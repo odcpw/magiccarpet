@@ -576,6 +576,7 @@ namespace MagicCarpet.Native
         private Camera gameRuntimeTransitionCamera;
         private CampaignMenuPresenter gameRuntimeMenu;
         private FrontendMediaPresenter frontendMedia;
+        private int gameRuntimeCampaignMediaFrame = -1;
         private CampaignSpeechPresenter campaignSpeech;
         private ulong gameRuntimeAudioGeneration;
         private string gameRuntimeBriefingKey;
@@ -3158,6 +3159,12 @@ namespace MagicCarpet.Native
             if (session == null || gameRuntimeMenu == null) return;
             var identity = session.ObservedCampaignIdentity();
             var menu = identity.campaign_menu;
+            if (GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity))
+            {
+                campaignSpeech?.Stop();
+                gameRuntimeBriefingKey = null;
+                return;
+            }
             if (identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 EnsureGameRuntimeFrontendMedia(false);
@@ -3511,6 +3518,17 @@ namespace MagicCarpet.Native
             {
                 if (gameRuntimeSecretEntryPending)
                 {
+                    FreezeGameRuntimeInput();
+                    return;
+                }
+                if (session != null && GameRuntimeTransport.CampaignReturnMediaBlocksInput(
+                    session.ObservedCampaignIdentity()))
+                {
+                    StepGameRuntimeCampaignReturnMedia(
+                        (uint)Math.Min(5_000_000d, Time.unscaledDeltaTime * 1_000_000d),
+                        Input.anyKey || Input.GetMouseButton(0) || Input.GetMouseButton(1),
+                        Input.GetKey(KeyCode.Escape));
+                    gameRuntimeMenuAction = CampaignMenuPresenter.Action.None;
                     FreezeGameRuntimeInput();
                     return;
                 }
@@ -9925,10 +9943,7 @@ namespace MagicCarpet.Native
             gameRuntimeCampaignSnapshot = null;
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();
-            Require(
-                receipt.after.mode == GameRuntimeTransport.CampaignMode &&
-                receipt.after.campaign_menu?.phase == "results",
-                "accepted completion returned to the Rust campaign results owner");
+            GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt);
             PresentGameRuntimeTransition(receipt);
             gameRuntimeLoadingPresentationGate.Reset();
             DisposeGameRuntimeCampaignPresentation();
@@ -10320,7 +10335,9 @@ namespace MagicCarpet.Native
             // OnGUI may precede the first briefing Update on direct NewGame
             // or map restore. Bind audio before the first portal draw, while
             // leaving cold Title's startup=true media initialization intact.
-            if (session?.ObservedCampaignIdentity().mode == GameRuntimeTransport.CampaignMode)
+            var identity = session?.ObservedCampaignIdentity();
+            if (identity?.mode == GameRuntimeTransport.CampaignMode &&
+                !GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity))
             {
                 EnsureGameRuntimeFrontendMedia(false);
                 frontendMedia.StartMapMusic();
@@ -10391,6 +10408,20 @@ namespace MagicCarpet.Native
             return frontendMedia.Step(session.Handle, session.GameRuntimeIdentity(), elapsedUs, input, escape);
         }
 
+        internal bool StepGameRuntimeCampaignReturnMedia(uint elapsedUs, bool input, bool escape)
+        {
+            if (session == null) return false;
+            var identity = session.GameRuntimeIdentity();
+            if (!GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity)) return false;
+            gameRuntimeCampaignMediaFrame = Time.frameCount;
+            EnsureGameRuntimeFrontendMedia(false);
+            frontendMedia.Step(session.Handle, identity, elapsedUs, input, escape);
+            gameRuntimeMenuStatus = frontendMedia.Error;
+            // Consume the release frame too, so its key cannot also dismiss
+            // the results sheet that becomes eligible after this command.
+            return true;
+        }
+
         private void EnsureGameRuntimeFrontendMedia(bool startup)
         {
             if (frontendMedia == null)
@@ -10421,6 +10452,8 @@ namespace MagicCarpet.Native
         internal bool ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action action)
         {
             if (session == null || !gameRuntimeMode) return false;
+            if (GameRuntimeTransport.CampaignReturnMediaBlocksInput(session.GameRuntimeIdentity()))
+                return false;
             var mode = session.GameRuntimeIdentity().mode;
             var canSave = !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath);
             var saveSlot = action is CampaignMenuPresenter.Action.Save or CampaignMenuPresenter.Action.Load
@@ -14471,6 +14504,14 @@ namespace MagicCarpet.Native
             if (gameRuntimeTransitionPresenter?.HasFailure == true)
             { gameRuntimeTransitionPresenter.DrawFailure(); return; }
             if (gameRuntimeSecretEntryPending) return;
+            if (gameRuntimeMode && session != null && fatalError == null &&
+                (gameRuntimeCampaignMediaFrame == Time.frameCount ||
+                 GameRuntimeTransport.CampaignReturnMediaBlocksInput(session.ObservedCampaignIdentity())))
+            {
+                if (frontendMedia?.Visible == true) frontendMedia.Draw();
+                else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture);
+                return;
+            }
             if (frontendMedia?.Visible == true) { frontendMedia.Draw(); return; }
             if (gameRuntimeMode && fatalError == null && gameRuntimeSourceMenus.HasPendingAction)
             {

@@ -1517,7 +1517,8 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "command_transport": "mc_game_runtime_media_command_json_v1",
                 "observation": "identity.frontend_media",
                 "maximum_command_json_bytes": 256 * 1024,
-                "guards": ["runtime_generation", "title_mode"]
+                "guards": ["runtime_generation", "title_or_pending_campaign_return_mode"],
+                "campaign_return_observation": "identity.frontend_media.campaign_return"
             },
             "player_preferences": {
                 "command_transport": "mc_game_runtime_preferences_command_json_v1",
@@ -2977,9 +2978,20 @@ mod tests {
             })
         );
         assert_eq!(
+            contract["frontend_media"],
+            serde_json::json!({
+                "contract": "mc2-frontend-media/v1",
+                "command_transport": "mc_game_runtime_media_command_json_v1",
+                "observation": "identity.frontend_media",
+                "maximum_command_json_bytes": 256 * 1024,
+                "guards": ["runtime_generation", "title_or_pending_campaign_return_mode"],
+                "campaign_return_observation": "identity.frontend_media.campaign_return"
+            })
+        );
+        assert_eq!(
             contract["completion_transition"],
             serde_json::json!({
-                "receipt_contract": "carpet-flight-completion-transition-receipt/v2",
+                "receipt_contract": "carpet-flight-completion-transition-receipt/v3",
                 "accept_transport": "mc_game_runtime_accept_transition_v1",
                 "receipt_transport": "mc_game_runtime_completion_transition_receipt_json_v1",
                 "destination_authority": "rust_owned_semantic_flow",
@@ -4340,6 +4352,7 @@ mod tests {
                 state_hash: 0x1234,
                 statistics: None,
             },
+            disposition: sim_core::game_runtime::CompletionDisposition::Results,
             presentation_sequence: vec![completion_cue, title.presentation.clone()],
             receipt_sha256: "0".repeat(64),
         };
@@ -4357,8 +4370,9 @@ mod tests {
         });
         assert_eq!(
             encoded["receipt_contract"],
-            "carpet-flight-completion-transition-receipt/v2"
+            "carpet-flight-completion-transition-receipt/v3"
         );
+        assert_eq!(encoded["disposition"], "results");
         assert_eq!(
             encoded["presentation_sequence"],
             serde_json::json!([

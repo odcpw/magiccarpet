@@ -124,6 +124,25 @@ def event_table(name: str) -> list[dict]:
         last = frame
     return result
 
+def credit_records() -> list[str]:
+    """Retain the pinned off_DB558 order, including page separators."""
+    source = cache.pinned_remc2_blob('remc2/engine/EventsFunctions.cpp').decode('utf-8')
+    variables = dict(re.findall(r'char\* (var_0x[0-9A-Fa-f]+)\s*=\s*\(char\*\)\s*"([^"\\]*)"\s*;', source))
+    body = source.split('char* off_DB558[] = {', 1)[1].split('};', 1)[0]
+    names = re.findall(r'var_0x[0-9A-Fa-f]+|NULL', body)
+    if not names or 'NULL' not in names:
+        raise cache.CacheError('pinned credits table has no terminator')
+    end = names.index('NULL')
+    if any(name != 'NULL' for name in names[end:]):
+        raise cache.CacheError('pinned credits table has content after its terminator')
+    try:
+        records = [variables[name] for name in names[:end]]
+    except KeyError as error:
+        raise cache.CacheError(f'pinned credits string is missing: {error}') from error
+    if len(records) != 117 or records.count('!') != 20:
+        raise cache.CacheError('pinned credits table shape changed')
+    return records
+
 def build(owner: Path, output: Path, language: int = 1) -> dict:
     owner = owner.resolve(strict=True)
     output.mkdir(parents=True, exist_ok=False)
@@ -134,7 +153,11 @@ def build(owner: Path, output: Path, language: int = 1) -> dict:
         target.write_bytes(data)
         outputs.append(dict(path=path, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
     clips = []
-    for clip_id, name, table in [('intro1','INTRO.DAT','str_E17CC_0'),('intro2','INTRO2.DAT','str_E17CC_0x160')]:
+    cut_tables = ['str_E1328', 'str_E13EC', 'str_E14AC', 'str_E1570', 'str_E1634', 'str_E16B4']
+    clip_sources = [('intro1','INTRO.DAT','str_E17CC_0'),('intro2','INTRO2.DAT','str_E17CC_0x160')]
+    clip_sources += [(f'cut{index}', f'CUT{index}.DAT', table)
+                     for index, table in enumerate(cut_tables, 1)]
+    for clip_id, name, table in clip_sources:
         source = cache.confined_source(owner, f'INTRO/{name}').read_bytes()
         frames_path = f'{clip_id}.frames'
         digest = hashlib.sha256()
@@ -166,14 +189,45 @@ def build(owner: Path, output: Path, language: int = 1) -> dict:
             path=f'glyph-{index}.mask'
             write(path,mask)
             glyphs.append(dict(index=index,width=width,height=height,path=path))
+        # Credits use HSCREEN bank6, with the source table advanced by one
+        # before character lookup. Keep masks indexed by the unshifted table.
+        credits_pixels = cache.decode_container_blob(decoder, screens, 0x16554D, 640*480, work, 'credits-background')
+        credits_palette = cache.decode_container_blob(decoder, screens, 0x178B5F, 768, work, 'credits-palette')
+        if max(credits_palette) > 63:
+            raise cache.CacheError('credits palette is not RGB6')
+        write('credits.frames', credits_pixels + credits_palette)
+        credits_font_data = cache.decode_container_blob(decoder, screens, 0x1641FC, 12754, work, 'credits-font')
+        credits_font_table = cache.bitmap_records(cache.decode_container_blob(
+            decoder, screens, 0x1646BA, 1638, work, 'credits-font-table'))
+        if len(credits_font_table) != 273 or credits_font_table[66][1:] != (8, 14):
+            raise cache.CacheError('pinned credits font table changed')
+        credits_mask = bytearray(160 * 252)
+        credits_glyphs = []
+        for index, (offset, width, height) in enumerate(credits_font_table):
+            if width > 10 or height > 14:
+                raise cache.CacheError('credits glyph exceeds source atlas cell')
+            _, mask, _ = cache.materialize_indexed_rle(credits_font_data, offset, width, height)
+            x, y = index % 16 * 10, index // 16 * 14
+            for row in range(height):
+                credits_mask[(y+row)*160+x:(y+row)*160+x+width] = mask[row*width:(row+1)*width]
+            credits_glyphs.append(dict(index=index, width=width, height=height))
+        write('credits-font.mask', bytes(credits_mask))
+        credits_art = dict(frames_path='credits.frames', width=640, height=480,
+            font_path='credits-font.mask', font_width=160, font_height=252,
+            advance_x=8, advance_y=14, glyphs=credits_glyphs)
         language_bytes=cache.confined_source(owner,f'LANGUAGE/L{language}.TXT').read_bytes()
         subtitles=[row.decode('cp1252') for row in cache.language_records(language_bytes)]
         audio=[]
-        for filename,selector,rows,row,slots in [('SOUND',4,6,3,range(1,20)),('MUSIC',0,4,0,[4,5])]:
+        sound_banks = [(bank, range(1,20) if bank == 4 else (1,2) if bank == 9 else (1,2,3))
+                       for bank in range(4,10)]
+        audio_sources = [('SOUND', bank, 6, 3, slots) for bank, slots in sound_banks]
+        audio_sources.append(('MUSIC',0,4,0,[2,4,5,6]))
+        for filename,selector,rows,row,slots in audio_sources:
             container=cache.confined_source(owner,f'SOUND/{filename}.DAT').read_bytes()
             _,desc=cache.container_descriptor(container,count_rows=rows,selector=selector,row=row,label=filename)
-            meta=cache.decode_container_blob(decoder,container,desc['metadata_offset'],desc['metadata_size'],work,filename+'-meta')
-            data=cache.decode_container_blob(decoder,container,desc['data_offset'],desc['data_size'],work,filename+'-data')
+            label=f'{filename.lower()}-{selector}'
+            meta=cache.decode_container_blob(decoder,container,desc['metadata_offset'],desc['metadata_size'],work,label+'-meta')
+            data=cache.decode_container_blob(decoder,container,desc['data_offset'],desc['data_size'],work,label+'-data')
             records=cache.packed_audio_records(meta,data,expected_count=(len(meta)-32)//32,label=filename)
             if filename=='MUSIC':
                 converter,_=cache.compile_xmi_converter(work)
@@ -181,7 +235,8 @@ def build(owner: Path, output: Path, language: int = 1) -> dict:
             for slot in slots:
                 record=records[slot-1]
                 payload=data[record['relative_data_offset']:record['relative_data_offset']+record['bytes']]
-                path=f'audio/{filename.lower()}-{slot}.wav'
+                path=(f'audio/sound-bank{selector}-{slot}.wav' if filename == 'SOUND' and selector != 4
+                      else f'audio/{filename.lower()}-{slot}.wav')
                 if filename=='MUSIC':
                     midi=cache.transcode_xmi(converter,payload,work,f'media-{slot}')
                     source=work/f'media-{slot}.mid'
@@ -193,6 +248,7 @@ def build(owner: Path, output: Path, language: int = 1) -> dict:
                 write(path,payload)
                 audio.append(dict(kind=filename.lower(),bank=selector,id=slot,path=path,filename=record['filename']))
     result=dict(schema=SCHEMA,clips=clips,audio=audio,glyphs=glyphs,subtitles=subtitles,
+                credits=credit_records(),credits_art=credits_art,
                 subtitles_enabled=language!=2,language=language,outputs=outputs,
                 music_renderer='libADLMIDI bank59, 2 chips, 44100Hz; host adaptation, not DOS hardware timbre')
     (output/'media.json').write_bytes(cache.canonical_json(result))

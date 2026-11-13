@@ -1769,6 +1769,80 @@ mod tests {
     }
 
     #[test]
+    fn level25_early_slot_exit_reaches_results_after_natural_boss_approach() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"), PathBuf::from);
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"), PathBuf::from);
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache).unwrap();
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package, &cache, CampaignSelection::ordinary(25).unwrap(),
+        ).expect("actual Level25 package and owner cache");
+        campaign.step(crate::PlayerCommand::default(), 0);
+        // Configured prior group29 and group31 boundaries isolate the real
+        // exit consumer. This is not objective completion or a boss defeat.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29)
+            .expect("actual boss producer");
+        let sim = campaign.simulation();
+        let boss = sim.entities().iter().find(|row|
+            row.active && (row.class, row.model) == (5, 10) && !row.drawing_disabled())
+            .expect("authored boss").index;
+        let player = sim.state.entity_index;
+        let original_creatures = sim.entities().iter().filter(|row|
+            row.active && row.class == 5 && row.index < player && row.index != boss)
+            .filter_map(|row| sim.source_arena().handle(row.index)).collect::<Vec<_>>();
+        assert!(!original_creatures.is_empty());
+        let mut approach = sim.entities()[usize::from(boss)].position;
+        crate::move_entity(&mut approach, sim.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = sim.canonical_terrain().ground_height(approach).wrapping_add(768);
+        let sim = campaign.simulation_mut();
+        sim.set_level2_entity_position(player, approach).unwrap();
+        sim.state.actual_speed = 0;
+        sim.state.target_speed = 0;
+        {
+            // Match the paid encounter's disclosed player survival budget.
+            let live = &mut sim.session.state.live;
+            let row = &mut live.economy.entities[usize::from(player)];
+            row.set_max_life(200_000);
+            row.set_life(200_000);
+            let row = row.clone();
+            live.player_life = row.life;
+            live.shared_spells.sync_player_entity_from_authority(&row);
+        }
+        let mut ready = false;
+        let mut saw_clear_window = false;
+        for turn in 0..320 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let generation = campaign.generation();
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation,
+            ).expect("actual boss approach frame");
+            frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap();
+            let sim = campaign.simulation();
+            assert!(!sim.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "approach turn{turn}: {:?}", sim.dispatch_events());
+            let row = &sim.entities()[usize::from(boss)];
+            saw_clear_window |= row.subspell_index & 4 != 0;
+            if row.action == 80 && (2..12).contains(&row.record[74]) && row.record[61] != 0 {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "ordinary boss approach must complete before exit setup");
+        assert!(saw_clear_window && original_creatures.iter().any(|handle|
+            campaign.simulation().source_arena().resolve(*handle).is_none()),
+            "unmodified source approach must clear and reclaim an original lower-slot creature");
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(31)
+            .expect("actual ordered group31 constructors");
+        assert_final_exit_consumer(campaign, &package, &cache, player, false);
+    }
+
+    #[test]
     fn level25_paid_meteor_reaches_original_boss_damage_and_cleanup() {
         use crate::campaign::{CampaignSession, spec::CampaignSelection};
         use crate::native_world::{area_damage, Mc2DispatchEvent};
@@ -1786,6 +1860,16 @@ mod tests {
         ).expect("actual Level25 owner package and environment");
         campaign.step(crate::PlayerCommand::default(), 0);
         let player = campaign.simulation().state.entity_index;
+        let exit_root = campaign.simulation().entities().iter().find(|row|
+            row.active && (row.class, row.model, row.action, row.source_id) == (11, 4, 4, 31))
+            .expect("reset-born final mission group31 controller").index;
+        let exit_root_handle = campaign.simulation().source_arena().handle(exit_root).unwrap();
+        let objective_stages = &campaign.simulation().runtime().stages;
+        assert_eq!((objective_stages[0].kind, objective_stages[1].kind), (5, 1));
+        let group31_rows = campaign.simulation().mission().authored_features().iter()
+            .filter(|row| row.kind != 0 && row.activation_group == 31)
+            .map(|row| row.index).collect::<Vec<_>>();
+        assert_eq!(group31_rows, [393, 394]);
         {
             // Declared prior carry and resources. The player pays the real
             // holder; no boss state, phase, life, RNG or timer is changed.
@@ -2159,6 +2243,8 @@ mod tests {
         // (phase, remaining timer at first observation, real later callbacks).
         let mut death_timer_watch: Option<(u8, i32, usize)> = None;
         let mut completed_timers = Vec::new();
+        let mut group31_publications = 0;
+        let mut exit_root_hidden = false;
         for turn in 0..interval_bound {
             let prior_boss = campaign.simulation().source_arena().handle(boss_slot) == Some(boss);
             let boss_before = prior_boss.then(|| &campaign.simulation().entities()[usize::from(boss_slot)]);
@@ -2242,6 +2328,12 @@ mod tests {
             let sim = campaign.simulation();
             assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "held Meteor turn{turn}: {:?}", sim.dispatch_events());
+            group31_publications += sim.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 31, authored_indices, .. }
+                    if *source_slot == exit_root && authored_indices.as_ref() == group31_rows.as_slice())).count();
+            if sim.source_arena().handle(exit_root) == Some(exit_root_handle) {
+                exit_root_hidden |= sim.entities()[usize::from(exit_root)].drawing_disabled();
+            }
             let actual_player = &sim.entities()[usize::from(player)];
             if actual_player.position != retreat && first_drift.is_none() {
                 first_drift = Some((turn, actual_player.position, actual_player.life));
@@ -2392,6 +2484,178 @@ mod tests {
         assert_eq!(campaign.simulation().session.state.live.core.runtime.final_boss_active_counter(), Some(0));
         eprintln!("Level25 natural boss defeat: start_life={stage_life} consumed={} paid_launches={} terminal={terminal:?} death_meteor={death_meteor:?} reward={reward:?} reward_product={reward_product:?} timers={completed_timers:?} first_drift={first_drift:?}",
             fight_consumed.len(), fight_launches.len());
+
+        // Preserve the same paid fight and its actual target-death result.
+        // If its fixed firing position did not already satisfy the earlier
+        // objective, place only the player at the authored reach point. No
+        // objective, switch, lifetime or result state is staged.
+        assert_eq!(campaign.simulation().runtime().objectives[0].stage_selectors[1], 2,
+            "the actual authored boss's negative-life visit satisfies its bound objective");
+        if campaign.simulation().runtime().objectives[0].stage_selectors[0] == 1 {
+            let mut point = Position { x: 40 * 256, y: 212 * 256, z: 0 };
+            point.z = campaign.simulation().canonical_terrain().ground_height(point).wrapping_add(768);
+            campaign.simulation_mut().set_level2_entity_position(player, point)
+                .expect("declared real-player pose at the authored reach objective");
+        }
+        for _ in 0..32 {
+            if group31_publications == 1
+                && campaign.simulation().source_arena().resolve(exit_root_handle).is_none() { break; }
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let sim = campaign.simulation();
+            assert!(!sim.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "final objective and group31: {:?}", sim.dispatch_events());
+            group31_publications += sim.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 31, authored_indices, .. }
+                    if *source_slot == exit_root && authored_indices.as_ref() == group31_rows.as_slice())).count();
+            if sim.source_arena().handle(exit_root) == Some(exit_root_handle) {
+                exit_root_hidden |= sim.entities()[usize::from(exit_root)].drawing_disabled();
+            }
+        }
+        let sim = campaign.simulation();
+        let objective = &sim.runtime().objectives[0];
+        assert_eq!((&objective.stage_selectors[..2], objective.is_level_end), (&[2, 2][..], 1));
+        assert_eq!(group31_publications, 1, "row392 publishes its source-ordered group once");
+        assert!(exit_root_hidden && sim.source_arena().resolve(exit_root_handle).is_none(),
+            "row392 hides and its original incarnation is reclaimed");
+        assert_final_exit_consumer(campaign, &package, &cache, player, true);
+    }
+
+    fn assert_final_exit_consumer(
+        mut campaign: crate::campaign::CampaignSession,
+        package: &std::path::Path,
+        cache: &std::path::Path,
+        player: u16,
+        paid_fight: bool,
+    ) {
+        use crate::native_world::Mc2DispatchEvent;
+        let sim = campaign.simulation();
+        let portal = sim.economy().authored_class14().iter()
+            .find(|row| row.active && row.authored_index == 393).copied()
+            .expect("row393 is the group31 visible portal");
+        let trigger = sim.economy().authored_switch_producers().iter()
+            .find(|row| row.active && row.authored_index == 394).copied()
+            .expect("row394 is the group31 exit trigger");
+        assert_eq!((portal.model, portal.action, trigger.model, trigger.action), (3, 8, 12, 12));
+        let trigger_handle = sim.source_arena().handle(trigger.source_entity_index).unwrap();
+        assert!(trigger.source_entity_index < player,
+            "this source allocation visits the row394 trigger before the player");
+        campaign.simulation_mut().set_level2_entity_position(player, trigger.position)
+            .expect("declared real-player pose overlaps the actual row394 trigger");
+        // A long paid encounter exceeds the bounded retained journal window;
+        // a slice length is not an absolute event cursor once old rows expire.
+        let mut exit_cursor = campaign.effect_cursor();
+        let mut exit_records = Vec::new();
+        for _ in 0..16 {
+            if campaign.simulation().level_exit_sequence().active { break; }
+            campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })));
+            let page = campaign.effects_after(exit_cursor, usize::MAX)
+                .expect("each trigger turn retains its new production effects");
+            exit_cursor = page.next_cursor;
+            exit_records.extend(page.records.into_vec());
+        }
+        let sim = campaign.simulation();
+        let exit = sim.level_exit_sequence();
+        assert!(exit.active && !exit.complete);
+        // sub_6F2B0 writes action12/phase0 at the lower trigger slot; the
+        // same ascending UpdateEntities scan then visits the player and runs
+        // sub_5E8C0 phase0 to phase1. Capture both callback order and the
+        // phase0-only effects, rather than expecting an end-of-turn phase0.
+        let receipts = sim.cf10_production_schedule_receipts();
+        let trigger_visit = receipts.iter().position(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                if *slot == trigger.source_entity_index)).expect("row394 callback");
+        let player_visit = receipts.iter().position(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == player && selector.registry_key().selector ==
+                    (crate::campaign::spec::BehaviorSelector::ClassAction { class: 3, action: 12 })))
+            .expect("same-pass player action12 callback");
+        assert!(trigger_visit < player_visit);
+        let start = exit_records.iter().position(|record| matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
+                trigger_entity_index, portal_entity_index, ..
+            }) if trigger_entity_index == trigger.source_entity_index
+                && portal_entity_index == portal.source_entity_index)).expect("real exit start");
+        let phase_zero_sound = exit_records.iter().position(|record| matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::ExitSequenceSwitch, entity_index,
+                sound_id: crate::world::portals::EXIT_SWITCH_SOUND, ..
+            }) if entity_index == player)).expect("player phase0 sound");
+        assert!(start < phase_zero_sound);
+        assert_eq!((exit.trigger_entity_index, exit.portal_entity_index, exit.phase,
+            exit.palette_submode, exit.player_status_flags),
+            (trigger.source_entity_index, portal.source_entity_index, 1,
+                crate::world::portals::EXIT_PALETTE_ENTRY_FLASH_REQUEST, 0x20));
+        assert_eq!((sim.entities()[usize::from(player)].action, sim.entities()[usize::from(player)].record[74]),
+            (12, 1));
+        assert_eq!(sim.economy().authored_class14().iter()
+            .find(|row| row.source_entity_index == portal.source_entity_index).unwrap().control_flags & 1, 0);
+        for _ in 0..700 {
+            if campaign.simulation().level_exit_sequence().complete { break; }
+            campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        let sim = campaign.simulation();
+        assert!(sim.source_arena().resolve(trigger_handle).is_none(), "row394 is reclaimed after hide");
+        assert!(sim.level_exit_sequence().complete);
+        assert_eq!((sim.level_exit_sequence().result_code, sim.source_exit_result_byte()), (0x0a, 0x0a));
+        if paid_fight {
+            crate::campaign::backend::tests::assert_final_campaign_return_for_test(
+                campaign.clone(), package, cache,
+            );
+        }
+        // Move the actual completed session into a matching backend to exercise
+        // the real runtime consumer. This configured admission does not claim
+        // a save restore or an earned preceding campaign frontier.
+        use crate::campaign::backend::{load_mc2_campaign_with_owner_cache, Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs};
+        use crate::game_runtime::{CampaignMenuPhase, GameRuntime, ReplayOperation, ResolvedCompletionTarget, RuntimeMode};
+        use crate::game_session::GameCommand;
+        use sim_definition::runtime_flow::RuntimeFlowDestination;
+        let expected_hash = campaign.state_hash();
+        let expected_tick = campaign.tick();
+        let expected_stats = campaign.simulation().completion_statistics();
+        let definition = std::sync::Arc::new(load_mc2_campaign_with_owner_cache(
+            &package, &cache, &crate::game_definition::default_catalog().unwrap(),
+        ).expect("actual final mission definition and cache"));
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(61925).unwrap();
+        let title_guard = runtime.identity().guard();
+        runtime.restore_playing_resolved(
+            title_guard, definition, &Mc2CampaignAdapter, 61925,
+            std::iter::empty::<ReplayOperation<GameCommand>>(), false, Vec::new(), Vec::new(),
+            |_| Ok(Mc2CampaignInputs::with_owner_cache(&package, &cache)),
+            |session| {
+                assert_eq!(session.backend().compatibility_campaign().definition().package_sha256,
+                    campaign.definition().package_sha256);
+                *session.backend_mut().compatibility_campaign_mut_for_test() = campaign;
+                Ok(())
+            },
+            |_, _| Ok(()),
+            |session| {
+                assert_eq!(session.backend().compatibility_campaign().state_hash(), expected_hash);
+                assert_eq!(session.identity().tick, expected_tick);
+                Ok(())
+            },
+            |_, _, _| {}, |_| {},
+        ).expect("controlled admission of the unchanged completed session");
+        let playing = runtime.identity();
+        let receipt = runtime.accept_transition_resolved(
+            playing.guard(), playing.session.as_ref().unwrap().guard(),
+            |_, destination| {
+                assert!(matches!(destination, RuntimeFlowDestination::Title { .. }));
+                Ok(ResolvedCompletionTarget::Title)
+            },
+        ).expect("actual result reaches the runtime completion consumer");
+        assert!(receipt.verify());
+        assert_eq!(receipt.completion.state_hash, expected_hash);
+        assert_eq!(receipt.completion.statistics, Some(expected_stats.clone()));
+        assert_eq!(receipt.after.mode, RuntimeMode::Campaign);
+        let menu = receipt.after.campaign_menu.as_ref().unwrap();
+        assert_eq!(menu.phase, CampaignMenuPhase::Results);
+        assert_eq!(menu.completion_statistics, Some(expected_stats));
+        assert_eq!(menu.completed_levels, vec![receipt.completed_level_id.clone()]);
+        assert!(runtime.session().is_none());
     }
 
     #[test]

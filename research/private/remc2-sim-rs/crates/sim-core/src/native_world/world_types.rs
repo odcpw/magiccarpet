@@ -5460,6 +5460,7 @@ impl NativeWorldInspection {
                 &mut economy,
                 learned_spells,
                 &wizard.blocked_spells,
+                definition.identity == CampaignSelection::LEVEL1,
             )?;
         }
         let house_parameters = campaign_house_parameters(definition)?;
@@ -5591,6 +5592,7 @@ impl NativeWorldInspection {
                 &mut economy,
                 learned_spells,
                 &wizard.blocked_spells,
+                false,
             )?;
         }
         let castle_holder = shared_spells

@@ -16,7 +16,17 @@ namespace MagicCarpet.Native
             public Output[] outputs;
             public Glyph[] glyphs;
             public AudioBinding[] audio;
+            public CreditsArt credits_art;
         }
+        [Serializable] private sealed class CreditsArt
+        {
+            public string frames_path, font_path;
+            public int width, height, font_width, font_height, advance_x, advance_y;
+            public CreditsGlyph[] glyphs;
+            [NonSerialized] public byte[] mask;
+        }
+        [Serializable] private sealed class CreditsGlyph
+        { public int index, width, height; }
         [Serializable] private sealed class AudioBinding
         { public string kind, path; public int bank, id; }
         [Serializable] private sealed class Output
@@ -46,14 +56,18 @@ namespace MagicCarpet.Native
         private AudioSource music;
         private FileStream frames;
         private Texture2D texture;
+        private Texture2D creditsTexture;
+        private byte[] creditsPixels, creditsPalette;
+        private int creditsCursor = -1;
+        private int creditsFadeIn = -1, creditsFadeOut = -1;
         private byte[] pixels, palette;
         private Color32[] colors;
         private uint epoch;
         private int frameIndex = -1;
         private int fadeIn = -1, fadeOut = -1;
-        private bool installed;
+        private bool installed, installAttempted, campaignInstallAttempted, mapMusicFailed;
         private GameRuntimeTransport.MediaSnapshot current;
-        internal bool Visible => current?.active == true;
+        internal bool Visible => current?.active == true || current?.campaign_return?.blocking == true;
         internal string Error { get; private set; }
 
         internal FrontendMediaPresenter(Transform parent, string directory, bool startup = true)
@@ -69,12 +83,17 @@ namespace MagicCarpet.Native
             var wasVisible = Visible;
             try
             {
-                if (!installed)
+                var campaignReturn = identity.frontend_media?.campaign_return?.blocking == true;
+                if (!installed && (!installAttempted || campaignReturn && !campaignInstallAttempted))
                 {
-                    installed = true;
+                    installAttempted = true;
+                    if (campaignReturn) campaignInstallAttempted = true;
                     LoadCatalog();
                     Send(handle, identity, "{\"operation\":\"install\",\"catalog\":" + catalogJson +
-                        ",\"startup\":" + (startup ? "true" : "false") + "}");
+                        ",\"startup\":" + (startup ? "true" : "false") +
+                        ",\"audio_available\":" + (SystemInfo.supportsAudio ? "true" : "false") + "}", true);
+                    Error = null;
+                    mapMusicFailed = false;
                     return true;
                 }
                 Send(handle, identity, "{\"operation\":\"frame\",\"elapsed_us\":" + elapsedUs +
@@ -90,9 +109,21 @@ namespace MagicCarpet.Native
                 StopAudio();
                 // JsonUtility supplies correct JSON string escaping, including
                 // paths and decoder diagnostics, through a typed request.
-                GameRuntimeTransport.MediaCommand(handle, identity,
-                    JsonUtility.ToJson(new Failure { message = Error }));
-                current = GameRuntimeTransport.ReadIdentity(handle).frontend_media;
+                try
+                {
+                    GameRuntimeTransport.MediaCommand(handle, identity,
+                        JsonUtility.ToJson(new Failure { message = Error }));
+                    // A Title failure clears Rust's catalog; a campaign-return
+                    // failure retains it while draining the held input.
+                    if (identity.frontend_media?.campaign_return?.blocking != true)
+                        installed = false;
+                    current = GameRuntimeTransport.ReadIdentity(handle).frontend_media;
+                }
+                catch (Exception failure)
+                {
+                    Error += "; failed to report media error: " + failure.Message;
+                    Debug.LogError("MC_FRONTEND_MEDIA_ERROR " + Error);
+                }
                 return true;
             }
         }
@@ -126,6 +157,25 @@ namespace MagicCarpet.Native
             }
             if (!candidate.glyphs.Any(g => g.index == 65 && g.width > 0 && g.height > 0))
                 throw new InvalidDataException("frontend subtitle font is missing glyph 65: " + PathFor("media.json"));
+            if (candidate.credits_art != null)
+            {
+                var art = candidate.credits_art;
+                if (art.width != 640 || art.height != 480 || art.font_width != 160 || art.font_height != 252 ||
+                    art.advance_x != 8 || art.advance_y != 14 || art.glyphs?.Length != 273 ||
+                    !candidate.outputs.Any(row => row.path == art.frames_path) ||
+                    !candidate.outputs.Any(row => row.path == art.font_path))
+                    throw new InvalidDataException("invalid source credits art bindings");
+                art.mask = File.ReadAllBytes(PathFor(art.font_path));
+                if (art.mask.Length != checked(art.font_width * art.font_height))
+                    throw new InvalidDataException("source credits font mask extent");
+                for (var i = 0; i < art.glyphs.Length; i++)
+                {
+                    var glyph = art.glyphs[i];
+                    if (glyph == null || glyph.index != i || glyph.width < 0 || glyph.width > 10 ||
+                        glyph.height < 0 || glyph.height > 14 || (glyph.width == 0) != (glyph.height == 0))
+                        throw new InvalidDataException("source credits glyph extent");
+                }
+            }
             catalog = candidate;
             catalogJson = json;
         }
@@ -134,21 +184,36 @@ namespace MagicCarpet.Native
         /// map with no preceding Title/media clock in this process.
         internal void StartMapMusic()
         {
-            LoadCatalog();
-            var binding = catalog.audio?.SingleOrDefault(row => row.kind == "music" && row.bank == 0 && row.id == 4)
-                ?? throw new InvalidDataException("source menu music bank0/track4 is missing");
-            if (!catalog.outputs.Any(row => row.path == binding.path))
-                throw new InvalidDataException("source menu music has no validated output receipt");
-            if (music != null && music.isPlaying && clips.TryGetValue(binding.path, out var clip) && music.clip == clip) return;
-            ApplyAudio(new GameRuntimeTransport.MediaAction { op = "M", value = 4, asset_path = binding.path });
+            if (mapMusicFailed) return;
+            try
+            {
+                LoadCatalog();
+                var binding = catalog.audio?.SingleOrDefault(row => row.kind == "music" && row.bank == 0 && row.id == 4)
+                    ?? throw new InvalidDataException("source menu music bank0/track4 is missing");
+                if (!catalog.outputs.Any(row => row.path == binding.path))
+                    throw new InvalidDataException("source menu music has no validated output receipt");
+                if (music != null && music.isPlaying && clips.TryGetValue(binding.path, out var clip) && music.clip == clip) return;
+                ApplyAudio(new GameRuntimeTransport.MediaAction { op = "M", value = 4, asset_path = binding.path });
+            }
+            catch (Exception exception)
+            {
+                mapMusicFailed = true;
+                Error = exception.Message;
+                StopAudio();
+                Debug.LogError("MC_FRONTEND_MEDIA_ERROR " + Error);
+            }
         }
-        private void Send(ulong handle, GameRuntimeTransport.Identity identity, string json)
+        private void Send(ulong handle, GameRuntimeTransport.Identity identity, string json, bool installing = false)
         {
             var previousActive = current?.active == true;
             GameRuntimeTransport.MediaCommand(handle, identity, json);
+            // Record native installation before observing or rendering it: a
+            // subsequent decoder failure does not undo the native command.
+            if (installing) installed = true;
             current = GameRuntimeTransport.ReadIdentity(handle).frontend_media;
             if (current == null || current.contract != "mc2-frontend-media/v1")
                 throw new InvalidDataException("native frontend media observation is unavailable");
+            if (current.campaign_return == null) campaignInstallAttempted = false;
             if (current.epoch != epoch)
             {
                 ReleaseSegment(current.retain_previous_frame);
@@ -163,6 +228,11 @@ namespace MagicCarpet.Native
             }
             foreach (var action in current.actions ?? Array.Empty<GameRuntimeTransport.MediaAction>())
                 ApplyAudio(action);
+            if (current.campaign_return?.phase == "credits")
+            {
+                ComposeCredits(current.campaign_return.credits);
+                return;
+            }
             if (!current.active)
             {
                 if (frames != null || texture != null)
@@ -197,6 +267,76 @@ namespace MagicCarpet.Native
             fadeOut = current.fade_out_level;
             if (frameChanged && (frameIndex == 0 || frameIndex % 200 == 0))
                 Debug.Log($"MC_FRONTEND_MEDIA_FRAME clip={current.clip_id} frame={frameIndex} subtitle={current.subtitle}");
+        }
+        private void ComposeCredits(GameRuntimeTransport.CreditsSnapshot view)
+        {
+            var art = catalog?.credits_art ?? throw new InvalidDataException("source credits art is missing");
+            if (view?.lines == null || view.cursor < 0 || view.cursor > 117 || view.lines.Length > 8)
+                throw new InvalidDataException("invalid Rust credits page");
+            if (creditsTexture != null && creditsCursor == view.cursor &&
+                creditsFadeIn == current.fade_in_level && creditsFadeOut == current.fade_out_level) return;
+            if (creditsPixels == null)
+            {
+                using var stream = File.OpenRead(PathFor(art.frames_path));
+                creditsPixels = new byte[checked(art.width * art.height)];
+                creditsPalette = new byte[768];
+                ReadExactly(stream, creditsPixels);
+                ReadExactly(stream, creditsPalette);
+                if (stream.Position != stream.Length)
+                    throw new InvalidDataException("source credits background extent");
+            }
+            var image = (byte[])creditsPixels.Clone();
+            var white = 0;
+            var distance = int.MaxValue;
+            for (var i = 0; i < 256; i++)
+            {
+                var d = 0;
+                for (var c = 0; c < 3; c++) { var delta = 63 - creditsPalette[i * 3 + c]; d += delta * delta; }
+                if (d < distance) { distance = d; white = i; }
+            }
+            for (var line = 0; line < view.lines.Length; line++)
+            {
+                var text = view.lines[line] ?? throw new InvalidDataException("null source credits line");
+                if (text.Length > 33 || text.Any(ch => ch > 255))
+                    throw new InvalidDataException("invalid source credits line");
+                // DrawText_7FAE0 centres between x10 and x620 and omits a
+                // one-character string. Bank6's font pointer skips TAB row0.
+                if (text.Length == 1) continue;
+                var x = 315 - art.advance_x * text.Length / 2;
+                var y = 200 + line * (art.advance_y + 2);
+                foreach (var ch in text)
+                {
+                    var glyph = art.glyphs[ch + 1];
+                    if (ch != ' ' && ch != '\t')
+                    {
+                        var gx = glyph.index % 16 * 10;
+                        var gy = glyph.index / 16 * 14;
+                        for (var dy = 0; dy < glyph.height; dy++)
+                            for (var dx = 0; dx < glyph.width; dx++)
+                                if (art.mask[(gy + dy) * art.font_width + gx + dx] != 0 &&
+                                    x + dx >= 0 && x + dx < art.width && y + dy < art.height)
+                                    image[(y + dy) * art.width + x + dx] = (byte)white;
+                    }
+                    x += art.advance_x;
+                }
+            }
+            var rgba = new Color32[image.Length];
+            for (var y = 0; y < art.height; y++)
+                for (var x = 0; x < art.width; x++)
+                {
+                    var i = image[y * art.width + x] * 3;
+                    rgba[(art.height - 1 - y) * art.width + x] = new Color32(
+                        Channel(creditsPalette[i]), Channel(creditsPalette[i + 1]),
+                        Channel(creditsPalette[i + 2]), 255);
+                }
+            if (creditsTexture == null)
+                creditsTexture = new Texture2D(art.width, art.height, TextureFormat.RGBA32, false)
+                { name = "MC2 source credits", filterMode = FilterMode.Point };
+            creditsTexture.SetPixels32(rgba);
+            creditsTexture.Apply(false, false);
+            creditsCursor = view.cursor;
+            creditsFadeIn = current.fade_in_level;
+            creditsFadeOut = current.fade_out_level;
         }
         private void ComposeIndexedFrame()
         {
@@ -392,6 +532,13 @@ namespace MagicCarpet.Native
             if (!Visible) return;
             GUI.depth = -1000;
             GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture);
+            if (current.campaign_return?.phase == "credits")
+            {
+                if (creditsTexture != null)
+                    GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), creditsTexture, ScaleMode.ScaleToFit);
+                return;
+            }
+            if (current.campaign_return?.phase == "input_release") return;
             if (texture != null && (current.frame_index >= 0 || current.retain_previous_frame))
                 GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), texture, ScaleMode.ScaleToFit);
         }
@@ -440,6 +587,8 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             ReleaseSegment(); StopAudio();
+            ReleaseObject(creditsTexture);
+            creditsTexture = null; creditsPixels = null; creditsPalette = null;
             ReleaseObject(audioRoot);
             audioRoot = null; music = null; current = null;
         }

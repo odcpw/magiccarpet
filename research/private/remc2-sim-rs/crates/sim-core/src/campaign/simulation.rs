@@ -5822,6 +5822,29 @@ impl Mc2Simulation {
             .min(LEVEL2_SPELL_TIER_THRESHOLDS[usize::from(family)][2])
     }
 
+    /// `sub_6E0D0` writes learned history and threshold+1, then the same
+    /// `sub_6DB50(1, 0)` visit recomputes tiers and banks eligible families.
+    /// The next `InitialiseSpells` clears the runtime buffer and selection.
+    pub(crate) fn final_victory_spell_progression(&self) -> Vec<CarriedSpellProgress> {
+        let player = self.shared_spells().local_player();
+        (0..PLAYER_SPELL_COUNT).map(|family| {
+            let thresholds = LEVEL2_SPELL_TIER_THRESHOLDS[family];
+            let base = thresholds[2].wrapping_add(1);
+            let runtime = if family == 2 { player.runtime_spell_experience[family].min(7) }
+                else { player.runtime_spell_experience[family] };
+            let total = base.wrapping_add(runtime);
+            let unlocked_tier = thresholds.iter().rposition(|threshold| total >= *threshold)
+                .unwrap_or(0) as i8;
+            CarriedSpellProgress {
+                family: family as u8,
+                persistent_experience: self.bank_carried_spell_experience(family as u8, base, runtime),
+                runtime_experience: 0,
+                unlocked_tier,
+                selected_tier: 0,
+            }
+        }).collect()
+    }
+
     pub(crate) fn apply_carried_spell_progression(
         &mut self,
         entries: &[CarriedSpellProgress],

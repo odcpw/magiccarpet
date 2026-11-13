@@ -23,7 +23,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --loading-cache DIR     Frontend/loading cache (required with explicit packages)
   --loading-assets DIR    Optional destination loading artwork cache override
   --menu-cache DIR        Optional original campaign-map/menu cache override
-  --media-cache DIR       Optional original intro/frontend media cache override
+  --media-cache DIR       Optional original intro, cutscene and credits cache override
 
 An explicit package set replaces all defaults; Rust validates its semantic flow
 and content identities. There is no fixed package count or canned entry replay.
@@ -195,6 +195,10 @@ def main(arguments):
     if loading is not None:
         directory(loading, 'loading cache')
         native.extend(('-mc-runtime-loading-cache', str(loading)))
+    if media is None:
+        installed_media = GENERATED / 'mc2-campaign-media-cache-decoded'
+        if installed_media.is_dir():
+            media = installed_media
     if media is not None:
         directory(media, 'media cache')
         native.extend(('-mc-runtime-media-cache', str(media)))

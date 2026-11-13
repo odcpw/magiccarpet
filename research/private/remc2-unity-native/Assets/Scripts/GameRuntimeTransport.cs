@@ -29,7 +29,9 @@ namespace MagicCarpet.Native
             "carpet-flight-game-definition/v11";
         internal const string SemanticContractVersion = "36.0";
         internal const string CompletionTransitionReceiptContract =
-            "carpet-flight-completion-transition-receipt/v2";
+            "carpet-flight-completion-transition-receipt/v3";
+        internal const string ResultsCompletionDisposition = "results";
+        internal const string ReplayMapCompletionDisposition = "replay_map";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
@@ -412,6 +414,23 @@ namespace MagicCarpet.Native
             public string error;
             public bool clear_input;
             public bool retain_previous_frame;
+            [OptionalField] public CampaignReturnMediaSnapshot campaign_return;
+        }
+
+        [Serializable]
+        internal sealed class CampaignReturnMediaSnapshot
+        {
+            public string phase;
+            public bool blocking;
+            public int? cutscene_id;
+            [OptionalField] public CreditsSnapshot credits;
+        }
+
+        [Serializable]
+        internal sealed class CreditsSnapshot
+        {
+            public string[] lines;
+            public int cursor;
         }
 
         [Serializable]
@@ -522,6 +541,7 @@ namespace MagicCarpet.Native
             public string completed_level_id;
             public RuntimeFlowDestination completion_destination;
             public GameCompletion completion;
+            public string disposition;
             public RuntimePresentationCue[] presentation_sequence;
             public string receipt_sha256;
         }
@@ -1331,6 +1351,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("game runtime identity is incomplete");
             }
             ParseCounter(identity.generation, "generation");
+            ValidateCampaignReturnMedia(identity);
             if (identity.mode != CampaignMode && HasCampaignMenuData(identity.campaign_menu))
                 throw new InvalidOperationException("non-campaign identity carries a campaign menu");
             ValidateIdentityPresentation(identity);
@@ -1430,6 +1451,27 @@ namespace MagicCarpet.Native
                     break;
             }
             ValidateSecretCampaign(identity);
+        }
+
+        internal static bool CampaignReturnMediaBlocksInput(Identity identity) =>
+            identity?.frontend_media?.campaign_return?.blocking == true;
+
+        internal static void ValidateCampaignReturnMedia(Identity identity)
+        {
+            var pending = identity?.frontend_media?.campaign_return;
+            if (pending == null) return;
+            if (identity.mode != CampaignMode || !pending.blocking ||
+                !new[] { "cutscene", "credits", "input_release" }.Contains(pending.phase) ||
+                (pending.cutscene_id.HasValue && (pending.cutscene_id < 1 || pending.cutscene_id > 6)) ||
+                (pending.phase == "cutscene" && !pending.cutscene_id.HasValue) ||
+                (pending.phase == "credits") != (pending.credits != null))
+                throw new InvalidOperationException("campaign return media has an invalid source phase");
+            var credits = pending.credits;
+            if (credits != null && (credits.cursor < 0 || credits.cursor > 117 ||
+                credits.lines == null || credits.lines.Length > 8 ||
+                credits.lines.Any(line => line == null || line.Length > 33 ||
+                    line.Any(character => character > 127) || line == "!")))
+                throw new InvalidOperationException("campaign credits exceed the source row extent");
         }
 
         private static void ValidateSecretCampaign(Identity identity)
@@ -1595,11 +1637,9 @@ namespace MagicCarpet.Native
                     "completion transition receipt is not bound to the accepted Rust transition");
             }
             ValidateCompletionPresentationSequence(receipt);
-            if (after.mode != CampaignMode || after.campaign_menu?.phase != "results" ||
-                after.campaign_menu.completed_level_id != receipt.completed_level_id ||
-                HasSessionIdentityData(after.session) || HasDefinitionIdentityData(after.pending_definition) ||
+            if (HasSessionIdentityData(after.session) || HasDefinitionIdentityData(after.pending_definition) ||
                 !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow))
-                throw new InvalidOperationException("completion did not return to campaign results");
+                throw new InvalidOperationException("completion did not return to its campaign owner");
         }
 
         internal static void ValidatePresentationCue(RuntimePresentationCue cue)
@@ -1654,24 +1694,37 @@ namespace MagicCarpet.Native
         internal static void ValidateCompletionPresentationSequence(
             CompletionTransitionReceipt receipt)
         {
-            if (receipt?.presentation_sequence == null ||
-                receipt.presentation_sequence.Length != 2)
+            var replayMap = receipt?.disposition == ReplayMapCompletionDisposition;
+            if (receipt == null ||
+                receipt.receipt_contract != CompletionTransitionReceiptContract ||
+                !IsSemanticId(receipt.completed_level_id, "level") ||
+                (!replayMap && receipt.disposition != ResultsCompletionDisposition) ||
+                receipt.after?.mode != CampaignMode ||
+                receipt.after.campaign_menu?.phase != (replayMap ? "mission_select" : "results") ||
+                receipt.after.campaign_menu.completed_level_id != receipt.completed_level_id ||
+                (replayMap && receipt.after.frontend_media?.campaign_return != null) ||
+                receipt.presentation_sequence == null ||
+                receipt.presentation_sequence.Length != (replayMap ? 1 : 2))
             {
                 throw new InvalidOperationException(
-                    "completion transition has no ordered presentation sequence");
+                    "completion transition disposition does not match its campaign presentation");
             }
+            ValidateIdentityPresentation(receipt.after);
             foreach (var cue in receipt.presentation_sequence)
             {
                 ValidatePresentationCue(cue);
             }
+            var destination = receipt.presentation_sequence[replayMap ? 0 : 1];
+            if (!SamePresentationCue(destination, receipt.after.presentation))
+                throw new InvalidOperationException(
+                    "completion transition destination presentation is not receipt-bound");
+            if (replayMap) return;
             var completion = receipt.presentation_sequence[0];
-            var destination = receipt.presentation_sequence[1];
             if (completion.phase != LevelCompletionPresentationPhase ||
                 completion.level_id != receipt.completed_level_id ||
                 !SameDestination(
                     completion.completion_destination,
-                    receipt.completion_destination) ||
-                !SamePresentationCue(destination, receipt.after?.presentation))
+                    receipt.completion_destination))
             {
                 throw new InvalidOperationException(
                     "completion transition presentation sequence is not receipt-bound");
@@ -1925,12 +1978,26 @@ namespace MagicCarpet.Native
                 left.runtime_id == right.runtime_id &&
                 left.generation == right.generation &&
                 left.mode == right.mode &&
+                SameCampaignReturnMedia(left.frontend_media, right.frontend_media) &&
                 SamePresentationCue(left.presentation, right.presentation) &&
                 SameDefinitionIdentity(left.pending_definition, right.pending_definition) &&
                 SameRuntimeFlow(left.active_runtime_flow, right.active_runtime_flow) &&
                 SameCampaignMenu(left.campaign_menu, right.campaign_menu) &&
                 SameSessionIdentity(left.session, right.session) &&
                 SameSecretCampaign(left.secret_campaign, right.secret_campaign);
+        }
+
+        private static bool SameCampaignReturnMedia(MediaSnapshot left, MediaSnapshot right)
+        {
+            var first = left?.campaign_return;
+            var second = right?.campaign_return;
+            if (first == null || second == null) return first == second;
+            if (first.phase != second.phase || first.blocking != second.blocking ||
+                first.cutscene_id != second.cutscene_id) return false;
+            if (first.credits == null || second.credits == null) return first.credits == second.credits;
+            return first.credits.cursor == second.credits.cursor &&
+                first.credits.lines != null && second.credits.lines != null &&
+                first.credits.lines.SequenceEqual(second.credits.lines);
         }
 
         private static bool HasCampaignMenuData(CampaignMenuSnapshot menu) => menu != null &&

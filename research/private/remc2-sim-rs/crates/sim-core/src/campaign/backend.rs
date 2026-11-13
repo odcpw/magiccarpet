@@ -906,6 +906,10 @@ struct Mc2CampaignReplaySave {
     initial_secret_continuation: Option<sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     initial_mission_rewards: Option<super::rewards::MissionRewards>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial_final_reward: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    played_cutscenes: Option<u8>,
     operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
@@ -945,6 +949,10 @@ struct Mc2CampaignReplaySavePayload<'a> {
     initial_secret_continuation: Option<&'a sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_mission_rewards: Option<super::rewards::MissionRewards>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_final_reward: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    played_cutscenes: Option<u8>,
     operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
@@ -979,6 +987,8 @@ impl Mc2CampaignReplaySave {
             retained_campaign: None,
             initial_secret_continuation: None,
             initial_mission_rewards: None,
+            initial_final_reward: None,
+            played_cutscenes: None,
             operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
@@ -1009,6 +1019,8 @@ impl Mc2CampaignReplaySave {
             retained_campaign: self.retained_campaign.as_ref(),
             initial_secret_continuation: self.initial_secret_continuation.as_ref(),
             initial_mission_rewards: self.initial_mission_rewards,
+            initial_final_reward: self.initial_final_reward,
+            played_cutscenes: self.played_cutscenes,
             operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
@@ -1068,6 +1080,8 @@ struct Mc2CampaignMapSave {
     secret_flow: Option<crate::game_runtime::secret_flow::SecretFlowState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_context: Option<GlobalSpecialState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    played_cutscenes: Option<u8>,
     receipt_sha256: String,
 }
 
@@ -1092,6 +1106,10 @@ impl Mc2CampaignMapSave {
         } else {
             bytes
         };
+        let bytes = if let Some(played) = self.played_cutscenes {
+            serde_json::to_vec(&(bytes, "cutscene-history-v1", played))
+                .expect("cutscene history is serializable")
+        } else { bytes };
         hex_digest(Sha256::digest(bytes).into())
     }
 }
@@ -1924,6 +1942,7 @@ impl Mc2RuntimePackageResolver {
         let source_context = contexts.get(&guard.runtime_id).copied();
         let secret_progress = runtime.secret_flow_state().clone();
         let completed_levels = runtime.completed_levels().to_vec();
+        let from_campaign_map = runtime.loading_from_campaign();
         let dynamic_lighting_enabled = runtime
             .identity()
             .player_preferences
@@ -1944,6 +1963,10 @@ impl Mc2RuntimePackageResolver {
             },
             |candidate| {
                 use crate::world::portals::OrdinaryExitRoute;
+
+                let final_reward = from_campaign_map
+                    && self.exact_package_for_definition(candidate.definition())?.selection.internal_level == 24;
+                candidate.backend_mut().initial_final_reward = final_reward;
 
                 let exit_route = if self
                     .unfinished_parent_continuation(candidate.definition(), &secret_progress)?
@@ -2020,6 +2043,9 @@ impl Mc2RuntimePackageResolver {
         &self,
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
     ) -> Result<Vec<u8>, Mc2CampaignReplaySaveError> {
+        if runtime.campaign_return_active() {
+            return Err(Mc2CampaignReplaySaveError::InvalidMode);
+        }
         let mode = runtime.identity().mode;
         if matches!(
             mode,
@@ -2078,6 +2104,7 @@ impl Mc2RuntimePackageResolver {
                     .is_empty())
                 .then(|| runtime.secret_flow_state().clone()),
                 source_context: contexts.get(&runtime.identity().runtime_id).copied(),
+                played_cutscenes: (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes()),
                 receipt_sha256: String::new(),
             };
             if mode == crate::game_runtime::RuntimeMode::Title
@@ -2157,6 +2184,8 @@ impl Mc2RuntimePackageResolver {
             &snapshot,
         );
         save.level_statistics = runtime.completed_level_statistics().to_vec();
+        save.initial_final_reward = session.backend().initial_final_reward.then_some(true);
+        save.played_cutscenes = (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes());
         save.secret_flow = (!runtime
             .secret_flow_state()
             .discovered_secret_levels()
@@ -2307,6 +2336,10 @@ impl Mc2RuntimePackageResolver {
                     message: "campaign map receipt does not verify".to_owned(),
                 });
             }
+            if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 {
+                return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid cutscene history".to_owned() });
+            }
+            let played_cutscenes = save.played_cutscenes.unwrap_or(0);
             self.exact_package_for_definition(&save.state.definition)
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
             let secret_flow = save.secret_flow.unwrap_or_default();
@@ -2386,6 +2419,7 @@ impl Mc2RuntimePackageResolver {
             } else {
                 contexts.remove(&guard.runtime_id);
             }
+            runtime.restore_played_cutscenes(played_cutscenes).map_err(Mc2CampaignReplaySaveError::Runtime)?;
             return Ok(runtime.identity());
         }
         let save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).map_err(|error| {
@@ -2397,6 +2431,9 @@ impl Mc2RuntimePackageResolver {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: "save contract or receipt digest does not verify".to_owned(),
             });
+        }
+        if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 || save.initial_final_reward == Some(false) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid campaign return state".to_owned() });
         }
         if save.operations.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
@@ -2475,6 +2512,9 @@ impl Mc2RuntimePackageResolver {
                 ),
             }
         })?;
+        if save.initial_final_reward == Some(true) && package.selection.internal_level != 24 {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "final reward source does not bind final mission".to_owned() });
+        }
         let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
         let retained = if save.definition.runtime_flow() != package.definition.runtime_flow() {
             self.retained_catalog_definition(package, flow)
@@ -2500,6 +2540,8 @@ impl Mc2RuntimePackageResolver {
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         }
         let initial_rewards = save.initial_mission_rewards.unwrap_or_default();
+        let initial_final_reward = save.initial_final_reward.unwrap_or(false);
+        let played_cutscenes = save.played_cutscenes.unwrap_or(0);
         if let Some(recorded) = save.initial_mission_rewards {
             let level = flow.bound_level_id();
             let completed = save
@@ -2583,6 +2625,7 @@ impl Mc2RuntimePackageResolver {
                         .with_dynamic_lighting(initial_dynamic_lighting))
                 },
                 move |candidate| {
+                    candidate.backend_mut().initial_final_reward = initial_final_reward;
                     candidate
                         .backend_mut()
                         .apply_semantic_spell_carry(&semantic_spell_carry)?;
@@ -2668,6 +2711,7 @@ impl Mc2RuntimePackageResolver {
         runtime
             .restore_secret_flow_state(secret_flow, retained_campaign)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        runtime.restore_played_cutscenes(played_cutscenes).map_err(Mc2CampaignReplaySaveError::Runtime)?;
         pending.remove(&guard.runtime_id);
         contexts.remove(&guard.runtime_id);
         Ok(runtime.identity())
@@ -2907,10 +2951,14 @@ impl Mc2RuntimePackageResolver {
                 message: "source context owner is unavailable".to_owned(),
             }
         })?;
+        let return_cutscene = runtime.secret_flow_state().return_frame()
+            .and_then(|frame| self.package(frame.origin_level_id()))
+            .and_then(|package| crate::game_runtime::ending::milestone(package.selection.internal_level));
         let receipt = runtime.return_from_secret_resolved(
             guard,
             session_guard,
             SecretMissionOutcome::Completed,
+            return_cutscene,
             |parent| {
                 self.exact_package_for_definition(&parent.definition)?;
                 super::mc2_secret_flow::activate_parent_after_secret_return(
@@ -2991,10 +3039,14 @@ impl Mc2RuntimePackageResolver {
                 message: "source context owner is unavailable".to_owned(),
             }
         })?;
+        let return_cutscene = runtime.secret_flow_state().return_frame()
+            .and_then(|frame| self.package(frame.origin_level_id()))
+            .and_then(|package| crate::game_runtime::ending::milestone(package.selection.internal_level));
         let receipt = runtime.return_from_secret_resolved(
             guard,
             session_guard,
             SecretMissionOutcome::Abandoned,
+            return_cutscene,
             |parent| {
                 self.exact_package_for_definition(&parent.definition)?;
                 super::mc2_secret_flow::activate_parent_after_secret_return(
@@ -3067,6 +3119,19 @@ impl Mc2RuntimePackageResolver {
                 message: "source context owner is unavailable".to_owned(),
             }
         })?;
+        let source = runtime.session().ok_or_else(|| crate::game_runtime::RuntimeTransitionError::InvalidMode {
+            expected: crate::game_runtime::RuntimeMode::Playing,
+            actual: runtime.identity().mode,
+        })?;
+        let source_package = self.exact_package_for_definition(source.definition())?;
+        let source_index = source_package.selection.internal_level;
+        let reward_enabled = source.backend().campaign.simulation().mission_rewards() != super::rewards::MissionRewards::Suppressed;
+        let final_reward = source.backend().initial_final_reward && reward_enabled;
+        // The bit-4 replay branch resets the source result byte to 4 before
+        // MenusAndIntros observes it; it must not look like a fresh success.
+        let campaign_return = reward_enabled.then(|| (
+            crate::game_runtime::ending::milestone(source_index), source_index == 24,
+        ));
         let (receipt, (carry, source_context)) = runtime.accept_transition_resolved_with_source(
             guard,
             session_guard,
@@ -3094,16 +3159,28 @@ impl Mc2RuntimePackageResolver {
                 }
             },
             |session| {
-                session
-                    .backend()
-                    .transition_spell_carry()
+                (if final_reward {
+                    session.backend().final_victory_spell_carry()
+                } else if reward_enabled {
+                    session.backend().transition_spell_carry()
+                } else {
+                    session.backend().initial_semantic_spell_carry()
+                })
                     .map(|carry| (carry, session.backend().campaign.source_global_context()))
             },
+            campaign_return,
+            if reward_enabled { crate::game_runtime::CompletionDisposition::Results }
+            else { crate::game_runtime::CompletionDisposition::ReplayMap },
         )?;
         contexts.insert(guard.runtime_id, source_context);
-        let destination_level = match &receipt.completion_destination {
-            RuntimeFlowDestination::Level { level_id } => level_id.clone(),
-            RuntimeFlowDestination::Title { .. } => receipt.completed_level_id.clone(),
+        let destination_level = if receipt.disposition == crate::game_runtime::CompletionDisposition::ReplayMap {
+            receipt.after.campaign_menu.as_ref().and_then(|menu| menu.selected_level_id.clone())
+                .unwrap_or_else(|| receipt.completed_level_id.clone())
+        } else {
+            match &receipt.completion_destination {
+                RuntimeFlowDestination::Level { level_id } => level_id.clone(),
+                RuntimeFlowDestination::Title { .. } => receipt.completed_level_id.clone(),
+            }
         };
         let replaced = pending.insert(
             guard.runtime_id,
@@ -3186,6 +3263,7 @@ pub struct Mc2CampaignBackend {
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
+    initial_final_reward: bool,
 }
 
 impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
@@ -3558,6 +3636,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             dynamic_lighting_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
+            initial_final_reward: false,
             package_base,
         })
     }
@@ -4265,6 +4344,31 @@ impl Mc2CampaignBackend {
             }
             progress.runtime_experience = 0;
             progress.selected_tier = 0;
+        }
+        Ok(carry)
+    }
+
+    fn final_victory_spell_carry(
+        &self,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        let mut carry = self.semantic_spell_carry()?;
+        let progression = self.campaign.simulation().final_victory_spell_progression();
+        carry.acquired.clear();
+        carry.progression.clear();
+        for row in progression {
+            let spell = mc2_spell_kind_for_family(row.family).ok_or_else(|| {
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: format!("final reward family {} has no semantic spell", row.family),
+                }
+            })?;
+            carry.acquired.push(spell);
+            carry.progression.push(Mc2SemanticSpellProgress {
+                spell,
+                persistent_experience: row.persistent_experience,
+                runtime_experience: row.runtime_experience,
+                unlocked_tier: row.unlocked_tier,
+                selected_tier: row.selected_tier,
+            });
         }
         Ok(carry)
     }
@@ -5174,6 +5278,134 @@ pub(crate) mod tests {
             );
             carry = next.backend().transition_spell_carry().unwrap();
         }
+    }
+
+    /// Connect the paid Level 25 producer to the actual campaign resolver.
+    /// The first 24 completions and the encounter's group/carry/pose are
+    /// configured boundaries, not an earned campaign. The replay below
+    /// reuses a clone of the same real result; it is not a second fight.
+    pub(crate) fn assert_final_campaign_return_for_test(
+        completed: CampaignSession,
+        final_package: &std::path::Path,
+        final_cache: &std::path::Path,
+    ) {
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState,
+            CompletionDisposition, GameRuntime, RuntimeTransitionError};
+        use crate::game_runtime::media::{MediaCatalog, MediaClip, MediaCommand, MEDIA_CONTRACT};
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES")
+            .map(PathBuf::from).unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj"));
+        let mut inputs = (1..25).map(|level| Mc2CampaignInputs::new(ordinary.join(format!("level{level}"))))
+            .collect::<Vec<_>>();
+        inputs.push(Mc2CampaignInputs::with_owner_cache(final_package, final_cache));
+        let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
+        let entries = resolver.flow().entries();
+        assert_eq!(entries.len(), 25);
+        let final_level = entries[24].level_id().clone();
+        let first_level = entries[0].level_id().clone();
+        let first = resolver.package(&first_level).unwrap();
+        let final_binding = resolver.package(&final_level).unwrap();
+        assert_eq!(final_binding.selection.internal_level, 24);
+        let initial_frontier = entries[..24].iter().map(|entry| entry.level_id().clone()).collect();
+        let save = CampaignSaveState {
+            definition: first.definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None,
+            selected_level_id: Some(final_level.clone()),
+            completed_levels: initial_frontier,
+            level_statistics: Vec::new(),
+        };
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(61926).unwrap();
+        // This tiny catalog exercises the real presentation state machine,
+        // not owner media decoding or actual credits presentation.
+        let clips = ["welcome", "intro1", "intro2", "cut6"].map(|id| MediaClip {
+            id: id.into(), width: 320, height: 200, frame_count: 1,
+            frames_path: format!("{id}.frames"), events: Vec::new(),
+        }).to_vec();
+        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Install {
+            catalog: MediaCatalog { schema: MEDIA_CONTRACT.into(), clips, audio: Vec::new(),
+                subtitles: Vec::new(), subtitles_enabled: false, language: None,
+                credits: vec!["!".into(); 117] },
+            startup: false, audio_available: false,
+        }).unwrap();
+        let map = runtime.restore_campaign_resolved(runtime.identity().guard(), save, Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow { message: "missing selected package".into() })
+            }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        let playing = resolver.open_pending(&mut runtime, loading.guard(), 61926).unwrap();
+        assert!(runtime.session().unwrap().backend().initial_final_reward,
+            "normal map entry installs source final flag 0x20");
+        assert!(matches!(resolver.accept_transition(&mut runtime, playing.guard(), playing.session.as_ref().unwrap().guard()),
+            Err(RuntimeTransitionError::CompletionNotReady)));
+        let expected_stats = completed.simulation().completion_statistics();
+        let player = completed.simulation().shared_spells().local_player();
+        let runtime_xp = player.runtime_spell_experience;
+        let is_cave = completed.simulation().canonical_terrain().map_type() == crate::native_world::MapType::Cave;
+        let replay_result = completed.clone();
+        runtime.session_mut().unwrap().backend_mut().campaign = completed;
+        let playing = runtime.identity();
+        let receipt = resolver.accept_transition(&mut runtime, playing.guard(), playing.session.as_ref().unwrap().guard()).unwrap();
+        assert_eq!(receipt.disposition, CompletionDisposition::Results);
+        assert_eq!(receipt.completion.statistics, Some(expected_stats.clone()));
+        assert_eq!(runtime.played_cutscenes() & 0x20, 0x20);
+        assert_eq!(runtime.identity().frontend_media.as_ref().unwrap().campaign_return.as_ref().unwrap().cutscene_id, Some(6));
+        let pending = resolver.pending_spell_carries.lock().unwrap()[&61926].carry.clone();
+        assert_eq!(pending.acquired.len(), 26);
+        for family in 0..26 {
+            let thresholds = crate::native_world::Level2SharedSpellResetSession::source_spell_tier_thresholds_for_test(family).unwrap();
+            let base = thresholds[2].wrapping_add(1);
+            let runtime_xp = if family == 2 { runtime_xp[family].min(7) } else { runtime_xp[family] };
+            let total = base.wrapping_add(runtime_xp);
+            let tier = thresholds.iter().rposition(|threshold| total >= *threshold).unwrap_or(0) as i8;
+            let bank = if family == 25 && !is_cave { base } else { total.min(thresholds[2]) };
+            let kind = mc2_spell_kind_for_family(family as u8).unwrap();
+            let progress = pending.progression.iter().find(|p| p.spell == kind).unwrap();
+            assert_eq!((progress.persistent_experience, progress.runtime_experience, progress.unlocked_tier, progress.selected_tier),
+                (bank, 0, tier, 0), "source 6E0D0/6D9C0 family {family}");
+        }
+        // A decoder-failure event ends the fixture CUT and enters real credits;
+        // this is a control-path check, not a claim of playing CUT6 assets.
+        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Failed { message: "test decoder stop".into() }).unwrap();
+        for (elapsed_us, input) in [(0, false), (320_000, false), (0, true), (160_000, true), (0, false)] {
+            runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Frame { elapsed_us, input, escape: false }).unwrap();
+        }
+        assert!(!runtime.campaign_return_active());
+        assert_eq!(runtime.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::Results);
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(61927).unwrap();
+        let restore_guard = restored.identity().guard();
+        resolver.load_replay(&mut restored, restore_guard, 61927, &saved).unwrap();
+        assert_eq!(restored.played_cutscenes() & 0x20, 0x20);
+        let old_stats = restored.completed_level_statistics().to_vec();
+        assert_eq!(old_stats.last().unwrap().statistics, expected_stats);
+        let results = restored.identity();
+        let map = resolver.campaign_menu_command(&mut restored, results.guard(), CampaignMenuCommand::DismissResults).unwrap();
+        let map = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::SelectMission { level_id: final_level }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
+        assert_eq!(restored.session().unwrap().backend().campaign.simulation().mission_rewards(), crate::campaign::rewards::MissionRewards::Suppressed);
+        let entry_carry = restored.session().unwrap().backend().initial_semantic_spell_carry().unwrap();
+        let mut replay_result = replay_result;
+        replay_result.simulation_mut().shared_spells_mut().set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
+        restored.session_mut().unwrap().backend_mut().campaign = replay_result;
+        let replay = restored.identity();
+        let receipt = resolver.accept_transition(&mut restored, replay.guard(), replay.session.as_ref().unwrap().guard()).unwrap();
+        assert_eq!(receipt.disposition, CompletionDisposition::ReplayMap);
+        assert_eq!(restored.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::MissionSelect);
+        assert!(!restored.campaign_return_active());
+        assert_eq!(restored.played_cutscenes() & 0x20, 0x20);
+        assert_eq!(restored.completed_level_statistics(), old_stats);
+        assert_eq!(resolver.pending_spell_carries.lock().unwrap()[&61927].carry, entry_carry);
+        let map = restored.identity();
+        let map = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::SelectMission { level_id: first_level }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
+        let destination = restored.session().unwrap().backend().semantic_spell_carry().unwrap();
+        assert_eq!(destination, entry_carry, "replay entry carry reaches the chosen destination");
     }
 
     pub(super) fn level_three_descriptor_fixture_path() -> PathBuf {
@@ -6660,6 +6892,7 @@ pub(crate) mod tests {
             carry_destination_level: Some(destination),
             secret_flow: None,
             source_context: None,
+            played_cutscenes: None,
             receipt_sha256: String::new(),
         };
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -6840,6 +7073,33 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains_key(&7113)
         );
+    }
+
+    #[test]
+    fn campaign_map_save_retains_nonempty_cut_history_and_rejects_invalid_bits() {
+        use crate::game_runtime::GameRuntime;
+
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut source = GameRuntime::<Mc2CampaignBackend>::title(7114).unwrap();
+        // Controlled nonempty history exercises save validation; actual
+        // playback/marking is checked by the media owner and remains separate.
+        source.restore_played_cutscenes(0x21).unwrap();
+        let saved = resolver.save_replay(&source).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(7115).unwrap();
+        let guard = restored.identity().guard();
+        resolver.load_replay(&mut restored, guard, 7115, &saved).unwrap();
+        assert_eq!(restored.played_cutscenes(), 0x21);
+        let mut invalid: Mc2CampaignMapSave = serde_json::from_slice(&saved).unwrap();
+        invalid.played_cutscenes = Some(0x40);
+        invalid.receipt_sha256 = invalid.compute_receipt_sha256();
+        let mut target = GameRuntime::<Mc2CampaignBackend>::title(7116).unwrap();
+        let before = target.identity();
+        assert!(resolver.load_replay(&mut target, before.guard(), 7116, &serde_json::to_vec(&invalid).unwrap()).is_err());
+        assert_eq!(target.identity(), before);
     }
 
     #[test]
