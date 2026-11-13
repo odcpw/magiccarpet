@@ -2655,31 +2655,33 @@ mod tests {
     }
 
     #[test]
-    fn runtime_public_flight_enters_real_exit_trigger_for_each_package() {
+    fn runtime_opening_exit_triggers_complete_and_open_the_next_missions() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_one_package()),
             Mc2CampaignInputs::new(level_two_package()),
             Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                generated.join("mc-b9s2-cursor-level4-20261029"),
+            ),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("dragon-bee-20261105-integration/level5-owner-current/level5"),
+                generated.join("secret-lifecycle-20261111-source4-environment"),
+            ),
         ])
         .unwrap();
-        for (level, group, authored_row) in [(1, 4, 137), (2, 31, 209), (3, 6, 201)] {
-            let mut runtime = match level {
-                1 => {
-                    let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(340).unwrap();
-                    let guard = runtime.identity().guard();
-                    let loading = resolver.new_game(&mut runtime, guard).unwrap();
-                    resolver
-                        .open_pending(&mut runtime, loading.guard(), 340)
-                        .unwrap();
-                    runtime
-                }
-                2 => open_real_level_two_at_proven_incoming_boundary(&resolver, 341),
-                _ => open_real_level_three_at_proven_incoming_boundary(&resolver, 342),
-            };
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(340).unwrap();
+        let guard = runtime.identity().guard();
+        let loading = resolver.new_game(&mut runtime, guard).unwrap();
+        resolver
+            .open_pending(&mut runtime, loading.guard(), 340)
+            .unwrap();
+        for (level, group, authored_row) in [(1, 4, 137), (2, 31, 209), (3, 6, 201), (4, 45, 728)] {
             let session = runtime.session_mut().unwrap();
-            // Focused exit-consumer fixture: stage the completed-objective group
-            // and start outside its box. The crossing, cadence and exit start
-            // below must all be produced by ordinary public flight commands.
+            // Stage only the completed-objective group and approach position.
+            // Outdoor exits retain public flight. In the Cave, isolate the
+            // overlap callback from the separate wall-collision checks.
             let compatibility = session
                 .backend_mut()
                 .compatibility_campaign_mut_for_test()
@@ -2702,12 +2704,61 @@ mod tests {
                     .wrapping_add(512),
                 ..trigger.position
             };
-            compatibility
-                .set_level2_entity_position(compatibility.state.entity_index, outside)
-                .unwrap();
             assert!(!compatibility.level_exit_sequence().active);
+            let player = compatibility.state.entity_index;
+            if level == 4 {
+                compatibility
+                    .set_level2_entity_position(
+                        player,
+                        crate::Position {
+                            x: outside.x.wrapping_add(512),
+                            ..outside
+                        },
+                    )
+                    .unwrap();
+                for _ in 0..8 {
+                    session
+                        .step(session.identity().guard(), GameCommand::default())
+                        .unwrap();
+                    assert!(
+                        !session
+                            .backend()
+                            .compatibility_campaign()
+                            .simulation()
+                            .level_exit_sequence()
+                            .active
+                    );
+                }
+                session
+                    .backend_mut()
+                    .compatibility_campaign_mut_for_test()
+                    .simulation_mut()
+                    .set_level2_entity_position(player, trigger.position)
+                    .unwrap();
+            } else {
+                compatibility
+                    .set_level2_entity_position(player, outside)
+                    .unwrap();
+            }
             let tick_before = session.identity().tick;
-            fly_to_real_exit_trigger(session, authored_row);
+            if level == 4 {
+                for _ in 0..8 {
+                    session
+                        .step(session.identity().guard(), GameCommand::default())
+                        .unwrap();
+                    if session
+                        .backend()
+                        .compatibility_campaign()
+                        .simulation()
+                        .level_exit_sequence()
+                        .active
+                    {
+                        break;
+                    }
+                }
+            } else {
+                fly_to_real_exit_trigger(session, authored_row);
+            }
             assert!(session.identity().tick > tick_before);
             let exit = session
                 .backend()
@@ -2719,6 +2770,41 @@ mod tests {
                 "level {level} ordinary flight starts its real exit"
             );
             assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+            for _ in 0..700 {
+                if matches!(
+                    session.backend().completion_status(),
+                    GameCompletionStatus::Completed { .. }
+                ) {
+                    break;
+                }
+                session
+                    .step(session.identity().guard(), GameCommand::default())
+                    .unwrap();
+            }
+            let completed = runtime.identity();
+            let receipt = resolver
+                .accept_transition(
+                    &mut runtime,
+                    completed.guard(),
+                    completed.session.as_ref().unwrap().guard(),
+                )
+                .unwrap();
+            assert!(receipt.verify());
+            assert_eq!(runtime.completed_levels().len(), level);
+            if let Some(next) = resolver.flow().entries().get(level) {
+                let loading = start_selected_campaign_mission(&resolver, &mut runtime);
+                let playing = resolver
+                    .open_pending(&mut runtime, loading.guard(), 340)
+                    .unwrap();
+                assert_eq!(
+                    playing
+                        .active_runtime_flow
+                        .as_ref()
+                        .unwrap()
+                        .bound_level_id(),
+                    next.level_id()
+                );
+            }
         }
     }
 
