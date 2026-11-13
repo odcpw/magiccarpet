@@ -1,4 +1,243 @@
 #[test]
+fn level11_tropolos_reach_house_chain_creatures_and_exit() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::schedule::ScheduleReceipt;
+    use crate::campaign::source_arena::SourceEntityHandle;
+    use crate::combat::area::{AreaDamage, Shape};
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    fn tick(session: &mut crate::native_world::Mc2Simulation,
+            groups: &mut Vec<(u16, Vec<u16>, Option<SourceEntityHandle>)>,
+            house_deaths: &mut Vec<(u16, u16)>) {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        for event in session.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Tropolos dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { group, source_slot, authored_indices, .. } => {
+                    let volcano = if *group == 51 {
+                        assert_eq!(authored_indices.as_ref(), [356, 357, 358, 359]);
+                        let live = &session.session.state.live;
+                        assert!([356, 357, 358, 359].iter().all(|row|
+                            !live.authored_features_consumed.contains(row)),
+                            "sub_6F0B0 publishes with sub_4A1E0's non-consuming flag");
+                        assert!(session.entities().iter().all(|row|
+                            !row.active || (row.class, row.model) != (10, 8)),
+                            "enabled sub_4E750 returns null for all three model8 rows");
+                        let row = session.entities().iter().find(|row| row.active
+                            && (row.class, row.model, row.action) == (10, 9, 9)
+                            && (row.position.x, row.position.y) == (131 * 256 + 128, 190 * 256 + 128))
+                            .expect("the preceding group51 row356 constructs the real Volcano");
+                        let visited = row.index > *source_slot;
+                        let receipts = session.cf10_production_schedule_receipts();
+                        assert_eq!(receipts.iter().any(|receipt| matches!(receipt,
+                            ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == row.index)), visited);
+                        assert_eq!(row.life, 17 - i32::from(visited));
+                        Some(session.source_arena().handle(row.index).unwrap())
+                    } else { None };
+                    groups.push((*group, authored_indices.to_vec(), volcano));
+                }
+                Mc2DispatchEvent::House { source_slot, events, .. } => {
+                    for event in events.iter() {
+                        if let HouseStepEvent::DestructionStarted { attacker_entity_index, .. } = event {
+                            house_deaths.push((*source_slot, *attacker_entity_index));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn complete_group(session: &crate::native_world::Mc2Simulation,
+                      groups: &[(u16, Vec<u16>, Option<SourceEntityHandle>)], group: u16) -> bool {
+        let expected = session.mission().authored_features().iter()
+            .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == group as i16)
+            .map(|row| row.index).collect::<Vec<_>>();
+        !expected.is_empty() && groups.iter().any(|(id, rows, _)| *id == group && *rows == expected)
+    }
+    fn travel(session: &mut crate::native_world::Mc2Simulation, player: u16, x: u16, y: u16) {
+        let position = Position { x: x * 256, y: y * 256, z: session.state.position.z };
+        session.set_level2_entity_position(player, position).unwrap();
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+    }
+    fn strike(session: &mut crate::native_world::Mc2Simulation, player: u16,
+              position: Position, vertical_offset: i16, selector: (u8, u8)) -> u16 {
+        let request = AreaDamage { position,
+            shape: Shape { half_width: 1, half_depth: 1, vertical_offset, half_height: 1 },
+            owner: player, payload: 60_000, selector, mode: 0 };
+        let live = &mut session.session.state.live;
+        area_damage::apply(&mut live.economy,
+            Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+            Some((player, live.core.state.position)), request).unwrap()
+    }
+
+    let package = std::env::var_os("MC_LEVEL11_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level11"));
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(11).unwrap())
+        .expect("the whole Tropolos owner package opens").simulation().clone();
+    let player = session.state.entity_index;
+    let mut groups = Vec::new();
+    let mut house_deaths = Vec::new();
+    assert_eq!(session.runtime().stages[0].kind, 5);
+    assert!(session.campaign_building_objective_targets(1).is_empty(),
+        "the group1 Houses are not born at reset");
+    travel(&mut session, player, 124, 140);
+    for _ in 0..256 {
+        tick(&mut session, &mut groups, &mut house_deaths);
+        if session.runtime().objectives[0].stage_selectors[0] == 2
+            && complete_group(&session, &groups, 1) { break; }
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[0], 2);
+    assert!(complete_group(&session, &groups, 1),
+        "the real row13 switch must produce every group1 House and creature: {groups:?}");
+    let objective_id = session.session.definition.semantic_level().unwrap().objectives()[1].id();
+    assert_eq!(session.session.definition.standing_building_chain(objective_id), Some(&[23, 24, 28][..]));
+    let first_houses = session.campaign_building_objective_targets(1).into_iter()
+        .map(|(slot, _)| session.source_arena().handle(slot).unwrap()).collect::<Vec<_>>();
+    assert_eq!(first_houses.len(), 6, "all six source selector23 Houses are present");
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
+    travel(&mut session, player, 20, 20);
+
+    // Destruction follows the source 23 -> 24 -> 28 constructor chain. Area
+    // admission, typed House mailboxes, actor callbacks and other live actors
+    // retain their real ordering; no building life or objective is staged.
+    let mut observed_selectors = std::collections::BTreeSet::new();
+    let mut player_house_hits = 0_u32;
+    for _ in 0..1024 {
+        let targets = session.campaign_building_objective_targets(1);
+        for (slot, _) in targets {
+            let Some(house) = session.ordinary().houses().iter()
+                .find(|house| house.active && house.entity_index == slot).copied() else { continue; };
+            observed_selectors.insert(house.building_index);
+            if house.life >= 0 {
+                player_house_hits += u32::from(strike(&mut session, player, house.position,
+                    house.collision_vertical_offset, (10, 45)));
+            }
+        }
+        if session.runtime().objectives[0].stage_selectors[1] == 2
+            && session.campaign_building_objective_targets(1).is_empty() { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 2,
+        "the 16-frame source census must see the complete House chain absent");
+    assert!(session.campaign_building_objective_targets(1).is_empty());
+    assert_eq!(observed_selectors, [23, 24, 28].into_iter().collect(),
+        "the real successor selectors must be exercised, not skipped");
+    assert!(first_houses.iter().all(|handle| session.source_arena().resolve(*handle).is_none()));
+    assert!(first_houses.iter().all(|handle| house_deaths.iter()
+        .any(|(slot, _)| *slot == handle.source_slot)),
+        "each original objective House has a real destruction receipt: {house_deaths:?}");
+    assert!(player_house_hits > 0 || house_deaths.iter().any(|(_, owner)| *owner != 0),
+        "source-admitted player or NPC damage accounts for the demolition");
+
+    for _ in 0..256 {
+        if complete_group(&session, &groups, 41) { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(complete_group(&session, &groups, 41),
+        "the House objective must publish all 146 authored model21 rows: {groups:?}");
+    assert_eq!(session.runtime().stages[2].relation, crate::native_world::RuntimeRelation::Scalar(21));
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 1);
+    let mut struck_generations = Vec::new();
+    for _ in 0..1024 {
+        let roots = session.source_arena().rebuilt_class5_model_slots()[21].iter()
+            .map(|slot| session.source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+        for handle in roots {
+            if !struck_generations.contains(&handle) { struck_generations.push(handle); }
+            let row = &session.entities()[usize::from(handle.source_slot)];
+            let (position, offset) = (row.position, row.array_yaw());
+            let hits = strike(&mut session, player, position, offset, (5, 21));
+            let (damage, attacker) = area_damage::source_bounty(session.source_arena(), None,
+                handle.source_slot).unwrap();
+            assert!(hits > 0 && damage > 0 && attacker == player,
+                "actual source admission must accept this model21 target {handle:?}");
+        }
+        if session.runtime().objectives[0].stage_selectors[2] == 2
+            && struck_generations.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+        { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(!struck_generations.is_empty());
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 2);
+    assert!(struck_generations.iter().all(|handle| session.source_arena().resolve(*handle).is_none()),
+        "the original struck model21 generations must naturally reclaim");
+    for _ in 0..256 {
+        if complete_group(&session, &groups, 42) { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(complete_group(&session, &groups, 42), "absence must produce authored spell row120");
+    let pickup_slot = *session.shared_spells().authored_pickup_slots().get(&120)
+        .expect("group42 publishes its real family22 pickup");
+    let pickup_position = session.shared_spells().pickup(pickup_slot).unwrap().position;
+    session.set_level2_entity_position(player, pickup_position).unwrap();
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let mut acquired = false;
+    for _ in 0..64 {
+        tick(&mut session, &mut groups, &mut house_deaths);
+        acquired |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::SpellAcquisition { source_slot, family: 22, result: Some(_), .. }
+                if *source_slot == pickup_slot));
+        if acquired && session.runtime().objectives[0].stage_selectors[3] == 2 { break; }
+    }
+    assert!(acquired, "the group42 source pickup must be acquired by the player");
+    assert_eq!(session.runtime().objectives[0].stage_selectors[3], 2,
+        "the real final reach(121,117) completes through player placement");
+    for _ in 0..256 {
+        if session.campaign_exit_objective_target().is_some() { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(complete_group(&session, &groups, 43),
+        "the source end switch must produce all portal and exit rows");
+    // Row355 is the repeating model2 area-entry switch, not an exit gate.
+    // Approach its real bounds from outside and let its own cadence publish
+    // group51; the level objectives and switch state remain untouched.
+    assert!(!complete_group(&session, &groups, 51));
+    let entry = session.entities().iter().find(|row| row.active
+        && (row.class, row.model, row.action, row.source_id) == (11, 2, 2, 51))
+        .cloned().expect("authored row355 retains its live group51 entry switch");
+    let outside = Position { x: entry.position.x.wrapping_add(8192),
+        y: entry.position.y, z: session.state.position.z };
+    session.set_level2_entity_position(player, outside).unwrap();
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    for _ in 0..8 { tick(&mut session, &mut groups, &mut house_deaths); }
+    assert!(!complete_group(&session, &groups, 51),
+        "the source entry predicate stays false outside row355");
+    session.set_level2_entity_position(player, Position {
+        z: session.state.position.z, ..entry.position
+    }).unwrap();
+    for _ in 0..16 {
+        if complete_group(&session, &groups, 51) { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(complete_group(&session, &groups, 51),
+        "the real source area-entry producer must execute group51");
+    let volcano = groups.iter().find_map(|(group, _, handle)| (*group == 51).then_some(*handle).flatten())
+        .expect("group51 retains its scheduled Volcano generation");
+    let (exit_slot, exit_position) = session.campaign_exit_objective_target().expect("real group43 exit");
+    assert!(session.economy().authored_switch_producers().iter().any(|source|
+        source.source_entity_index == exit_slot && source.authored_index == 130));
+    assert!(session.economy().authored_class14().iter().any(|source| source.authored_index == 59));
+    session.set_level2_entity_position(player, exit_position).unwrap();
+    for _ in 0..16 {
+        if session.level_exit_sequence().active { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(session.level_exit_sequence().active);
+    for _ in 0..700 {
+        if session.level_exit_sequence().complete { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(session.level_exit_sequence().complete);
+    assert!(session.source_arena().resolve(volcano).is_none(),
+        "the real group51 Volcano reaches its source lifetime and reclaim");
+    assert_eq!(session.level_exit_sequence().result_code, 10);
+    assert_eq!(session.session.state.live.source_player_result.result_byte(), 0x0a);
+}
+
+#[test]
 fn level_two_type_str_164_auxiliary_materializes_and_reset_replays() {
     let inspection =
         NativeWorld::inspect_level2(&level_two_fixture_path()).expect("qualified Level 2 package");

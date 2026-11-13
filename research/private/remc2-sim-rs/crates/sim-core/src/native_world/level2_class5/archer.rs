@@ -2511,6 +2511,134 @@ mod tests {
     }
 
     #[test]
+    fn jaleen_waypoints_publish_spell_and_actual_ordinary_exit() {
+        use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+        use crate::game_session::{GameCompletionStatus, GameSession};
+        use crate::level_definition::{ObjectiveCondition, TilePosition};
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::native_world::player_lifecycle_tests::{
+            RivalTestGame, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+            rival_test_step as step,
+        };
+
+        #[derive(Default)]
+        struct Receipts {
+            group46: usize,
+            group25: usize,
+            pickup: Option<(u16, crate::Position)>,
+            trigger: Option<(u16, crate::Position)>,
+            portal: Option<u16>,
+            acquired: bool,
+        }
+        fn visit(game: &mut RivalTestGame, receipts: &mut Receipts) {
+            step(game);
+            let state = sim(game);
+            for event in state.dispatch_events() {
+                match event {
+                    Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 46, authored_indices, .. }
+                        if authored_indices.contains(&296) => {
+                        receipts.group46 += 1;
+                        let producer = &state.entities()[usize::from(*source_slot)];
+                        assert_eq!((producer.class, producer.model, producer.source_id, producer.level_gate),
+                            (11, 32, 46, 0), "objective0 source switch266");
+                        let pickup = state.economy().spell_pickups().iter()
+                            .find(|row| row.authored_index == 296 && row.family == 16)
+                            .expect("actual group46 spell16 row296");
+                        receipts.pickup = Some((pickup.source_entity_index, pickup.position));
+                    }
+                    Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 25, authored_indices, .. }
+                        if authored_indices.contains(&331) && authored_indices.contains(&341) => {
+                        receipts.group25 += 1;
+                        let producer = &state.entities()[usize::from(*source_slot)];
+                        assert_eq!((producer.class, producer.model, producer.source_id), (11, 4, 25),
+                            "level-end source switch330");
+                        let trigger = state.economy().authored_switch_producers().iter()
+                            .find(|row| row.authored_index == 331 && (row.model, row.action) == (12, 12))
+                            .expect("actual group25 exit331");
+                        let portal = state.economy().authored_class14().iter()
+                            .find(|row| row.authored_index == 341 && row.model == 3)
+                            .expect("actual group25 portal341");
+                        receipts.trigger = Some((trigger.source_entity_index, trigger.position));
+                        receipts.portal = Some(portal.source_entity_index);
+                    }
+                    Mc2DispatchEvent::SpellAcquisition { source_slot, family: 16, result: Some(_), .. }
+                        if receipts.pickup.is_some_and(|pickup| pickup.0 == *source_slot) => {
+                        receipts.acquired = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn place(game: &mut RivalTestGame, player: u16, x: u16, y: u16) {
+            let mut position = crate::Position { x, y, z: 0 };
+            let terrain = sim(game).canonical_terrain();
+            let floor = terrain.ground_height(position);
+            let ceiling = terrain.ceiling_height(position).expect("Jaleen cave ceiling");
+            assert!(i32::from(ceiling) > i32::from(floor), "open cave at {x},{y}");
+            position.z = ((i32::from(floor) + i32::from(ceiling)) / 2) as i16;
+            sim_mut(game).set_level2_entity_position(player, position).unwrap();
+        }
+
+        let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_ARCHER_LEVEL12_PACKAGE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| generated.join("archer-20261105-integration/level12-owner-current/level12"));
+        let cache = std::env::var_os("MC_LEVEL12_OWNER_CACHE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/level12"));
+        let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+        let objectives = definition.level_definition().unwrap().objectives();
+        assert_eq!(objectives.len(), 2);
+        assert_eq!(objectives[0].condition(), ObjectiveCondition::ReachLocation(TilePosition { x: 137, y: 171 }));
+        assert_eq!(objectives[1].condition(), ObjectiveCondition::ReachLocation(TilePosition { x: 139, y: 177 }));
+        let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2212,
+            Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+        let player = sim(&game).state.entity_index;
+        let owner = usize::from(sim(&game).state.player_color_index);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+        let mut receipts = Receipts::default();
+        // Visiting the later point first cannot bypass the current objective.
+        place(&mut game, player, 139 << 8, 177 << 8);
+        visit(&mut game, &mut receipts);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+        place(&mut game, player, 137 << 8, 171 << 8);
+        for _ in 0..128 {
+            visit(&mut game, &mut receipts);
+            if sim(&game).runtime().objectives[owner].stage_selectors[0] == 2 { break; }
+        }
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 1]);
+        for _ in 0..64 {
+            if receipts.pickup.is_some() { break; }
+            visit(&mut game, &mut receipts);
+        }
+        assert_eq!(receipts.group46, 1, "objective-done switch publishes group46 once");
+        assert_eq!(receipts.group25, 0, "level-end group stays blocked after one waypoint");
+        let pickup = receipts.pickup.expect("actual spell pickup");
+        sim_mut(&mut game).set_level2_entity_position(player, pickup.1).unwrap();
+        for _ in 0..128 {
+            visit(&mut game, &mut receipts);
+            if receipts.acquired && sim(&game).runtime().objectives[owner].stage_selectors[1] == 2
+                && receipts.trigger.is_some() { break; }
+        }
+        assert!(receipts.acquired, "real family16 pickup must reach its acquisition consumer");
+        assert_ne!(sim(&game).shared_spells().local_player().enabled_spell_holders[16], 0);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
+        assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+        assert_eq!(receipts.group25, 1, "actual level-end switch publishes group25 once");
+        let (trigger, position) = receipts.trigger.expect("actual exit331");
+        let portal = receipts.portal.expect("actual portal341");
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+        for _ in 0..700 {
+            if matches!(game.completion_status(game.identity().guard()).unwrap().value,
+                GameCompletionStatus::Completed { .. }) { break; }
+            visit(&mut game, &mut receipts);
+        }
+        assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value,
+            GameCompletionStatus::Completed { .. }));
+        let exit = sim(&game).level_exit_sequence();
+        assert_eq!((exit.trigger_entity_index, exit.portal_entity_index), (trigger, portal));
+        assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+    }
+
+    #[test]
     fn level_twelve_authored_archer_stage_guard_targets_and_shoots_player() {
         use crate::campaign::{CampaignSession, spec::CampaignSelection};
         use crate::native_world::Mc2DispatchEvent;

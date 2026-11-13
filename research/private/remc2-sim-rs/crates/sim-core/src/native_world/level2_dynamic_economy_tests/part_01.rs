@@ -4703,8 +4703,8 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
             action: 44,
             mana: 0,
             max_mana: 0,
-            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+            life: 0,
+            max_life: 0,
             speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
             target_sphere_slot: 0,
             pending_damage: 0,
@@ -4713,7 +4713,7 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
             killer_entity_index: 0,
             source_byte_3e: construction.construction_slot as u8,
             source_byte_39: 0,
-            source_byte_3b: 1,
+            source_byte_3b: 0,
             cave_collision_cooldown: 1,
             source_dword_10: 0,
             source_word_2e: 0,
@@ -4722,7 +4722,7 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
             yaw: 0,
             roll: 0,
             visual_index: 0,
-            control_flags: 1,
+            control_flags: 0x0001_0001,
             chain_previous_slot: 0,
             chain_next_slot: 0,
             source_byte_43: 0,
@@ -4817,7 +4817,7 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
         assert!(economy.set_castle_controller_coefficient(2, 0x2a));
         let castle = economy.castle.as_mut().expect("stage-two Castle");
         castle.action = 5;
-        castle.build_state = 3;
+        castle.build_state = 0;
         castle.level = 1;
         for child in &mut economy.castle_children {
             if child.parent_entity_index == stage_two_slot && child.model == 42 {

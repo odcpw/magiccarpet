@@ -4,12 +4,13 @@ use super::*;
 use crate::campaign::source_arena::SourceArena;
 
 /// The Castle callback borrows source records for its two mana scans and
-/// player records for final loss. Keeping those operations in one narrow
+/// player records for reconstruction and final loss. Keeping those operations in one narrow
 /// consumer preserves their source call order without aliasing the arena.
 pub(crate) trait CastleSourceConsumer {
     fn mana_rows(&self, economy: &Level2EconomyState)
         -> Vec<crate::campaign::source_arena::SourceManaRow>;
     fn hide_mana_source(&mut self, economy: &mut Level2EconomyState, slot: u16);
+    fn holder_busy(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState);
     fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState);
 }
 
@@ -41,6 +42,8 @@ impl<F: FnMut(&mut Level2EconomyState, Level2CastleState)> CastleSourceConsumer 
             sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT;
         }
     }
+
+    fn holder_busy(&mut self, _economy: &mut Level2EconomyState, _castle: Level2CastleState) {}
 
     fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
         self(economy, castle);
@@ -492,7 +495,7 @@ impl Mc2LiveState {
                 .is_some_and(|owner| owner.special_relation == EntitySpecialRelation::GlobalSpecialState)
             && let Some(current) = economy.castle_entry(castle_slot)
         {
-            if prior.action == 5 && matches!(prior.build_state, 0 | 3)
+            if prior.action == 5 && prior.build_state == 0
                 && current.active && current.build_state == 4
             {
                 consumer.shared_spells.global_special_state.castle_entity_index = castle_slot;
@@ -625,6 +628,25 @@ impl CastleSourceConsumer for CastlePlayerConsumer<'_> {
         } else if let Some(raw) = self.entities.get_mut(usize::from(slot)) {
             raw.disable_drawing();
         }
+    }
+
+    fn holder_busy(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
+        // BeginOfCastleCreation state3 calls sub_5F890 before NewEvent,
+        // including allocation failure. The helper addresses the current
+        // SpellEnabled[2] record and publishes its raw and typed word2E.
+        let Some(EntitySpecialRelation::PlayerState(slot)) = self.entities
+            .get(usize::from(castle.source_id_entity_index)).map(|row| row.special_relation)
+        else {
+            // NewEvent can rebind this address to the shared A4, whose
+            // Castle holder remains zero. Do not use the prior player's A4.
+            return;
+        };
+        let Some(owner) = self.core.players.iter().find(|player| player.slot == slot)
+            .map(|player| player.entity_index) else { return };
+        let _ = self.shared_spells.apply_castle_holder_record_update(
+            economy, self.entities, &self.core.players,
+            self.core.context.spell_fire.as_mut(), owner, true,
+        ).expect("validated Castle owner holder relation fits the source arena");
     }
 
     fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
@@ -812,6 +834,90 @@ fn apply_castle_spell_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn castle_reconstruction_updates_actual_holder_before_allocation() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let campaign = crate::campaign::CampaignSession::open(
+            package, crate::campaign::spec::CampaignSelection::LEVEL2,
+        ).unwrap();
+        let base = campaign.simulation().clone();
+        let owner = base.state.entity_index;
+        let holder = base.shared_spells().local_player.enabled_spell_holders[2];
+        assert_ne!(holder, 0);
+        let expected = base.shared_spells().pickup(holder).unwrap()
+            .activation_value.wrapping_sub(1).cast_signed();
+        assert_ne!(base.shared_spells().pickup(holder).unwrap().active_value, expected,
+            "the actual initial holder must discriminate the reconstruction write");
+        for (exhausted, aliases_caller, rebound_owner) in [
+            (false, false, false), (true, false, false),
+            (false, true, false), (true, true, false),
+            (false, false, true), (true, false, true),
+            (false, true, true), (true, true, true),
+        ] {
+            let mut session = base.clone();
+            let root = session.economy_mut().build_castle(base.state.position, owner).unwrap();
+            // Declared entry to the ordinary post-destruction callback, not
+            // an earned tier loss. Its real holder and NewEvent stay in charge.
+            {
+                let mut economy = session.economy_mut();
+                let castle = economy.castle_at_mut(root).unwrap();
+                castle.level = 2;
+                castle.action = 5;
+                castle.build_state = 3;
+                castle.source_word_2e = 3;
+            }
+            let live = &mut session.session.state.live;
+            let prior_holder_value = live.shared_spells.pickup(holder).unwrap().active_value;
+            if aliases_caller {
+                // The existing source adapter deliberately addresses the
+                // current occupant of SpellEnabled[2], including this root.
+                for player in live.core.players.iter_mut()
+                    .chain(live.shared_spells.players.iter_mut())
+                    .chain(std::iter::once(&mut live.shared_spells.local_player))
+                    .filter(|row| row.entity_index == owner)
+                {
+                    assert!(player.set_enabled_spell_holder_index(2, root));
+                }
+                assert_eq!(live.economy.castle_at(root).unwrap().source_word_30, 0);
+            }
+            if rebound_owner {
+                // Declared current physical-A4 replacement at the retained
+                // owner address. The old player record stays present so it
+                // cannot accidentally satisfy this source-pointer check.
+                live.economy.entities[usize::from(owner)].special_relation =
+                    EntitySpecialRelation::GlobalSpecialState;
+            }
+            if exhausted {
+                while live.economy.allocate_source_slot_with_terrain(&mut live.terrain).is_some() {}
+                assert!(live.economy.free_source_slots().is_empty());
+            }
+            let chain = crate::campaign::source_arena::SourceManaChain::capture(
+                &mut live.economy, Vec::new(),
+            );
+            let constructed = live.step_castle_action_with_player_state(root, &[], false, None, &chain);
+            assert_eq!(constructed, !exhausted);
+            if aliases_caller {
+                let castle = live.economy.castle_at(root).unwrap();
+                assert_eq!(castle.level, 2, "the selected callback remains reconstruction");
+                let expected_word = if !exhausted { 4 } else if rebound_owner { 3 } else { u16::MAX };
+                assert_eq!(castle.source_word_2e, expected_word,
+                    "failure retains the holder write; successful sub5FBD0 overwrites it");
+                continue;
+            }
+            let expected = if rebound_owner { prior_holder_value } else { expected };
+            assert_eq!(live.shared_spells.pickup(holder).unwrap().active_value, expected,
+                "typed holder must receive sub5F890 before NewEvent, exhausted={exhausted}");
+            assert_eq!(live.economy.entities[usize::from(holder)].source_word_2e(),
+                expected.cast_unsigned(), "raw holder must match the typed source record");
+            if let Some(fire) = live.core.context.spell_fire.as_ref()
+                && let Some(projected) = fire.holders.iter().find(|row| row.entity_index == holder)
+            {
+                assert_eq!(projected.active_value, expected);
+            }
+        }
+    }
 
     #[test]
     fn castle_final_loss_applies_queued_profile_to_caller_before_reclaim() {

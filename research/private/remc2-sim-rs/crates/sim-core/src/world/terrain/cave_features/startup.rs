@@ -302,7 +302,7 @@ impl TerrainStartupWorld {
         let mut cursor = 0;
         while let Some((&key, &slot)) = source_order.range((Excluded(cursor), Unbounded)).next() {
             cursor = key;
-            if arena.economy.castle_at(slot).is_some() {
+            if let Some(root) = arena.economy.castle_at(slot).copied() {
                 let class3 = arena
                     .economy
                     .live_castles()
@@ -316,7 +316,7 @@ impl TerrainStartupWorld {
                 )[1];
                 arena
                     .economy
-                    .begin_castle_stage_with_site(slot, &mut terrain, site_clear);
+                    .begin_castle_stage_with_site(slot, &mut terrain, site_clear, root.build_state);
                 // A real NewEvent model42 born after this root is reached in
                 // the same ascending scan. Other Castle descendants retain
                 // their separate owners and do not write startup geometry.

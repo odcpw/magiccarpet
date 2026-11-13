@@ -416,7 +416,7 @@ fn level_two_castle_controller_points_pin_stage_corner_vectors() {
                 .as_mut()
                 .expect("controller vector Castle");
             castle.action = 5;
-            castle.build_state = 3;
+            castle.build_state = 0;
             castle.level = level.saturating_sub(1);
         }
         assert!(session.economy_mut().step_castle_action(castle_slot));
@@ -628,7 +628,7 @@ fn level_two_castle_controller_coefficients_back_down_to_nonzero_stage() {
         assert!(economy.set_castle_controller_coefficient(3, 0));
         let castle = economy.castle.as_mut().expect("controller fallback Castle");
         castle.action = 5;
-        castle.build_state = 3;
+        castle.build_state = 0;
         castle.level = 2;
     }
     assert!(session.economy_mut().step_castle_action(castle_slot));
@@ -792,6 +792,81 @@ fn level_two_castle_stage_removal_uses_old_tab_and_sentinel_rng() {
 }
 
 #[test]
+fn castle_reconstruction_keeps_surviving_stage_and_uses_source_child_hold() {
+    struct HolderVisits(Vec<u16>);
+    impl crate::native_world::player_spell_state::CastleSourceConsumer for HolderVisits {
+        fn mana_rows(&self, _: &Level2EconomyState) -> Vec<crate::campaign::source_arena::SourceManaRow> {
+            Vec::new()
+        }
+        fn hide_mana_source(&mut self, _: &mut Level2EconomyState, _: u16) {}
+        fn final_loss(&mut self, _: &mut Level2EconomyState, _: Level2CastleState) {
+            panic!("reconstruction cannot perform final loss");
+        }
+        fn holder_busy(&mut self, _: &mut Level2EconomyState, castle: Level2CastleState) {
+            self.0.push(castle.source_id_entity_index);
+        }
+    }
+    let package = level_two_fixture_path();
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+        .expect("qualified Level 2 gameplay component");
+    let mut session = inspection.level2_reset_session().expect("reconstruction session");
+    let slot = session.economy_mut().build_castle(Position::default(), 111)
+        .expect("Castle root");
+    assert!(session.economy_mut().start_castle_construction(slot));
+    assert!(session.economy_mut().step_castle_action(slot));
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle.as_mut().expect("built Castle");
+        castle.action = 5;
+        castle.build_state = 3;
+        castle.source_word_2e = 3;
+    }
+    let before = session.economy().castle().expect("surviving stage");
+    let mut no_slots = session.economy().clone();
+    no_slots.free_slots.clear();
+    let mut terrain = session.canonical_terrain().clone();
+    let mut holder_visits = HolderVisits(Vec::new());
+    assert!(!no_slots.step_castle_action_with_site(slot, &mut terrain, &[], true, &mut holder_visits));
+    assert_eq!(holder_visits.0, vec![before.source_id_entity_index],
+        "source marks the holder busy before a failed allocation");
+    assert_eq!(no_slots.castle_at(slot).unwrap().build_state, 3);
+    assert!(session.economy_mut().step_castle_action(slot));
+    let after = session.economy().castle().expect("reconstructing stage");
+    assert_eq!((after.action, after.build_state, after.source_word_2e), (5, 4, 4));
+    assert_eq!((after.level, after.life, after.max_life, after.mana_capacity),
+        (before.level, before.life, before.max_life, before.mana_capacity));
+    assert_eq!((after.controller_chain_slots, after.controller_chain_count,
+        after.controller_chain_head, after.controller_chain_tail),
+        (before.controller_chain_slots, before.controller_chain_count,
+        before.controller_chain_head, before.controller_chain_tail));
+    let child_slot = after.construction_slot;
+    let child = session.economy().castle_children().iter()
+        .find(|child| child.source_entity_index == child_slot).copied()
+        .expect("reconstruction model 42");
+    assert_eq!((child.model, child.action, child.source_byte_3b, child.cave_collision_cooldown),
+        (42, 44, 1, before.level));
+    assert_eq!((child.life, child.max_life, child.control_flags), (0, 0, 1));
+    for _ in 0..19 {
+        assert!(session.economy_mut().step_castle_child_terminal_slot(child_slot));
+    }
+    assert_eq!(session.economy().castle_children().iter()
+        .find(|child| child.source_entity_index == child_slot).unwrap().source_dword_10, -25);
+    for _ in 0..25 {
+        assert!(session.economy_mut().step_castle_child_terminal_slot(child_slot));
+    }
+    let completed = session.economy().castle().expect("completed reconstruction");
+    assert_eq!((completed.level, completed.action, completed.build_state), (before.level, 5, 2));
+    let child = session.economy().castle_children().iter()
+        .find(|child| child.source_entity_index == child_slot).unwrap();
+    assert_ne!(child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert!(session.economy_mut().step_castle_action(slot));
+    assert_eq!((session.economy().castle().unwrap().level,
+        session.economy().castle().unwrap().action), (before.level, 4));
+}
+
+#[test]
 fn level_two_castle_model42_handler_preserves_clock_before_root_consumer() {
     let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -857,7 +932,7 @@ fn level_two_castle_model42_handler_preserves_clock_before_root_consumer() {
         (child_slot as u8).wrapping_add(1),
         "BUILD callback epilogue advances byte_0x3E exactly once"
     );
-    assert_eq!(initialized.source_byte_3b, 1);
+    assert_eq!(initialized.source_byte_3b, 0);
     assert_eq!(
         initialized.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT,
         LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT
@@ -898,15 +973,7 @@ fn level_two_castle_model42_handler_preserves_clock_before_root_consumer() {
         .find(|child| child.source_entity_index == child_slot)
         .copied()
         .expect("BUILD timer-one transition");
-    assert_eq!(timer_one.source_dword_10, -25);
-
-    for _ in 0..24 {
-        assert!(
-            session
-                .economy_mut()
-                .step_castle_child_terminal_slot(child_slot)
-        );
-    }
+    assert_eq!(timer_one.source_dword_10, -1);
     assert_eq!(
         session
             .economy()
