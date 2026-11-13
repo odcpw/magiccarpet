@@ -35844,8 +35844,8 @@ pub(crate) mod tests {
         assert_eq!(selected_receipt.2, sphere_slot.unwrap());
         assert_eq!(
             economy.owner_mana_global(),
-            19_577 + 300 * i32::try_from(seen.len()).unwrap(),
-            "early real Goat receipts account for the exact reset-relative total"
+            19_577,
+            "the 300-mana sphere replaces the reset Goat's counted body"
         );
         let before_negative = seen.clone();
         assert!(
@@ -36084,7 +36084,7 @@ pub(crate) mod tests {
                 .economy()
                 .owner_mana_global(),
             19_577,
-            "package group-3 Archer materialization does not change the reset mana denominator"
+            "the published census stays at reset until the next source pass"
         );
         let archer = session
             .backend()
@@ -36578,8 +36578,8 @@ pub(crate) mod tests {
                 .simulation()
                 .economy()
                 .owner_mana_global(),
-            20_077,
-            "deposit transfers the Archer mana into the qualifying Castle row"
+            21_577,
+            "the Castle deposit and three living Archers retain the four bodies' original mana"
         );
     }
 
@@ -36682,11 +36682,11 @@ pub(crate) mod tests {
                 *event_cursor = event_end;
             };
 
-        let known_world_mana = |archer_births: usize, goat_births: usize| {
-            RESET_WORLD_MANA
-                + 500 * i32::try_from(archer_births).expect("four Archer births fit i32")
-                + 300 * i32::try_from(goat_births).expect("qualified Goat births fit i32")
-        };
+        // Source 60F00 counts both class-5 bodies and model-39 spheres.
+        // The reset already includes the Goats. Group 3 adds four Archers,
+        // and a death transfers each body's mana to its sphere.
+        let world_mana_after_archer_group =
+            RESET_WORLD_MANA + 500 * i32::try_from(ARCHER_ROWS.len()).expect("four Archers fit i32");
         capture_goat_occurrences(session, &mut goat_event_cursor, &mut seen_goat_occurrences);
 
         let step_toward = |session: &mut GameSession<Mc2CampaignBackend>,
@@ -37262,6 +37262,7 @@ pub(crate) mod tests {
             .copied()
             .collect::<Vec<_>>();
         assert_eq!(archers.len(), ARCHER_ROWS.len());
+        assert!(archers.iter().all(|archer| archer.mana == 500));
         let first_archer = archers.first().expect("one package Archer");
         let first_archer_sphere =
             kill_archer_with_fireballs(&mut session, first_archer.source_entity_index);
@@ -37277,8 +37278,8 @@ pub(crate) mod tests {
                 .simulation()
                 .economy()
                 .owner_mana_global(),
-            known_world_mana(1, seen_goat_occurrences.len()),
-            "the first Archer adds exactly 500 mana plus explicitly recorded Goat births"
+            world_mana_after_archer_group,
+            "the first Archer death preserves its 500 mana alongside the three living Archers"
         );
         let pickup_slot = castle_pickup.source_entity_index;
         if session.backend().campaign.simulation().players()[0].enabled_spell_holders
@@ -37431,7 +37432,6 @@ pub(crate) mod tests {
             |session: &mut GameSession<Mc2CampaignBackend>,
              occurrence: SphereOccurrence,
              expected_mana: i32,
-             archer_births: usize,
              goat_event_cursor: &mut usize,
              seen_goat_occurrences: &mut BTreeSet<(usize, u16, u16)>| {
                 capture_goat_occurrences(session, goat_event_cursor, seen_goat_occurrences);
@@ -37523,8 +37523,8 @@ pub(crate) mod tests {
                 );
                 assert_eq!(
                     economy.owner_mana_global(),
-                    known_world_mana(archer_births, seen_goat_occurrences.len()),
-                    "sphere-to-Castle transfer conserves mana except explicit qualified births"
+                    world_mana_after_archer_group,
+                    "sphere-to-Castle transfer conserves world mana"
                 );
                 assert!(
                     !economy.spheres().iter().any(|sphere| {
@@ -37545,20 +37545,17 @@ pub(crate) mod tests {
             &mut session,
             first_archer_sphere,
             expected_castle_mana,
-            1,
             &mut goat_event_cursor,
             &mut seen_goat_occurrences,
         );
 
-        for (archer_index, archer) in archers.iter().skip(1).enumerate() {
+        for archer in archers.iter().skip(1) {
             let occurrence = kill_archer_with_fireballs(&mut session, archer.source_entity_index);
             let sphere_slot = occurrence.slot;
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
             capture_goat_occurrences(session, &mut goat_event_cursor, &mut seen_goat_occurrences);
-            let archer_births = archer_index + 2;
-            let expected_global = known_world_mana(archer_births, seen_goat_occurrences.len());
             assert_eq!(
                 session
                     .backend()
@@ -37566,8 +37563,8 @@ pub(crate) mod tests {
                     .simulation()
                     .economy()
                     .owner_mana_global(),
-                expected_global,
-                "each Archer sphere adds one exact 500-mana row"
+                world_mana_after_archer_group,
+                "each Archer sphere replaces one exact 500-mana body"
             );
             let claimed_occurrence = claim_real_sphere(&mut session, occurrence, false);
             assert_eq!(
@@ -37579,7 +37576,6 @@ pub(crate) mod tests {
                 &mut session,
                 occurrence,
                 expected_castle_mana,
-                archer_births,
                 &mut goat_event_cursor,
                 &mut seen_goat_occurrences,
             );
@@ -37594,7 +37590,7 @@ pub(crate) mod tests {
                 .simulation()
                 .economy()
                 .owner_mana_global(),
-            known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len())
+            world_mana_after_archer_group
         );
 
         for _ in 0..24 {
@@ -37722,7 +37718,6 @@ pub(crate) mod tests {
                     &mut session,
                     occurrence,
                     expected_castle_mana,
-                    ARCHER_ROWS.len(),
                     &mut goat_event_cursor,
                     &mut seen_goat_occurrences,
                 );
@@ -37735,8 +37730,8 @@ pub(crate) mod tests {
                 let economy = session.backend().campaign.simulation().economy();
                 assert_eq!(
                     economy.owner_mana_global(),
-                    known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len()),
-                    "each distinct package Goat death adds one exact 300-mana row"
+                    world_mana_after_archer_group,
+                    "each distinct Goat sphere replaces one exact 300-mana body"
                 );
                 assert_eq!(
                     economy.castle().map(|castle| castle.mana),
@@ -37893,10 +37888,9 @@ pub(crate) mod tests {
         assert_eq!(deposited_goat_mana, 300 * distinct_deaths);
         assert_eq!(
             economy.owner_mana_global(),
-            known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len())
+            world_mana_after_archer_group
         );
-        let exact_percent = 100_i32 * (2_000 + deposited_goat_mana)
-            / known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len());
+        let exact_percent = 100_i32 * (2_000 + deposited_goat_mana) / world_mana_after_archer_group;
         assert_eq!(
             100_i32
                 * economy

@@ -40850,8 +40850,18 @@ mod tests {
             "final demolition must publish source reward group22"
         );
         let objective = &session.session.state.live.core.runtime.objectives[objective_index];
-        assert_eq!(objective.stage_selectors[target_stage_index], 2);
-        assert_eq!(objective.is_level_end, 1);
+        // The injected raw Type2 relation above verifies source rebinding.
+        // The semantic campaign still evaluates the authored Type9 objective.
+        assert_eq!(objective.stage_selectors[target_stage_index], 1);
+        assert_eq!(objective.is_level_end, 0);
+        assert_eq!(
+            session
+                .campaign_building_objective_targets(target_stage_index)
+                .into_iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>(),
+            vec![vaults[1]]
+        );
     }
 
     #[test]
@@ -42421,14 +42431,10 @@ mod tests {
             209, 244, 260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272, 274,
         ];
 
-        // No-Claim: this stages objectives 0-3 at their already-proven
-        // boundary and exercises the real Level-2 package's type-9 predicate,
-        // source cadence, pass-start model-45 membership, and first group-31
-        // consumer. It does not prove organic prior objectives, player-driven
-        // vault destruction, arbitrary BLDGPRM graphs, authoring, L1/L3,
-        // save/replay, Unity/CAPI, or commercial distribution.
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        // Stage the preceding objective boundary and supply fixed damage
+        // mailboxes. Construction, successors, reclaim, objective evaluation
+        // and the exit producer still run through the ordinary scheduler.
+        let package = authored_vault_package_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let baseline_hash = campaign.state_hash();
@@ -42501,16 +42507,12 @@ mod tests {
                 ..
             } if authored_indices.as_ref() == [153, 154]
         )));
-        assert_eq!(session.economy().authored_model45().len(), 2);
-        assert!(
+        let vault_slots = [153, 154].map(|record| {
             session
                 .economy()
-                .authored_model45()
-                .iter()
-                .all(|source| source.active && source.drawing_enabled),
-            "group-8 births must remain visible until their own numeric visit: {:?}",
-            session.economy().authored_model45()
-        );
+                .authored_house_source_slot(record)
+                .unwrap()
+        });
         let frozen_before_group8 = session
             .session
             .state
@@ -42520,12 +42522,13 @@ mod tests {
         let mut expected_current_census = ordinary_houses.clone();
         expected_current_census.extend([21, 21]);
         expected_current_census.sort_unstable();
-        let mut current_census = session
-            .session
-            .state
-            .live
-            .economy
-            .rebuilt_model45_building_selectors();
+        let live = &session.session.state.live;
+        let mut current_census = live
+            .ordinary
+            .current_building_rows(&live.economy)
+            .into_iter()
+            .map(|(_, selector, _)| selector)
+            .collect::<Vec<_>>();
         current_census.sort_unstable();
         assert_eq!(current_census, expected_current_census);
 
@@ -42552,117 +42555,140 @@ mod tests {
             frozen_before_group8
         );
 
-        // Start the final objective with a due source frame. The model-45
-        // callbacks hide both target rows, but the frozen pass-start list must
-        // still block completion for this frame.
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        for slot in vault_slots {
+            let house = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                (house.active, house.building_index, house.action, house.life),
+                (true, 21, 52, 6000)
+            );
+        }
         {
             let live = &mut session.session.state.live;
             let objective = &mut live.core.runtime.objectives[0];
-            objective.stage_selectors.fill(0);
+            objective.stage_selectors.fill(2);
             objective.stage_selectors[FINAL_STAGE] = 1;
             objective.text_selector = FINAL_STAGE as u8;
             objective.done = 0;
             objective.is_level_end = 0;
             live.level2_objective_pause = 0;
             live.level2_objective_done = false;
-            live.source_frame_timing_index = 15;
-            // Deliberately disagree with the source-global cadence carrier.
-            // A player-turn alias would not be due on this frame.
-            live.core.players[0].turn = 3;
         }
-        let phases_before = session
-            .economy()
-            .authored_model45()
-            .iter()
-            .map(|source| (source.source_entity_index, source.source_byte_3e))
-            .collect::<BTreeMap<_, _>>();
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(session.source_frame_timing_index, 16);
-        assert_eq!(
-            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
-            1
-        );
-        let retained_after = session
-            .economy()
-            .authored_model45()
-            .iter()
-            .map(|source| {
-                (
-                    source.source_entity_index,
-                    (source.source_byte_3e, source.active, source.drawing_enabled),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(retained_after.len(), phases_before.len());
-        assert!(phases_before.iter().all(|(source_slot, phase)| {
-            retained_after.get(source_slot) == Some(&(phase.wrapping_add(1), true, false))
-        }));
 
-        // The next pass reclaims the hidden targets, but frame 17 is not a
-        // source cadence boundary, so absence alone is insufficient.
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(session.source_frame_timing_index, 17);
-        assert!(session.economy().authored_model45().is_empty());
-        assert!(
+        let player = session.state.entity_index;
+        for slot in vault_slots {
+            assert!(
+                session
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .houses
+                    .submit_source_damage(slot, 6001, player)
+            );
+        }
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(
+                session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+                1
+            );
+        }
+        let successors = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active && house.building_index == 54)
+            .map(|house| {
+                assert_eq!((house.action, house.life), (52, 8000));
+                house.entity_index
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(successors.len(), 2);
+        assert_eq!(
             session
                 .campaign_building_objective_targets(FINAL_STAGE)
-                .is_empty(),
-            "reclaimed buildings no longer produce objective markers"
-        );
-        assert_eq!(
-            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
-            1
+                .into_iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>(),
+            successors
         );
 
-        // Retarget one real imported class-10/model-45 row to the second
-        // package-bound chain member. This plants both the imported-list and
-        // successor-tail negatives without claiming an organic vault edit.
-        let (imported_target_slot, imported_original_selector) = ordinary_house_rows[0];
-        session
-            .session
-            .state
-            .live
-            .ordinary
-            .house_mut(imported_target_slot)
-            .expect("real imported house")
-            .building_index = 54;
+        // Leave the second successor standing across a cadence boundary.
         assert!(
             session
                 .session
                 .state
                 .live
                 .ordinary
-                .current_building_rows(&session.session.state.live.economy)
-                .iter()
-                .any(|&(slot, selector, _)| slot == imported_target_slot && selector == 54)
+                .houses
+                .submit_source_damage(successors[0], 8001, player)
         );
-        let hash_at_frame_17 = session.campaign_state_hash();
-        session.session.state.live.source_frame_timing_index = 31;
-        assert_ne!(session.campaign_state_hash(), hash_at_frame_17);
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(session.source_frame_timing_index, 32);
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(
+                session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+                1
+            );
+        }
         assert_eq!(
-            session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
-            1,
-            "the imported selector-54 chain tail must block completion"
+            session
+                .campaign_building_objective_targets(FINAL_STAGE)
+                .into_iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>(),
+            successors[1..]
         );
-        session
-            .session
-            .state
-            .live
-            .ordinary
-            .house_mut(imported_target_slot)
-            .expect("real imported house")
-            .building_index = imported_original_selector;
+
+        // Even when demolition runs on a due frame, its pass-start membership
+        // blocks completion. The next due frame may complete after reclaim.
+        session.session.state.live.source_frame_timing_index = 15;
+        session.session.state.live.core.players[0].turn = 3;
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses
+                .submit_source_damage(successors[1], 8001, player)
+        );
+        for frame in 16..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(session.source_frame_timing_index, frame);
+            assert_eq!(
+                session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
+                1
+            );
+        }
         assert!(
             session
                 .campaign_building_objective_targets(FINAL_STAGE)
-                .is_empty(),
-            "restoring a non-target selector removes the imported target too"
+                .is_empty()
         );
-        session.session.state.live.source_frame_timing_index = 47;
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|row| row.authored_index == 155)
+        );
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|row| row.authored_index == 156)
+        );
         session.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(session.source_frame_timing_index, 48);
+        assert_eq!(session.source_frame_timing_index, 32);
         assert_eq!(
             session.runtime().objectives[0].stage_selectors[FINAL_STAGE],
             2
