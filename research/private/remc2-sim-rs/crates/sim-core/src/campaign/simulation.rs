@@ -43890,23 +43890,35 @@ mod tests {
             burst_count
         );
 
-        let mut reached_empty_prey_scan = false;
+        let descriptor = &campaign.simulation().session.definition.presentation.entity_parameters
+            [usize::from(MC2_SKELETON_ASSETS.descriptor)];
+        let scan_period = u16::from_le_bytes([descriptor[26], descriptor[27]]);
+        let attack_range = u16::from_le_bytes([descriptor[28], descriptor[29]]);
+        assert_eq!(scan_period, 25);
+        let mut abandoned_out_of_range_target = false;
         for _ in 0..25 {
             let phase_before = skeleton(&campaign).phase;
+            assert_eq!(skeleton(&campaign).source_word_96(), player_entity_index);
             step(&mut campaign);
-            assert_eq!(
-                (skeleton(&campaign).life, skeleton(&campaign).action),
-                (500, 74),
-                "the surviving Skeleton remains in its reaction scan without package-present prey"
-            );
-            if phase_before % 25 == 0 {
-                reached_empty_prey_scan = true;
+            assert_eq!(skeleton(&campaign).life, 500);
+            if u16::from(phase_before) % scan_period == 0 {
+                let target = &campaign.simulation().session.state.live.economy.entities
+                    [usize::from(player_entity_index)];
+                assert!(target.active && target.life >= 0 && target.control_flags & 0x400 == 0);
+                assert!(
+                    crate::distance_3d_wrapped(skeleton(&campaign).position, target.position)
+                        >= u32::from(attack_range),
+                    "the current player target is outside the source attack range"
+                );
+                assert_eq!(skeleton(&campaign).action, 73);
+                abandoned_out_of_range_target = true;
                 break;
             }
+            assert_eq!(skeleton(&campaign).action, 74);
         }
         assert!(
-            reached_empty_prey_scan,
-            "the real Level 3 Skeleton reaches descriptor row 80's 25-phase prey scan"
+            abandoned_out_of_range_target,
+            "action 74 reaches the descriptor's attack-range check and returns to action 73"
         );
 
         apply_hit(&mut campaign, player_entity_index);
@@ -46123,19 +46135,30 @@ mod tests {
             );
         }
 
-        // Bee combat/death is already covered by the shared Bee tests. Stage
-        // only the proven terminal hide on these six real roots; production
-        // reclaim and the frozen model-2 objective census remain under test.
-        assert_eq!(
-            campaign
-                .simulation_mut()
-                .economy_mut()
-                .stage_authored_bee_terminal_hide_for_test(&BEE_ROWS),
-            BEE_ROWS.len()
-        );
+        // Supply source-shaped combat damage to each actual package Bee.
+        // Their callbacks, death conversion, reclaim and the absence census
+        // all run normally; no terminal hide or objective result is staged.
+        let bee_lives = bees.iter().map(|bee| (bee.source_entity_index, bee.life))
+            .collect::<Vec<_>>();
+        let kill_credit_before = live.economy.economy.authored_bee_kill_census(player_entity_index);
+        for &(slot, life) in &bee_lives {
+            assert!(campaign.simulation_mut().economy_mut()
+                .stage_bee_mailbox_damage_for_test(slot, player_entity_index, life + 1));
+        }
         step(&mut campaign);
         let live = &campaign.simulation().session.state.live;
-        assert!(live.economy.economy.bee_creatures().is_empty());
+        assert_eq!(live.core.runtime.objectives[0].stage_selectors[BEE_STAGE], 1,
+            "the pass-start census still contains the Bees that consumed lethal damage");
+        assert!(live.economy.economy.bee_creatures().iter().all(|bee|
+            bee.life < 0 && bee.action == 20 && bee.drawing_enabled));
+        step(&mut campaign);
+        let live = &campaign.simulation().session.state.live;
+        assert_eq!(live.economy.economy.bee_creatures().len(), BEE_ROWS.len());
+        assert!(live.economy.economy.bee_creatures().iter().all(|bee|
+            bee.life < 0 && bee.action == 21 && bee.drawing_enabled),
+            "the absence census excludes dead Bees before their conversion and reclaim");
+        assert_eq!(live.economy.economy.authored_bee_kill_census(player_entity_index),
+            kill_credit_before + u32::try_from(BEE_ROWS.len()).unwrap());
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
             2
@@ -46335,6 +46358,18 @@ mod tests {
         }
         assert!(saw_morph_acquisition);
 
+        // The objective can advance while action21 bodies are still waiting
+        // for their phase-gated conversion. Retain the already-observed group
+        // 4 and group 12 events above while the ordinary cursor finishes them.
+        for _ in 0..9 {
+            if campaign.simulation().economy().bee_creatures().iter().all(|bee|
+                !bee.authored_index().is_some_and(|row| BEE_ROWS.contains(&row))) { break; }
+            step(&mut campaign);
+        }
+        assert!(campaign.simulation().economy().bee_creatures().iter().all(|bee|
+            !bee.authored_index().is_some_and(|row| BEE_ROWS.contains(&row))),
+            "all six original Bee bodies convert and reclaim on their own source cadence");
+
         let live = &campaign.simulation().session.state.live;
         let morph = live
             .shared_spells
@@ -46443,10 +46478,13 @@ mod tests {
             .live
             .shared_spells
             .spell_experience()[4];
-        assert!(
-            morph_slot < player_entity_index,
-            "the qualified package's Morph holder visits before its player"
-        );
+        assert!(morph_slot > player_entity_index,
+            "after real Bee deaths the acquired holder follows the player in source order");
+        // Preserve an idle clone for the isolated allocator-failure branch.
+        // Its holder will be armed there at the handler boundary; the success
+        // branch uses the actual public command and numeric scheduler.
+        let mut allocation_failure = campaign.clone();
+        let success_journal_cursor = pre_cast_sound_cursor;
         step_with_command(
             &mut campaign,
             PlayerCommand {
@@ -46456,36 +46494,6 @@ mod tests {
                 ..PlayerCommand::default()
             },
         );
-        let armed_live = &campaign.simulation().session.state.live;
-        let armed_holder = armed_live
-            .shared_spells
-            .dynamic_pickups()
-            .iter()
-            .find(|holder| holder.index == morph_slot)
-            .expect("the public command arms the acquired Morph holder");
-        assert_eq!(
-            (armed_holder.active_value, armed_holder.source_word_96()),
-            (201, 0),
-            "the player visit arms Morph but never runs action 12 inline"
-        );
-        assert_eq!(
-            armed_live.economy.economy.bee_creatures().len(),
-            pre_cast_bee_count
-        );
-        assert!(
-            campaign.simulation().effect_journal().records()[pre_cast_sound_cursor..]
-                .iter()
-                .all(|record| !matches!(
-                    record.effect,
-                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
-                        sound_id: 60,
-                        ..
-                    })
-                ))
-        );
-
-        let mut allocation_failure = campaign.clone();
-        let player_before_pulse = campaign.simulation().session.state.live.core.state;
         let player_mana_before_pulse = campaign
             .simulation()
             .session
@@ -46494,8 +46502,6 @@ mod tests {
             .shared_spells
             .player_entity
             .mana;
-        let success_journal_cursor = campaign.simulation().effect_journal().records().len();
-        step(&mut campaign);
         let success_live = &campaign.simulation().session.state.live;
         let holder = success_live
             .shared_spells
@@ -46523,6 +46529,7 @@ mod tests {
             })
             .copied()
             .expect("Morph's first pulse constructs one semantic Bee");
+        assert_eq!(success_live.economy.economy.bee_creatures().len(), pre_cast_bee_count + 1);
         assert_eq!(morph_bee.parent_entity_index, player_entity_index);
         assert_eq!(morph_bee.entity_id, player_entity_index);
         let bee_visited_on_birth_pass = expected_bee_slot > morph_slot;
@@ -46552,12 +46559,7 @@ mod tests {
         );
         assert_eq!(morph_bee.phase, u8::from(bee_visited_on_birth_pass));
         let expected_angle = (morph_bee.entity_rng & 0x07ff) as i16 - 1;
-        let followed_parent =
-            if bee_visited_on_birth_pass && expected_bee_slot > player_entity_index {
-                success_live.core.state
-            } else {
-                player_before_pulse
-            };
+        let followed_parent = success_live.core.state;
         assert_eq!(
             (morph_bee.yaw, morph_bee.pitch, morph_bee.roll),
             (
@@ -46591,7 +46593,8 @@ mod tests {
                     .mana_regen,
                 success_live.economy.entities[usize::from(player_entity_index)].mana_regen,
             ),
-            (100, 100, 100)
+            (-5_000, -5_000, -5_000),
+            "the later holder leaves Morph's charge for the next player visit"
         );
         assert_eq!(
             (
@@ -46606,11 +46609,11 @@ mod tests {
                 success_live.economy.entities[usize::from(player_entity_index)].mana,
             ),
             (
-                player_mana_before_pulse.wrapping_sub(5_000),
-                player_mana_before_pulse.wrapping_sub(5_000),
-                player_mana_before_pulse.wrapping_sub(5_000),
+                player_mana_before_pulse,
+                player_mana_before_pulse,
+                player_mana_before_pulse,
             ),
-            "the later player visit consumes Morph's -5000 mana-regeneration charge"
+            "the player has already visited before the holder charges regeneration"
         );
         assert_eq!(success_live.shared_spells.caster.control_flags & 0x21, 0x21);
         assert_eq!(
@@ -46660,6 +46663,10 @@ mod tests {
                 )
             })
             .expect("Morph holder receives its numeric callback");
+        let player_callback = receipts.iter().position(|receipt| matches!(receipt,
+            ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == player_entity_index))
+            .expect("the player receives its numeric callback");
+        assert!(player_callback < holder_callback);
         let bee_callback = receipts.iter().position(|receipt| {
             matches!(
                 receipt,
@@ -46675,6 +46682,15 @@ mod tests {
         let mut non_expiry = campaign.clone();
         let non_expiry_effect_cursor = non_expiry.simulation().effect_journal().records().len();
         step(&mut non_expiry);
+        let next_live = &non_expiry.simulation().session.state.live;
+        assert_eq!(next_live.shared_spells.player_entity.mana,
+            player_mana_before_pulse.wrapping_sub(5_000),
+            "the next player visit consumes the holder's charge");
+        assert_eq!((next_live.shared_spells.player_entity.mana_regen,
+            next_live.shared_spells.player_entities.iter().find(|row| row.index == player_entity_index)
+                .expect("local shared player").mana_regen,
+            next_live.economy.entities[usize::from(player_entity_index)].mana_regen), (0, 0, 0),
+            "the later active holder suppresses the positive rate selected by the player visit");
         assert!(
             non_expiry.simulation().effect_journal().records()[non_expiry_effect_cursor..]
                 .iter()
@@ -46929,6 +46945,19 @@ mod tests {
             );
         }
 
+        // Let the real player callback publish the staged resources and
+        // Castle relation in this idle clone, as it did before the successful
+        // holder visit. Then stage only the source arming write at the holder
+        // boundary so no prepass can free a slot before allocation.
+        step(&mut allocation_failure);
+        {
+            let holder = allocation_failure.simulation_mut().session.state.live.shared_spells
+                .pickup_mut(morph_slot).expect("the acquired Morph holder survives in the clone");
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        }
+        let failure_mana_before_pulse = allocation_failure.simulation().shared_spells()
+            .player_entity().mana;
         let failure_sound_cursor = allocation_failure
             .simulation()
             .effect_journal()
@@ -46956,6 +46985,21 @@ mod tests {
                 );
             }
             arena.finish_source_group();
+        }
+        {
+            let session = allocation_failure.simulation();
+            let holder = session.shared_spells().pickup(morph_slot).unwrap();
+            let parent = session.current_morph_parent(player_entity_index).unwrap().unwrap();
+            let castle_mana = source_target::status_castle_mana(
+                &session.session.state.live.economy,
+                &session.session.state.live.shared_spells,
+                &parent,
+            ).unwrap();
+            assert_eq!((holder.active_value, holder.activation_value), (201, 201));
+            assert!(parent.life >= 0 && parent.mana >= holder.max_mana
+                && castle_mana.is_some_and(|mana| mana >= holder.mana_regen),
+                "failure branch must reach the same source gate as a paid first pulse: parent life={} mana={} cost={} castle={castle_mana:?} requirement={}",
+                parent.life, parent.mana, holder.max_mana, holder.mana_regen);
         }
         let failure_constructor_phase = allocation_failure
             .simulation()
@@ -46991,7 +47035,7 @@ mod tests {
         assert_eq!(failed_live.shared_spells.player_entity.mana_regen, -5_000);
         assert_eq!(
             failed_live.shared_spells.player_entity.mana,
-            player_mana_before_pulse
+            failure_mana_before_pulse
         );
         assert_eq!(
             failed_live.economy.economy.bee_model2_constructor_phase,
@@ -47042,7 +47086,7 @@ mod tests {
         );
         assert_eq!(
             failed_live.shared_spells.player_entity.mana,
-            player_mana_before_pulse.wrapping_sub(5_000),
+            failure_mana_before_pulse.wrapping_sub(5_000),
             "the following ordinary player visit must consume the failed cast's charge"
         );
         assert_eq!(
@@ -47058,6 +47102,82 @@ mod tests {
         );
         allocation_failure.reset();
         assert_eq!(allocation_failure.state_hash(), baseline_hash);
+
+        // Group 12's Dragons are real combatants, but the package's last
+        // objective is Bee absence, not Dragon absence. Exercise their death
+        // and body cleanup independently from the exit branch below: the
+        // already-proven damage mailbox is the only staged combat input.
+        let mut dragon_combat = campaign.clone();
+        let final_dragons = dragon_combat.simulation().economy().authored_class5().iter()
+            .filter(|source| FINAL_DRAGON_ROWS.contains(&source.authored_index)
+                && source.model == level2_class5::dragon::DRAGON_MODEL)
+            .map(|source| (source.source_entity_index, source.life))
+            .collect::<Vec<_>>();
+        assert_eq!(final_dragons.len(), FINAL_DRAGON_ROWS.len());
+        for &(slot, life) in &final_dragons {
+            assert!(dragon_combat.simulation_mut().session.state.live.economy.economy
+                .submit_authored_dragon_damage(slot, life + 1, player_entity_index));
+        }
+        let mut dragon_death_bursts = [false; 3];
+        for _ in 0..32 {
+            step(&mut dragon_combat);
+            let economy = dragon_combat.simulation().economy();
+            for (index, (slot, _)) in final_dragons.iter().enumerate() {
+                dragon_death_bursts[index] |= economy.events().iter().any(|event| matches!(event,
+                    Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                        if parent_entity_index == slot
+                ));
+            }
+            if final_dragons.iter().all(|(slot, _)| {
+                economy.authored_class5().iter().all(|root| root.source_entity_index != *slot)
+                    && economy.authored_dragon_parts().iter().all(|part| part.entity_id != *slot)
+            }) {
+                break;
+            }
+        }
+        let economy = dragon_combat.simulation().economy();
+        for (index, (slot, _)) in final_dragons.iter().enumerate() {
+            assert!(economy.authored_class5().iter().all(|root| root.source_entity_index != *slot));
+            assert!(economy.authored_dragon_parts().iter().all(|part| part.entity_id != *slot));
+            assert!(dragon_death_bursts[index], "each final Dragon root reaches its own death producer");
+        }
+
+        // Continue the unmodified objective branch. No selector, win flag,
+        // or exit group is staged: the Bee census above must cause the real
+        // objective and group-31 producer to expose the package exit.
+        for _ in 0..256 {
+            if campaign.simulation().campaign_exit_objective_target().is_some() {
+                break;
+            }
+            step(&mut campaign);
+        }
+        let session = campaign.simulation();
+        assert_eq!(session.runtime().objectives[0].stage_selectors[BEE_STAGE], 2);
+        assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+        assert_eq!(session.economy().authored_class5().iter().filter(|source|
+            FINAL_DRAGON_ROWS.contains(&source.authored_index)
+                && source.model == level2_class5::dragon::DRAGON_MODEL).count(), 3,
+            "the final Dragons do not gate the Bee objective or exit");
+        let (exit_slot, exit_position) = session.campaign_exit_objective_target()
+            .expect("the completed Bee objective produces the live group-31 exit");
+        assert!(session.economy().authored_switch_producers().iter().any(|source|
+            source.source_entity_index == exit_slot && (source.model, source.action) == (12, 12)));
+        campaign.simulation_mut().set_level2_entity_position(player_entity_index, exit_position)
+            .expect("move the real player into the born exit trigger");
+        for _ in 0..16 {
+            if campaign.simulation().level_exit_sequence().active { break; }
+            step(&mut campaign);
+        }
+        assert!(campaign.simulation().level_exit_sequence().active,
+            "the real group-31 overlap starts the source exit sequence");
+        for _ in 0..700 {
+            if campaign.simulation().level_exit_sequence().complete { break; }
+            step(&mut campaign);
+        }
+        let session = campaign.simulation();
+        assert!(session.level_exit_sequence().complete);
+        assert_eq!(session.level_exit_sequence().result_code, 10);
+        assert_eq!(session.session.state.live.source_player_result.result_byte(), 0x0a);
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), baseline_hash);
