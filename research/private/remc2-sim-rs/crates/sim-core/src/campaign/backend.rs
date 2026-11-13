@@ -5291,7 +5291,7 @@ pub(crate) mod tests {
     ) {
         use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState,
             CompletionDisposition, GameRuntime, RuntimeTransitionError};
-        use crate::game_runtime::media::{MediaCatalog, MediaClip, MediaCommand, MEDIA_CONTRACT};
+        use crate::game_runtime::media::MediaCommand;
 
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES")
@@ -5317,18 +5317,7 @@ pub(crate) mod tests {
             level_statistics: Vec::new(),
         };
         let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(61926).unwrap();
-        // This tiny catalog exercises the real presentation state machine,
-        // not owner media decoding or actual credits presentation.
-        let clips = ["welcome", "intro1", "intro2", "cut6"].map(|id| MediaClip {
-            id: id.into(), width: 320, height: 200, frame_count: 1,
-            frames_path: format!("{id}.frames"), events: Vec::new(),
-        }).to_vec();
-        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Install {
-            catalog: MediaCatalog { schema: MEDIA_CONTRACT.into(), clips, audio: Vec::new(),
-                subtitles: Vec::new(), subtitles_enabled: false, language: None,
-                credits: vec!["!".into(); 117] },
-            startup: false, audio_available: false,
-        }).unwrap();
+        install_owner_return_media(&mut runtime);
         let map = runtime.restore_campaign_resolved(runtime.identity().guard(), save, Default::default(),
             |definition, selected| {
                 resolver.exact_package_for_definition(definition)?;
@@ -5367,11 +5356,14 @@ pub(crate) mod tests {
             assert_eq!((progress.persistent_experience, progress.runtime_experience, progress.unlocked_tier, progress.selected_tier),
                 (bank, 0, tier, 0), "source 6E0D0/6D9C0 family {family}");
         }
-        // A decoder-failure event ends the fixture CUT and enters real credits;
-        // this is a control-path check, not a claim of playing CUT6 assets.
-        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Failed { message: "test decoder stop".into() }).unwrap();
-        for (elapsed_us, input) in [(0, false), (320_000, false), (0, true), (160_000, true), (0, false)] {
+        play_owner_return_clip(&mut runtime, "cut6", 259, Some("credits"));
+        let view = runtime.identity().frontend_media.unwrap().campaign_return.unwrap();
+        assert_eq!(view.credits.unwrap().lines, ["Designed By", "Bullfrog Productions Ltd"]);
+        for (elapsed_us, input) in [(320_000, false), (0, true), (160_000, true), (0, true), (0, false)] {
             runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Frame { elapsed_us, input, escape: false }).unwrap();
+            if input {
+                assert!(runtime.campaign_return_active(), "credits acknowledgment must drain");
+            }
         }
         assert!(!runtime.campaign_return_active());
         assert_eq!(runtime.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::Results);
@@ -5406,6 +5398,51 @@ pub(crate) mod tests {
         resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
         let destination = restored.session().unwrap().backend().semantic_spell_carry().unwrap();
         assert_eq!(destination, entry_carry, "replay entry carry reaches the chosen destination");
+    }
+
+    fn install_owner_return_media(runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>) {
+        use crate::game_runtime::media::MediaCommand;
+
+        let root = std::env::var_os("MC_ENDING_MEDIA_CACHE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc2-campaign-media-cache-decoded"));
+        let catalog = serde_json::from_reader(std::fs::File::open(root.join("media.json")).unwrap())
+            .expect("decoded original campaign media catalog");
+        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Install {
+            catalog, startup: false, audio_available: true,
+        }).unwrap();
+        runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Frame {
+            elapsed_us: 50_000, input: false, escape: false,
+        }).unwrap();
+    }
+
+    fn play_owner_return_clip(
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        clip: &str,
+        frame_count: i32,
+        stop_at: Option<&str>,
+    ) {
+        use crate::game_runtime::media::MediaCommand;
+
+        let mut last_frame = -1;
+        for _ in 0..2400 {
+            runtime.frontend_media_command(runtime.identity().guard(), MediaCommand::Frame {
+                elapsed_us: 50_000, input: false, escape: false,
+            }).unwrap();
+            let media = runtime.identity().frontend_media.expect("installed original media owner");
+            assert!(media.error.is_none(), "{:?}", media.error);
+            if media.active && media.clip_id == clip && media.frame_index > last_frame {
+                assert_eq!(media.frame_index, last_frame + 1, "ordered {clip} frames");
+                last_frame = media.frame_index;
+            }
+            let phase = media.campaign_return.as_ref().map(|state| state.phase);
+            if phase == stop_at {
+                assert_eq!(last_frame + 1, frame_count, "full {clip} ran before {stop_at:?}");
+                return;
+            }
+        }
+        panic!("{clip} did not reach {stop_at:?}");
     }
 
     pub(super) fn level_three_descriptor_fixture_path() -> PathBuf {
@@ -6051,6 +6088,7 @@ pub(crate) mod tests {
             level_statistics: level_statistics.clone(),
         };
         let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(7433).unwrap();
+        install_owner_return_media(&mut runtime);
         let title = runtime.identity();
         let map = runtime
             .restore_campaign_resolved(
@@ -6289,6 +6327,12 @@ pub(crate) mod tests {
         assert_ne!(mission_carry, pending.carry);
         assert_eq!(source_context, paused_context);
 
+        assert!(runtime.campaign_return_active(), "unseen parent queues CUT1");
+        assert!(matches!(resolver.save_replay(&runtime), Err(Mc2CampaignReplaySaveError::InvalidMode)));
+        play_owner_return_clip(&mut runtime, "cut1", 529, None);
+        assert_eq!(runtime.played_cutscenes(), 1);
+        let map_save = resolver.save_replay(&runtime).unwrap();
+
         let exit_route = |runtime: &GameRuntime<Mc2CampaignBackend>| {
             runtime
                 .session()
@@ -6330,6 +6374,41 @@ pub(crate) mod tests {
             )
             .unwrap()
             .unwrap();
+        assert!(!runtime.campaign_return_active(), "revisit must not replay CUT1");
+        assert_eq!(runtime.played_cutscenes(), 1);
+
+        let mut cold_map = GameRuntime::<Mc2CampaignBackend>::title(7437).unwrap();
+        install_owner_return_media(&mut cold_map);
+        let guard = cold_map.identity().guard();
+        let map = resolver.load_replay(&mut cold_map, guard, 7437, &map_save).unwrap();
+        let selected = resolver.campaign_menu_command(&mut cold_map, map.guard(),
+            CampaignMenuCommand::SelectMission { level_id: secret_level.clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut cold_map, selected.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        let playing = resolver.open_pending(&mut cold_map, loading.guard(), 7437).unwrap();
+        assert_eq!(playing.session.as_ref().unwrap().tick, 0);
+        let cold_return = complete_source_thirty_castle_and_exit(&resolver, &mut cold_map);
+        assert_eq!(cold_return.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(cold_return.origin_level_id, origin);
+        assert_eq!(cold_map.campaign_save_state().unwrap(), activated_parent);
+        assert!(!cold_map.campaign_return_active(), "cold revisit must not replay CUT1");
+        assert_eq!(cold_map.played_cutscenes(), 1);
+        let secret_progress = cold_return.after.secret_campaign.as_ref().unwrap();
+        assert_eq!(secret_progress.completed_levels, [secret_level.clone()]);
+
+        let selected = resolver.campaign_menu_command(&mut cold_map, cold_return.after.guard(),
+            CampaignMenuCommand::SelectMission { level_id: secret_level.clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut cold_map, selected.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut cold_map, loading.guard(), 7437).unwrap();
+        let won = complete_source_thirty_castle_and_exit(&resolver, &mut cold_map);
+        assert_eq!(won.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(won.origin_level_id, origin);
+        assert_eq!(cold_map.campaign_save_state().unwrap(), activated_parent);
+        assert_eq!(cold_map.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_level));
+        assert_eq!(cold_map.secret_flow_state().completed_secret_statistics().len(), 1);
+        assert!(!cold_map.campaign_return_active(), "successful revisit must not replay CUT1");
+        assert_eq!(cold_map.played_cutscenes(), 1);
 
         let loading = resolver
             .campaign_menu_command(
@@ -6364,6 +6443,7 @@ pub(crate) mod tests {
         let bytes = resolver.save_replay(&runtime).unwrap();
         let mut saved: Mc2CampaignReplaySave = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(saved.initial_secret_continuation.as_ref(), Some(secret_entry));
+        assert_eq!(saved.played_cutscenes, Some(1));
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(7435).unwrap();
         let guard = restored.identity().guard();
         let resumed = resolver
@@ -6374,6 +6454,7 @@ pub(crate) mod tests {
             OrdinaryExitRoute::SecretReturnFromParentContinuation
         );
         assert_eq!(resolver.save_replay(&restored).unwrap(), bytes);
+        assert_eq!(restored.played_cutscenes(), 1);
         assert!(
             resolver
                 .advance_secret_if_ready(
@@ -6400,6 +6481,72 @@ pub(crate) mod tests {
             Err(Mc2CampaignReplaySaveError::Restore(_))
         ));
         assert_eq!(rejected.identity(), before);
+    }
+
+    fn complete_source_thirty_castle_and_exit(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+    ) -> crate::game_runtime::SecretTransitionReceipt {
+        use crate::native_world::Mc2DispatchEvent;
+
+        let session = runtime.session_mut().unwrap();
+        assert!(matches!(session.backend().completion_status(), GameCompletionStatus::InProgress));
+        let sim = session.backend_mut().campaign.simulation_mut();
+        let player = sim.state.entity_index;
+        assert_eq!(sim.runtime().stages[0].relation, crate::native_world::RuntimeRelation::Scalar(85));
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            sim.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x|
+            crate::Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .find(|position| sim.castle_projectile_site_admitted_for_test(*position))
+            .expect("valid Castle site in Karakir");
+        let castle = sim.economy_mut().build_castle(site, player).unwrap();
+        // Supply the Castle stock as a declared upstream prerequisite. The
+        // unmodified objective, group publisher and exit own the win itself.
+        let total = sim.economy().owner_mana_global();
+        assert!(total > 0);
+        // The next source mana scan includes the Castle stock in the global
+        // denominator too. Solve 100 * (owned + stock) >= 85 * (total + stock).
+        let owned = sim.economy().owner_mana_aggregate(player);
+        let required = (85 * i64::from(total) - 100 * i64::from(owned)).max(0);
+        let stock = i32::try_from((required + 14) / 15).unwrap();
+        assert!(sim.economy_mut().set_castle_mana_prerequisite_for_test(castle, stock));
+
+        let mut exit = None;
+        for _ in 0..32 {
+            session.step(guard(session), GameCommand::default()).unwrap();
+            let sim = session.backend().campaign.simulation();
+            assert!(!sim.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            exit = sim.economy().authored_switch_producers().iter()
+                .find(|row| row.active && row.authored_index == 65 && row.model == 12)
+                .map(|row| row.position);
+            if exit.is_some() { break; }
+        }
+        let exit = exit.unwrap_or_else(|| {
+            let sim = session.backend().campaign.simulation();
+            panic!("Karakir exit row 65 absent: objective={:?}, total={}, owned={}, stock={:?}",
+                sim.runtime().objectives[0], sim.economy().owner_mana_global(),
+                sim.economy().owner_mana_aggregate(player), sim.economy().castle().map(|row| row.mana));
+        });
+        let sim = session.backend_mut().campaign.simulation_mut();
+        assert_eq!(sim.runtime().objectives[0].stage_selectors[0], 2);
+        assert!(sim.economy().authored_class14().iter()
+            .any(|row| row.active && row.authored_index == 64 && row.model == 3));
+        sim.set_level2_entity_position(player, exit).unwrap();
+        for _ in 0..700 {
+            if matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }) {
+                break;
+            }
+            session.step(guard(session), GameCommand::default()).unwrap();
+            assert!(!session.backend().campaign.simulation().dispatch_events().iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert!(matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }));
+        assert_eq!(session.backend().campaign.simulation().source_exit_result_byte(), 0x0a);
+        let session_guard = session.identity().guard();
+        let runtime_guard = runtime.identity().guard();
+        resolver.advance_secret_if_ready(runtime, runtime_guard, session_guard).unwrap().unwrap()
     }
 
     #[test]
