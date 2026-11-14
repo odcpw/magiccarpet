@@ -96,6 +96,10 @@ pub(crate) fn rival_test_destroy_castle(
         );
         if observed_levels.last().copied() != Some(current.level) {
             observed_levels.push(current.level);
+            // The rival may rebuild a tier while its Castle is being attacked.
+            // A returning tier is a new damage window, even if the intervening
+            // tier never became attackable before the ordinary AI upgraded it.
+            hit_level = None;
         }
         if current.action == 4
             && current.timer == 0
@@ -144,6 +148,136 @@ pub(crate) fn rival_test_wait_unprotected(game: &mut RivalTestGame, actor: u16) 
         "rival protection did not expire naturally: actor={actor} countdown={} high_upkeep={}",
         common.word_0x159, common.high_upkeep
     );
+}
+
+#[test]
+fn galiphur_four_rival_banishments_produce_the_real_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::SourceEntityHandle;
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::ObjectiveCondition;
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation};
+
+    let package = std::env::var_os("MC_LEVEL13_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/volcano-quake-20261104-integration/current-owner-package/level13"),
+        PathBuf::from,
+    );
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2205,
+        Mc2CampaignInputs::new(&package)).unwrap();
+    let sim = rival_test_sim(&game);
+    let player = sim.state.entity_index;
+    let player_color = usize::from(sim.state.player_color_index);
+    let objectives = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 4);
+    assert!(objectives.iter().all(|goal| matches!(goal.condition(), ObjectiveCondition::DefeatRivalWizard(_))));
+    let rivals: Vec<u16> = (1..=4).map(|color| {
+        let owner = sim.players().iter().find(|p| p.player_color_index() == color && p.is_ai)
+            .expect("the authored selector resolves to the active rival roster");
+        owner.entity_index
+    }).collect();
+    for (index, actor) in rivals.iter().copied().enumerate() {
+        assert_eq!(sim.runtime().stages[index].kind, 3);
+        assert_eq!(sim.runtime().stages[index].relation, RuntimeRelation::LiveEntity(actor));
+        assert_eq!(rival_test_participation(&game, actor), Some(1));
+    }
+    assert_eq!(sim.runtime().objectives[player_color].stage_selectors[..4], [1, 1, 1, 1]);
+    let rival_handles: Vec<SourceEntityHandle> = rivals.iter().map(|slot|
+        sim.source_arena().handle(*slot).unwrap()).collect();
+    let mut castle_hits = std::collections::BTreeMap::<u16, (SourceEntityHandle, u8)>::new();
+    let mut actor_hits = std::collections::BTreeSet::<u16>::new();
+    let mut released_holders = Vec::<SourceEntityHandle>::new();
+    let mut exit = None;
+    let mut group_six = 0;
+
+    // Controlled arrived damage contacts and player positioning leave every
+    // Castle tier, protection countdown, actor callback and objective census
+    // in the ordinary live schedule. Other actors continue their own turns.
+    for _ in 0..8192 {
+        let state = rival_test_sim(&game);
+        if exit.is_none() {
+            if let Some(actor) = rivals.iter().copied()
+                .find(|actor| rival_test_participation(&game, *actor) == Some(1))
+            {
+                if let Some(castle) = state.economy().castle_for_owner(actor).copied() {
+                    let handle = state.source_arena().handle(castle.source_entity_index).unwrap();
+                    let hit = (handle, castle.level);
+                    if castle.action == 4 && castle.timer == 0 && castle.life > 0
+                        && castle_hits.get(&actor) != Some(&hit)
+                    {
+                        castle_hits.insert(actor, hit);
+                        rival_test_contact(&mut game, castle.source_entity_index, player, castle.life);
+                    }
+                } else {
+                    castle_hits.remove(&actor);
+                    let state = rival_test_sim(&game);
+                    let row = &state.entities()[usize::from(actor)];
+                    let handle = state.source_arena().handle(actor).unwrap();
+                    let upkeep = state.session.state.live.nyphur_dispatcher.get(handle).unwrap()
+                        .common_upkeep(row.phase);
+                    if upkeep.word_0x159 == 0 && !upkeep.high_upkeep && row.life > 0
+                        && actor_hits.insert(actor)
+                    {
+                        let life = row.life;
+                        released_holders.extend(rival_test_held_spell_generations(&game, actor));
+                        rival_test_contact(&mut game, actor, player, life);
+                    }
+                }
+            }
+        }
+        rival_test_step(&mut game);
+        let state = rival_test_sim(&game);
+        for event in state.dispatch_events() {
+            if let Mc2DispatchEvent::AuthoredGroupActivated { group: 6, authored_indices, .. } = event {
+                assert_eq!(authored_indices.as_ref(), [402, 403, 404, 405, 406, 407, 408]);
+                group_six += 1;
+                let trigger = state.economy().authored_switch_producers().iter()
+                    .find(|row| row.active && row.authored_index == 402 && row.model == 12 && row.action == 12)
+                    .expect("group 6 publishes the real authored exit trigger");
+                assert!(state.economy().authored_class14().iter()
+                    .any(|row| row.active && row.authored_index == 408),
+                    "the authored portal is published in the same group");
+                exit = Some((trigger.position, state.source_arena().handle(trigger.source_entity_index).unwrap()));
+            }
+        }
+        if exit.is_some() {
+            if state.runtime().objectives[player_color].stage_selectors[..4] == [2, 2, 2, 2] {
+                break;
+            }
+        }
+    }
+    let (exit_position, exit_handle) = exit.expect("all four source banishments must publish group 6");
+    let state = rival_test_sim(&game);
+    assert_eq!(group_six, 1);
+    assert_eq!(state.runtime().objectives[player_color].stage_selectors[..4], [2, 2, 2, 2]);
+    assert_eq!(state.runtime().objectives[player_color].is_level_end, 1);
+    for (actor, handle) in rivals.iter().copied().zip(rival_handles) {
+        assert_eq!(rival_test_participation(&game, actor), Some(0));
+        assert_eq!(state.source_arena().handle(actor), Some(handle));
+        assert!(state.economy().castle_for_owner(actor).is_none());
+    }
+    for _ in 0..320 {
+        if released_holders.iter().all(|handle| rival_test_sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+        rival_test_step(&mut game);
+    }
+    assert!(released_holders.iter().all(|handle| rival_test_sim(&game).source_arena().resolve(*handle).is_none()),
+        "the original scattered holder generations must reclaim naturally");
+    let state = rival_test_sim(&game);
+    let sequence = state.level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(state.source_arena().resolve(exit_handle).is_some(), "exit was captured at publication: {exit_position:?}");
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+            .set_level2_entity_position(player, exit_position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value,
+            GameCompletionStatus::Completed { .. }) { break; }
+        rival_test_step(&mut game);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value,
+        GameCompletionStatus::Completed { .. }));
+    assert_eq!(rival_test_sim(&game).source_exit_result_byte(), 0x0a);
 }
 
 pub(crate) fn complete_tklom_rival_objectives_for_test(mut game: &mut RivalTestGame) {
