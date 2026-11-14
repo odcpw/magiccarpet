@@ -2,6 +2,258 @@ use super::super::archer::ArcherStageDescriptor as StageDescriptor;
 use super::*;
 
 #[test]
+fn gleph_source_objectives_produce_the_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::ObjectiveCondition;
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use crate::FlightWorld;
+    use crate::native_world::player_lifecycle_tests::{
+        RivalTestGame, rival_test_contact, rival_test_destroy_castle, rival_test_held_spell_generations,
+        rival_test_participation, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step, rival_test_wait_unprotected,
+    };
+    use std::path::PathBuf;
+
+    fn spell113(game: &RivalTestGame) -> String {
+        let state = sim(game);
+        let raw = &state.entities()[113];
+        let fields = |row: &crate::native_world::EntitySnapshot| (
+            row.active, row.class, row.model, row.action, row.life, row.phase,
+            row.control_flags, row.source_spell_parent_entity_index(), row.source_id,
+        );
+        format!("handle={:?}, raw={:?}, shared={:?}", state.source_arena().handle(113),
+            fields(raw), state.shared_spells().pickup(113).map(fields))
+    }
+    fn player_receipt(game: &RivalTestGame) -> (i32, u8, Position, u16, u8) {
+        let state = sim(game);
+        let player = &state.entities()[usize::from(state.state.entity_index)];
+        (state.canonical_player_life_for_test(), player.action, player.position,
+            state.economy().player_castle_entity_index(), state.source_exit_result_byte())
+    }
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL18_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("all-spells-20261104-integration/current-owner-package/level18"));
+    let cache = std::env::var_os("MC_LEVEL18_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level18"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2218,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let goals = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 4);
+    assert!(matches!(goals[0].condition(), ObjectiveCondition::CastleManaPercent(25)));
+    assert!(matches!(goals[1].condition(), ObjectiveCondition::TargetDeath(_)));
+    assert!(matches!(goals[2].condition(), ObjectiveCondition::CastleManaPercent(60)));
+    assert!(matches!(goals[3].condition(), ObjectiveCondition::DefeatRivalWizard(_)));
+    let player = sim(&game).state.entity_index;
+    let source_spawn = sim(&game).state.position;
+    let mut player_history = vec![("opened", player_receipt(&game))];
+    let owner = usize::from(sim(&game).state.player_color_index);
+    let rival = match &sim(&game).runtime().stages[3].relation {
+        RuntimeRelation::LiveEntity(slot) => *slot,
+        relation => panic!("selector7 must bind the actual Yragore player: {relation:?}"),
+    };
+    assert_eq!(sim(&game).players().iter().find(|row| row.entity_index == rival)
+        .expect("selector7 has a real roster owner").player_color_index(), 6);
+    assert_eq!(rival_test_participation(&game, rival), Some(1),
+        "the package must retain the real unbanished source carrier");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [1, 1, 1, 1]);
+    let gate = &sim(&game).entities()[90];
+    assert_eq!((gate.class, gate.model, gate.action, gate.source_id), (11, 4, 4, 20));
+    let gate_handle = sim(&game).source_arena().handle(90).unwrap();
+    let mut safe = gate.position;
+    safe.z = sim(&game).canonical_terrain().ground_height(safe).wrapping_add(1024);
+    sim_mut(&mut game).set_level2_entity_position(player, safe).unwrap();
+    sim_mut(&mut game).state.actual_speed = 0;
+    sim_mut(&mut game).state.target_speed = 0;
+
+    // Declared prior resource boundary: a terrain-admitted player Castle and
+    // prior bank support the source 25% and 60% predicates. Neither value is
+    // claimed as earned in this scenario; the actual objective callbacks,
+    // group construction and all later lifecycles run without staged flags.
+    let castle = {
+        let state = sim_mut(&mut game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            state.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+            x: x * 2048, y: y * 2048, z: 0,
+        })).filter(|position| !state.economy().castle_projectile_site_blocked(
+            *position, state.entities(), state.canonical_terrain()))
+            .min_by_key(|position| crate::distance_3d_wrapped(*position, safe))
+            .expect("the real map admits the declared prior Castle");
+        state.economy_mut().build_castle(site, player).unwrap()
+    };
+    step(&mut game);
+    assert_eq!(sim(&game).economy().player_castle_entity_index(), castle);
+    let total = i64::from(sim(&game).economy().owner_mana_global());
+    let aggregate = i64::from(sim(&game).economy().owner_mana_aggregate(player));
+    assert!(total > 0);
+    // 100*(aggregate + B)/(total + B) >= 60, including B in the
+    // source-global denominator. Round B upward using checked wide arithmetic.
+    let numerator = total.checked_mul(3).and_then(|v| aggregate.checked_mul(5).and_then(|a| v.checked_sub(a)))
+        .expect("source census fits prior-bank calculation").max(0);
+    let bank = i32::try_from(numerator.checked_add(1).unwrap() / 2).unwrap();
+    assert!(bank <= i32::MAX / 100);
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
+    let mut group2 = false;
+    for _ in 0..128 {
+        step(&mut game);
+        group2 |= sim(&game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 86, group: 2, authored_indices, .. }
+                if authored_indices.contains(&172)));
+        if group2 { break; }
+    }
+    assert!(group2, "actual 25% objective must produce group2 and Wyvern172");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[2], 2,
+        "actual 60% objective consumes the declared prior resource boundary");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1);
+    let target = sim(&game).creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Wyvern)
+        .find(|row| row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 172 }))
+        .expect("group2 constructs the actual Wyvern172 generation").handle;
+    assert_eq!(sim(&game).runtime().stages[1].relation, RuntimeRelation::LiveEntity(target.source_slot));
+    assert!(sim(&game).entities()[usize::from(target.source_slot)].life > 0);
+    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, target.source_slot, u16::MAX, player).unwrap();
+    for _ in 0..256 {
+        step(&mut game);
+        if sim(&game).runtime().objectives[owner].stage_selectors[1] == 2 { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 2,
+        "the original target's real death, not group creation, completes kind1");
+    player_history.push(("wyvern goal", player_receipt(&game)));
+    assert_eq!(rival_test_participation(&game, rival), Some(1));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[3], 1,
+        "one participating target keeps the rival objective incomplete");
+
+    // Selected arrived contacts preserve source protection, all current
+    // Castle tiers and real banishment/tails; no NPC state is staged.
+    for _ in 0..256 {
+        if sim(&game).economy().castle_for_owner(rival).is_some() { break; }
+        step(&mut game);
+    }
+    assert!(sim(&game).economy().castle_for_owner(rival).is_some(), "target's source AI supplies its Castle");
+    rival_test_wait_unprotected(&mut game, rival);
+    player_history.push(("rival unprotected", player_receipt(&game)));
+    let rival_handle = sim(&game).source_arena().handle(rival).unwrap();
+    let original_castle = rival_test_destroy_castle(&mut game, rival, player);
+    player_history.push(("rival castle lost", player_receipt(&game)));
+    let common = sim(&game).session.state.live.nyphur_dispatcher.get(rival_handle).unwrap()
+        .common_upkeep(sim(&game).entities()[usize::from(rival)].phase);
+    assert_eq!(common.word_0x159, 0, "source protection must admit the real contact");
+    let holders = rival_test_held_spell_generations(&game, rival);
+    let at_castle_loss = spell113(&game);
+    let life = sim(&game).entities()[usize::from(rival)].life;
+    rival_test_contact(&mut game, rival, player, life);
+    // Declared single player retreat before the long, natural holder tails.
+    // Return to this level's actual starting position, far from the Castle
+    // battle, using the current cave floor and ceiling. Enemies remain live.
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+    let retreat = {
+        let state = sim(&game);
+        let current = state.economy().castle_for_owner(player).expect("current player Castle");
+        assert_eq!(current.source_entity_index, castle);
+        let dx = i32::from(source_spawn.x.wrapping_sub(current.position.x) as i16).abs();
+        let dy = i32::from(source_spawn.y.wrapping_sub(current.position.y) as i16).abs();
+        assert!(dx.max(dy) > 8192, "actual starting position is remote from the Castle battle");
+        let terrain = state.canonical_terrain();
+        let floor = i32::from(terrain.ground_height(source_spawn));
+        let ceiling = terrain.ceiling_height(source_spawn).map(i32::from).unwrap_or(i32::from(i16::MAX));
+        let min_z = floor + i32::from(state.profile().ground_clearance.max(0));
+        let max_z = ceiling - i32::from(state.profile().ceiling_clearance.max(0));
+        assert!(min_z <= max_z, "actual starting location has a valid cave flight interval");
+        let mut position = source_spawn;
+        position.z = i16::try_from(i32::from(source_spawn.z).clamp(min_z, max_z)).unwrap();
+        position
+    };
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    player_history.push(("retreated to source spawn", player_receipt(&game)));
+    let mut group20 = false;
+    let mut slot_history = std::collections::VecDeque::new();
+    let mut first_tail_death = None;
+    for turn in 0..640 {
+        let prior_gate = sim(&game).source_arena().handle(90);
+        if slot_history.len() == 16 { slot_history.pop_front(); }
+        slot_history.push_back(spell113(&game));
+        if let Err(error) = game.advance(game.identity().guard(), GameCommand::default()) {
+            panic!("Gleph source step failed: {error:?}; rival={rival_handle:?}, holders={holders:?}, at Castle loss={at_castle_loss}, slot113 history={slot_history:?}, after={}", spell113(&game));
+        }
+        assert!(sim(&game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Gleph source dispatch: {:?}", sim(&game).dispatch_events());
+        if first_tail_death.is_none() && sim(&game).canonical_player_life_for_test() < 0 {
+            first_tail_death = Some((turn, player_receipt(&game)));
+        }
+        let activated = sim(&game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 90, group: 20, authored_indices, .. }
+                if authored_indices.contains(&431) && authored_indices.contains(&432)));
+        if activated { assert_eq!(prior_gate, Some(gate_handle)); }
+        group20 |= activated;
+        if group20 && holders.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert_eq!(rival_test_participation(&game, rival), Some(0));
+    assert!(sim(&game).source_arena().resolve(original_castle).is_none());
+    assert!(holders.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2, 2, 2, 2]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert!(group20, "real level-end switch produces authored exit and portal");
+    player_history.push(("exit produced and holders reclaimed", player_receipt(&game)));
+    let exit = *sim(&game).economy().authored_switch_producers().iter()
+        .find(|row| row.active && row.authored_index == 432 && row.model == 12 && row.action == 12)
+        .expect("real group20 exit432");
+    assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 431));
+    assert!(sim(&game).canonical_player_life_for_test() >= 0,
+        "the participant must be alive before the actual exit: history={player_history:?}, first_tail_death={first_tail_death:?}");
+    sim_mut(&mut game).set_level2_entity_position(player, exit.position).unwrap();
+    player_history.push(("entered exit", player_receipt(&game)));
+    let mut first_exit_death = None;
+    let mut exit_events = Vec::new();
+    for turn in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        if let Err(error) = game.advance(game.identity().guard(), GameCommand::default()) {
+            let state = sim(&game);
+            let shared = state.shared_spells();
+            let errors = state.dispatch_events().iter().filter_map(|event| match event {
+                Mc2DispatchEvent::Error { source_slot, .. } => Some((*source_slot, event)),
+                _ => None,
+            }).collect::<Vec<_>>();
+            let mut slots = errors.iter().map(|(slot, _)| *slot).collect::<std::collections::BTreeSet<_>>();
+            for row in shared.pickups().iter().chain(shared.holders.iter()).chain(shared.dynamic_pickups()) {
+                if row.active && row.class == 15 && row.model == 3 { slots.insert(row.index); }
+            }
+            let fields = |row: &crate::native_world::EntitySnapshot| (
+                row.active, row.class, row.model, row.action, row.life, row.phase,
+                row.source_spell_parent_entity_index(), row.source_id,
+            );
+            let slot_states = slots.into_iter().map(|slot| {
+                let raw = state.entities().get(usize::from(slot)).map(fields);
+                let candidates = shared.pickups().iter().map(|row| ("pickup", row))
+                    .chain(shared.holders.iter().map(|row| ("holder", row)))
+                    .chain(shared.dynamic_pickups().iter().map(|row| ("dynamic", row)))
+                    .filter(|(_, row)| row.index == slot).map(|(origin, row)| (origin, fields(row)))
+                    .collect::<Vec<_>>();
+                let pickup = state.economy().spell_pickups().iter().find(|row| row.source_entity_index == slot);
+                let replacement = state.economy().spell_replacements().iter().find(|row| row.source_entity_index == slot);
+                (slot, state.source_arena().handle(slot), state.source_arena().economy.live_arena_kind(slot),
+                    raw, candidates, pickup.copied(), replacement.copied())
+            }).collect::<Vec<_>>();
+            panic!("Gleph exit turn{turn}: {error:?}; source errors={errors:?}; slots={slot_states:?}; family3 acquisitions={:?}; player life={} action={}; history={player_history:?}; first_tail_death={first_tail_death:?}; first_exit_death={first_exit_death:?}; exit_events={exit_events:?}",
+                shared.acquisition_states().iter().filter(|row| row.family == 3).collect::<Vec<_>>(),
+                state.canonical_player_life_for_test(), state.entities()[usize::from(player)].action);
+        }
+        if first_exit_death.is_none() && sim(&game).canonical_player_life_for_test() < 0 {
+            first_exit_death = Some((turn, player_receipt(&game)));
+        }
+        exit_events.extend(sim(&game).dispatch_events().iter().filter(|event| matches!(event,
+            Mc2DispatchEvent::LevelExitSequenceStarted { .. } | Mc2DispatchEvent::LevelExitSequenceCompleted { .. }
+        )).cloned());
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }),
+        "real exit did not complete: history={player_history:?}, first_tail_death={first_tail_death:?}, first_exit_death={first_exit_death:?}, exit_events={exit_events:?}, final={:?}", player_receipt(&game));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn alliance_follows_retained_parent_and_expires_when_dead() {
     let (mut arena, mut runtime, mut terrain, particles, player, feature) = mission_eighteen_source_parts();
     let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
