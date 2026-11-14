@@ -570,10 +570,9 @@ fn materialize_summons(
 }
 
 /// Return the exact SEARCH.DAT bitmap class sequence consumed by `sub_10130`.
-/// `source_search_offsets` is cumulative and class-major, so subtracting the
-/// preceding prefix yields one bitmap's row-major coordinates. The source
-/// loop accepts only return value 1; its final return value 2 means the last
-/// emitted pair is deliberately omitted here.
+/// AddE7EE0(0, class) walks every bitmap from class zero through class in
+/// order. The source loop accepts return value 1 across intermediate bitmap
+/// boundaries, but omits the final pair returned with value 2.
 fn source_bitmap_class_offsets(class: u8) -> Result<Vec<(i8, i8)>, String> {
     if class > 15 {
         return Err(format!(
@@ -581,17 +580,6 @@ fn source_bitmap_class_offsets(class: u8) -> Result<Vec<(i8, i8)>, String> {
         ));
     }
     let mut offsets = crate::level1_mission::source_search_offsets(class);
-    let prefix = if class == 0 {
-        0
-    } else {
-        crate::level1_mission::source_search_offsets(class - 1).len()
-    };
-    if prefix > offsets.len() {
-        return Err(format!(
-            "final encounter SEARCH.DAT class{class} prefix is malformed"
-        ));
-    }
-    offsets.drain(..prefix);
     offsets.pop();
     Ok(offsets)
 }
@@ -1766,6 +1754,351 @@ mod tests {
             }
         }
         panic!("ordinary boss model21 path incomplete: boss={last_boss:?} child={child:?} launch={saw_launch} follow={saw_follow} air={airborne} land={landed} shot={shot} player_life={} selections={selections:?}", campaign.simulation().session.state.live.player_life);
+    }
+
+    #[test]
+    fn level25_reset_absence_chain_produces_original_boss_and_real_exit() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::campaign::source_arena::SourceEntityHandle;
+        use crate::native_world::{Mc2DispatchEvent, area_damage, directional_spells};
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::path::PathBuf;
+
+        fn tick(campaign: &mut CampaignSession, groups: &mut BTreeMap<u16, usize>, field: &mut Option<(SourceEntityHandle, bool)>) {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let sim = campaign.simulation();
+            let player = sim.state.entity_index;
+            let actor = &sim.entities()[usize::from(player)];
+            let boss = sim.entities().iter().find(|row| row.active && (row.class, row.model) == (5, 10))
+                .map(|row| (row.index, row.record[74], row.subspell_index, row.source_dword_10(), row.life));
+            assert!(actor.life >= 0,
+                "Uluth player must remain alive: position={:?} life={} killer={} attacker={} pending=({}, {}) boss={boss:?} groups={groups:?}",
+                sim.state.position, actor.life, actor.word_24(), actor.word_26(),
+                actor.source_upkeep_payload(), actor.source_upkeep_word_62());
+            for event in campaign.simulation().dispatch_events() {
+                match event {
+                    Mc2DispatchEvent::Error { .. } => panic!("Uluth dispatch: {event:?}"),
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 7, authored_indices, .. }
+                        if authored_indices.contains(&217) => {
+                            let sim = campaign.simulation();
+                            let row = sim.entities().iter().find(|row| row.active
+                                && (row.class, row.model, row.action) == (10, 25, 25)
+                                && (row.position.x, row.position.y) == (125 * 256 + 128, 114 * 256 + 128))
+                                .expect("actual group7 row217 field");
+                            assert_eq!((row.source_id, row.record[74]), (row.index, 0));
+                            assert!(field.replace((sim.source_arena().handle(row.index).unwrap(), false)).is_none(),
+                                "the consumed row217 publishes exactly once");
+                        }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group, authored_indices, .. }
+                        if matches!(*group, 2 | 3 | 12 | 25 | 28 | 29 | 31) => {
+                            let required = match *group {
+                                2 => 43, 3 => 120, 12 => 266, 25 => 368,
+                                28 => 373, 29 => 379, 31 => 394, _ => unreachable!(),
+                            };
+                            assert!(authored_indices.contains(&required), "group{group}: {authored_indices:?}");
+                            *groups.entry(*group).or_default() += 1;
+                        }
+                    _ => {}
+                }
+            }
+            if let Some((handle, hidden)) = field
+                && campaign.simulation().source_arena().handle(handle.source_slot) == Some(*handle)
+            {
+                *hidden |= campaign.simulation().entities()[usize::from(handle.source_slot)].drawing_disabled();
+            }
+        }
+        fn contact(campaign: &mut CampaignSession, player: u16, slot: u16) {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            area_damage::contact(&mut live.economy,
+                Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                slot, u16::MAX, player).unwrap();
+        }
+        fn count(groups: &BTreeMap<u16, usize>, group: u16) -> usize {
+            groups.get(&group).copied().unwrap_or(0)
+        }
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"), PathBuf::from);
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"), PathBuf::from);
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache).unwrap();
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package, &cache, CampaignSelection::ordinary(25).unwrap()).unwrap();
+        let player = campaign.simulation().state.entity_index;
+        let mut groups = BTreeMap::new();
+        let mut field = None;
+        directional_spells::start_steal_mana_lane_trace();
+        tick(&mut campaign, &mut groups, &mut field);
+        // Declare a terrain-admitted player retreat near the authored exit,
+        // away from the source encounter while its live populations advance.
+        let terrain = campaign.simulation().canonical_terrain();
+        let mut retreat = (216_u16..240).flat_map(|y| (216_u16..240).map(move |x|
+            Position { x: x * 256, y: y * 256, z: 0 }))
+            .find(|position| terrain.material_mask(*position) != crate::MOVEMENT_REDIRECT_MASK
+                && terrain.ceiling_height(*position).is_none_or(|ceiling|
+                    i32::from(ceiling) > i32::from(terrain.ground_height(*position)) + 768))
+            .expect("Uluth source terrain admits a retreat near the authored exit");
+        retreat.z = terrain.ground_height(retreat).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, retreat).unwrap();
+        // After group3 exists, visit this source position inside both row62's
+        // area and row217's field, then retreat when the real field reclaims.
+        let mut field_position = Position { x: 125 * 256 + 128, y: 114 * 256 + 128, z: 0 };
+        field_position.z = campaign.simulation().canonical_terrain().ground_height(field_position);
+        let fireflies = campaign.simulation().creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Firefly)
+            .filter(|row| row.living).map(|row| row.handle)
+            .collect::<Vec<_>>();
+        assert_eq!(fireflies.len(), 7, "actual reset Fireflies gate group2");
+        for handle in &fireflies[1..] { contact(&mut campaign, player, handle.source_slot); }
+        for _ in 0..64 { tick(&mut campaign, &mut groups, &mut field); }
+        assert_eq!(count(&groups, 2), 0, "one actual Firefly blocks row15");
+        assert!(campaign.simulation().creature_identity_for_source_slot(fireflies[0].source_slot)
+            .is_some_and(|row| row.handle == fireflies[0] && row.living),
+            "the original held Firefly is still living in the source census");
+        contact(&mut campaign, player, fireflies[0].source_slot);
+
+        // Only source-managed population models0..11 and16 block selector30.
+        // Each observed generation receives one declared arrived contact;
+        // unrelated living models, their AI, and the source countdown remain live.
+        let mut struck = BTreeSet::new();
+        let mut field_arrival = false;
+        let mut field_complete = false;
+        for _ in 0..4096 {
+            if count(&groups, 28) == 1 && field_complete { break; }
+            let sim = campaign.simulation();
+            let buckets = sim.source_arena().rebuilt_class5_model_slots();
+            let targets = (0..=11).chain(std::iter::once(16))
+                .flat_map(|model| buckets[model].iter().copied())
+                .filter_map(|slot| sim.source_arena().handle(slot)).collect::<Vec<_>>();
+            for handle in targets {
+                if struck.insert((handle.source_slot, handle.generation)) {
+                    contact(&mut campaign, player, handle.source_slot);
+                }
+            }
+            tick(&mut campaign, &mut groups, &mut field);
+            if count(&groups, 3) == 1 && !field_arrival {
+                campaign.simulation_mut().set_level2_entity_position(player, field_position).unwrap();
+                field_arrival = true;
+            }
+            if !field_complete && let Some((handle, true)) = field
+                && campaign.simulation().source_arena().resolve(handle).is_none()
+            {
+                let lanes = directional_spells::take_steal_mana_lane_trace();
+                assert!(lanes.contains(&(false, player, handle.source_slot, 0))
+                    && lanes.contains(&(true, player, handle.source_slot, 0)),
+                    "row217's real source field must write and the current player must consume its Steal Mana lane: {lanes:?}");
+                campaign.simulation_mut().set_level2_entity_position(player, retreat).unwrap();
+                field_complete = true;
+            }
+        }
+        assert!([2, 3, 12, 25, 28].into_iter().all(|group| count(&groups, group) == 1),
+            "actual absence chain must publish in source order: {groups:?}");
+        let (field, field_hidden) = field.expect("the real area switch publishes row217");
+        assert!(field_complete && field_hidden && campaign.simulation().source_arena().resolve(field).is_none(),
+            "the original row217 field must hide and reclaim naturally");
+        eprintln!("Uluth reset absence chain: {groups:?}");
+
+        // Keep the now-reclaimed handle in the tick observer without allowing
+        // an unrelated future field to replace the original receipt.
+        let mut field = Some((field, field_hidden));
+
+        // The actual group28 BUILD68 advances through the source successor
+        // chain. Contacts are only admitted to live constructed Houses.
+        for selector in [68, 69, 72, 73] {
+            let mut finished = false;
+            for _ in 0..512 {
+                let house = campaign.simulation().ordinary().houses().iter()
+                    .find(|house| house.active && house.building_index == selector).copied();
+                if let Some(house) = house {
+                    if house.action == crate::house::HOUSE_LIVE_ACTION {
+                        assert!(campaign.simulation_mut().session.state.live.ordinary.houses
+                            .submit_source_damage(house.entity_index, u16::MAX, player));
+                    }
+                } else if selector == 73 && count(&groups, 29) == 1 {
+                    finished = true; break;
+                } else if campaign.simulation().ordinary().houses().iter().any(|house|
+                    house.active && house.building_index == match selector { 68 => 69, 69 => 72, 72 => 73, _ => 0 }) {
+                    finished = true; break;
+                }
+                tick(&mut campaign, &mut groups, &mut field);
+            }
+            assert!(finished, "actual BUILD{selector} must construct and remove: {groups:?}");
+        }
+        assert_eq!(count(&groups, 29), 1);
+        let sim = campaign.simulation();
+        let boss_slot = sim.entities().iter().find(|row| row.active && (row.class, row.model) == (5, 10)
+            && !row.drawing_disabled()).expect("actual group29 boss").index;
+        let boss = sim.source_arena().handle(boss_slot).unwrap();
+        assert_eq!((sim.entities()[usize::from(boss_slot)].life, sim.entities()[usize::from(boss_slot)].max_life),
+            (300_000, 300_000));
+        let mut approach = sim.entities()[usize::from(boss_slot)].position;
+        crate::move_entity(&mut approach, sim.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = sim.canonical_terrain().ground_height(approach).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        let mut ready = false;
+        let mut approach_samples = Vec::new();
+        let mut terrain_samples = Vec::new();
+        let scan_offsets = source_bitmap_class_offsets(7).unwrap();
+        let (center_x, center_y) = source_tile_center(campaign.simulation().entities()[usize::from(boss_slot)].position);
+        let lowered = (0..=15).flat_map(|class| source_bitmap_class_offsets(class).unwrap())
+            .map(|(dx, dy)| (center_x.wrapping_add(i16::from(dx)) as u8,
+                center_y.wrapping_add(i16::from(dy)) as u8)).collect::<BTreeSet<_>>();
+        let watched = scan_offsets.iter().flat_map(|&(dx, dy)| {
+            (-1_i16..=1).flat_map(move |ny| (-1_i16..=1).map(move |nx|
+                (center_x.wrapping_add(i16::from(dx)).wrapping_add(nx) as u8,
+                 center_y.wrapping_add(i16::from(dy)).wrapping_add(ny) as u8)))
+        }).filter(|tile| lowered.contains(tile)).collect::<BTreeSet<_>>();
+        let planes = campaign.simulation().canonical_terrain().planes();
+        let max_height = watched.iter().map(|&(x, y)| planes.ground_heights[usize::from(x) + 256 * usize::from(y)])
+            .max().unwrap_or(0);
+        // A complete source retry visits each admitted SEARCH class once in
+        // 17 turns. Include one partial entry cycle, topology settling and
+        // the real post-clear approach, with no terrain or timer edits.
+        let approach_bound = (usize::from(max_height) + 3) * 17 + 192;
+        let mut previous_retry_terrain = None;
+        let mut stalled_retries = 0;
+        let mut previous_mode = None;
+        for turn in 0..approach_bound {
+            tick(&mut campaign, &mut groups, &mut field);
+            // sub_21490 modes8/4 do not read primary visibility. Mode10
+            // clears the prior bit on entry and then consumes fresh frames.
+            let needs_visibility = {
+                let row = &campaign.simulation().entities()[usize::from(boss_slot)];
+                row.record[74] != 1 || row.subspell_index & 0x10 != 0
+            };
+            let visibility = if needs_visibility {
+                let generation = campaign.generation();
+                let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                    campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+                frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap()
+            } else { Vec::new() };
+            let sim = campaign.simulation();
+            let row = &sim.entities()[usize::from(boss_slot)];
+            assert_eq!(sim.source_arena().handle(boss_slot), Some(boss));
+            if row.subspell_index & 8 != 0 && row.source_dword_10() == -1 {
+                let planes = sim.canonical_terrain().planes();
+                let blocked = scan_offsets.iter().any(|&(dx, dy)| {
+                    let x = center_x.wrapping_add(i16::from(dx)) as u8;
+                    let y = center_y.wrapping_add(i16::from(dy)) as u8;
+                    planes.terrain_types[usize::from(x) + 256 * usize::from(y)] != 0
+                });
+                let terrain_state = watched.iter().map(|&(x, y)| {
+                    let index = usize::from(x) + 256 * usize::from(y);
+                    (planes.ground_heights[index], planes.angles[index] & 7, planes.terrain_types[index])
+                }).collect::<Vec<_>>();
+                let height_sum = terrain_state.iter().map(|row| u32::from(row.0)).sum::<u32>();
+                if blocked {
+                    if previous_retry_terrain.as_ref() == Some(&terrain_state) {
+                        stalled_retries += 1;
+                    } else { stalled_retries = 0; }
+                    assert!(stalled_retries < 2,
+                        "source class7 remains blocked with unchanged height/topology across two complete retries: height_sum={height_sum}, samples={terrain_samples:?}");
+                    previous_retry_terrain = Some(terrain_state);
+                }
+            }
+            if turn % 64 == 0 {
+                let (center_x, center_y) = source_tile_center(row.position);
+                let planes = sim.canonical_terrain().planes();
+                let blocked = scan_offsets.iter().filter_map(|&(dx, dy)| {
+                    let x = center_x.wrapping_add(i16::from(dx)) as u8;
+                    let y = center_y.wrapping_add(i16::from(dy)) as u8;
+                    let index = usize::from(x) + 256 * usize::from(y);
+                    (planes.terrain_types[index] != 0).then_some((dx, dy,
+                        planes.terrain_types[index], planes.ground_heights[index], planes.angles[index]))
+                }).collect::<Vec<_>>();
+                terrain_samples.push((turn, blocked.len(), blocked.iter().map(|row| row.3).max(),
+                    blocked.into_iter().take(8).collect::<Vec<_>>()));
+            }
+            let mode = (row.action, row.record[74], row.subspell_index);
+            if turn % 32 == 0 || previous_mode != Some(mode) {
+                approach_samples.push((turn, mode, row.source_dword_10(), row.record[61], row.position,
+                    sim.entities()[usize::from(player)].life, sim.state.position,
+                    (sim.state.actual_speed, sim.state.target_speed, sim.state.recoil_speed),
+                    visibility.iter().any(|(slot, _)| *slot == boss_slot)));
+                previous_mode = Some(mode);
+            }
+            if row.action == 80 && (2..12).contains(&row.record[74]) && row.record[61] != 0 {
+                ready = true; break;
+            }
+        }
+        assert!(ready, "the same naturally produced boss reaches its real damage window: bound={approach_bound}, initial_max_height={max_height}, {approach_samples:?}; class7 blocked terrain {terrain_samples:?}");
+        // The real initial approach is now complete. As in the independently
+        // paid encounter, use one disclosed westward player retreat outside
+        // the source phase3 8192-unit attack radius; no NPC state is changed.
+        let sim = campaign.simulation();
+        let target = &sim.entities()[usize::from(boss_slot)];
+        let parent = &sim.entities()[usize::from(player)];
+        assert!(parent.life >= 0, "the original player survived the natural approach");
+        let mut combat_retreat = Position { x: target.position.x.wrapping_sub(8256),
+            y: target.position.y, z: 0 };
+        let terrain = sim.canonical_terrain();
+        assert_ne!(terrain.material_mask(combat_retreat), crate::MOVEMENT_REDIRECT_MASK,
+            "the fixed westward source position admits player movement");
+        let descriptor_clearance = parent.parameter_relation
+            .and_then(|index| sim.session.definition.presentation.entity_parameters.get(usize::from(index)))
+            .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
+        let clearance = sim.profile().ground_clearance.max(descriptor_clearance);
+        combat_retreat.z = terrain.ground_height(combat_retreat).checked_add(clearance)
+            .expect("source-valid player altitude");
+        assert!(terrain.ceiling_height(combat_retreat).is_none_or(|ceiling| ceiling > combat_retreat.z));
+        assert!(crate::native_world::level2_wrapping_target_distance(combat_retreat, target.position) >= 8192);
+        campaign.simulation_mut().set_level2_entity_position(player, combat_retreat).unwrap();
+        assert!(campaign.simulation().entities()[usize::from(player)].life >= 0,
+            "the declared retreat preserves the live source player");
+        area_damage::start_actor_damage_trace(&[boss]);
+        let mut contact_writes = BTreeSet::new();
+        let mut admitted_contact = false;
+        let mut terminal_consumption = false;
+        let mut phases = BTreeSet::new();
+        for _ in 0..8192 {
+            let sim = campaign.simulation();
+            if sim.source_arena().resolve(boss).is_none() { break; }
+            let row = &sim.entities()[usize::from(boss_slot)];
+            phases.insert(row.record[74]);
+            if row.action == 80 && (2..12).contains(&row.record[74]) && row.record[61] != 0
+                && row.life >= 10 && row.source_upkeep_word_62() == 0 {
+                let expected_payload = row.source_upkeep_payload().wrapping_add(i32::from(u16::MAX));
+                contact(&mut campaign, player, boss_slot);
+                let write = area_damage::latest_player_mailbox_writer()
+                    .expect("the selected contact writes the watched boss mailbox");
+                assert_eq!((write.target, write.mailbox), (boss, (expected_payload, player)));
+                contact_writes.insert(write.sequence);
+            }
+            tick(&mut campaign, &mut groups, &mut field);
+            for receipt in area_damage::take_player_damage_consumptions() {
+                assert_eq!(receipt.target, boss);
+                let after = receipt.life_before.wrapping_sub(receipt.mailbox.0.clamp(1, 300));
+                assert_eq!(receipt.life_after, if after < 10 { 8 } else { after },
+                    "the real boss callback applies the source damage cap and terminal clamp");
+                if let Some(writer) = receipt.writer && contact_writes.contains(&writer.sequence) {
+                    assert_eq!((writer.target, writer.mailbox, receipt.mailbox.1),
+                        (boss, receipt.mailbox, player));
+                    admitted_contact = true;
+                }
+                terminal_consumption |= receipt.life_after == 8;
+            }
+        }
+        area_damage::start_actor_damage_trace(&[]);
+        assert!(campaign.simulation().source_arena().resolve(boss).is_none(),
+            "original boss must die and reclaim: contacts={} phases={phases:?}", contact_writes.len());
+        assert!(admitted_contact && terminal_consumption
+            && [13, 14, 15].into_iter().all(|phase| phases.contains(&phase)),
+            "the original boss must consume a selected contact, reach terminal life8, and visit its real death phases");
+        assert_eq!(campaign.simulation().runtime().objectives[0].stage_selectors[1], 2);
+        if campaign.simulation().runtime().objectives[0].stage_selectors[0] == 1 {
+            let mut point = Position { x: 40 * 256, y: 212 * 256, z: 0 };
+            point.z = campaign.simulation().canonical_terrain().ground_height(point).wrapping_add(768);
+            campaign.simulation_mut().set_level2_entity_position(player, point).unwrap();
+        }
+        for _ in 0..128 {
+            if count(&groups, 31) == 1 { break; }
+            tick(&mut campaign, &mut groups, &mut field);
+        }
+        assert_eq!(&campaign.simulation().runtime().objectives[0].stage_selectors[..2], &[2, 2]);
+        assert_eq!(count(&groups, 31), 1);
+        eprintln!("Uluth same boss {boss:?} natural death: contacts={} phases={phases:?}", contact_writes.len());
+        assert_final_exit_consumer(campaign, &package, &cache, player, false);
     }
 
     #[test]
@@ -3048,17 +3381,18 @@ mod tests {
     fn source_bitmap_class_keeps_prefix_order_and_skips_sub10130_return_two() {
         for class in [0_u8, 7, 15] {
             let cumulative = crate::level1_mission::source_search_offsets(class);
-            let prefix_len = if class == 0 {
-                0
-            } else {
-                crate::level1_mission::source_search_offsets(class - 1).len()
-            };
-            assert!(cumulative.len() > prefix_len);
+            assert!(!cumulative.is_empty());
+            let actual = source_bitmap_class_offsets(class).unwrap();
             assert_eq!(
-                source_bitmap_class_offsets(class).unwrap(),
-                cumulative[prefix_len..cumulative.len() - 1],
-                "class {class} is exact class-major SEARCH.DAT suffix minus the final return-2 pair"
+                actual, cumulative[..cumulative.len() - 1],
+                "AddE7EE0(0,{class}) visits all intermediate classes and omits only the final return-2 pair"
             );
+            for previous_class in 0..class {
+                let prior = crate::level1_mission::source_search_offsets(previous_class);
+                assert!(actual.contains(prior.last().unwrap()),
+                    "the final pair of intermediate class{previous_class} returns1");
+            }
+            if class >= 7 { assert!(actual.contains(&(0, 0)), "the interior class0 is visited"); }
         }
         assert!(source_bitmap_class_offsets(16).is_err());
     }
