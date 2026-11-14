@@ -40260,6 +40260,232 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn actual_jaleen_area_secret_entry_and_pav_parent_return() {
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState,
+            GameRuntime, RuntimeMode, RuntimeTransitionError, SecretTransitionKind};
+        use crate::native_world::{Mc2DispatchEvent, player_lifecycle_tests::{
+            rival_test_sim as sim, rival_test_sim_mut as sim_mut, rival_test_step as step,
+        }};
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+            &std::fs::read(resources).expect("normal installed campaign resources"),
+        ).unwrap();
+        assert_eq!(resources.len(), 30);
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+        )).unwrap();
+        let source = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::ordinary(12).unwrap()).unwrap();
+        let secret = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::secret_destination(32).unwrap()).unwrap();
+        let origin = source.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let secret_id = secret.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let origin_index = resolver.flow().entries().iter().position(|row| row.level_id() == &origin).unwrap();
+        let completed_levels = resolver.flow().entries().iter().take(origin_index)
+            .map(|row| row.level_id().clone()).collect::<Vec<_>>();
+        let parent = CampaignSaveState {
+            definition: resolver.package(resolver.flow().entry_level_id()).unwrap().definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect, completed_level_id: None,
+            selected_level_id: Some(origin.clone()), completed_levels, level_statistics: Vec::new(),
+        };
+        // Explicit arrival frontier and Possession inventory; switches, portal,
+        // secret mission and return are all produced by the actual source.
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(12320).unwrap();
+        let map = runtime.restore_campaign_resolved(runtime.identity().guard(), parent.clone(), Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "Jaleen parent must be installed".to_owned(),
+                    })
+            }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 12320).unwrap();
+        runtime.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[1], Some(1)).unwrap();
+        let game = runtime.session_mut().unwrap();
+        let features = sim(game).mission().authored_features();
+        for (index, kind, subtype, activation, stage) in [
+            (722, 11, 0, 0, 58), (727, 11, 0, 58, 44),
+            (755, 11, 31, 44, 45), (770, 14, 4, 44, 44),
+        ] {
+            let feature = &features[index];
+            assert_eq!((feature.kind, feature.subtype, feature.activation_group, feature.stage_tag),
+                (kind, subtype, activation, stage));
+        }
+        let groups = [58, 44].map(|group| features.iter()
+            .filter(|row| row.kind != 0 && row.activation_group == group)
+            .map(|row| row.index).collect::<Vec<_>>());
+        assert_eq!(groups[0], [716, 727, 811, 812, 813, 814, 815, 816, 817, 818]);
+        assert_eq!(groups[1], [755, 756, 767, 768, 769, 770, 771]);
+        let player = sim(game).state.entity_index;
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+        assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 770));
+        for (authored, group, expected) in [(722, 58, &groups[0]), (727, 44, &groups[1])] {
+            let (slot, trigger_position, half_width, half_depth) = if authored == 722 {
+                // Group0 is already an imported source entity at reset, not a
+                // dynamically allocated authored-switch carrier.
+                let candidates = sim(game).entities().iter().enumerate().filter(|(_, row)|
+                    row.active && row.class == 11 && row.model == 0 && row.action == 0
+                        && row.source_id == group && (row.position.x >> 8, row.position.y >> 8) == (140, 108)
+                ).collect::<Vec<_>>();
+                assert_eq!(candidates.len(), 1, "unique current imported area722: {candidates:?}");
+                let (slot, row) = candidates[0];
+                (slot as u16, row.position,
+                    i16::from_le_bytes(row.record_bytes()[88..90].try_into().unwrap()),
+                    i16::from_le_bytes(row.record_bytes()[90..92].try_into().unwrap()))
+            } else {
+                let row = sim(game).economy().authored_switch_producers().iter()
+                    .find(|row| row.active && row.authored_index == authored && row.model == 0 && row.stage_tag == group)
+                    .expect("actual dynamically produced area727");
+                let extent = row.word_10.cast_unsigned().wrapping_shl(8).cast_signed();
+                (row.source_entity_index, row.position, extent, extent)
+            };
+            let handle = sim(game).source_arena().handle(slot).unwrap();
+            assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 770),
+                "secret portal remains blocked before area{authored} is visited");
+            let outside = {
+                let terrain = sim(game).canonical_terrain();
+                let mut position = crate::Position { x: 137 << 8, y: 171 << 8, z: 0 };
+                let floor = terrain.ground_height(position);
+                let ceiling = terrain.ceiling_height(position).expect("Jaleen cave ceiling");
+                assert!(i32::from(ceiling) > i32::from(floor));
+                position.z = ((i32::from(floor) + i32::from(ceiling)) / 2) as i16;
+                assert!(i32::from(position.x.wrapping_sub(trigger_position.x) as i16).abs() >= i32::from(half_width)
+                    || i32::from(position.y.wrapping_sub(trigger_position.y) as i16).abs() >= i32::from(half_depth));
+                position
+            };
+            sim_mut(game).set_level2_entity_position(player, outside).unwrap();
+            for _ in 0..8 {
+                step(game);
+                assert!(sim(game).canonical_player_life_for_test() >= 0);
+                assert!(sim(game).source_arena().resolve(handle).is_some());
+                assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 770));
+                assert!(!sim(game).secret_entry_ready());
+            }
+            let position = {
+                let state = sim(game);
+                let terrain = state.canonical_terrain();
+                (-15_i16..=15).flat_map(|dy| (-15_i16..=15).map(move |dx| {
+                    let mut position = crate::Position {
+                        x: trigger_position.x.wrapping_add_signed(dx * 256),
+                        y: trigger_position.y.wrapping_add_signed(dy * 256), z: 0,
+                    };
+                    position.z = terrain.ground_height(position).wrapping_add(state.profile().ground_clearance);
+                    (dx, dy, position)
+                })).filter(|(_, _, position)| {
+                    let dx = i32::from(position.x.wrapping_sub(trigger_position.x) as i16).abs();
+                    let dy = i32::from(position.y.wrapping_sub(trigger_position.y) as i16).abs();
+                    dx < i32::from(half_width) && dy < i32::from(half_depth)
+                        && crate::resolve_legacy_movement(&mut crate::FlightState::default(), *position, *position,
+                            state.profile(), terrain) == crate::MovementResolution::Accept(*position)
+                }).min_by_key(|(dx, dy, _)| i32::from(*dx).pow(2) + i32::from(*dy).pow(2))
+                    .map(|(_, _, position)| position).expect("area switch admits a cave-valid player pose")
+            };
+            sim_mut(game).set_level2_entity_position(player, position).unwrap();
+            let mut produced = false;
+            for _ in 0..128 {
+                step(game);
+                if let Some(actual) = sim(game).dispatch_events().iter().find_map(|event| match event {
+                    Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: actual_group, authored_indices, .. }
+                        if *source_slot == handle.source_slot && *actual_group == group as u16 => Some(authored_indices),
+                    _ => None,
+                }) {
+                    assert_eq!(actual.as_ref(), expected.as_slice());
+                    produced = true;
+                    break;
+                }
+            }
+            assert!(produced, "source area{authored} must publish group{group}");
+            assert!(sim(game).canonical_player_life_for_test() >= 0);
+        }
+        let portal = *sim(game).economy().authored_class14().iter()
+            .find(|row| row.active && row.authored_index == 770 && row.model == 4).expect("real portal770");
+        let trigger = *sim(game).economy().authored_switch_producers().iter()
+            .find(|row| row.active && row.authored_index == 755 && row.model == 31).expect("real secret entry755");
+        let portal_handle = sim(game).source_arena().handle(portal.source_entity_index).unwrap();
+        let entry_handle = sim(game).source_arena().handle(trigger.source_entity_index).unwrap();
+        assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (70, 11));
+        assert_eq!((trigger.position.x >> 8, trigger.position.y >> 8), (75, 233));
+        assert_eq!(portal.control_flags & 1, 1);
+        assert!(!sim(game).secret_entry_ready(), "an unvisited entry cannot transfer");
+        let arrival = {
+            let state = sim(game);
+            let terrain = state.canonical_terrain();
+            (-2_i16..=2).flat_map(|dy| (-2_i16..=2).map(move |dx| {
+                let mut position = crate::Position { x: trigger.position.x.wrapping_add_signed(dx * 128),
+                    y: trigger.position.y.wrapping_add_signed(dy * 128), z: 0 };
+                position.z = terrain.ground_height(position).wrapping_add(state.profile().ground_clearance);
+                position
+            })).find(|position| crate::resolve_legacy_movement(&mut crate::FlightState::default(),
+                *position, *position, state.profile(), terrain) == crate::MovementResolution::Accept(*position))
+                .expect("actual entry755 admits a cave-valid player position")
+        };
+        sim_mut(game).set_level2_entity_position(player, arrival).unwrap();
+        for _ in 0..700 {
+            if sim(game).secret_entry_ready() { break; }
+            step(game);
+        }
+        let entry = sim(game).level_exit_sequence();
+        assert!(entry.complete && sim(game).secret_entry_ready());
+        assert_eq!((entry.trigger_entity_index, entry.portal_entity_index, entry.result_code),
+            (entry_handle.source_slot, portal_handle.source_slot, 0x1a));
+        assert!(sim(game).source_arena().resolve(entry_handle).is_none());
+        assert_eq!(sim(game).source_arena().handle(portal_handle.source_slot), Some(portal_handle));
+        let inherited = game.backend().transition_spell_carry().unwrap();
+        let outer = runtime.identity().guard();
+        let session_guard = runtime.session().unwrap().identity().guard();
+        let entered = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard).unwrap()
+            .expect("actual source11 entry must open Pav through the resolver");
+        assert!(entered.verify());
+        assert_eq!(entered.kind, SecretTransitionKind::Entry);
+        assert_eq!(runtime.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &secret_id);
+        assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
+        assert_eq!(runtime.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+        assert_eq!(crate::native_world::tests::complete_pav_source32_for_test(runtime.session_mut().unwrap()), 0x0a);
+        let won = runtime.session().unwrap();
+        let GameCompletionStatus::Completed { completion } = won.backend().completion_status()
+            else { panic!("Pav's actual exit must publish completion") };
+        let statistics = completion.statistics.unwrap();
+        let carry = won.backend().transition_spell_carry().unwrap();
+        let session_guard = won.identity().guard();
+        let outer = runtime.identity().guard();
+        let returned = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard)
+            .unwrap().expect("actual Pav completion must return to the retained parent");
+        assert!(returned.verify());
+        assert_eq!(returned.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(returned.origin_level_id, origin);
+        assert_eq!(returned.after.mode, RuntimeMode::Campaign);
+        assert!(runtime.session().is_none());
+        let mut expected_parent = parent;
+        expected_parent.completed_levels.push(origin.clone());
+        assert_eq!(runtime.campaign_save_state().unwrap(), expected_parent);
+        assert_eq!(runtime.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_id));
+        let results = runtime.secret_flow_state().completed_secret_statistics();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].level_id, secret_id);
+        assert_eq!(results[0].statistics, statistics);
+        assert!(!runtime.campaign_return_active(), "source11 has no first-return cutscene");
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(12321).unwrap();
+        let cold_guard = cold.identity().guard();
+        let restored = resolver.load_replay(&mut cold, cold_guard, 12321, &bytes).unwrap();
+        assert_eq!(resolver.save_replay(&cold).unwrap(), bytes);
+        let loading = resolver.campaign_menu_command(&mut cold, restored.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut cold, loading.guard(), 12321).unwrap();
+        assert_eq!(cold.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &origin);
+        assert_eq!(cold.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+    }
+
+    #[test]
     fn configured_source_four_secret_portal_produces_real_entry_result() {
         use crate::campaign::{
             mc2_level_definition::Mc2LevelDefinition,
