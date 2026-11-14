@@ -6488,6 +6488,45 @@ pub(crate) mod tests {
             "inheriting the source bit does not complete the secret"
         );
 
+        // The arriving parent/frontier remains the declared boundary fixture
+        // above. Win this actual resumed Karakir through its earned final mana
+        // increment and source exit, rather than changing any completion flag.
+        let parent_before_win = restored.secret_flow_state().return_frame()
+            .expect("resumed secret retains its parent").parent_campaign().clone();
+        let actual_result = crate::native_world::tests::complete_karakir_earned_mana_and_exit(
+            restored.session_mut().unwrap(),
+        );
+        assert_eq!(actual_result, 0x1a, "the retained source return bit reaches the real exit");
+        let completed_carry = restored.session().unwrap().backend().transition_spell_carry().unwrap();
+        let completed_guard = restored.session().unwrap().identity().guard();
+        let outer_guard = restored.identity().guard();
+        let won = resolver.advance_secret_if_ready(&mut restored, outer_guard, completed_guard)
+            .unwrap().expect("actual source1A completion returns to its retained parent");
+        assert!(won.verify());
+        assert_eq!(won.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(won.origin_level_id, origin);
+        assert_eq!(won.after.mode, RuntimeMode::Campaign);
+        assert!(restored.session().is_none(), "the completed secret releases its live session");
+        let returned_parent = restored.campaign_save_state().unwrap();
+        assert_eq!(returned_parent.selected_level_id, parent_before_win.selected_level_id);
+        assert_eq!(returned_parent.completed_levels, parent_before_win.completed_levels);
+        assert_eq!(returned_parent.level_statistics, parent_before_win.level_statistics);
+        assert_eq!(restored.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_level));
+        assert_eq!(restored.secret_flow_state().completed_secret_statistics().len(), 1);
+        assert!(restored.secret_flow_state().return_frame().is_none());
+        assert_eq!(restored.played_cutscenes(), 1);
+        assert!(!restored.campaign_return_active(), "source30 revisit does not replay CUT1");
+
+        // Consume the successful secret's carry through the ordinary parent
+        // loader, retaining the already-played cutscene and cleared source bit.
+        let loading = resolver.campaign_menu_command(
+            &mut restored, won.after.guard(), CampaignMenuCommand::StartMission,
+        ).unwrap();
+        resolver.open_pending(&mut restored, loading.guard(), 7435).unwrap();
+        assert_eq!(exit_route(&restored), OrdinaryExitRoute::CampaignMap);
+        assert_eq!(restored.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), completed_carry);
+        assert_eq!(restored.session().unwrap().backend().semantic_spell_carry().unwrap(), completed_carry);
+
         saved.initial_secret_continuation = None;
         saved.receipt_sha256 = saved.compute_receipt_sha256();
         let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(7436).unwrap();
