@@ -1508,15 +1508,15 @@ fn configured_head_tail_retains_hidden_flags_and_literal_map_copies() {
     }
 }
 
-#[test]
-fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
-    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+pub(crate) fn complete_ammyridia_objectives_for_test(
+    mut game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+) -> (Position, crate::campaign::source_arena::SourceEntityHandle,
+      crate::campaign::source_arena::SourceEntityHandle) {
     use crate::campaign::source_arena::CreatureRootOrigin;
-    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::game_session::{GameCommand, GameSession};
     use crate::level_definition::{CreatureKind, ObjectiveCondition};
     use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
     use std::collections::BTreeSet;
-    use std::path::PathBuf;
 
     type Game = GameSession<crate::campaign::backend::Mc2CampaignBackend>;
     fn sim(game: &Game) -> &crate::native_world::Mc2Simulation {
@@ -1530,14 +1530,6 @@ fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
         assert!(sim(game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "Ammyridia source dispatch: {:?}", sim(game).dispatch_events());
     }
-    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
-    let package = std::env::var_os("MC_LEVEL20_PACKAGE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level20"));
-    let cache = std::env::var_os("MC_LEVEL20_OWNER_CACHE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("campaign-original-environments/level20"));
-    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
-    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2220,
-        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
     let goals = game.definition().level_definition().unwrap().objectives();
     assert_eq!(goals.len(), 2);
     assert!(matches!(goals[0].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Wyvern)));
@@ -1545,6 +1537,10 @@ fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
     let player = sim(&game).state.entity_index;
     let owner = usize::from(sim(&game).state.player_color_index);
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    let objective_gate = &sim(&game).entities()[23];
+    assert_eq!((objective_gate.class, objective_gate.model, objective_gate.action, objective_gate.source_id),
+        (11, 32, 32, 7));
+    let objective_gate = sim(&game).source_arena().handle(23).unwrap();
     let wyverns = [299_u16, 300, 301, 302].map(|slot| {
         let row = &sim(&game).entities()[usize::from(slot)];
         assert_eq!((row.class, row.model), (5, 16));
@@ -1639,7 +1635,10 @@ fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
     let parts = std::iter::once(root).chain(chain.ordered.iter().copied()).collect::<Vec<_>>();
     let mut exit = None;
     let mut group5 = 0;
+    let mut group7 = 0;
+    let mut secret_house = None;
     for _ in 0..1024 {
+        let prior_objective_gate = sim(&game).source_arena().handle(23);
         step(&mut game);
         for event in sim(&game).dispatch_events() {
             if let Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 317, group: 5, authored_indices, .. } = event {
@@ -1651,17 +1650,49 @@ fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
                 assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 385));
                 exit = Some((trigger.position, sim(&game).source_arena().handle(trigger.source_entity_index).unwrap()));
             }
+            if let Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 23, group: 7, authored_indices, .. } = event {
+                assert_eq!(prior_objective_gate, Some(objective_gate));
+                assert_eq!(authored_indices.as_ref(), [24, 50, 54, 55, 481, 484, 486, 487, 488, 489,
+                    490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 504,
+                    505, 506, 507, 508, 509, 510, 511]);
+                group7 += 1;
+                let house = sim(&game).ordinary().houses().iter().find(|row|
+                    row.active && row.building_index == 43 && row.xtype == 8)
+                    .expect("group7 produces actual House24 BUILD43");
+                secret_house = sim(&game).source_arena().handle(house.entity_index);
+            }
         }
-        if group5 != 0 && parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+        if group5 != 0 && group7 != 0 && parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
             && wyverns.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
     }
     assert_eq!(group5, 1);
+    assert_eq!(group7, 1, "actual Hydra-death objective publishes the entire group7 once");
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
     assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
     assert!(parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
         "the Hydra root and all 50 original parts must reclaim naturally");
     assert!(wyverns.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
     let (position, trigger) = exit.expect("actual level-complete group produces the exit");
+    (position, trigger, secret_house.expect("actual group7 House generation"))
+}
+
+#[test]
+fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::native_world::player_lifecycle_tests::{rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step};
+    use std::path::PathBuf;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL20_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level20"));
+    let cache = std::env::var_os("MC_LEVEL20_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level20"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2220,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let (position, trigger, _secret_house) = complete_ammyridia_objectives_for_test(&mut game);
+    let player = sim(&game).state.entity_index;
     let sequence = sim(&game).level_exit_sequence();
     if !sequence.active && !sequence.complete {
         assert!(sim(&game).source_arena().resolve(trigger).is_some());

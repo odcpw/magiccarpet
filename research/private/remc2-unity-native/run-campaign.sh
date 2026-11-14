@@ -73,6 +73,7 @@ def default_campaign_resources():
         16: 'darklava-source-closure-20261114/level16',
         17: f'{environments}/level17-package',
         18: 'all-spells-20261104-integration/current-owner-package/level18',
+        20: 'ammyridia-source-closure-20261114/level20',
         22: 'volcano-quake-20261104-integration/current-owner-package/level22',
         23: 'creatures-20261104-integration/current-owner-package/level23',
         24: 'ribbon-20261104-integration/current-owner-package/level24',
@@ -89,6 +90,7 @@ def default_campaign_resources():
         11: 'tropolos-source-closure-20261113/environment',
         16: 'darklava-source-closure-20261114/environment',
         17: f'{environments}/level17-complete',
+        20: 'ammyridia-source-closure-20261114/environment',
         25: 'dragon-bee-20261105-integration/current-level25-environment',
     }
     presentations = {

@@ -12,7 +12,7 @@ pub(crate) mod mc2;
 mod multipart;
 mod stage;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) const SOURCE_MODEL: u8 = 27;
 pub(crate) const ACTION_BASE: u8 = 216;
