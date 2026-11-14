@@ -836,10 +836,15 @@ Focused Rust map tampering/atomicity, stale guards, persisted preferences,
 two-entry progression, paused replay, actual corridor audio and native finite
 voice/arbitration/generation checks pass. Strict Rig workspace check passes;
 native `15063781441a96dd5a7ceddbe3134df4e8c31ff75022c4451a705eb059c1a269`
-has606/606 matching qualified source inputs. Its first matching player is
-installed and root viewed normal map/loading/NightSpire terrain/HUD, one portal
-click/zero retries, then stopped its owned processes. This is launch/load,
-not human gameplay, hardware audio or FPS. Source is not yet committed/pushed.
+has606/606 matching qualified source inputs. Final player `build-9izvzfji` is
+installed, check-installed passes and root viewed normal map/loading/NightSpire
+terrain/HUD, one portal click/zero retries, then stopped its owned processes
+without escalation. Code is canonical `8ac701df`, pushed/remote-verified Original
+`d9398768` on `codex/original-ending`; unrelated Modern ancestry was excluded.
+This is launch/load, not human gameplay, hardware audio or FPS. Evidence:
+`continuity-input-audio-qualification.json`, `continuity-input-audio-native-*.json`,
+`continuity-input-audio-unity-11.xml` and `continuity-input-audio-final-installed-smoke/`
+under `research/private/generated/campaign-original-environments/`.
 
 The deeper current-client check found omitted already-committed preference/music
 generation joins in the isolated Original client. Those exact canonical hunks
@@ -852,8 +857,8 @@ the complete Night NewGame/cast/Playing save/cold load/Paused save/invalid load/
 cold restore/resume/Restart check passes34.46s with its original exact hash and
 presentation assertions. Real GUI events require graphics; `-nographics` does
 not draw the test's map window. The check now uses the normal launcher's exact
-loading/menu/media roles; no validator was relaxed. Final matching player
-refresh is pending. Temporary root diagnostic writes were removed after
+loading/menu/media roles; no validator was relaxed. The final installed player
+contains these joins. Temporary root diagnostic writes were removed after
 preserving their decisive initial/retried replay evidence; no Rust reset rewrite.
 
 An actual source4/secret30 native objective check reproduced a separate managed
@@ -865,9 +870,23 @@ recursion or speech lifetime. Those full criteria, Results-phase save input and
 Day/Night/Cave performance remain open. No all30 rerun or automated playthrough.
 Preserve unrelated Modern/Voxel dirty work and its installed player.
 
+The next connected `mc-oi6.6` slice is actual source glyph/textbox composition
+over the current Day/Night/Cave indexed world. SilentBrook owns the canonical
+compositor and its focused instance/shader consumer through integration;
+VioletAnchor owns the existing menu-cache producer/typed loader for original
+glyph/frame/profile data; BoldForge owns the runtime and menu forwarding joins.
+Their narrow reservations and actual interfaces, not new planning, govern edits.
+Root retains serialized builds, verification, candidate-cache promotion and
+installation. Default-language selection passing alone does not close this.
+All full campaign/frontend/audio/performance acceptance stays open. Static UBS
+is partial for C# conditional/callable effects; the temporary-directory Guid
+heuristic was a triaged false positive, with no critical changed-hunk defect
+identified. DCG rejected removal of the two superseded generated Original player
+folders (about203MiB total); both remain intact, without an override or retry.
+
 Previous committed Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
 native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
-is installed. Learned spell ownership now survives physical-holder release
+was the preceding installation. Learned spell ownership now survives physical-holder release
 and reclaim through the source collection consumer; selection/casting still
 needs a current holder. The real death→drop/expiry/reclaim→semantic carry→
 next-entry holder/reset check passes45.87s, existing progression/two-entry/save
