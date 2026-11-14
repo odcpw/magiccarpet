@@ -945,11 +945,29 @@ successfully0.827s; the normal30-resource launcher routing check passes0.243s.
 No Unity/native rebuild is needed for this content-only follow-through, and
 no native Level8 rendering or human-play claim is made. Proofs are under
 `ul-buthnen-source-closure-20261114/` and mission `*-current-package-66.log`.
-Two of the five original parent entry paths are now exercised with declared
+Three of the five original parent entry paths are now exercised with declared
 frontier, inventory, arrived contacts and poses; they are not earned campaign
-or normal player-movement proof. The remaining original entries are ordinary
-12→Pav Durivium32,18→Beleem33 and20→Ommosyth34, per the pinned source table.
+or normal player-movement proof. Jaleen12/source11→Pav Durivium32 passes364.00s
+on68: original initial area722→complete group58→area727→complete group44,
+actual portal/controller1A→Pav's real mission0A→statistics/cold parent/carry.
+The initial area is a unique current imported source actor, not a later typed
+birth; the original67 gate wrongly assumed the latter and failed before
+production. No engine behavior or gate assertion was weakened to fix it.
+Jaleen's source entrance is independent of mission objectives, so no invented
+objective prerequisite or duplicate objective helper was introduced. Local
+`b46eb684`, remote Original `6d48f96a`; test-only, native2d3d remains current.
+The now-default qualified Level8 ordinary regression also passes7.20s on67.
+The remaining original entries are ordinary18→Beleem33 and20→Ommosyth34, per
+the pinned source table. Gleph18's actual level-end group20→House372→group21
+is the next prerequisite; its current package already has BUILD27→41→49
+closure, so no speculative package replacement is required.
 Fixture-parent checks alone do not prove those original portal producers.
+
+Fresh bounded post-fix source/receipt review at `e7e8ab87` found no further
+concrete defect in reset Dragon adoption/schedule/presentation, controlled
+T'Klom→Karakir or Ul'Buthnen→Ymbul paths. Inspected revision/hashes and
+uninspected earned movement/native Level8/full-campaign scope remain explicit;
+that review is not a full-engine or human-play certification.
 
 Jathnar23 remains the ordinary objective check. Run56 proved early real stage4
 Hydra birth/lifecycle and all seven Castle losses, then failed4503.25s at final
