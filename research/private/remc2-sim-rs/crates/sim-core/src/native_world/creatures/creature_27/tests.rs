@@ -1706,6 +1706,1157 @@ fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
     assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
 }
 
+#[test]
+fn jathnar_possession_carry_enters_with_selected_live_holder() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCommand, GameSession};
+    use std::path::PathBuf;
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("creatures-20261104-integration/current-owner-package/level23"));
+    let cache = std::env::var_os("MC_LEVEL23_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level23"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2323,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let campaign = game.backend_mut().compatibility_campaign_mut_for_test();
+    assert_eq!(campaign.rebuild_for_spell_carry(&[1], Some(1)).unwrap(), Some(1));
+    let state = game.backend().compatibility_campaign().simulation();
+    let owner = state.state.entity_index;
+    let player = state.shared_spells().local_player();
+    assert_eq!(crate::SOURCE_SPELL_INDEX_MAP[usize::from(player.selected_spell_ui_index)], 1);
+    let slot = player.enabled_spell_holders[1];
+    let handle = state.source_arena().handle(slot).expect("entry materializes the source holder");
+    let holder = state.shared_spells().pickup(slot).expect("entry publishes the physical holder");
+    assert!(holder.active && (holder.class, holder.model) == (15, 1)
+        && holder.source_spell_parent_entity_index() == owner, "entry holder: {holder:?}");
+    let physical = &state.entities()[usize::from(slot)];
+    assert!(physical.active && (physical.class, physical.model) == (15, 1)
+        && physical.source_spell_parent_entity_index() == owner, "entry physical row: {physical:?}");
+    game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+    let state = game.backend().compatibility_campaign().simulation();
+    assert_eq!(state.source_arena().handle(slot), Some(handle));
+    assert_eq!(state.shared_spells().local_player().enabled_spell_holders[1], slot);
+    assert!(state.cf10_production_schedule_receipts().iter().any(|row| matches!(row,
+        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+            pass: crate::campaign::schedule::SourcePass::UpdateEntities, slot: visited, selector, ..
+        } if *visited == slot && selector.registry_key().selector == crate::campaign::spec::BehaviorSelector::ClassAction {
+            class: 15, action: 3,
+        })), "the actual carried Possession holder reaches its source callback");
+}
+
+#[test]
+fn jathnar_carried_holder_and_first_castle_loss_source_timeline() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
+    use crate::native_world::player_lifecycle_tests::{
+        rival_test_contact as contact, rival_test_sim as sim, rival_test_sim_mut as sim_mut, rival_test_step as step,
+    };
+    use crate::native_world::player_spell_state::{start_castle_final_loss_trace, take_castle_final_loss_trace};
+    use std::path::PathBuf;
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("creatures-20261104-integration/current-owner-package/level23"));
+    let cache = std::env::var_os("MC_LEVEL23_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level23"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2323,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    assert_eq!(game.backend_mut().compatibility_campaign_mut_for_test()
+        .rebuild_for_spell_carry(&[1], Some(1)).unwrap(), Some(1));
+    let player = sim(&game).state.entity_index;
+    let original_slot = sim(&game).shared_spells().local_player().enabled_spell_holders[1];
+    let original = sim(&game).source_arena().handle(original_slot).expect("actual entry holder");
+    // One fixed player-only retreat is outside the reset actors and authored
+    // creature births; their AI, damage and source scheduling remain live.
+    let mut retreat = Position { x: 8192, y: 57344, z: 0 };
+    retreat.z = sim(&game).canonical_terrain().ground_height(retreat).checked_add(4096).unwrap();
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    let rivals = [425_u16, 451, 477, 504, 531, 558, 585];
+    let initial = rivals.map(|slot| {
+        let state = sim(&game);
+        let player = state.players().iter().find(|row| row.entity_index == slot).unwrap();
+        let holder = player.enabled_spell_holders[2];
+        (slot, holder, state.source_arena().handle(holder), state.entities()[usize::from(holder)].clone())
+    });
+    for (actor, holder, _, row) in &initial {
+        assert!(row.active && (row.class, row.model) == (15, 2)
+            && row.source_spell_parent_entity_index() == *actor,
+            "actual entry rival{actor} Castle holder{holder}: {row:?}");
+    }
+    eprintln!("Jathnar entry player={player}, possession={original:?}, rival Castle holders={:?}",
+        initial.iter().map(|(actor, holder, handle, _)| (*actor, *holder, *handle)).collect::<Vec<_>>());
+    let entry_actor = &sim(&game).entities()[usize::from(player)];
+    let entry_holder = &sim(&game).entities()[usize::from(original_slot)];
+    let entry_one = &sim(&game).entities()[1];
+    eprintln!("Jathnar entry local life={} action={}, holder=(class={},model={},action={},flags={:#x},parent={}), physical1=(active={},class={},model={},action={},flags={:#x},generation={:?})",
+        entry_actor.life, entry_actor.action, entry_holder.class, entry_holder.model, entry_holder.action,
+        entry_holder.control_flags, entry_holder.source_spell_parent_entity_index(), entry_one.active, entry_one.class,
+        entry_one.model, entry_one.action, entry_one.control_flags, sim(&game).source_arena().handle(1));
+
+    let mut changes = Vec::new();
+    let mut last_local = None;
+    let mut last_rivals = None;
+    let mut first_loss = None;
+    start_castle_final_loss_trace();
+    for turn in 0..2048 {
+        if let Some(castle) = sim(&game).economy().castle_for_owner(425).copied() {
+            if castle.action == 4 && castle.timer == 0 && castle.life >= 0 && castle.pending_attacker_entity_index == 0 {
+                contact(&mut game, castle.source_entity_index, player, castle.life);
+            }
+        }
+        step(&mut game);
+        let state = sim(&game);
+        let local = state.shared_spells().local_player();
+        let actor = &state.entities()[usize::from(player)];
+        let holder = &state.entities()[usize::from(original_slot)];
+        let local_key = (actor.action, actor.life < 0, local.enabled_spell_holders[1],
+            state.source_arena().handle(original_slot), holder.active, holder.class, holder.model,
+            holder.drawing_disabled(), holder.source_spell_parent_entity_index());
+        if last_local.as_ref() != Some(&local_key) {
+            changes.push(format!("turn{turn} local life={} action={} A4={} original={:?} physical=(active={},class={},model={},action={},flags={:#x},parent={})",
+                actor.life, actor.action, local.enabled_spell_holders[1], state.source_arena().handle(original_slot),
+                holder.active, holder.class, holder.model, holder.action, holder.control_flags, holder.source_spell_parent_entity_index()));
+            last_local = Some(local_key);
+        }
+        let current_rivals = rivals.map(|slot| {
+            let actor = &state.entities()[usize::from(slot)];
+            let player = state.players().iter().find(|row| row.entity_index == slot).unwrap();
+            (slot, actor.action, actor.life < 0, player.enabled_spell_holders[2])
+        });
+        if last_rivals.as_ref() != Some(&current_rivals) {
+            changes.push(format!("turn{turn} rivals={current_rivals:?}"));
+            last_rivals = Some(current_rivals);
+        }
+        for loss in take_castle_final_loss_trace() {
+            changes.push(format!("turn{turn} Castle loss owner={:?} castle={:?} remove={} holder={} before={:?} after={:?}",
+                loss.owner, loss.castle, loss.remove_spell, loss.holder_slot,
+                loss.holder_before.as_ref().map(|(handle, row)| (*handle, row.active, row.class, row.model, row.action, row.control_flags, row.source_spell_parent_entity_index())),
+                loss.holder_after.as_ref().map(|row| (row.active, row.class, row.model, row.action, row.control_flags))));
+            if loss.owner.source_slot == 425 { assert!(loss.remove_spell); first_loss = Some(turn); }
+        }
+        if first_loss.is_some_and(|loss_turn| turn >= loss_turn + 128) { break; }
+    }
+    assert!(first_loss.is_some(), "actual owner425 Castle must reach its source final-loss callback; trace={changes:?}");
+    let state = sim(&game);
+    assert!(state.canonical_player_life_for_test() >= 0
+        && state.shared_spells().local_player().enabled_spell_holders[1] == original_slot
+        && state.source_arena().handle(original_slot) == Some(original),
+        "the fixed retreat must retain the real living player and carried holder through this bounded source path: trace={changes:?}");
+    eprintln!("Jathnar entry→first Castle and 128 subsequent source turns: {}", changes.join("\n"));
+
+
+}
+
+#[test]
+fn jathnar_source_objectives_feature4_and_dynamic_groups_reach_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::SourceEntityHandle;
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::ObjectiveCondition;
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use crate::native_world::player_spell_state::{start_castle_final_loss_trace, take_castle_final_loss_trace};
+    use crate::native_world::player_lifecycle_tests::{
+        rival_test_contact as contact,
+        rival_test_held_spell_generations as held_spells, rival_test_participation as participation,
+    };
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    type Game = GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+    // Reset source slots, group IDs, dispatch selectors and source stage
+    // operands. Each original switch is consumed by its own publication.
+    const GATES: [(u16, u16, u8, i8); 6] = [
+        (14, 13, 32, 0), (420, 14, 32, 1), (421, 15, 32, 2),
+        (422, 16, 32, 4), (423, 17, 32, 6), (245, 18, 4, 0),
+    ];
+    #[derive(Default)]
+    struct Receipts {
+        groups: [u32; 6],
+        gates: [Option<SourceEntityHandle>; 6],
+        hydra: Option<SourceEntityHandle>,
+        exit: Option<(Position, SourceEntityHandle)>,
+        carried_holder: Option<SourceEntityHandle>,
+    }
+    fn sim(game: &Game) -> &crate::native_world::Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut crate::native_world::Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game, receipt: &mut Receipts, command: GameCommand) {
+        let before = GATES.map(|(slot, _, _, _)| {
+            let state = sim(game);
+            let row = &state.entities()[usize::from(slot)];
+            (state.source_arena().handle(slot), row.active, row.class, row.model,
+                row.action, row.source_id, row.level_gate)
+        });
+        game.advance(game.identity().guard(), command).unwrap();
+        let state = sim(game);
+        if let Some(holder) = receipt.carried_holder {
+            let player = state.state.entity_index;
+            let local = state.shared_spells().local_player();
+            let actor = &state.entities()[usize::from(player)];
+            let physical = &state.entities()[usize::from(holder.source_slot)];
+            let attacker = u16::from_le_bytes([actor.record_bytes()[42], actor.record_bytes()[43]]);
+            assert!(state.canonical_player_life_for_test() >= 0
+                && local.enabled_spell_holders[1] == holder.source_slot
+                && state.source_arena().handle(holder.source_slot) == Some(holder)
+                && physical.active && (physical.class, physical.model) == (15, 1)
+                && physical.source_spell_parent_entity_index() == player,
+                "Jathnar first player/holder loss: turn={} life={} actor_action={} attacker={} attacker_row={:?} A4={} original={holder:?} current={:?} physical=(active={},class={},model={},action={},life={},flags={:#x},parent={})",
+                local.turn, state.canonical_player_life_for_test(), actor.action, attacker, state.entities().get(usize::from(attacker)), local.enabled_spell_holders[1],
+                state.source_arena().handle(holder.source_slot), physical.active, physical.class, physical.model,
+                physical.action, physical.life, physical.control_flags, physical.source_spell_parent_entity_index());
+        }
+        for event in state.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Jathnar source dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. }
+                    if (13..=18).contains(group) => {
+                    let expected = state.mission().authored_features().iter()
+                        .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == *group as i16)
+                        .map(|row| row.index).collect::<Vec<_>>();
+                    assert_eq!(authored_indices.as_ref(), expected, "complete source group{group}");
+                    let index = usize::from(*group - 13);
+                    let (expected_slot, expected_group, action, stage) = GATES[index];
+                    assert_eq!(*source_slot, expected_slot);
+                    assert_eq!(before[index], (receipt.gates[index], true, 11, action, action, expected_group, stage),
+                        "the actual original gate generation owns this publication before the source pass");
+                    assert!(state.cf10_production_schedule_receipts().iter().any(|row| matches!(row,
+                        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                            pass: crate::campaign::schedule::SourcePass::UpdateEntities, slot, selector, ..
+                        } if *slot == expected_slot
+                            && selector.registry_key().selector == crate::campaign::spec::BehaviorSelector::ClassAction {
+                                class: 11, action,
+                            })), "the source scheduler ran the original class11/action{action} callback");
+                    receipt.groups[index] += 1;
+                    if *group == 16 {
+                        let constructions = mc2::take_construction_trace();
+                        let construction = constructions.iter().find(|row| row.authored_record == 560)
+                            .unwrap_or_else(|| panic!("group16 did not visit the Hydra560 constructor: {constructions:?}"));
+                        assert!(construction.map_allowed && construction.free_slots >= 51,
+                            "Hydra560 source admission failed at the actual constructor: {construction:?}");
+                        let born = construction.root.unwrap_or_else(|| panic!("Hydra560 constructor returned null: {construction:?}"));
+                        let root = state.creature_runtime_census().roots_of_kind(CreatureKind::Creature27)
+                            .find(|root| root.handle == born && root.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 560 }))
+                            .unwrap_or_else(|| panic!("Hydra560 born at callback but missing from post-turn census: {construction:?}, physical={:?}", state.entities()[usize::from(born.source_slot)]));
+                        let chain = multipart::read_chain(state.source_arena(), root.handle).unwrap();
+                        assert_eq!(chain.ordered.len(), 50);
+                        receipt.hydra = Some(root.handle);
+                    }
+                    if *group == 18 {
+                        assert_eq!(authored_indices.as_ref(), [285, 286]);
+                        let trigger = state.economy().authored_switch_producers().iter()
+                            .find(|row| row.active && row.authored_index == 285 && (row.model, row.action) == (12, 12))
+                            .expect("real level-complete group publishes exit285");
+                        assert!(state.economy().authored_class14().iter().any(|row| row.active && row.authored_index == 286));
+                        receipt.exit = Some((trigger.position, state.source_arena().handle(trigger.source_entity_index).unwrap()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn ordinary_step(game: &mut Game, receipt: &mut Receipts) { step(game, receipt, GameCommand::default()); }
+    fn unprotected(game: &Game, actor: u16, handle: SourceEntityHandle) -> bool {
+        let state = sim(game);
+        let row = &state.entities()[usize::from(actor)];
+        let upkeep = state.session.state.live.nyphur_dispatcher.get(handle).unwrap().common_upkeep(row.phase);
+        upkeep.word_0x159 == 0 && !upkeep.high_upkeep
+    }
+    fn percent(game: &Game, player: u16) -> i32 {
+        let economy = sim(game).economy();
+        let total = economy.owner_mana_global();
+        assert!(total > 0);
+        economy.castle_for_owner(player).map_or(0, |castle|
+            100 * economy.owner_mana_aggregate(player).saturating_add(castle.mana) / total)
+    }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("creatures-20261104-integration/current-owner-package/level23"));
+    let cache = std::env::var_os("MC_LEVEL23_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level23"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let goals = definition.level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 7);
+    for stage in [0, 2, 3] { assert!(matches!(goals[stage].condition(), ObjectiveCondition::TargetDeathWithoutFont(_))); }
+    for stage in [1, 4] { assert!(matches!(goals[stage].condition(), ObjectiveCondition::NoStandingBuildings)); }
+    assert!(matches!(goals[5].condition(), ObjectiveCondition::AllOtherPlayersBanished));
+    assert!(matches!(goals[6].condition(), ObjectiveCondition::CastleManaPercent(65)));
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2323,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    assert_eq!(game.backend_mut().compatibility_campaign_mut_for_test()
+        .rebuild_for_spell_carry(&[1], Some(1)).unwrap(), Some(1),
+        "declared prior Possession carry is materialized at source mission entry");
+    mc2::start_construction_trace();
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(player, 424);
+    assert_eq!(sim(&game).runtime().player_count, 8);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..7], [1; 7]);
+    let holder_slot = sim(&game).shared_spells().local_player().enabled_spell_holders[1];
+    let holder_handle = sim(&game).source_arena().handle(holder_slot).expect("source entry Possession holder");
+    // This one fixed pose is separated from every reset actor and every
+    // authored creature birth; it changes no AI, health or source timer.
+    let mut retreat = Position { x: 8192, y: 57344, z: 0 };
+    retreat.z = sim(&game).canonical_terrain().ground_height(retreat).checked_add(4096).unwrap();
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    let mut receipt = Receipts { carried_holder: Some(holder_handle), ..Receipts::default() };
+    for (index, (slot, group, action, stage)) in GATES.into_iter().enumerate() {
+        let row = &sim(&game).entities()[usize::from(slot)];
+        assert_eq!((row.active, row.class, row.model, row.action, row.source_id, row.level_gate),
+            (true, 11, action, action, group, stage));
+        receipt.gates[index] = Some(sim(&game).source_arena().handle(slot).unwrap());
+    }
+    let mut hit_houses = BTreeSet::new();
+    assert_eq!(sim(&game).campaign_building_objective_targets(4).len(), 4,
+        "four actual BUILD23 chains start the fifth objective");
+
+    // Exercise feature4 before the unrelated House work gives the seven real
+    // AIs time to lose their own Castles independently. The proof still uses
+    // ordinary source turns and compares another current owner at the actual
+    // Castle-loss boundary, without holding any participant fixed.
+    let rivals = [425_u16, 451, 477, 504, 531, 558, 585];
+    let rival_handles = rivals.map(|slot| sim(&game).source_arena().handle(slot).unwrap());
+    let proof_actor = rivals[0];
+    let proof_holder = sim(&game).players().iter().find(|row| row.entity_index == proof_actor).unwrap().enabled_spell_holders[2];
+    assert_eq!(proof_holder, 428);
+    let proof_holder_handle = sim(&game).source_arena().handle(proof_holder).expect("actual initial Castle holder");
+    let proof_castle = sim(&game).economy().castle_for_owner(proof_actor).expect("actual initial rival Castle").source_entity_index;
+    assert_eq!(proof_castle, 450);
+    let proof_castle_handle = sim(&game).source_arena().handle(proof_castle).unwrap();
+    let mut unaffected_peer = None;
+    start_castle_final_loss_trace();
+    for _ in 0..2048 {
+        let Some(castle) = sim(&game).economy().castle_for_owner(proof_actor).copied() else { break };
+        assert_eq!(sim(&game).source_arena().handle(castle.source_entity_index), Some(proof_castle_handle));
+        let peers = rivals[1..].iter().filter_map(|actor| {
+            let state = sim(&game);
+            let player = state.players().iter().find(|row| row.entity_index == *actor)?;
+            let holder = player.enabled_spell_holders[2];
+            let handle = state.source_arena().handle(holder)?;
+            state.economy().castle_for_owner(*actor)?;
+            state.shared_spells().pickup(holder).filter(|row| row.active && !row.drawing_disabled())?;
+            let row = &state.entities()[usize::from(holder)];
+            if !row.active || row.drawing_disabled() || (row.class, row.model) != (15, 2)
+                || row.source_spell_parent_entity_index() != *actor { return None; }
+            Some((*actor, holder, handle))
+        }).collect::<Vec<_>>();
+        if castle.action == 4 && castle.timer == 0 && castle.life >= 0 && castle.pending_attacker_entity_index == 0 {
+            contact(&mut game, castle.source_entity_index, player, castle.life);
+        }
+        let affected_before = sim(&game).players().iter().find(|row| row.entity_index == proof_actor)
+            .map(|row| row.enabled_spell_holders[2]);
+        let holder_before = sim(&game).source_arena().handle(proof_holder);
+        ordinary_step(&mut game, &mut receipt);
+        let losses = take_castle_final_loss_trace();
+        if sim(&game).economy().castle_for_owner(proof_actor).is_none() {
+            let loss = losses.iter().find(|row| row.owner == rival_handles[0] && row.castle == proof_castle_handle)
+                .unwrap_or_else(|| panic!("actual owner425 Castle-loss callback receipt missing: {losses:?}"));
+            assert!(loss.remove_spell);
+            assert_eq!(loss.holder_slot, proof_holder);
+            let (actual_handle, actual_before) = loss.holder_before.as_ref().expect("callback-time physical holder");
+            assert_eq!(*actual_handle, proof_holder_handle,
+                "the original affected holder is physically current at the source Castle-loss callback; outer-turn prior={affected_before:?}/{holder_before:?}");
+            assert_eq!((actual_before.class, actual_before.model, actual_before.source_spell_parent_entity_index()), (15, 2, proof_actor));
+            assert!(loss.holder_after.as_ref().is_some_and(|row| row.drawing_disabled()),
+                "feature4's actual callback hides the affected holder: {loss:?}");
+            unaffected_peer = peers.into_iter().find(|(actor, holder, handle)| {
+                let state = sim(&game);
+                state.economy().castle_for_owner(*actor).is_some()
+                    && state.players().iter().find(|row| row.entity_index == *actor)
+                        .is_some_and(|row| row.enabled_spell_holders[2] == *holder)
+                    && state.source_arena().handle(*holder) == Some(*handle)
+                    && state.shared_spells().pickup(*holder).is_some_and(|row| row.active && !row.drawing_disabled())
+                    && state.entities().get(usize::from(*holder)).is_some_and(|row|
+                        row.active && !row.drawing_disabled() && (row.class, row.model) == (15, 2)
+                            && row.source_spell_parent_entity_index() == *actor)
+            });
+            break;
+        }
+    }
+    assert!(sim(&game).economy().castle_for_owner(proof_actor).is_none(), "actual owner425 Castle reaches final loss");
+    assert_eq!(sim(&game).players().iter().find(|row| row.entity_index == proof_actor).unwrap().enabled_spell_holders[2], 0,
+        "feature4 removes the current affected owner's Castle holder");
+    if sim(&game).source_arena().resolve(proof_holder_handle).is_some() {
+        let current = &sim(&game).entities()[usize::from(proof_holder)];
+        assert_eq!((current.class, current.model, current.source_spell_parent_entity_index()), (15, 2, proof_actor));
+        assert!(current.drawing_disabled(),
+            "feature4 hides the current original holder with source byte1 bit2 before reclaim: {current:?}");
+    }
+    assert!(unaffected_peer.is_some(), "an actual unaffected live owner/holder must survive the same source loss visit");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[5], 1,
+        "a remaining real rival blocks all-other-players banishment");
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 0);
+    for _ in 0..16 {
+        if sim(&game).source_arena().resolve(proof_holder_handle).is_none() { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(sim(&game).source_arena().resolve(proof_holder_handle).is_none());
+
+    // Type2 follows each real target's successive House generations and reads
+    // the final dead form's font. Contacts enter the typed House mailbox.
+    for stage in [0_usize, 2, 3] {
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[stage], 1);
+        let mut last_observation = None;
+        let mut stagnant = 0;
+        let mut packets = 0_u32;
+        let mut milestones = Vec::new();
+        for turn in 0..512 {
+            if sim(&game).runtime().objectives[owner].stage_selectors[stage] == 2 { break; }
+            let relation = sim(&game).runtime().stages[stage].relation;
+            let mut observation = format!("relation={relation:?}");
+            if let RuntimeRelation::LiveEntity(slot) = relation {
+                let raw = &sim(&game).entities()[usize::from(slot)];
+                let handle = sim(&game).source_arena().handle(slot);
+                let house = sim(&game).ordinary().houses().iter()
+                    .find(|row| row.source_retained() && row.entity_index == slot).copied();
+                observation = format!("slot={slot} handle={handle:?} raw=({},{},{},{},{:#x}) house={:?}",
+                    raw.class, raw.model, raw.action, raw.life, raw.control_flags,
+                    house.map(|row| (row.building_index, row.action, row.life, row.pending_damage,
+                        row.pending_attacker, row.parameter.destruction_successor)));
+                if house.is_some_and(|row| row.active && row.action == 52 && row.life >= 0 && row.pending_attacker == 0) {
+                    let handle = sim(&game).source_arena().handle(slot).unwrap();
+                    hit_houses.insert((handle.source_slot, handle.generation));
+                    assert!(sim_mut(&mut game).session.state.live.ordinary.houses.submit_source_damage(slot, u16::MAX, player));
+                    packets += 1;
+                }
+            }
+            if last_observation.as_ref() == Some(&observation) { stagnant += 1; } else { stagnant = 0; }
+            if turn == 0 || stagnant == 0 && (turn % 32 == 0 || packets > 0 && packets <= 4) {
+                if milestones.len() == 12 { milestones.remove(0); }
+                milestones.push((turn, packets, observation.clone()));
+            }
+            assert!(stagnant < 64,
+                "actual target stage{stage} made no observed source-state progress for 64 visits: {observation}; packets={packets}; milestones={milestones:?}");
+            last_observation = Some(observation);
+            ordinary_step(&mut game, &mut receipt);
+        }
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[stage], 2,
+            "actual target stage{stage}; packets={packets}; milestones={milestones:?}; last={last_observation:?}");
+    }
+    let initial = sim(&game).campaign_building_objective_targets(1);
+    assert_eq!(initial.len(), 5);
+    let survivor = initial[0].1;
+    for leave_one in [true, false] {
+        for _ in 0..1536 {
+            let targets = sim(&game).campaign_building_objective_targets(1);
+            if leave_one && !targets.is_empty() && targets.iter().all(|(_, pos)| (pos.x, pos.y) == (survivor.x, survivor.y)) { break; }
+            if !leave_one && sim(&game).runtime().objectives[owner].stage_selectors[1] == 2 { break; }
+            for (slot, pos) in targets {
+                if leave_one && (pos.x, pos.y) == (survivor.x, survivor.y) { continue; }
+                if let Some(house) = sim(&game).ordinary().houses().iter()
+                    .find(|row| row.active && row.action == 52 && row.entity_index == slot).copied()
+                {
+                    assert!([18, 21, 54].contains(&house.building_index));
+                    let handle = sim(&game).source_arena().handle(slot).unwrap();
+                    if house.life >= 0 && house.pending_attacker == 0 {
+                        hit_houses.insert((handle.source_slot, handle.generation));
+                        assert!(sim_mut(&mut game).session.state.live.ordinary.houses.submit_source_damage(slot, u16::MAX, player));
+                    }
+                }
+            }
+            ordinary_step(&mut game, &mut receipt);
+            if leave_one { assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1); }
+        }
+        if leave_one {
+            let remaining = sim(&game).campaign_building_objective_targets(1);
+            assert!(!remaining.is_empty() && remaining.iter().all(|(_, pos)| (pos.x, pos.y) == (survivor.x, survivor.y)));
+        }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 2);
+    for _ in 0..128 { if receipt.groups[..3] == [1, 1, 1] { break; } ordinary_step(&mut game, &mut receipt); }
+    assert_eq!(receipt.groups[..3], [1, 1, 1]);
+
+    assert!(rivals.iter().any(|actor| participation(&game, *actor) == Some(1)
+        && sim(&game).entities()[usize::from(*actor)].active
+        && sim(&game).entities()[usize::from(*actor)].life >= 0),
+        "an actual living participating rival remains while the fifth objective is reached");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[5], 1,
+        "the real living rival blocks the source banishment objective");
+
+    // Last standing-BUILD objective walks the complete 23→24→28 chain.
+    for _ in 0..1536 {
+        if sim(&game).runtime().objectives[owner].stage_selectors[4] == 2 && receipt.groups[3] == 1 { break; }
+        for (slot, _) in sim(&game).campaign_building_objective_targets(4) {
+            if let Some(house) = sim(&game).ordinary().houses().iter()
+                .find(|row| row.active && row.action == 52 && row.entity_index == slot).copied()
+            {
+                assert!([23, 24, 28].contains(&house.building_index));
+                let handle = sim(&game).source_arena().handle(slot).unwrap();
+                if house.life >= 0 && house.pending_attacker == 0 {
+                    hit_houses.insert((handle.source_slot, handle.generation));
+                    assert!(sim_mut(&mut game).session.state.live.ordinary.houses.submit_source_damage(slot, u16::MAX, player));
+                }
+            }
+        }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[4], 2);
+    assert_eq!(receipt.groups[3], 1);
+    let hydra = receipt.hydra.expect("actual group16 Hydra560");
+    let chain = multipart::read_chain(sim(&game).source_arena(), hydra).unwrap();
+    assert_eq!(chain.ordered.len(), 50);
+    // Hydra is nongating. Apply the source's capped 76-point contacts to its
+    // actual head mailboxes and synchronize the five real head deaths.
+    let mut ready = false;
+    for _ in 0..2048 {
+        let heads = chain.heads.map(|handle| sim(&game).entities()[usize::from(handle.source_slot)].clone());
+        if heads.iter().all(|row| row.active && row.record_bytes()[74] <= 5 && (0..=76).contains(&row.life)
+            && row.source_upkeep_word_62() == 0) { ready = true; break; }
+        for (handle, row) in chain.heads.into_iter().zip(heads) {
+            if row.active && row.record_bytes()[74] <= 5 && row.life > 76 && row.source_upkeep_word_62() == 0 {
+                area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, 76, player).unwrap();
+            }
+        }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(ready, "actual Hydra head health must reach the ordinary finishing window");
+    for head in chain.heads { area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, head.source_slot, 76, player).unwrap(); }
+    for _ in 0..128 {
+        ordinary_step(&mut game, &mut receipt);
+        if sim(&game).entities()[usize::from(hydra.source_slot)].record_bytes()[63] == 0 { break; }
+    }
+    assert_eq!(sim(&game).entities()[usize::from(hydra.source_slot)].record_bytes()[63], 0);
+    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, hydra.source_slot, 76, player).unwrap();
+    let hydra_parts = std::iter::once(hydra).chain(chain.ordered.iter().copied()).collect::<Vec<_>>();
+    for _ in 0..256 {
+        if hydra_parts.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none()) { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(hydra_parts.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none()));
+    assert!(rivals.iter().any(|actor| participation(&game, *actor) == Some(1)
+        && sim(&game).entities()[usize::from(*actor)].active
+        && sim(&game).entities()[usize::from(*actor)].life >= 0),
+        "an actual living rival remains after Hydra cleanup");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[5], 1,
+        "the source banishment objective remains incomplete while that rival lives");
+
+    // Source feature4 removes the affected rival's Castle holder after its
+    // actual last Castle tier falls. Keep an untouched other owner as the
+    // positive control, then let all seven ordinary rivals reach banishment.
+    let mut castle_handles = vec![proof_castle_handle];
+    let mut released_holders = Vec::new();
+    for (index, (&actor, &handle)) in rivals.iter().zip(&rival_handles).enumerate() {
+        if participation(&game, actor) == Some(0) { continue; }
+        assert_eq!(participation(&game, actor), Some(1), "actual current rival must have source participation");
+        let holder = sim(&game).players().iter().find(|row| row.entity_index == actor).unwrap().enabled_spell_holders[2];
+        let earlier_holder_handle = (holder != 0).then(|| sim(&game).source_arena().handle(holder)).flatten();
+        for _ in 0..512 {
+            if participation(&game, actor) == Some(0) { break; }
+            if unprotected(&game, actor, handle) { break; }
+            ordinary_step(&mut game, &mut receipt);
+        }
+        if participation(&game, actor) == Some(0) { continue; }
+        assert!(unprotected(&game, actor, handle));
+        if let Some(castle) = sim(&game).economy().castle_for_owner(actor).copied() {
+            let castle_handle = sim(&game).source_arena().handle(castle.source_entity_index).unwrap();
+            castle_handles.push(castle_handle);
+            let mut loss_receipt = None;
+            let _ = take_castle_final_loss_trace();
+            for _ in 0..2048 {
+                let Some(current) = sim(&game).economy().castle_for_owner(actor).copied() else { break };
+                assert_eq!(sim(&game).source_arena().handle(current.source_entity_index), Some(castle_handle));
+                if current.action == 4 && current.timer == 0 && current.life >= 0
+                    && current.pending_attacker_entity_index == 0
+                {
+                    contact(&mut game, current.source_entity_index, player, current.life);
+                }
+                // sub_605E0 rereads the current physical owner's A4 only at
+                // final loss. An earlier holder can have been stolen, dropped
+                // or replaced during protection waits and prior tier visits.
+                let before_slot = sim(&game).players().iter().find(|row| row.entity_index == actor)
+                    .expect("current rival A4").enabled_spell_holders[2];
+                let before = if before_slot == 0 { None } else {
+                    let state = sim(&game);
+                    Some((before_slot, state.economy().slot_generation(before_slot), state.source_arena().handle(before_slot),
+                        state.entities()[usize::from(before_slot)].clone()))
+                };
+                ordinary_step(&mut game, &mut receipt);
+                let losses = take_castle_final_loss_trace();
+                if sim(&game).economy().castle_for_owner(actor).is_none() {
+                    loss_receipt = Some((losses.into_iter().find(|row| row.owner == handle && row.castle == castle_handle)
+                        .unwrap_or_else(|| panic!("actor{actor} missing exact Castle-loss callback receipt; outer-turn A4={before_slot}, physical={before:?}")),
+                        before_slot, before));
+                    break;
+                }
+            }
+            assert!(sim(&game).economy().castle_for_owner(actor).is_none(), "actual Castle tier chain reaches final loss");
+            assert_eq!(sim(&game).players().iter().find(|row| row.entity_index == actor).unwrap().enabled_spell_holders[2], 0,
+                "feature4 leaves this owner's current Castle holder absent");
+            let (loss, before_slot, outer_before) = loss_receipt.expect("capture the actual final Castle-loss callback");
+            assert!(loss.remove_spell, "feature4 must be active for actor{actor}: {loss:?}");
+            if loss.holder_slot != 0 {
+                let (holder_handle, before) = loss.holder_before.as_ref().expect("callback-time physical holder");
+                assert_eq!(holder_handle.source_slot, loss.holder_slot);
+                let after = loss.holder_after.as_ref().expect("callback-time physical holder after hide");
+                assert!(after.drawing_disabled(),
+                    "actor{actor} feature4 must hide callback-time holder: {loss:?}; outer-turn A4={before_slot}/{outer_before:?}; earlier={holder}/{earlier_holder_handle:?}");
+                let mut expected = before.clone();
+                expected.disable_drawing();
+                assert_eq!(*after, expected,
+                    "actor{actor} feature4 must apply the source hide to this exact physical record: {loss:?}");
+                eprintln!("Jathnar actor{actor} feature4 callback: earlier={holder}/{earlier_holder_handle:?}, outer-turn={before_slot}, source-holder={holder_handle:?}, before=(active={}, class={}, model={}, action={}, parent={}, flags={:#x})",
+                    before.active, before.class, before.model, before.action,
+                    before.source_spell_parent_entity_index(), before.control_flags);
+                if before.active {
+                    for _ in 0..16 {
+                        if sim(&game).source_arena().resolve(*holder_handle).is_none() { break; }
+                        ordinary_step(&mut game, &mut receipt);
+                    }
+                    assert!(sim(&game).source_arena().resolve(*holder_handle).is_none(),
+                        "actor{actor} callback-time live holder {holder_handle:?} did not naturally reclaim: source={loss:?}, outer-turn={before_slot}/{outer_before:?}, current={:?}",
+                        sim(&game).entities()[usize::from(holder_handle.source_slot)]);
+                } else {
+                    // This physical address was already free at the actual
+                    // callback; sub_57F20 clears class but leaves model and
+                    // action bytes. 605E0 still writes its hide bit, but
+                    // there is no live generation to release a second time.
+                    assert_eq!(before.class, 0);
+                    assert!(!after.active, "the source hide must not allocate the free row");
+                }
+            } else {
+                assert!(loss.holder_before.is_none() && loss.holder_after.is_none());
+                eprintln!("Jathnar actor{actor} feature4 callback: source holder was zero; outer-turn={before_slot}, earlier={holder}/{earlier_holder_handle:?}");
+            }
+        }
+        for _ in 0..512 {
+            if participation(&game, actor) == Some(0) { break; }
+            // A rival may already be falling after an ordinary AI encounter.
+            // Its negative life is not a request for another contact.
+            if sim(&game).entities()[usize::from(actor)].life < 0 { break; }
+            if unprotected(&game, actor, handle) { break; }
+            ordinary_step(&mut game, &mut receipt);
+        }
+        if participation(&game, actor) == Some(0) { continue; }
+        let state = sim(&game);
+        let row = &state.entities()[usize::from(actor)];
+        assert!(row.active && state.economy().castle_for_owner(actor).is_none(),
+            "actor{actor} must retain its current Castleless source row: handle={handle:?}, current={:?}, row={row:?}",
+            state.source_arena().handle(actor));
+        let life = row.life;
+        if life >= 0 {
+            assert!(unprotected(&game, actor, handle), "living actor{actor} remains protected: row={row:?}");
+            released_holders.extend(held_spells(&game, actor));
+            contact(&mut game, actor, player, life);
+        }
+        // sub_5E310 continues the natural fall; once grounded it enters
+        // action 3. With the Castle word zero, sub_5E7C0 banishes on the
+        // reached visit rather than waiting out the Castle revival timer.
+        for _ in 0..768 {
+            ordinary_step(&mut game, &mut receipt);
+            if participation(&game, actor) == Some(0) { break; }
+        }
+        assert_eq!(participation(&game, actor), Some(0),
+            "actor{actor} did not naturally banish: original={handle:?}, current={:?}, castle={:?}, row={:?}",
+            sim(&game).source_arena().handle(actor), sim(&game).economy().castle_for_owner(actor),
+            sim(&game).entities()[usize::from(actor)]);
+        assert_eq!(sim(&game).source_arena().handle(actor), Some(handle));
+        if index < rivals.len() - 1 && rivals[index + 1..].iter().any(|actor| participation(&game, *actor) == Some(1)) {
+            assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[5], 1,
+                "one live rival blocks actual all-other-players banishment");
+        }
+    }
+    for _ in 0..512 {
+        if castle_handles.iter().chain(&released_holders).all(|h| sim(&game).source_arena().resolve(*h).is_none()) { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(castle_handles.iter().chain(&released_holders).all(|h| sim(&game).source_arena().resolve(*h).is_none()));
+
+    for _ in 0..512 {
+        if sim(&game).runtime().objectives[owner].stage_selectors[5] == 2 { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[5], 2,
+        "the ordinary source text order admits the already-earned rival objective");
+
+    // Defend the upcoming real collector route using arrived source contacts.
+    // Source Cymmerian roots split into three independently scheduled small
+    // bodies; their protected landing and all death/reclaim visits stay live.
+    // Wyvern and Cymmerian actors remain authoritative and can still attack.
+    let initial_threats = sim(&game).entities().iter().filter(|row|
+        row.active && row.class == 5 && matches!(row.model, 16 | 25)
+            && row.source_id != player && !row.drawing_disabled())
+        .filter_map(|row| sim(&game).source_arena().handle(row.index).map(|handle| (row.model, handle)))
+        .collect::<Vec<_>>();
+    assert!(initial_threats.iter().any(|(model, _)| *model == 16)
+        && initial_threats.iter().any(|(model, _)| *model == 25),
+        "the actual reachable mission must supply both kinds of recorded Castle attackers: {initial_threats:?}");
+    eprintln!("Jathnar live pre-collector threats: {initial_threats:?}");
+    let mut parent_slots = initial_threats.iter().filter_map(|(model, handle)|
+        (*model == 25).then_some(handle.source_slot)).collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut contacted = BTreeSet::new();
+    let mut split_children = BTreeSet::new();
+    let mut cleared = false;
+    let mut allocator_wait = 0_u16;
+    let mut admission_history = Vec::new();
+    for _ in 0..2048 {
+        let state = sim(&game);
+        let current = state.entities().iter().filter(|row|
+            row.active && row.class == 5 && matches!(row.model, 16 | 25) && row.source_id != player)
+            .filter_map(|row| state.source_arena().handle(row.index).map(|handle| (handle, row.clone())))
+            .collect::<Vec<_>>();
+        for (handle, row) in &current {
+            seen.insert((handle.source_slot, handle.generation));
+            if row.model == 25 && row.record_bytes()[74] == 0 { parent_slots.insert(handle.source_slot); }
+        }
+        for root in state.creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian) {
+            if let CreatureRootOrigin::CreatureConversion { producer_slot } = root.origin
+                && parent_slots.contains(&producer_slot)
+            {
+                split_children.insert((root.handle.source_slot, root.handle.generation));
+            }
+        }
+        if current.is_empty() && seen.iter().all(|&(slot, generation)|
+            state.source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none())
+        {
+            let economy = &state.source_arena().economy;
+            let existing = economy.live_castles().filter(|castle| castle.owner_entity_index == player).copied().collect::<Vec<_>>();
+            let admission = (economy.free_slot_count(), economy.typed_replacement_candidate());
+            if admission_history.last() != Some(&admission) { admission_history.push(admission); }
+            assert!(existing.is_empty(), "the declared prior Castle cannot replace an existing live owner Castle: {existing:?}, admission={admission:?}");
+            if admission.0 != 0 || admission.1.is_some() {
+                cleared = true;
+                break;
+            }
+            assert!(allocator_wait < 256,
+                "real source turns did not release an available Castle slot: wait={allocator_wait}, admission={admission_history:?}, active_rows={}, hidden_rows={}",
+                state.entities().iter().filter(|row| row.active).count(),
+                state.entities().iter().filter(|row| row.active && row.drawing_disabled()).count());
+            allocator_wait += 1;
+            ordinary_step(&mut game, &mut receipt);
+            continue;
+        }
+        for (handle, row) in current {
+            let admits_contact = match row.model {
+                16 => matches!(row.action, 128..=131),
+                25 => matches!(row.action, 201..=203)
+                    || (row.action == 200 && row.record_bytes()[74] >= 3),
+                _ => false,
+            };
+            if admits_contact && row.life >= 0 && !row.drawing_disabled() && row.source_upkeep_word_62() == 0
+                && contacted.insert((handle.source_slot, handle.generation))
+            {
+                area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+            }
+        }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(cleared && !split_children.is_empty() && split_children.iter().all(|&(slot, generation)|
+        sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()),
+        "actual Castle attackers and their born split generations must finish source death/reclaim: initial={initial_threats:?}, contacted={contacted:?}, seen={seen:?}, children={split_children:?}, current={:?}",
+        sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && matches!(row.model, 16 | 25))
+            .map(|row| (row.index, row.model, row.action, row.record_bytes()[74], row.life, row.source_upkeep_word_62(), row.control_flags)).collect::<Vec<_>>());
+    eprintln!("Jathnar actual combat defense cleared {} source generations, including {} born split children; allocator wait={allocator_wait}, admission={admission_history:?}", seen.len(), split_children.len());
+
+    // Declared prior Castle and bank isolate an actual
+    // below-65→65 crossing. A real neutral sphere, paid public cast and
+    // scheduled collector provide the final source-owned increment.
+    for _ in 0..256 {
+        if sim(&game).economy().spheres().iter().any(|row|
+            row.active && !row.pending_delete && row.player_entity_index == 0 && row.control_flags & 8 != 0
+                && row.control_flags & 0x0020_0000 == 0 && row.vertical_velocity == 0 && row.mana > 0) { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    // Choose one existing settled sphere and one admissible Castle site.
+    // Maximize current clearance from real living creatures while keeping the
+    // carrier route bounded; the source continues to move and attack normally.
+    let (sphere, site, threat_clearance) = {
+        let state = sim(&game);
+        let economy = &state.source_arena().economy;
+        let replacement_slot = (economy.free_slot_count() == 0).then(|| economy.typed_replacement_candidate()).flatten();
+        let spheres = state.economy().spheres().iter().filter(|row|
+            row.active && !row.pending_delete && row.player_entity_index == 0 && row.control_flags & 8 != 0
+                && row.control_flags & 0x0020_0000 == 0 && row.vertical_velocity == 0 && row.mana > 0
+                && Some(row.source_entity_index) != replacement_slot)
+            .copied().collect::<Vec<_>>();
+        let threats = state.entities().iter().filter(|row| row.active && row.class == 5
+            && row.life >= 0 && !row.drawing_disabled()).map(|row| row.position).collect::<Vec<_>>();
+        let mut best = None;
+        for y in 1_u16..32 {
+            for x in 1_u16..32 {
+                let mut position = Position { x: x * 2048, y: y * 2048, z: 0 };
+                position.z = state.canonical_terrain().ground_height(position);
+                let nearest = spheres.iter().filter_map(|sphere| {
+                    let dx = i32::from(position.x.wrapping_sub(sphere.position.x) as i16).unsigned_abs();
+                    let dy = i32::from(position.y.wrapping_sub(sphere.position.y) as i16).unsigned_abs();
+                    (4096..=8192).contains(&dx.max(dy)).then_some((
+                        crate::distance_3d_wrapped(position, sphere.position), *sphere))
+                }).min_by_key(|(distance, sphere)| (*distance, sphere.source_entity_index));
+                let Some((route, sphere)) = nearest else { continue };
+                if state.economy().castle_projectile_site_blocked(position, state.entities(), state.canonical_terrain()) { continue; }
+                let clearance = threats.iter().map(|threat| {
+                    let dx = i32::from(position.x.wrapping_sub(threat.x) as i16).unsigned_abs();
+                    let dy = i32::from(position.y.wrapping_sub(threat.y) as i16).unsigned_abs();
+                    dx.max(dy)
+                }).min().unwrap_or(u32::MAX);
+                let score = (clearance, std::cmp::Reverse(route));
+                if best.as_ref().is_none_or(|(previous, _, _, _)| score > *previous) {
+                    best = Some((score, sphere, position, clearance));
+                }
+            }
+        }
+        let (_, sphere, position, clearance) = best.expect("a real neutral sphere has an admissible nearby Castle site");
+        (sphere, position, clearance)
+    };
+    eprintln!("Jathnar actual collector setup: sphere={sphere:?}, site={site:?}, current creature clearance={threat_clearance}");
+    let sphere_handle = sim(&game).source_arena().handle(sphere.source_entity_index).unwrap();
+    let admission = {
+        let economy = &sim(&game).source_arena().economy;
+        (economy.free_slot_count(), economy.typed_replacement_candidate(),
+            economy.live_castles().filter(|castle| castle.owner_entity_index == player).copied().collect::<Vec<_>>())
+    };
+    let castle = {
+        let state = sim_mut(&mut game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            state.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        state.economy_mut().build_castle(site, player).unwrap_or_else(||
+            panic!("source Castle constructor rejected owner={player}, site={site:?}, sphere={sphere_handle:?}, admission={admission:?}, wait={allocator_wait}, history={admission_history:?}"))
+    };
+    let built_handle = sim(&game).source_arena().handle(castle);
+    let built_raw = sim(&game).entities()[usize::from(castle)].clone();
+    let built_typed = sim(&game).economy().castle_at(castle).copied();
+    ordinary_step(&mut game, &mut receipt);
+    let total = sim(&game).economy().owner_mana_global();
+    let aggregate = sim(&game).economy().owner_mana_aggregate(player);
+    let numerator = i64::from(total) * 65 - i64::from(aggregate) * 100;
+    let threshold = i32::try_from((numerator.max(0) + 34) / 35)
+        .expect("source 65-percent threshold fits i32");
+    assert!(threshold > 0, "real pre-bank source census must be below65: total={total}, aggregate={aggregate}");
+    // As in Pav, stage a prior bank missing the witnessed sphere's payload.
+    // A one-unit gap would let unrelated merged mana finish the objective.
+    let bank = threshold.checked_sub(sphere.mana).expect("prior bank fits i32");
+    assert!(bank >= 0 && sphere.mana > 0);
+    let eligible = sim(&game).economy().spheres().iter().filter_map(|row| {
+        let handle = sim(&game).source_arena().handle(row.source_entity_index)?;
+        (row.active && !row.pending_delete && row.control_flags & 8 != 0 && row.mana > 0)
+            .then_some(((handle.source_slot, handle.generation), (row.mana, row.player_entity_index)))
+    }).collect::<std::collections::BTreeMap<_, _>>();
+    assert!(eligible.contains_key(&(sphere_handle.source_slot, sphere_handle.generation)));
+    let eligible_total = eligible.values().try_fold(0_i64, |sum, (mana, _)| sum.checked_add(i64::from(*mana)))
+        .expect("actual eligible source payloads fit i64");
+    let capacity = i32::try_from(i64::from(aggregate) + i64::from(bank) + eligible_total)
+        .expect("source Castle capacity fits i32");
+    assert!(capacity <= i32::MAX / 100 && total.checked_add(bank).is_some());
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, capacity));
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
+    let castle_handle = sim(&game).source_arena().handle(castle).unwrap();
+    ordinary_step(&mut game, &mut receipt);
+    assert_eq!(sim(&game).source_arena().handle(sphere_handle.source_slot), Some(sphere_handle),
+        "selected sphere generation must survive prior-Castle setup: sphere={sphere:?}, current={:?}, castle={:?}",
+        sim(&game).economy().spheres().iter().find(|row| row.source_entity_index == sphere_handle.source_slot), sim(&game).economy().castle_at(castle));
+    assert_eq!(sim(&game).economy().owner_mana_global(), total + bank,
+        "actual source census after prior bank: total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, sphere={sphere:?}, castle={:?}", sim(&game).economy().castle_at(castle));
+    assert!(percent(&game, player) < 65,
+        "declared bank must leave source below65: total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, sphere={sphere:?}, current_percent={}", percent(&game, player));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[6], 1);
+
+    let target = sim(&game).possession_guidance_target_top_for_test(sphere.source_entity_index).unwrap();
+    let state = sim_mut(&mut game);
+    let fov = state.shared_spells().player_entity().array_fov();
+    let mut hand = Position { x: target.x.wrapping_add(2048), y: target.y, z: target.z.checked_add(512).unwrap() };
+    let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
+    let hand_yaw = yaw.wrapping_sub(state.shared_spells().beyond_sight_auxiliary().next_entity).wrapping_sub(512);
+    let mut origin = Position { z: hand.z.checked_sub(fov).unwrap(), ..hand };
+    crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+    origin.z = origin.z.max(state.canonical_terrain().ground_height(origin).wrapping_add(state.profile().ground_clearance))
+        .max(state.canonical_terrain().ground_height(hand).wrapping_add(crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT).wrapping_sub(fov));
+    hand.z = origin.z.wrapping_add(fov);
+    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(hand, target);
+    state.set_level2_entity_position(player, origin).unwrap();
+    state.state.actual_speed = 0;
+    state.state.target_speed = 0;
+    state.set_level2_player_aim_for_test(yaw, pitch);
+    let holder = sim(&game).shared_spells().local_player().enabled_spell_holders[1];
+    let holder_row = sim(&game).shared_spells().pickup(holder);
+    assert!(holder != 0 && holder_row.is_some_and(|row| row.active && (row.class, row.model) == (15, 1)
+        && row.source_spell_parent_entity_index() == player),
+        "the current carried Possession holder must still be owned at the final cast: holder={holder}, row={holder_row:?}, player={:?}, physical={:?}, free_slots={}",
+        sim(&game).shared_spells().local_player(), sim(&game).entities().get(usize::from(holder)),
+        sim(&game).source_arena().economy.free_slot_count());
+    assert_eq!(crate::SOURCE_SPELL_INDEX_MAP[usize::from(sim(&game).shared_spells().local_player().selected_spell_ui_index)], 1,
+        "the current source selector must still choose the carried Possession holder");
+    let holder_handle = sim(&game).source_arena().handle(holder).expect("current Possession holder generation");
+    let player_handle = sim(&game).source_arena().handle(player).unwrap();
+    let cost = sim(&game).shared_spells().pickup(holder).unwrap().max_mana;
+    assert!(cost > 0 && sim(&game).shared_spells().player_entity().mana >= cost,
+        "the actual carried holder must be payable: cost={cost}, holder={holder_handle:?}, player={:?}, sphere={sphere:?}, castle={:?}",
+        sim(&game).shared_spells().player_entity(), sim(&game).economy().castle_at(castle));
+    let mut paid_launch = false;
+    let mut paid_debit = false;
+    let mut claim = false;
+    let mut paid_projectile = None;
+    let mut paid_effects = std::collections::BTreeMap::new();
+    let mut impact_targets = BTreeSet::new();
+    // Paid subtotal and last verified total, keyed by physical generation.
+    let mut paid_lineage = std::collections::BTreeMap::<(u16, u32), (i32, i32)>::new();
+    let mut collected = std::collections::BTreeMap::<(u16, u32), std::collections::BTreeMap<(u16, u32), i32>>::new();
+    let mut paid_mailbox = false;
+    let mut collector = None;
+    let mut credited = false;
+    let mut retreated = false;
+    let mut cursor = sim(&game).economy().events().len();
+    let mut castle_history = std::collections::VecDeque::new();
+    let mut castle_damage_history = Vec::new();
+    let mut castle_raw_history = Vec::new();
+    let mut sphere_history = std::collections::VecDeque::new();
+    let mut possession_history = Vec::new();
+    let mut mana_events = Vec::new();
+    crate::native_world::level2_dynamic_economy::start_possession_trace();
+    let castle_position = sim(&game).economy().castle_at(castle).unwrap().position;
+    let bound = 32 + 2 * (crate::distance_3d_wrapped(sphere.position, castle_position) as usize).div_ceil(48) + 192;
+    for turn in 0..bound {
+        if claim && !retreated {
+            let mut position = Position { x: 8192, y: 57344, z: 0 };
+            position.z = sim(&game).canonical_terrain().ground_height(position).checked_add(4096).unwrap();
+            sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+            retreated = true;
+        }
+        let before_castle = sim(&game).economy().castle_at(castle).copied();
+        let before_percent = percent(&game, player);
+        let before_raw = sim(&game).entities()[usize::from(castle)].clone();
+        let before_handle = sim(&game).source_arena().handle(castle);
+        let before_sphere = sim(&game).economy().spheres().iter()
+            .find(|row| row.source_entity_index == sphere_handle.source_slot).copied();
+        let before_spheres = sim(&game).economy().spheres().iter().filter(|row| row.active && !row.pending_delete)
+            .map(|row| (row.source_entity_index, (sim(&game).economy().slot_generation(row.source_entity_index), row.control_flags, row.mana)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for (&(slot, generation), &(paid, expected)) in &paid_lineage {
+            assert!(before_spheres.get(&slot).is_some_and(|(current, _, mana)| *current == generation && *mana == expected),
+                "paid sphere must retain its verified current generation and payload: turn={turn}, slot={slot}, generation={generation}, paid={paid}, expected={expected}, before={before_spheres:?}, events={mana_events:?}");
+        }
+        let before_defenders = sim(&game).economy().castle_children().iter().filter(|row| row.active)
+            .map(|row| (row.source_entity_index, (sim(&game).source_arena().handle(row.source_entity_index), row.mana, row.max_mana, row.target_sphere_slot)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        step(&mut game, &mut receipt, GameCommand { cast_selected: turn == 0, ..GameCommand::default() });
+        let state = sim(&game);
+        let after_castle = state.economy().castle_at(castle).copied();
+        let after_raw = &state.entities()[usize::from(castle)];
+        let before_key = (before_handle, before_raw.active, before_raw.class, before_raw.model,
+            before_raw.action, before_raw.control_flags, before_raw.authority);
+        let after_key = (state.source_arena().handle(castle), after_raw.active, after_raw.class, after_raw.model,
+            after_raw.action, after_raw.control_flags, after_raw.authority);
+        if before_key != after_key { castle_raw_history.push((turn, before_key, after_key)); }
+        let after_sphere = state.economy().spheres().iter()
+            .find(|row| row.source_entity_index == sphere_handle.source_slot).copied();
+        if before_sphere != after_sphere {
+            if sphere_history.len() == 32 { sphere_history.pop_front(); }
+            sphere_history.push_back((turn, before_sphere, after_sphere, state.source_arena().handle(sphere_handle.source_slot)));
+        }
+        let relevant = state.economy().events()[cursor..].iter().filter(|event| matches!(event,
+            Level2EconomyEvent::DamageApplied { target_entity_index, .. } if *target_entity_index == castle)
+            || matches!(event, Level2EconomyEvent::CastleStageDestroyed { source_entity_index, .. }
+                | Level2EconomyEvent::CastleDestroyed { source_entity_index, .. } if *source_entity_index == castle))
+            .cloned().collect::<Vec<_>>();
+        for event in &relevant {
+            let attacker = match event {
+                Level2EconomyEvent::DamageApplied { attacker_entity_index, .. } => Some(*attacker_entity_index),
+                Level2EconomyEvent::CastleDestroyed { killer_entity_index, .. } => Some(*killer_entity_index),
+                _ => None,
+            };
+            let current_attacker = attacker.and_then(|slot| state.entities().get(usize::from(slot)).map(|row|
+                (slot, state.source_arena().handle(slot), row.active, row.class, row.model, row.action, row.life, row.control_flags)));
+            castle_damage_history.push((turn, event.clone(), current_attacker));
+        }
+        if before_castle != after_castle || !relevant.is_empty() {
+            if castle_history.len() == 32 { castle_history.pop_front(); }
+            castle_history.push_back((turn, before_castle, after_castle, relevant));
+        }
+        paid_debit |= state.cf10_production_schedule_receipts().into_iter().any(|row| match row {
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+            } if slot == player => original.observed_player_resources().zip(selector.observed_player_resources())
+                .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                    && before.2 <= -cost && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1.saturating_sub(after.1) >= cost),
+            _ => false,
+        });
+        if turn == 0 {
+            paid_projectile = state.economy().possession_projectiles().iter().find_map(|row|
+                (row.source_id_entity_index == player && row.holder_entity_index == holder_handle.source_slot)
+                    .then(|| state.source_arena().handle(row.source_entity_index)).flatten());
+            let charged = state.cf10_production_schedule_receipts().into_iter().any(|row| match row {
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+                } if slot == holder => original.observed_player_resources().zip(selector.observed_player_resources())
+                    .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                        && before.1 >= cost && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) }),
+                _ => false,
+            });
+            paid_launch = paid_projectile.is_some() && charged;
+        }
+        let source_receipts = crate::native_world::level2_dynamic_economy::take_possession_trace();
+        crate::native_world::level2_dynamic_economy::start_possession_trace();
+        for source in source_receipts {
+            possession_history.push((turn, source));
+            use crate::native_world::level2_dynamic_economy::PossessionSourceReceipt;
+            match source {
+                PossessionSourceReceipt::ImpactBirth { effect, projectile, holder, owner, packet }
+                    if Some(projectile) == paid_projectile && holder == holder_handle && owner == player_handle => {
+                        assert!(matches!(packet.source_model, 12 | 70));
+                        paid_effects.insert((effect.source_slot, effect.generation), packet.source_model);
+                    }
+                PossessionSourceReceipt::MailboxWrite { effect, target, source_id, before_possessor, amount, possessor, .. }
+                    if source_id == player && before_possessor != player && possessor == player => {
+                        let key = (target.source_slot, target.generation);
+                        if let Some(model) = paid_effects.get(&(effect.source_slot, effect.generation))
+                            && amount == u32::from(*model == 70)
+                            && eligible.contains_key(&key)
+                            && (amount != 0 || before_spheres.get(&target.source_slot)
+                                .is_some_and(|(generation, flags, _)| *generation == target.generation && *flags & 0x0020_0000 == 0))
+                        {
+                            impact_targets.insert(key);
+                            paid_mailbox = true;
+                        }
+                    }
+                _ => {}
+            }
+        }
+        assert_eq!(state.source_arena().handle(castle), Some(castle_handle),
+            "declared prior Castle disappeared at collection turn{turn}: built={built_handle:?}/{built_typed:?}/{built_raw:?}, original={castle_handle:?}, before_raw={before_raw:?}, after_raw={:?}, paid_launch={paid_launch}, paid_debit={paid_debit}, claim={claim}, collector={collector:?}, credited={credited}, raw_history={castle_raw_history:?}, damage={castle_damage_history:?}, history={castle_history:?}",
+            state.entities()[usize::from(castle)]);
+        let mut defender_loads = before_defenders.iter().filter_map(|(&slot, &(handle, mana, _, _))|
+            handle.map(|handle| ((slot, handle.generation), mana)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // Reconstruct sphere amounts in event order for this source pass. A
+        // merge transfers only already-paid mana, not its unpaid neighbour.
+        let mut sphere_loads = before_spheres.iter().map(|(&slot, &(generation, _, mana))|
+            ((slot, generation), mana)).collect::<std::collections::BTreeMap<_, _>>();
+        let arrival_total = state.economy().events()[cursor..].iter().fold(0_i32, |sum, event| match event {
+            Level2EconomyEvent::CastleDefenderArrived { castle_id, mana, .. } if *castle_id == castle => sum.wrapping_add(*mana),
+            _ => sum,
+        });
+        let event_sphere_key = |id: u32| {
+            let slot = u16::try_from(id).ok()?;
+            let generation = state.economy().slot_generation(slot);
+            if before_spheres.get(&slot).is_some_and(|(before, _, _)| *before != generation) { return None; }
+            Some((slot, generation))
+        };
+        for event in &state.economy().events()[cursor..] {
+            if matches!(event, Level2EconomyEvent::ManaSphereClaimed { .. } | Level2EconomyEvent::ManaSpheresMerged { .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. } | Level2EconomyEvent::CastleDefenderArrived { .. }) {
+                mana_events.push((turn, *event));
+            }
+            match *event {
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index } if owner_entity_index == player => {
+                    if let Some(key) = event_sphere_key(sphere_id) && impact_targets.contains(&key) {
+                        let amount = *sphere_loads.get(&key).unwrap_or_else(|| panic!(
+                            "paid claim requires the actual ordered sphere payload: turn={turn}, key={key:?}, before={before_spheres:?}, events={mana_events:?}"));
+                        assert!(amount > 0, "paid claim must have positive source payload: turn={turn}, key={key:?}, amount={amount}, events={mana_events:?}");
+                        paid_lineage.insert(key, (amount, amount));
+                        claim = true;
+                    }
+                }
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, .. } => {
+                    if let Some(key) = event_sphere_key(sphere_id) { paid_lineage.remove(&key); }
+                }
+                Level2EconomyEvent::ManaSpheresMerged { target_sphere_id, source_sphere_id, owner_entity_index, mana } => {
+                    let target = event_sphere_key(target_sphere_id);
+                    let source = event_sphere_key(source_sphere_id);
+                    let touches_paid = paid_lineage.keys().any(|(slot, _)| u32::from(*slot) == target_sphere_id || u32::from(*slot) == source_sphere_id);
+                    let amounts = target.zip(source).and_then(|(target, source)|
+                        sphere_loads.get(&target).copied().zip(sphere_loads.get(&source).copied())
+                            .map(|(target_mana, source_mana)| (target, source, target_mana, source_mana)));
+                    if let Some((target, source, target_mana, source_mana)) = amounts && source_mana == mana {
+                        let merged = target_mana.checked_add(source_mana).expect("actual merged sphere payload fits i32");
+                        sphere_loads.insert(target, merged);
+                        sphere_loads.remove(&source);
+                        let target_paid = paid_lineage.remove(&target);
+                        let source_paid = paid_lineage.remove(&source);
+                        assert!(target_paid.is_none_or(|(_, expected)| expected == target_mana)
+                            && source_paid.is_none_or(|(_, expected)| expected == source_mana),
+                            "paid merge inputs must match their last verified totals: turn={turn}, target={target:?}/{target_paid:?}/{target_mana}, source={source:?}/{source_paid:?}/{source_mana}, events={mana_events:?}");
+                        let paid = target_paid.map_or(0, |(paid, _)| paid)
+                            .checked_add(source_paid.map_or(0, |(paid, _)| paid)).expect("paid merged subtotal fits i32");
+                        if paid > 0 && owner_entity_index == player && eligible.contains_key(&target) {
+                            assert!(paid <= merged, "paid subtotal cannot exceed actual merged payload: turn={turn}, paid={paid}, merged={merged}, events={mana_events:?}");
+                            paid_lineage.insert(target, (paid, merged));
+                        }
+                    } else {
+                        assert!(!touches_paid, "paid merge requires current generation and ordered payloads: turn={turn}, target={target:?}, source={source:?}, source_mana={mana}, loads={sphere_loads:?}, lineage={paid_lineage:?}, events={mana_events:?}");
+                        if let Some(target) = target { sphere_loads.remove(&target); }
+                        if let Some(source) = source { sphere_loads.remove(&source); }
+                    }
+                }
+                Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana } => {
+                    let defender = state.source_arena().handle(defender_slot);
+                    if let Some(handle) = defender && let Some(load) = defender_loads.get_mut(&(defender_slot, handle.generation)) {
+                        *load = load.wrapping_add(mana);
+                    }
+                    if let Some(key) = event_sphere_key(sphere_id) && let Some((paid_amount, expected)) = paid_lineage.remove(&key) {
+                        assert!(claim && paid_mailbox && mana > 0,
+                            "paid lineage must deliver positive source mana: turn={turn}, claim={claim}, paid_mailbox={paid_mailbox}, mana={mana}, key={key:?}, eligible={eligible:?}, before={before_sphere:?}, after={after_sphere:?}, defenders={before_defenders:?}, total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, events={mana_events:?}, possession={possession_history:?}, sphere_history={sphere_history:?}");
+                        assert_eq!(sphere_loads.get(&key), Some(&mana),
+                            "actual collection must match the ordered sphere payload: turn={turn}, key={key:?}, paid={paid_amount}, loads={sphere_loads:?}, events={mana_events:?}");
+                        assert_eq!(expected, mana, "paid sphere must retain its last verified payload until actual collection: turn={turn}, key={key:?}, paid={paid_amount}, events={mana_events:?}");
+                        assert!(paid_amount > 0 && paid_amount <= mana,
+                            "collector's paid subtotal must be positive and no larger than its actual payload: turn={turn}, key={key:?}, paid={paid_amount}, mana={mana}, events={mana_events:?}");
+                        let handle = defender.unwrap_or_else(|| panic!(
+                            "paid collection must retain its actual defender generation: turn={turn}, defender={defender_slot}, sphere={key:?}, mana={mana}, before={before_defenders:?}, events={mana_events:?}, possession={possession_history:?}"));
+                        collected.entry((handle.source_slot, handle.generation)).or_default().insert(key, paid_amount);
+                        collector = Some((handle, mana));
+                    }
+                }
+                Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                    if castle_id == castle && mana > 0 => {
+                        let Some(handle) = state.source_arena().handle(defender_slot) else { continue };
+                        let Some(payloads) = collected.get(&(handle.source_slot, handle.generation)) else { continue };
+                        let paid_payload = payloads.values().try_fold(0_i32, |sum, value| sum.checked_add(*value)).expect("actual paid collector payload fits i32");
+                        assert_eq!(defender_loads.get(&(handle.source_slot, handle.generation)).copied(), Some(mana),
+                            "source collector deposits its full current payload: turn={turn}, collected={collected:?}, before={before_defenders:?}, events={mana_events:?}, sphere_history={sphere_history:?}");
+                        assert!(paid_payload > 0 && mana >= paid_payload,
+                            "actual arriving defender must include its paid source payload: turn={turn}, mana={mana}, collected={collected:?}, events={mana_events:?}");
+                        assert_eq!(after_castle.map(|row| row.mana).zip(before_castle.map(|row| row.mana))
+                            .map(|(after, before)| after.wrapping_sub(before)), Some(arrival_total),
+                            "the real Castle must receive its source arrivals: turn={turn}, before={before_castle:?}, after={after_castle:?}, events={mana_events:?}");
+                        assert!(before_percent < 65 && percent(&game, player) >= 65,
+                            "actual collector credit must cross 65%: turn={turn}, total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, target_initial={sphere:?}, event_mana={mana}, before_percent={before_percent}, current_total={}, current_aggregate={}, percent={}, events={mana_events:?}, sphere_history={sphere_history:?}", state.economy().owner_mana_global(), state.economy().owner_mana_aggregate(player), percent(&game, player));
+                        let sampled_total = state.economy().owner_mana_global();
+                        let sampled_owned = state.economy().owner_mana_aggregate(player);
+                        let sampled_castle = after_castle.expect("the sampled Castle remains current").mana;
+                        let without_paid = sampled_owned.saturating_add(sampled_castle).checked_sub(paid_payload)
+                            .expect("paid subtotal fits the sampled Castle numerator");
+                        assert!(sampled_total > 0 && without_paid >= 0 && 100_i64 * i64::from(without_paid) / i64::from(sampled_total) < 65,
+                            "traced paid subtotal must be necessary at the real source objective sample: turn={turn}, sampled_total={sampled_total}, sampled_owned={sampled_owned}, sampled_castle={sampled_castle}, paid={paid_payload}, collected={collected:?}, events={mana_events:?}, sphere_history={sphere_history:?}");
+                        credited = true;
+                    }
+                _ => {}
+            }
+        }
+        cursor = state.economy().events().len();
+        if !credited {
+            assert!(percent(&game, player) < 65 && state.runtime().objectives[owner].stage_selectors[6] == 1,
+                "source 65% goal must remain incomplete before the traced positive collector credit: turn={turn}, percent={}, total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, eligible={eligible:?}, impacts={impact_targets:?}, lineage={paid_lineage:?}, collected={collected:?}, events={mana_events:?}, possession={possession_history:?}, sphere_history={sphere_history:?}", percent(&game, player));
+        }
+        if credited && receipt.groups[4] == 1 && receipt.groups[5] == 1 { break; }
+    }
+    let _ = crate::native_world::level2_dynamic_economy::take_possession_trace();
+    assert!(paid_launch && paid_debit && paid_mailbox && claim && retreated && collector.is_some() && credited,
+        "actual paid sphere claim and collector arrival must earn the 65 percent crossing: paid_launch={paid_launch}, paid_debit={paid_debit}, paid_mailbox={paid_mailbox}, claim={claim}, retreated={retreated}, collector={collector:?}, credited={credited}, total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, initial_sphere={sphere:?}, possession={possession_history:?}, events={mana_events:?}, sphere_history={sphere_history:?}, damage={castle_damage_history:?}, history={castle_history:?}");
+    assert_eq!(receipt.groups, [1; 6]);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..7], [2; 7]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    let (position, trigger) = receipt.exit.expect("actual level-complete switch publishes group18 exit");
+    receipt.carried_holder = None;
+    let sequence = sim(&game).level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        ordinary_step(&mut game, &mut receipt);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
 fn owner_level20_model27() -> (crate::native_world::Mc2Simulation, u16) {
     use crate::PlayerCommand;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
