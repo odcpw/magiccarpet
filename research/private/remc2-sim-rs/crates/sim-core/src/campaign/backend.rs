@@ -6153,6 +6153,11 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn actual_ommosyth_completion_returns_to_its_parent_with_carry() {
+        assert_actual_secret_completed_return(34, crate::native_world::tests::complete_ommosyth_source34_for_test);
+    }
+
+    #[test]
     fn abandoned_secret_return_preserves_parent_and_entry_carry() {
         use crate::game_runtime::{
             CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode,
