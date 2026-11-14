@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    AUDIO_VOICE_COUNT, AbiError, AbiResult, AudioVoice, MC_AUDIO_ACTION_RESTART,
-    MC_AUDIO_ACTION_START, MC_AUDIO_ACTION_SUPPRESS_EXISTING, MC_AUDIO_ACTION_SUPPRESS_NO_VOICE,
+    AUDIO_VOICE_COUNT, AbiError, AbiResult, AudioVoice, MC_AUDIO_ACTION_END_LOOP,
+    MC_AUDIO_ACTION_RESTART, MC_AUDIO_ACTION_START, MC_AUDIO_ACTION_SUPPRESS_EXISTING,
+    MC_AUDIO_ACTION_SUPPRESS_NO_EXISTING, MC_AUDIO_ACTION_SUPPRESS_NO_VOICE,
     MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED, MC_AUDIO_ACTION_UPDATE_EXISTING,
     MC_AUDIO_VOICE_NONE, MC_STATUS_BOUNDS, McAudioCommandV2, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
     positional_sound_should_replace,
@@ -70,7 +71,10 @@ pub(super) fn drain_pending_audio_commands(
         command.voice_index = voice_index;
         if matches!(
             command.action,
-            MC_AUDIO_ACTION_START | MC_AUDIO_ACTION_RESTART | MC_AUDIO_ACTION_UPDATE_EXISTING
+            MC_AUDIO_ACTION_START
+                | MC_AUDIO_ACTION_RESTART
+                | MC_AUDIO_ACTION_UPDATE_EXISTING
+                | MC_AUDIO_ACTION_END_LOOP
         ) {
             command.pooled_flush_rank = pooled_flush_rank;
             command.reserved[0] = pooled_flush_id as u32;
@@ -97,13 +101,30 @@ pub(super) fn allocate_audio_voice(
             voice.sound_id == command.sound_id && voice.sound_flags == command.sound_flags
         })
     });
+    // PlayEntitySounds_6E150 case 4 uses the ordinary finite sample with
+    // flags 0, centered pan and IfNotPlayingPlaySample. Its exact volume 512
+    // branch instead ends the current sample immediately. Keep the existing
+    // EndLoop action for this PrepareSound stop edge; unlike an EndLoop event,
+    // it retires the native voice before the following sound is admitted.
+    let is_finite_if_not_playing = matches!(command.sound_id, 47 | 49) && command.play_type == 4;
+    if is_finite_if_not_playing && command.volume_q15 == 512 {
+        return if let Some(index) = matching {
+            voices[index] = None;
+            (
+                MC_AUDIO_ACTION_END_LOOP,
+                u16::try_from(index).expect("ten voices fit u16"),
+            )
+        } else {
+            (MC_AUDIO_ACTION_SUPPRESS_NO_EXISTING, MC_AUDIO_VOICE_NONE)
+        };
+    }
     // `play_type` is the queued `EntitySounds.playType_0` value for
     // PrepareEventSound events (1 = restart-or-start, 3 = if-not-playing).
     // The four direct ambience loops retain the lower PlaySample enum
     // value 2 for if-not-playing.
     let is_direct_ambience_if_not_playing = matches!(command.sound_id, 1 | 2 | 5 | 31)
         && command.play_type == POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING;
-    if (command.play_type == 3 || is_direct_ambience_if_not_playing)
+    if (command.play_type == 3 || is_direct_ambience_if_not_playing || is_finite_if_not_playing)
         && let Some(index) = matching
     {
         return (

@@ -470,7 +470,7 @@ namespace MagicCarpet.Native
         private static bool IsSourceNameCharacter(char value) => value == ' ' ||
             value >= '0' && value <= '9' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z';
 
-        private static string SourceKeyName(string value)
+        internal static string SourceKeyName(string value)
         {
             if (!Enum.TryParse(value, true, out KeyCode key)) return value ?? string.Empty;
             return key switch {
@@ -488,7 +488,8 @@ namespace MagicCarpet.Native
                 KeyCode.A => "A ", KeyCode.F => "F ", KeyCode.G => "G ",
                 KeyCode.H => "H ", KeyCode.J => "J ", KeyCode.K => "K ",
                 KeyCode.Z => "Z ", KeyCode.X => "X ", KeyCode.B => "B ",
-                KeyCode.N => "N ", KeyCode.Minus => "- ", KeyCode.Semicolon => "; ",
+                KeyCode.N => "N ", KeyCode.Minus or KeyCode.Equals => "- ",
+                KeyCode.Semicolon => "; ", KeyCode.Backslash => "# ",
                 KeyCode.Comma => ", ", KeyCode.Period => ". ", KeyCode.Slash => "/ ",
             // Remaining schema-supported identifiers have no sub_79E10 glyph;
             // keep their readable enum spelling as a compatibility extension.

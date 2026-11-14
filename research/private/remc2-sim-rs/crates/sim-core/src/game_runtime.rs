@@ -3543,7 +3543,10 @@ mod tests {
             save_json["save_contract"],
             crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
         );
-        assert_eq!(save_json["operations"].as_array().unwrap().len(), 3);
+        let operations = save_json["operations"].as_array().unwrap();
+        assert_eq!(operations.iter().map(|operation| operation["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(), ["step", "step", "step", "pause"],
+            "the source pause operation follows the three replayed gameplay steps");
         assert_eq!(save_json["paused"], true);
         assert_eq!(save_json["expected_tick"], 3);
         assert_eq!(

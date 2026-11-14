@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -50,6 +51,12 @@ namespace MagicCarpet.Native
         }
 
         private readonly Func<string, PlayerPreferencesSnapshot> command;
+        private readonly Func<KeyCode, bool> keyHeld;
+        private readonly Func<KeyCode, bool> keyPressed;
+        private readonly Func<int, bool> mouseHeld;
+        private readonly Func<int, bool> mousePressed;
+        private readonly HashSet<KeyCode> releaseKeys = new();
+        private readonly HashSet<int> releaseMouseButtons = new();
         private PlayerPreferences draft;
         private readonly SourceSettingsDialog sourceSettingsDialog = new();
         private SourceSettingsDialog.Page page = SourceSettingsDialog.Page.Keys;
@@ -66,9 +73,15 @@ namespace MagicCarpet.Native
         internal float SteeringPitch => pitch;
 
         internal PlayerPreferencesPresenter(Func<string, PlayerPreferencesSnapshot> command, string profileDir,
-            PlayerPreferencesSnapshot installed = null)
+            PlayerPreferencesSnapshot installed = null, Func<KeyCode, bool> keyHeld = null,
+            Func<KeyCode, bool> keyPressed = null, Func<int, bool> mouseHeld = null,
+            Func<int, bool> mousePressed = null)
         {
             this.command = command ?? throw new ArgumentNullException(nameof(command));
+            this.keyHeld = keyHeld ?? (key => Input.GetKey(key));
+            this.keyPressed = keyPressed ?? (key => Input.GetKeyDown(key));
+            this.mouseHeld = mouseHeld ?? (button => Input.GetMouseButton(button));
+            this.mousePressed = mousePressed ?? (button => Input.GetMouseButtonDown(button));
             if (installed != null && !installed.installed)
                 throw new InvalidOperationException("preferences hydration requires an installed Rust profile");
             // A restored owner may already have its operational profile. Observe
@@ -113,6 +126,7 @@ namespace MagicCarpet.Native
             try { Synchronize(command("{\"operation\":\"cancel\"}")); }
             catch (Exception error) { status = error.Message; }
             // Closing is always possible, including an unavailable transport.
+            ArmInputReleaseBarrier(Current?.preferences, draft);
             draft = null;
             captureKey = -1;
             keyCaptureRejected = false;
@@ -124,7 +138,9 @@ namespace MagicCarpet.Native
             if (draft == null || keyCaptureRejected) return false;
             try
             {
+                var previous = Current.preferences;
                 Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = draft })));
+                ArmInputReleaseBarrier(previous, Current.preferences);
                 draft = null;
                 captureKey = -1;
                 sourceSettingsDialog.Close();
@@ -220,12 +236,63 @@ namespace MagicCarpet.Native
             KeyCode.G or KeyCode.H or KeyCode.I or KeyCode.J or KeyCode.K or KeyCode.L or
             KeyCode.M or KeyCode.N or KeyCode.O or KeyCode.Q or KeyCode.S or KeyCode.T or
             KeyCode.U or KeyCode.V or KeyCode.W or KeyCode.X or KeyCode.Y or KeyCode.Z or
+            KeyCode.Minus or KeyCode.Equals or KeyCode.Semicolon or KeyCode.Backslash or
+            KeyCode.Comma or KeyCode.Period or KeyCode.Slash or
             KeyCode.UpArrow or KeyCode.DownArrow or KeyCode.LeftArrow or KeyCode.RightArrow or
             KeyCode.Return or KeyCode.Space or KeyCode.LeftControl or KeyCode.RightControl or
             KeyCode.LeftShift or KeyCode.RightShift or KeyCode.LeftAlt or KeyCode.RightAlt;
 
-        internal bool Held(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKey(key);
-        internal bool Pressed(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKeyDown(key);
+        private void ArmInputReleaseBarrier(PlayerPreferences previous, PlayerPreferences next)
+        {
+            void AddKeys(PlayerPreferences preferences)
+            {
+                if (preferences?.keys == null) return;
+                foreach (var name in preferences.keys)
+                    if (Enum.TryParse<KeyCode>(name, out var key) && keyHeld(key)) releaseKeys.Add(key);
+            }
+            AddKeys(previous);
+            AddKeys(next);
+            foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.LeftAlt,
+                         KeyCode.JoystickButton0, KeyCode.JoystickButton1 })
+                if (keyHeld(key)) releaseKeys.Add(key);
+            for (var button = 0; button < 3; button++)
+                if (mouseHeld(button)) releaseMouseButtons.Add(button);
+        }
+
+        // Poll even outside flight, so a release in a title or pause menu is
+        // observed before a later independent press reaches the consumer.
+        internal void AdvanceInputReleaseBarrier()
+        {
+            releaseKeys.RemoveWhere(key => !keyHeld(key));
+            releaseMouseButtons.RemoveWhere(button => !mouseHeld(button));
+        }
+
+        internal bool KeyHeld(KeyCode key)
+        {
+            var held = keyHeld(key);
+            if (!held) releaseKeys.Remove(key);
+            return held && !releaseKeys.Contains(key);
+        }
+
+        private bool KeyPressed(KeyCode key)
+        {
+            if (!keyHeld(key)) releaseKeys.Remove(key);
+            return !releaseKeys.Contains(key) && keyPressed(key);
+        }
+
+        internal bool Held(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && KeyHeld(key);
+        internal bool Pressed(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && KeyPressed(key);
+        internal bool MouseHeld(int button)
+        {
+            var held = mouseHeld(button);
+            if (!held) releaseMouseButtons.Remove(button);
+            return held && !releaseMouseButtons.Contains(button);
+        }
+        private bool MousePressed(int button)
+        {
+            if (!mouseHeld(button)) releaseMouseButtons.Remove(button);
+            return !releaseMouseButtons.Contains(button) && mousePressed(button);
+        }
         private static bool HasJoystick()
         {
             foreach (var name in Input.GetJoystickNames()) if (!string.IsNullOrWhiteSpace(name)) return true;
@@ -238,9 +305,9 @@ namespace MagicCarpet.Native
             var prefs = Current.preferences;
             var frame = new InputFrame {
                 Forward = Held(0), Backward = Held(1), Left = Held(2), Right = Held(3),
-                CastLeft = Input.GetMouseButton(0), CastRight = Input.GetMouseButton(1),
-                CastSelected = Input.GetKeyDown(KeyCode.Space),
-                Recenter = Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2),
+                CastLeft = MouseHeld(0), CastRight = MouseHeld(1),
+                CastSelected = KeyPressed(KeyCode.Space),
+                Recenter = KeyPressed(KeyCode.C) || MousePressed(2),
                 FullStop = Input.GetKeyDown(KeyCode.Backspace),
             };
             var joystick = HasJoystick();
@@ -262,8 +329,8 @@ namespace MagicCarpet.Native
                 var dead = prefs.joystick_dead_zone / 100f;
                 roll = Mathf.Abs(x) <= dead ? 0 : x * 127f;
                 pitch = Mathf.Abs(y) <= dead ? 0 : y * (prefs.invert_mouse ? -127f : 127f);
-                frame.CastLeft |= Input.GetKey(KeyCode.JoystickButton0);
-                frame.CastRight |= Input.GetKey(KeyCode.JoystickButton1);
+                frame.CastLeft |= KeyHeld(KeyCode.JoystickButton0);
+                frame.CastRight |= KeyHeld(KeyCode.JoystickButton1);
             }
             if (frame.Recenter || frame.FullStop) Center();
             roll = Mathf.Clamp(roll, -128, 127);

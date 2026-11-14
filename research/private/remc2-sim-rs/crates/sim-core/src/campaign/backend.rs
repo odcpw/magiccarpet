@@ -1203,6 +1203,46 @@ struct Mc2SemanticSpellProgress {
     selected_tier: i8,
 }
 
+impl Mc2SemanticSpellCarry {
+    /// Validate the source-independent carry packet before publishing it as
+    /// retained campaign state. Destination allocation remains an entry-time
+    /// check; these invariants are required for every destination.
+    fn validate(&self) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        use crate::game_runtime::RuntimeTransitionError;
+
+        let invalid = |message: &str| RuntimeTransitionError::InvalidRuntimeFlow {
+            message: message.to_owned(),
+        };
+        let mut families = std::collections::BTreeSet::new();
+        for kind in &self.acquired {
+            let family = mc2_spell_family(*kind)
+                .ok_or_else(|| invalid("carried spell has no closed MC2 family"))?;
+            if !families.insert(family) {
+                return Err(invalid("carried spell families are duplicated"));
+            }
+        }
+        if let Some(kind) = self.selected {
+            let family = mc2_spell_family(kind)
+                .ok_or_else(|| invalid("carried selected spell has no closed MC2 family"))?;
+            if !families.contains(&family) {
+                return Err(invalid("carried selected spell is not learned"));
+            }
+        }
+        let mut progress_families = std::collections::BTreeSet::new();
+        for entry in &self.progression {
+            let family = mc2_spell_family(entry.spell)
+                .ok_or_else(|| invalid("carried progression has no MC2 spell family"))?;
+            if !progress_families.insert(family)
+                || !(0..=2).contains(&entry.unlocked_tier)
+                || !(0..=entry.unlocked_tier).contains(&entry.selected_tier)
+            {
+                return Err(invalid("invalid carried spell progression"));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Mc2PendingSpellCarry {
     session_generation: u64,
@@ -2356,6 +2396,9 @@ impl Mc2RuntimePackageResolver {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
                     message: "campaign carry has no retained destination".to_owned(),
                 });
+            }
+            if let Some(carry) = &save.semantic_spell_carry {
+                carry.validate().map_err(Mc2CampaignReplaySaveError::Runtime)?;
             }
             if let Some(destination) = destination.as_ref() {
                 let expected_destination = save
@@ -4470,6 +4513,7 @@ impl Mc2CampaignBackend {
         &mut self,
         carry: &Mc2SemanticSpellCarry,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        carry.validate()?;
         // Replay saves retain the semantic entry spell state, while a
         // freshly opened bound package may already contain that exact state.
         // Treat an equivalent installation as observationally inert: the
@@ -7362,6 +7406,44 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert_eq!(restored.identity().mode, RuntimeMode::Title);
+        // A valid envelope digest must not publish a carry that the next
+        // destination is guaranteed to reject. Preserve the receiving owner
+        // and its retained save across each malformed structural packet.
+        let before_identity = restored.identity();
+        let before_save = resolver.save_replay(&restored).unwrap();
+        let first_spell = *carry.acquired.first().expect("actual entry has a learned spell");
+        let mut duplicate_family: Mc2CampaignMapSave = serde_json::from_slice(&bytes).unwrap();
+        duplicate_family.semantic_spell_carry.as_mut().unwrap().acquired.push(first_spell);
+        let missing_spell = (0..26_u8).filter_map(mc2_spell_kind_for_family)
+            .find(|spell| !carry.acquired.contains(spell))
+            .expect("entry leaves at least one source family unlearned");
+        let mut invalid_selection: Mc2CampaignMapSave = serde_json::from_slice(&bytes).unwrap();
+        invalid_selection.semantic_spell_carry.as_mut().unwrap().selected = Some(missing_spell);
+        let mut invalid_tier: Mc2CampaignMapSave = serde_json::from_slice(&bytes).unwrap();
+        invalid_tier.semantic_spell_carry.as_mut().unwrap().progression = vec![Mc2SemanticSpellProgress {
+            spell: first_spell,
+            persistent_experience: 0,
+            runtime_experience: 0,
+            unlocked_tier: 0,
+            selected_tier: 1,
+        }];
+        let mut duplicate_progress: Mc2CampaignMapSave = serde_json::from_slice(&bytes).unwrap();
+        let progress = Mc2SemanticSpellProgress {
+            spell: first_spell,
+            persistent_experience: 0,
+            runtime_experience: 0,
+            unlocked_tier: 0,
+            selected_tier: 0,
+        };
+        duplicate_progress.semantic_spell_carry.as_mut().unwrap().progression = vec![progress.clone(), progress];
+        for mut malformed in [duplicate_family, invalid_selection, invalid_tier, duplicate_progress] {
+            malformed.receipt_sha256 = malformed.compute_receipt_sha256();
+            assert!(resolver.load_replay(&mut restored, guard, 7113, &serde_json::to_vec(&malformed).unwrap()).is_err(),
+                "a re-digested but invalid carry must fail before campaign publication");
+            assert_eq!(restored.identity(), before_identity);
+            assert_eq!(resolver.save_replay(&restored).unwrap(), before_save);
+            assert!(!resolver.pending_spell_carries.lock().unwrap().contains_key(&7113));
+        }
         resolver
             .load_replay(&mut restored, guard, 7113, &bytes)
             .unwrap();
