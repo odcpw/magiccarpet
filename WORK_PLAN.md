@@ -982,12 +982,21 @@ the initial69 gate sent only one65535 contact and failed on a still-living
 House. Corrected contacts wait for each real source mailbox to be consumed,
 without changing HP, damage rules, stages or lifetimes. Local `b03a641e`,
 remote Original `d94bff4d`; test-only, native2d3d unchanged. Four original
-parent entries now pass. The only remaining entry is Ammyridia20/source19→
-Ommosyth34. Its normal old MCI3v2 package lacks BUILD44/45 after43; a fresh
-whole package and qualified cache are prepared under
-`ammyridia-source-closure-20261114/`, not yet installed. Actual Hydra
-objective→group7→House24/43→44→45→group8 must still pass.
-Fixture-parent checks alone do not prove those original portal producers.
+parent entries now pass in70. Ammyridia20/source19→Ommosyth34 now passes52.15s
+on74 using the existing release profile: real Wyvern absence/Hydra death→
+whole group7→House24 BUILD43→44→45→whole group8 controller25/portal26→
+secret completion→statistics/cold parent/carry. Contacts repeat after the
+actual mailbox clears; this is not an independent exact contact-count census.
+The ordinary regression passes185.19s on72. Its old MCI3v2 package lacked
+BUILD44/45; the fresh unmodified whole MCI3v4 package and2172-output qualified
+cache under `ammyridia-source-closure-20261114/` now occupy normal launcher
+entry20. Actual installed native29688f opens/destroys them0.879s; normal
+30-resource/default-new-game routing passes0.222s. Local `fab8e3c3`, remote
+Original `b33b0f9b`, no Unity/native rebuild for this content/test-only batch.
+All five original parent-entry paths now have controlled connected proofs,
+in addition to the five fixture-parent paths. Declared frontier, inventory,
+arrived contacts and poses are not normal movement or earned campaign proof.
+The full `mc-6qf.4` acceptance remains open.
 
 Fresh bounded post-fix source/receipt review at `e7e8ab87` found no further
 concrete defect in reset Dragon adoption/schedule/presentation, controlled
@@ -1007,7 +1016,21 @@ pass. A short source chronology now isolates real player/NPC death and holder
 release before repeating the long prefix. Package NPC A4 addresses initially
 point to actual holders; source grounded death intentionally replaces nonzero
 relations with1. Final index1 alone cannot establish an initializer or NPC-
-alias defect.
+alias defect. Fixed-retreat short73 passes134.21s, with actual player life
+and original carried holder retained through the first Castle loss and128
+following turns. Full release74 fails222.59s at actor531 because the gate
+expected an inactive row's model to be zero. Source Events.cpp sub57F20 clears
+class only and retains model/action; the actual class0/model9/action14 row
+is valid. The gate is being corrected to require exact source draw-disable
+write and retained packet/identity rather than invented zeroing. Frozen75
+passes all seven Castle-loss paths, including the exact raw-packet writes and
+live-holder reclaim, then fails531.16s because the declared local Castle597,
+generation1 is no longer current during paid collection. No pre-turn Castle
+state or destruction events were retained at that failure, so its cause is
+not yet established. The owner is tracing actual damage/stage/destruction/
+reclaim in a shorter source path and adding those receipts to the full gate
+before another long prefix. No mission pass, HP/AI/timer change, inferred
+Castle repair or repaired runtime is claimed from these negatives.
 
 Independent source diagnosis found a real shared carry consumer mismatch:
 CollectLevelStats preserves learned ownership from persistent0x3E9 OR nonzero
