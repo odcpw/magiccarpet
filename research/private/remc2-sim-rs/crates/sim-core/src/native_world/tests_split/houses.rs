@@ -1,4 +1,238 @@
 #[test]
+fn darklava_actual_house_chains_creatures_and_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use crate::native_world::player_lifecycle_tests::{
+        RivalTestGame, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step,
+    };
+    use std::collections::BTreeSet;
+
+    #[derive(Default)]
+    struct Groups {
+        counts: [usize; 4],
+        house_producer: Option<u16>,
+        trigger: Option<(u16, Position)>,
+        portal: Option<u16>,
+    }
+    fn visit(game: &mut RivalTestGame, groups: &mut Groups) {
+        step(game);
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            let Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. } = event else { continue };
+            let expected = match *group {
+                7 if authored_indices.contains(&335) => Some((0, 45)),
+                11 if authored_indices.contains(&338) => Some((1, 34)),
+                23 if authored_indices.contains(&404) => Some((2, 32)),
+                24 if authored_indices.contains(&412) => Some((3, 4)),
+                _ => None,
+            };
+            let Some((index, model)) = expected else { continue };
+            groups.counts[index] += 1;
+            let producer = &state.entities()[usize::from(*source_slot)];
+            if *group == 7 {
+                assert_eq!((producer.class, producer.model), (10, 45));
+                assert!(state.ordinary().houses().iter().any(|house| house.entity_index == *source_slot
+                    && house.building_index == 28 && house.xtype == 7),
+                    "final House304 form publishes group7 from its real xtype");
+                groups.house_producer = Some(*source_slot);
+            } else if *group == 11 {
+                let switch = state.economy().authored_switch_producers().iter()
+                    .find(|row| row.source_entity_index == *source_slot && row.authored_index == 336)
+                    .expect("actual group7 countdown switch336");
+                assert_eq!((switch.source_class, switch.model, switch.action, switch.stage_tag),
+                    (11, 34, 34, 11));
+            } else {
+                assert_eq!((producer.class, producer.model, producer.source_id), (11, model, *group));
+            }
+            if *group == 23 {
+                assert_eq!(producer.level_gate, 3);
+                assert!([91, 93, 95, 98, 100, 102, 105, 402, 403, 404, 405, 406, 407, 408, 409, 410, 468, 469, 470, 524]
+                    .into_iter().all(|row| authored_indices.contains(&row)), "complete actual group23");
+            }
+            if *group == 24 {
+                assert!(authored_indices.contains(&413));
+                let trigger = state.economy().authored_switch_producers().iter()
+                    .find(|row| row.authored_index == 412 && (row.model, row.action) == (12, 12))
+                    .expect("actual group24 exit412");
+                let portal = state.economy().authored_class14().iter()
+                    .find(|row| row.authored_index == 413 && row.model == 3)
+                    .expect("actual group24 portal413");
+                groups.trigger = Some((trigger.source_entity_index, trigger.position));
+                groups.portal = Some(portal.source_entity_index);
+            }
+        }
+    }
+    fn target(game: &RivalTestGame, authored: u16) -> SourceEntityHandle {
+        sim(game).creature_runtime_census().roots_of_kind(CreatureKind::Creature18)
+            .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: authored }))
+            .unwrap_or_else(|| panic!("actual living model18 authored{authored}"))
+            .handle
+    }
+    fn contact(game: &mut RivalTestGame, player: u16, handle: SourceEntityHandle) {
+        assert_eq!(sim(game).source_arena().handle(handle.source_slot), Some(handle));
+        area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+    }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL16_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("darklava-source-closure-20261114/level16"));
+    let cache = std::env::var_os("MC_LEVEL16_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("darklava-source-closure-20261114/environment"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let objectives = definition.level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 5);
+    assert!(matches!(objectives[0].condition(), ObjectiveCondition::TargetDeathWithoutFont(_)));
+    assert!(matches!(objectives[1].condition(), ObjectiveCondition::TargetDeath(_)));
+    assert!(matches!(objectives[2].condition(), ObjectiveCondition::TargetDeath(_)));
+    assert_eq!(objectives[3].condition(), ObjectiveCondition::NoStandingBuildings);
+    assert_eq!(objectives[4].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature24));
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2216,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [1; 5]);
+    let mut groups = Groups::default();
+    // Selected arrived damage follows actual target304 through each source
+    // conversion; the type2 predicate reads the last dead form's font byte.
+    let mut target_stages = Vec::new();
+    let mut target_last_slot = None;
+    let mut struck_houses = BTreeSet::new();
+    for _ in 0..512 {
+        if sim(&game).runtime().objectives[owner].stage_selectors[0] == 2 { break; }
+        if let RuntimeRelation::LiveEntity(slot) = sim(&game).runtime().stages[0].relation {
+            if let Some(house) = sim(&game).ordinary().houses().iter()
+                .find(|row| row.active && row.action == 52 && row.entity_index == slot).copied()
+            {
+                let handle = sim(&game).source_arena().handle(slot).unwrap();
+                if struck_houses.insert((handle.source_slot, handle.generation)) {
+                    target_stages.push(house.building_index);
+                    target_last_slot = Some(slot);
+                    assert!(sim_mut(&mut game).session.state.live.ordinary.houses
+                        .submit_source_damage(slot, u16::MAX, player));
+                }
+            }
+        }
+        visit(&mut game, &mut groups);
+    }
+    assert_eq!(target_stages, [23, 24, 28]);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+
+    // Objective0 can observe negative life before the next action53 visit;
+    // the actual final House xtype then publishes group7 before its hide tail.
+    for _ in 0..128 { if groups.counts[0] != 0 { break; } visit(&mut game, &mut groups); }
+    assert_eq!(groups.counts[0], 1, "final House304 form publishes group7");
+    assert_eq!(groups.house_producer, target_last_slot);
+    let first = target(&game, 335);
+    assert_eq!(sim(&game).runtime().stages[1].relation, RuntimeRelation::LiveEntity(first.source_slot));
+    contact(&mut game, player, first);
+    for _ in 0..256 { if groups.counts[1] != 0 { break; } visit(&mut game, &mut groups); }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 2);
+    assert_eq!(groups.counts[1], 1, "model18 absence countdown publishes group11");
+    assert!(sim(&game).source_arena().resolve(first).is_none());
+    let second = target(&game, 338);
+    assert_eq!(sim(&game).runtime().stages[2].relation, RuntimeRelation::LiveEntity(second.source_slot));
+    contact(&mut game, player, second);
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        if sim(&game).runtime().objectives[owner].stage_selectors[2] == 2
+            && sim(&game).source_arena().resolve(second).is_none() { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2, 2, 2, 1]);
+    assert!(sim(&game).source_arena().resolve(second).is_none());
+
+    // Only the five selected BUILD18 chains (18->21->54) participate in
+    // kind9. Leave one actual standing chain as the negative control.
+    let initial = sim(&game).campaign_building_objective_targets(3);
+    assert_eq!(initial.len(), 5);
+    let survivor_position = initial[0].1;
+    for leave_one in [true, false] {
+        for _ in 0..768 {
+            let targets = sim(&game).campaign_building_objective_targets(3);
+            if leave_one && !targets.is_empty() && targets.iter().all(|(_, position)|
+                (position.x, position.y) == (survivor_position.x, survivor_position.y)) { break; }
+            if !leave_one && groups.counts[2] == 1 { break; }
+            for (slot, position) in targets {
+                if leave_one && (position.x, position.y) == (survivor_position.x, survivor_position.y) { continue; }
+                let house = sim(&game).ordinary().houses().iter().find(|row|
+                    row.active && row.action == 52 && row.entity_index == slot).copied();
+                if let Some(house) = house {
+                    assert!([18, 21, 54].contains(&house.building_index));
+                    let handle = sim(&game).source_arena().handle(slot).unwrap();
+                    if struck_houses.insert((handle.source_slot, handle.generation)) {
+                        assert!(sim_mut(&mut game).session.state.live.ordinary.houses
+                            .submit_source_damage(slot, u16::MAX, player));
+                    }
+                }
+            }
+            visit(&mut game, &mut groups);
+            if leave_one { assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[3], 1); }
+        }
+        if leave_one {
+            let remaining = sim(&game).campaign_building_objective_targets(3);
+            assert!(!remaining.is_empty() && remaining.iter().all(|(_, position)|
+                (position.x, position.y) == (survivor_position.x, survivor_position.y)));
+            assert_eq!(groups.counts[2], 0);
+        }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [2, 2, 2, 2, 1]);
+    assert_eq!(groups.counts[2], 1);
+    let survivor = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Creature24)
+        .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 404 }))
+        .expect("actual group23 model24 row404").handle;
+    let mut seen = BTreeSet::new();
+    let mut struck = BTreeSet::new();
+    for leave_one in [true, false] {
+        for _ in 0..768 {
+            let roots = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Creature24)
+                .map(|row| (row.handle, row.living)).collect::<Vec<_>>();
+            for (handle, living) in roots {
+                seen.insert((handle.source_slot, handle.generation));
+                if living && (!leave_one || handle != survivor)
+                    && struck.insert((handle.source_slot, handle.generation)) { contact(&mut game, player, handle); }
+            }
+            visit(&mut game, &mut groups);
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[4], 1);
+                if seen.iter().all(|&(slot, generation)| {
+                    let handle = SourceEntityHandle { source_slot: slot, generation };
+                    handle == survivor || sim(&game).source_arena().resolve(handle).is_none()
+                }) { break; }
+            } else if groups.counts[3] == 1 && seen.iter().all(|&(slot, generation)|
+                sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()) { break; }
+        }
+        if leave_one {
+            assert!(sim(&game).creature_identity_for_source_slot(survivor.source_slot)
+                .is_some_and(|row| row.handle == survivor && row.living));
+            assert!(seen.iter().all(|&(slot, generation)| {
+                let handle = SourceEntityHandle { source_slot: slot, generation };
+                handle == survivor || sim(&game).source_arena().resolve(handle).is_none()
+            }));
+            assert_eq!(groups.counts[3], 0, "one living model24 blocks exit production");
+        }
+    }
+    assert!(seen.iter().all(|&(slot, generation)|
+        sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [2; 5]);
+    assert_eq!(groups.counts, [1; 4]);
+    let (trigger, position) = groups.trigger.expect("actual exit412");
+    let portal = groups.portal.expect("actual portal413");
+    let exit = sim(&game).level_exit_sequence();
+    if !exit.active && !exit.complete { sim_mut(&mut game).set_level2_entity_position(player, position).unwrap(); }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        visit(&mut game, &mut groups);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    let exit = sim(&game).level_exit_sequence();
+    assert_eq!((exit.trigger_entity_index, exit.portal_entity_index), (trigger, portal));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn level11_tropolos_reach_house_chain_creatures_and_exit() {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::campaign::schedule::ScheduleReceipt;

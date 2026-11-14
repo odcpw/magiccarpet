@@ -69,6 +69,7 @@ def default_campaign_resources():
         11: 'tropolos-source-closure-20261113/level11',
         12: 'archer-20261105-integration/level12-owner-current/level12',
         13: 'volcano-quake-20261104-integration/current-owner-package/level13',
+        16: 'darklava-source-closure-20261114/level16',
         17: f'{environments}/level17-package',
         18: 'all-spells-20261104-integration/current-owner-package/level18',
         22: 'volcano-quake-20261104-integration/current-owner-package/level22',
@@ -84,6 +85,7 @@ def default_campaign_resources():
         5: 'secret-lifecycle-20261111-source4-environment',
         7: f'{environments}/level7-complete',
         11: 'tropolos-source-closure-20261113/environment',
+        16: 'darklava-source-closure-20261114/environment',
         17: f'{environments}/level17-complete',
         25: 'dragon-bee-20261105-integration/current-level25-environment',
     }
