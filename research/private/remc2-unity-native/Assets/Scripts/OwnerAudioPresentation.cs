@@ -1262,6 +1262,7 @@ namespace MagicCarpet.Native
             NativeSim.AudioCommand command,
             bool reportCompletion)
         {
+            var finiteIfNotPlaying = command.playType == NativeSim.AudioEntitySoundFiniteIfNotPlaying;
             var minimumRateDelta = command.soundId == 46 ? -10 :
                 command.soundId >= 42 && command.soundId <= 44 ? -15 : 0;
             var maximumRateDelta = command.soundId == 46 ? 29 :
@@ -1272,11 +1273,12 @@ namespace MagicCarpet.Native
                 command.rateDeltaPercent <= maximumRateDelta,
                 $"sound ID {command.soundId} bounded positional values");
 
-            if (command.action == NativeSim.AudioActionSuppressExisting)
+            if (command.action == NativeSim.AudioActionSuppressNoVoice ||
+                command.action == NativeSim.AudioActionSuppressDistanceOrVolume ||
+                command.action == NativeSim.AudioActionSuppressPendingReplaced)
             {
-                Require(command.voiceIndex < positionalVoices.Length,
-                    $"sound ID {command.soundId} existing voice index");
-                positionalVoices[command.voiceIndex].SuppressedExisting++;
+                Require(command.voiceIndex == NativeSim.AudioVoiceNone,
+                    $"sound ID {command.soundId} suppressed command has no voice");
                 Debug.Log(
                     $"MC_AUDIO_POSITIONAL_SUPPRESS generation={nativeEvent.generation} " +
                     $"sequence={nativeEvent.sequence} id={command.soundId} " +
@@ -1284,12 +1286,39 @@ namespace MagicCarpet.Native
                     $"panQ16={command.panQ16}");
                 return;
             }
-            if (command.action == NativeSim.AudioActionSuppressNoVoice ||
-                command.action == NativeSim.AudioActionSuppressDistanceOrVolume ||
-                command.action == NativeSim.AudioActionSuppressPendingReplaced)
+
+            if (finiteIfNotPlaying && command.volumeQ15 == 512)
             {
-                Require(command.voiceIndex == NativeSim.AudioVoiceNone,
-                    $"sound ID {command.soundId} suppressed command has no voice");
+                if (command.action == NativeSim.AudioActionSuppressNoExisting)
+                {
+                    Require(command.voiceIndex == NativeSim.AudioVoiceNone,
+                        $"sound ID {command.soundId} stop without an existing voice");
+                    return;
+                }
+                Require(command.action == NativeSim.AudioActionEndLoop &&
+                    command.voiceIndex < positionalVoices.Length,
+                    $"sound ID {command.soundId} exact-volume source sample stop");
+                var stopped = positionalVoices[command.voiceIndex];
+                if (!stopped.WasPlaying && stopped.Source.clip == null) return;
+                Require(stopped.SoundId == command.soundId &&
+                    stopped.Generation == command.generation &&
+                    stopped.EventSequence < command.eventSequence && !stopped.Source.loop,
+                    $"sound ID {command.soundId} stop owns its finite device voice");
+                // The native case-4 admission has already retired this voice.
+                // An acknowledgement here could release a newer sound admitted
+                // to the same index by the following source flush.
+                stopped.Source.Stop();
+                RetirePositionalVoice(stopped);
+                Debug.Log($"MC_AUDIO_FINITE_STOP generation={command.generation} " +
+                    $"sequence={command.eventSequence} id={command.soundId} voice={command.voiceIndex}");
+                return;
+            }
+
+            if (command.action == NativeSim.AudioActionSuppressExisting)
+            {
+                Require(command.voiceIndex < positionalVoices.Length,
+                    $"sound ID {command.soundId} existing voice index");
+                positionalVoices[command.voiceIndex].SuppressedExisting++;
                 Debug.Log(
                     $"MC_AUDIO_POSITIONAL_SUPPRESS generation={nativeEvent.generation} " +
                     $"sequence={nativeEvent.sequence} id={command.soundId} " +
@@ -1323,7 +1352,8 @@ namespace MagicCarpet.Native
             }
 
             var volumeUnits = command.volumeQ15 >> 8;
-            var panUnits = 127 * (uint)command.panQ16 / 0xffff;
+            // Source play type 4 bypasses positional pan in PlayEntitySounds.
+            var panUnits = finiteIfNotPlaying ? 64u : 127 * (uint)command.panQ16 / 0xffff;
             var volume = volumeUnits / 127f;
             var leftGain = volume * (127f - panUnits) / 127f;
             var rightGain = volume * panUnits / 127f;
@@ -1441,7 +1471,10 @@ namespace MagicCarpet.Native
                 command.playerIndex == nativeEvent.playerIndex &&
                 (command.playType == NativeSim.AudioEntitySoundRestartOrStart ||
                  command.playType == NativeSim.AudioPlayIfNotPlaying ||
-                 command.playType == NativeSim.AudioEntitySoundIfNotPlaying) &&
+                 command.playType == NativeSim.AudioEntitySoundIfNotPlaying ||
+                 (command.playType == NativeSim.AudioEntitySoundFiniteIfNotPlaying &&
+                    (expectedSoundId == 47 || expectedSoundId == 49) &&
+                    playClass == "one_shot" && command.soundFlags == 0)) &&
                 command.loopCount == expectedLoopCount &&
                 command.pooledFlushRank <= 70 &&
                 command.reserved != null &&
@@ -1467,17 +1500,22 @@ namespace MagicCarpet.Native
                 var generation = state.Generation;
                 var sequence = state.EventSequence;
                 var notify = state.CompletionPending;
-                state.Source.clip = null;
-                if (state.RenderedClip != null)
-                    DestroyOwnedObject(state.RenderedClip);
-                state.RenderedClip = null;
-                state.SoundId = -1;
-                state.Generation = 0;
-                state.EventSequence = 0;
-                state.WasPlaying = false;
-                state.CompletionPending = false;
+                RetirePositionalVoice(state);
                 if (notify) voiceCompleted(generation, index, sequence);
             }
+        }
+
+        private static void RetirePositionalVoice(PositionalVoice state)
+        {
+            state.Source.clip = null;
+            if (state.RenderedClip != null)
+                DestroyOwnedObject(state.RenderedClip);
+            state.RenderedClip = null;
+            state.SoundId = -1;
+            state.Generation = 0;
+            state.EventSequence = 0;
+            state.WasPlaying = false;
+            state.CompletionPending = false;
         }
 
         private static float PanUnitsToStereo(uint panUnits)
@@ -1509,6 +1547,19 @@ namespace MagicCarpet.Native
             ValidateAudioCommand(nativeEvent, command, row.play_class, soundId);
             if (command.action == NativeSim.AudioActionSuppressNoExisting)
                 return;
+            if (soundId == 47 || soundId == 49)
+            {
+                Require(command.action == NativeSim.AudioActionEndLoop &&
+                    command.voiceIndex < positionalVoices.Length,
+                    $"EndLoop sound ID {soundId} finite shared voice index");
+                // EndLoop_6EAB0 requests target 0 with multiplier 4, but the
+                // pinned FadeSamples_8F4B0 skips loop_count == 0. These samples
+                // finish naturally; only case-4 volume 512 stops them early.
+                Debug.Log($"MC_AUDIO_FINITE_END_REQUEST generation={command.generation} " +
+                    $"sequence={command.eventSequence} id={soundId} voice={command.voiceIndex} " +
+                    "timerMultiplier=4 fadeEligible=false");
+                return;
+            }
             var found = loops.TryGetValue(soundId, out var state);
             Require(
                 command.action == NativeSim.AudioActionEndLoop &&

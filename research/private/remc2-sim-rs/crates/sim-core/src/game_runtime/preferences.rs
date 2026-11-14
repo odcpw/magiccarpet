@@ -45,6 +45,13 @@ pub enum InputKey {
     X,
     Y,
     Z,
+    Minus,
+    Equals,
+    Semicolon,
+    Backslash,
+    Comma,
+    Period,
+    Slash,
     UpArrow,
     DownArrow,
     LeftArrow,
@@ -1192,7 +1199,11 @@ mod tests {
         );
         let mut prefs = PlayerPreferences::default();
         prefs.player_name = "Oliver".into();
-        prefs.keys[0] = InputKey::W;
+        prefs.keys = [
+            InputKey::W, InputKey::Minus, InputKey::Equals, InputKey::Semicolon,
+            InputKey::Backslash, InputKey::Comma, InputKey::Period, InputKey::Slash,
+            InputKey::RightShift, InputKey::LeftAlt,
+        ];
         prefs.sound_volume = 63;
         prefs.show_help = false;
         prefs.reflections = false;
@@ -1236,6 +1247,8 @@ mod tests {
             store.snapshot().preferences
         );
         assert_eq!(cold.snapshot().preferences.player_name, "OLIVER");
+        assert_eq!(cold.snapshot().preferences.keys, store.snapshot().preferences.keys,
+            "source punctuation bindings survive a cold profile load");
         assert!(!cold.snapshot().preferences.dynamic_lighting);
         assert_eq!(fs::read(&save).unwrap(), b"existing campaign save");
         fs::remove_file(path).unwrap();

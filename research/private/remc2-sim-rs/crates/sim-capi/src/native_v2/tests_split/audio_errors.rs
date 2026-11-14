@@ -658,6 +658,125 @@ fn session_audio_sidecar_is_keyed_to_event_generation_and_cleared_on_reset() {
 }
 
 #[test]
+fn finite_source_sounds_reuse_stop_complete_and_reset_the_exact_shared_voice() {
+    let mut commands = std::collections::BTreeMap::new();
+    let mut voices = [None; AUDIO_VOICE_COUNT];
+    let mut sequence = 0;
+    for sound_id in [47, 49] {
+        let prepared = sim_core::prepare_event_sound_command(
+            Position::default(),
+            0,
+            Position {
+                x: 1_024,
+                ..Position::default()
+            },
+            sound_id,
+            0,
+            321,
+            7,
+        )
+        .expect("real source preparation admits the finite terrain/tornado sample");
+        assert_eq!(prepared.play_type, 4);
+        assert_eq!(prepared.command.sound_flags, 0);
+        let make_command = |event_sequence| {
+            audio_command_record(
+                7,
+                event_sequence,
+                123,
+                u32::from(sound_id),
+                sound_id,
+                321,
+                -1,
+                prepared.command,
+                prepared.play_type,
+            )
+        };
+        sequence += 1;
+        let start_sequence = sequence;
+        commands.insert(sequence, make_command(sequence));
+        super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+        let start = commands[&sequence];
+        assert_eq!(
+            (start.action, start.voice_index, start.loop_count),
+            (MC_AUDIO_ACTION_START, 0, 0)
+        );
+        assert_eq!(voices[0].unwrap().event_sequence, start_sequence);
+        for _ in 0..AUDIO_VOICE_COUNT + 1 {
+            sequence += 1;
+            commands.insert(sequence, make_command(sequence));
+            super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+            assert_eq!(
+                commands[&sequence].action,
+                MC_AUDIO_ACTION_SUPPRESS_EXISTING
+            );
+            assert_eq!(commands[&sequence].voice_index, 0);
+            assert_eq!(voices.iter().flatten().count(), 1);
+            assert_eq!(voices[0].unwrap().event_sequence, start_sequence);
+        }
+        // Natural completion acknowledges the start, never a later suppressed
+        // preparation or an EndLoop target request for this finite sample.
+        assert!(super::audio_voice_pool::complete_audio_voice(&mut voices, 0, sequence).is_err());
+        super::audio_voice_pool::complete_audio_voice(&mut voices, 0, start_sequence).unwrap();
+        assert!(voices.iter().all(Option::is_none));
+
+        sequence += 1;
+        commands.insert(sequence, make_command(sequence));
+        super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+        let stopped_start = sequence;
+        sequence += 1;
+        let mut stop = make_command(sequence);
+        stop.volume_q15 = 512;
+        commands.insert(sequence, stop);
+        super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+        assert_eq!(
+            (commands[&sequence].action, commands[&sequence].voice_index),
+            (MC_AUDIO_ACTION_END_LOOP, 0)
+        );
+        assert_eq!(
+            commands[&sequence].pooled_flush_rank, 1,
+            "the device stop must be consumed in its source flush, after an earlier queued start"
+        );
+        assert!(voices.iter().all(Option::is_none));
+        assert!(
+            super::audio_voice_pool::complete_audio_voice(&mut voices, 0, stopped_start).is_err(),
+            "source EndSample already retired the voice; the device must not complete it again"
+        );
+
+        sequence += 1;
+        commands.insert(sequence, make_command(sequence));
+        super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+        assert_eq!(commands[&sequence].action, MC_AUDIO_ACTION_START);
+        assert_eq!(voices[0].unwrap().event_sequence, sequence);
+        super::audio_voice_pool::complete_audio_voice(&mut voices, 0, sequence).unwrap();
+        sequence += 1;
+        let mut stop_without_voice = make_command(sequence);
+        stop_without_voice.volume_q15 = 512;
+        commands.insert(sequence, stop_without_voice);
+        super::audio_voice_pool::drain_pending_audio_commands(&mut commands, &mut voices);
+        assert_eq!(
+            (commands[&sequence].action, commands[&sequence].voice_index),
+            (MC_AUDIO_ACTION_SUPPRESS_NO_EXISTING, MC_AUDIO_VOICE_NONE)
+        );
+    }
+
+    let handle = open_fixture();
+    with_session_mut(handle, |session| {
+        session.audio_commands = commands;
+        session.audio_voices[0] = Some(AudioVoice {
+            sound_id: 47,
+            sound_flags: 0,
+            event_sequence: sequence,
+        });
+        session.reset();
+        assert!(session.audio_voices.iter().all(Option::is_none));
+        assert!(session.audio_commands.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn pending_slot_and_ten_voice_lifecycle_match_original_arbitration() {
     fn command(
         sequence: u64,

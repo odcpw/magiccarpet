@@ -126,6 +126,7 @@ namespace MagicCarpet.Native
         internal const byte AudioEntitySoundRestartOrStart = 1;
         internal const byte AudioPlayIfNotPlaying = 2;
         internal const byte AudioEntitySoundIfNotPlaying = 3;
+        internal const byte AudioEntitySoundFiniteIfNotPlaying = 4;
         internal const byte FrozenObserved = 1;
         internal const byte PlayerFlightLive = 2;
         internal const byte SpellActivationLive = 3;

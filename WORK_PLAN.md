@@ -817,7 +817,55 @@ native all-mission visuals, human combat, FPS, hardware audio or old saves.
 Full `mc-xa7.1`, opening and secret/carry acceptance remain open. Jathnar's
 additions are cfg(test)-only; the installed runtime/native below is unchanged.
 
-Latest Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
+Oliver has now authorized parallel completion of campaign continuity, Original
+frontend/controls and installed presentation/performance. The current native
+team is VioletAnchor (`mission_revealed_way`) on `mc-zdo.6` cold-save/restore,
+SilentBrook (`mission_night_spire`) on `mc-5r5.2` persisted bindings and dialog
+input lifetime, and Sol/xhigh BoldForge (`original_integration`) on shared
+client joins and `mc-oi6.8` source audio consumption. Root retains sole
+Cargo/RCH/Unity build dispatch, acceptance, push and installation. Former
+LavenderBeacon/GoldMoose registrations are confirmed retired; do not revive.
+Full dependency/acceptance remains open; these are bounded connected slices.
+
+First coherent candidate joins semantic carry validation BEFORE campaign-save
+publication; original accepted punctuation bindings and held-input release
+barriers across settings close/resume; and actual source play-type4 audio
+admission, ordering and finite-voice stop/completion. Source47/49 are finite
+voices: a blanket per-loop120Hz change is not supported by pinned source.
+Focused Rust map tampering/atomicity, stale guards, persisted preferences,
+two-entry progression, paused replay, actual corridor audio and native finite
+voice/arbitration/generation checks pass. Strict Rig workspace check passes;
+native `15063781441a96dd5a7ceddbe3134df4e8c31ff75022c4451a705eb059c1a269`
+has606/606 matching qualified source inputs. Its first matching player is
+installed and root viewed normal map/loading/NightSpire terrain/HUD, one portal
+click/zero retries, then stopped its owned processes. This is launch/load,
+not human gameplay, hardware audio or FPS. Source is not yet committed/pushed.
+
+The deeper current-client check found omitted already-committed preference/music
+generation joins in the isolated Original client. Those exact canonical hunks
+are now integrated there: Playing and Paused saves cold-load correctly; invalid
+Load preserves identity, hash, preferences and owner count; resume advances one
+tick. Final Restart exposed a stale managed snapshot captured before actual
+primary-frame visibility publication. Real initial/retried replay hashes match
+exactly. The client now refreshes that observation before audio consumption;
+the complete Night NewGame/cast/Playing save/cold load/Paused save/invalid load/
+cold restore/resume/Restart check passes34.46s with its original exact hash and
+presentation assertions. Real GUI events require graphics; `-nographics` does
+not draw the test's map window. The check now uses the normal launcher's exact
+loading/menu/media roles; no validator was relaxed. Final matching player
+refresh is pending. Temporary root diagnostic writes were removed after
+preserving their decisive initial/retried replay evidence; no Rust reset rewrite.
+
+An actual source4/secret30 native objective check reproduced a separate managed
+refusal of all source levels>=4. The focused default-language resolver now uses
+the pinned25-entry ordinary tables and real secret30..34 rules. Both actual
+native cases and prior-first-four/boundary/end regressions pass. This does not
+complete generic original glyph/textbox composition, selected locale, tutorial
+recursion or speech lifetime. Those full criteria, Results-phase save input and
+Day/Night/Cave performance remain open. No all30 rerun or automated playthrough.
+Preserve unrelated Modern/Voxel dirty work and its installed player.
+
+Previous committed Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
 native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
 is installed. Learned spell ownership now survives physical-holder release
 and reclaim through the source collection consumer; selection/casting still

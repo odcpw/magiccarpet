@@ -3509,6 +3509,7 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
+            playerPreferences?.AdvanceInputReleaseBarrier();
             if (modernEnvironment?.SandboxActive == true)
             {
                 FreezeGameRuntimeInput();
@@ -3561,11 +3562,15 @@ namespace MagicCarpet.Native
                     var menus = gameRuntimeSourceMenus.Step(
                         playerPreferences?.Pressed(4) ?? Input.GetKeyDown(KeyCode.Return),
                         playerPreferences?.Held(5) ?? (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)),
-                        Input.GetKeyDown(KeyCode.Escape), Input.GetMouseButton(0), Input.GetMouseButton(1),
+                        Input.GetKeyDown(KeyCode.Escape),
+                        playerPreferences?.MouseHeld(0) ?? Input.GetMouseButton(0),
+                        playerPreferences?.MouseHeld(1) ?? Input.GetMouseButton(1),
                         gameRuntimeCampaignSnapshot?.value.player_vitals.life >= 0,
                         playerPreferences?.Held(6) ?? Input.GetKey(KeyCode.Tab),
-                        playerPreferences?.Held(8) ?? (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)),
-                        playerPreferences?.Held(9) ?? (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)));
+                        (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
+                            (playerPreferences?.Held(8) ?? Input.GetKey(KeyCode.RightShift)),
+                        (playerPreferences?.KeyHeld(KeyCode.LeftAlt) ?? Input.GetKey(KeyCode.LeftAlt)) ||
+                            (playerPreferences?.Held(9) ?? Input.GetKey(KeyCode.RightAlt)));
                     if (menus.Action != null &&
                         !QueueGameRuntimeSourceMenuAction(menus.Action, gameRuntimeSourceMenus.MapOpen,
                             gameRuntimeSourceMenus.SpellOpen, gameRuntimeSourceMenus.PlayerInformationOpen, menus))
@@ -11205,6 +11210,9 @@ namespace MagicCarpet.Native
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
                 UpdateGameRuntimeNightPresentation(identity, gameRuntimeCampaignSnapshot);
             }
+            // The real primary frame publishes source visibility and animation
+            // demands at this tick, after the reset snapshot was captured.
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
             InitializeGameRuntimeAudioEffects(gameRuntimeCampaignSnapshot);
         }
 
@@ -14559,7 +14567,8 @@ namespace MagicCarpet.Native
                 var assignment = gameRuntimeSourceSpellMenu.Draw(gameRuntimeCampaignSnapshot?.value,
                     selector => hudBitmapTextures[selector],
                     selector => new Vector2Int(hudBitmapDescriptors[selector].runtime_width, hudBitmapDescriptors[selector].runtime_height),
-                    playerPreferences?.Held(7) ?? (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)),
+                    (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
+                        (playerPreferences?.Held(7) ?? Input.GetKey(KeyCode.RightShift)),
                     out var mark, gameRuntimeEnvironmentCache ?? ownerAssetCache);
                 if (mark != null)
                 {

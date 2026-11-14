@@ -1,7 +1,10 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -178,6 +181,149 @@ namespace MagicCarpet.Native.Tests
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
         }
+
+        [Test]
+        public void FiniteSourceSamplesKeepEndRequestsAndExactVolumeStopsSeparateFromAmbientFades()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(PrivateRoot, "generated/mc-oi68-source31-fullbank-v2-20261029"),
+                SecretSource31Package);
+            var root = new GameObject("source finite sample EndLoop consumer");
+            var completions = 0;
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(cache,
+                    NativeSim.CampaignSelection.Create(32, 31, 1), root.transform,
+                    (_, _, _) => completions++);
+                var ambient = SourceAudioEvent(1, 1);
+                var ambientCommand = SourceAudioCommand(ambient, 1, 1);
+                ambientCommand.playType = NativeSim.AudioPlayIfNotPlaying;
+                ambientCommand.loopCount = -1;
+                audio.Consume(ambient, ambientCommand);
+                audio.Tick(0.5f);
+                Assert.That(audio.QualificationLoopUnits(1), Is.EqualTo(30), "ambient callback remains 60 Hz");
+                ulong sequence = 2;
+                foreach (var soundId in new ushort[] { 47, 49 })
+                {
+                    var start = SourceAudioEvent(soundId, sequence++);
+                    var command = SourceAudioCommand(start, soundId, 0);
+                    command.panQ16 = 0xffff;
+                    audio.Consume(start, command);
+                    var source = Array.Find(root.GetComponentsInChildren<AudioSource>(),
+                        candidate => candidate.clip != null && candidate.clip.channels == 2 &&
+                            candidate.clip.frequency == 22050 && candidate.clip.samples == (soundId == 47 ? 48827 : 50757));
+                    Assert.That(source, Is.Not.Null);
+                    Assert.That(source.loop, Is.False, "source loop_count0 is a finite sample");
+                    Assert.That(audio.QualificationPositionalPan(soundId), Is.Zero,
+                        "PlayEntitySounds case4 uses pan64 even for an off-center preparation");
+                    var clip = source.clip;
+                    var volume = source.volume;
+                    var end = SourceAudioEvent(soundId, sequence++, NativeSim.EventEndLoop);
+                    var endCommand = SourceAudioCommand(end, soundId, 0);
+                    endCommand.action = NativeSim.AudioActionEndLoop;
+                    audio.Consume(end, endCommand);
+                    Assert.That(source.clip, Is.SameAs(clip), "EndLoop is not the volume512 EndSample edge");
+                    Assert.That(source.volume, Is.EqualTo(volume));
+                    Assert.That(audio.QualificationLoopVoiceIndex(soundId), Is.EqualTo(-1),
+                        "a finite sample must never become an ambient envelope");
+                    var replaced = SourceAudioEvent(soundId, sequence++);
+                    var replacedCommand = SourceAudioCommand(replaced, soundId, NativeSim.AudioVoiceNone);
+                    replacedCommand.volumeQ15 = 512;
+                    replacedCommand.action = NativeSim.AudioActionSuppressPendingReplaced;
+                    audio.Consume(replaced, replacedCommand);
+                    Assert.That(source.clip, Is.SameAs(clip),
+                        "a losing volume512 preparation must not become a source stop");
+                    var stop = SourceAudioEvent(soundId, sequence++);
+                    var stopCommand = SourceAudioCommand(stop, soundId, 0);
+                    stopCommand.volumeQ15 = 512;
+                    stopCommand.action = NativeSim.AudioActionEndLoop;
+                    audio.Consume(stop, stopCommand);
+                    Assert.That(source.clip, Is.Null);
+                    Assert.That(completions, Is.Zero,
+                        "the exact-volume source stop already retired its native voice");
+                    stop.sequence = sequence++;
+                    stopCommand.eventSequence = stop.sequence;
+                    stopCommand.action = NativeSim.AudioActionSuppressNoExisting;
+                    stopCommand.voiceIndex = NativeSim.AudioVoiceNone;
+                    audio.Consume(stop, stopCommand);
+                }
+                audio.Tick(0.5f);
+                Assert.That(audio.QualificationLoopUnits(1), Is.EqualTo(60),
+                    "finite EndLoop requests do not speed up or retarget ambience");
+                audio.Reset();
+                audio.Tick(1f);
+                Assert.That(audio.QualificationActiveLoopCount, Is.Zero);
+                Assert.That(completions, Is.Zero, "reset releases device ownership without stale completion");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator FiniteSourceSampleCompletesItsStartIdentityAfterEndRequestAndGenerationRebind()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(PrivateRoot, "generated/mc-oi68-source31-fullbank-v2-20261029"),
+                SecretSource31Package);
+            var root = new GameObject("source finite sample natural completion");
+            var completed = new List<(ulong generation, ushort voice, ulong sequence)>();
+            OwnerAudioPresentation audio = null;
+            try
+            {
+                audio = OwnerAudioPresentation.LoadCampaignEnvironment(cache,
+                    NativeSim.CampaignSelection.Create(32, 31, 1), root.transform,
+                    (generation, voice, sequence) => completed.Add((generation, voice, sequence)));
+                var start = SourceAudioEvent(49, 1);
+                audio.Consume(start, SourceAudioCommand(start, 49, 0));
+                var duplicate = SourceAudioEvent(49, 2);
+                var duplicateCommand = SourceAudioCommand(duplicate, 49, 0);
+                duplicateCommand.action = NativeSim.AudioActionSuppressExisting;
+                audio.Consume(duplicate, duplicateCommand);
+                Assert.That(audio.QualificationPositionalPlayStarts(49), Is.EqualTo(1));
+                audio.RebindCampaignGeneration(8);
+                var end = SourceAudioEvent(49, 3, NativeSim.EventEndLoop);
+                end.generation = 8;
+                var endCommand = SourceAudioCommand(end, 49, 0);
+                endCommand.action = NativeSim.AudioActionEndLoop;
+                audio.Consume(end, endCommand);
+                var deadline = Time.realtimeSinceStartup + 5f;
+                while (completed.Count == 0 && Time.realtimeSinceStartup < deadline)
+                {
+                    yield return null;
+                    audio.Tick(0f);
+                }
+                CollectionAssert.AreEqual(new[] { (8UL, (ushort)0, 1UL) }, completed,
+                    "natural finite completion owns the rebound generation and original start, not duplicate/end events");
+                audio.Tick(0f);
+                Assert.That(completed.Count, Is.EqualTo(1));
+                audio.Reset();
+                Assert.That(audio.QualificationPositionalIsPlaying(49), Is.False);
+                audio.Tick(0f);
+                Assert.That(completed.Count, Is.EqualTo(1));
+            }
+            finally
+            {
+                audio?.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static NativeSim.NativeEvent SourceAudioEvent(ushort soundId, ulong sequence,
+            uint kind = NativeSim.EventPrepareSound) => new NativeSim.NativeEvent {
+            abiVersion = NativeSim.AbiVersion, structSize = 72, generation = 7,
+            sequence = sequence, stateHash = 123, kind = kind, code = soundId,
+            entityIndex = 321, playerIndex = -1, assetRefIndex = soundId, reserved = new uint[4]
+        };
+
+        private static NativeSim.AudioCommand SourceAudioCommand(NativeSim.NativeEvent sound,
+            ushort soundId, ushort voiceIndex) => new NativeSim.AudioCommand {
+            abiVersion = NativeSim.AbiVersion, structSize = 88, generation = sound.generation,
+            eventSequence = sound.sequence, stateHash = sound.stateHash,
+            soundId = soundId, entityIndex = sound.entityIndex, playerIndex = sound.playerIndex,
+            assetRefIndex = sound.assetRefIndex, playbackRateHz = 22050,
+            volumeQ15 = 0x7fff, panQ16 = 0x7fff, voiceIndex = voiceIndex,
+            playType = NativeSim.AudioEntitySoundFiniteIfNotPlaying, loopCount = 0,
+            action = NativeSim.AudioActionStart, reserved = new uint[4]
+        };
 
         [Test]
         public void CaveLoadsSourceBankTwoAndLogicalTrackThreeFromItsOwnEnvironment()

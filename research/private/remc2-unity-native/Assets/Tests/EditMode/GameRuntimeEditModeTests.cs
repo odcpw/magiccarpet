@@ -12,6 +12,18 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        private sealed class CampaignGuiWindow : UnityEditor.EditorWindow
+        {
+            internal Action DrawRuntime;
+            internal int DrawCount;
+            private void OnGUI()
+            {
+                if (DrawRuntime == null) return;
+                DrawRuntime();
+                DrawCount++;
+            }
+        }
+
         private const string SecretOriginLevel = "level.magic_carpet_2.t_klom";
         private const string SecretDestinationLevel = "level.magic_carpet_2.karakir";
 
@@ -672,6 +684,29 @@ namespace MagicCarpet.Native.Tests
             Assert.That(hint.Visible, Is.False, "objective/menu suppression closes the popup");
         }
 
+        [TestCase((ushort)5, (ushort)4, (byte)0, "dragon-bee-20261105-integration/level5-owner-current/level5",
+            "secret-lifecycle-20261111-source4-environment", 0x45)]
+        [TestCase((ushort)31, (ushort)30, (byte)2, "mc-paj2-source30-campaign-package",
+            "mc-paj2-environment-source30-audio-20261026", 0x33)]
+        public void RegisteredLaterAndSecretObjectivesResolveLiveNativeSourceText(
+            ushort external, ushort source, byte mapType, string packagePath, string ownerPath, int firstRecord)
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var night = Path.Combine(generated, "settlement-20261105-integration/owner-closed-v6");
+            var cache = OwnerAssetCache.OpenAndValidate(Path.Combine(night, "night-presentation-v6"),
+                MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
+                Path.Combine(night, "level1"));
+            var records = Encoding.GetEncoding(28591).GetString(
+                cache.ReadOutput("font/language-l1.records-nul.bin")).Split('\0');
+            using var native = NativeCampaignSession.Open(Path.Combine(generated, packagePath),
+                NativeSim.CampaignSelection.Create(external, source, mapType), Path.Combine(generated, ownerPath));
+            var objective = native.ObjectiveStageState(0, 0);
+            Assert.That(objective.isLevelEnd, Is.Zero, "the actual initial objective is not a staged completion");
+            Assert.That(objective.textSelector, Is.Zero, "the actual initial source selector starts at zero");
+            Assert.That(records[firstRecord], Is.Not.Empty, "the qualified original language record exists");
+            Assert.That(new Mc2ObjectiveText(cache).Resolve(source, objective), Is.EqualTo(records[firstRecord]));
+        }
+
         [Test]
         public void FirstFourObjectivesUseAuthoredLanguageStageAndEndRecords()
         {
@@ -693,7 +728,23 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { isLevelEnd = 1 }),
                     Is.EqualTo(records[ends[level]]));
             }
-            Assert.Throws<ArgumentOutOfRangeException>(() => Mc2ObjectiveText.SourceRecordIndex(4, 0, false));
+            Assert.That(text.Resolve(4, new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 0 }),
+                Is.EqualTo(records[0x45]));
+            Assert.That(text.Resolve(4, new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 1 }),
+                Is.EqualTo(records[0x46]));
+            Assert.That(text.Resolve(4, new NativeSim.CampaignObjectiveStageSnapshot { isLevelEnd = 1 }),
+                Is.EqualTo(records[0x47]));
+            Assert.That(Mc2ObjectiveText.SourceRecordIndex(24, 0, false), Is.EqualTo(0x9c));
+            Assert.That(Mc2ObjectiveText.SourceRecordIndex(24, 0, true), Is.EqualTo(0x9e));
+            for (ushort level = 30; level <= 34; level++)
+            {
+                Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 7 }),
+                    Is.EqualTo(records[0x33]), "source secret objective ignores its local selector");
+                Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { isLevelEnd = 1 }),
+                    Is.EqualTo(records[0x65]), "source secret completion uses the common end record");
+            }
+            foreach (ushort invalid in new ushort[] { 25, 29, 35, ushort.MaxValue })
+                Assert.Throws<ArgumentOutOfRangeException>(() => Mc2ObjectiveText.SourceRecordIndex(invalid, 0, false));
         }
 
         [Test]
@@ -1830,13 +1881,18 @@ namespace MagicCarpet.Native.Tests
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
                     "-mc-game-runtime", "-mc-runtime-menu",
-                    "-mc-runtime-loading-cache", cache,
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
                     "-mc-runtime-replay-save", save,
                     "-mc-runtime-package", LevelOnePackage,
-                    "-mc-runtime-owner-cache", cache, "-mc-runtime-presentation-cache", cache,
-                    "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4"),
-                    "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2") });
+                    "-mc-runtime-owner-cache", cache,
+                    "-mc-runtime-presentation-cache", Path.Combine(generated,
+                        "settlement-20261105-integration/owner-closed-v6/night-presentation-v6"),
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "mc-b9s2-cursor-level2-vault-20261029"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-vault-successor-owner-cache-20261025"),
+                    "-mc-runtime-package", LevelThreePackage });
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty,
                     "menu startup has not opened a hidden gameplay session");
@@ -1849,6 +1905,29 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty);
                 var presentBriefing = typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeBriefing",
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeMenu", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(menu.SourceBriefingReady, Is.False, "the map has not entered its normal GUI phase yet");
+                var drawGui = typeof(MagicCarpetRuntime).GetMethod("OnGUI",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                gui.DrawRuntime = () => drawGui.Invoke(runtime, null);
+                try
+                {
+                    gui.Show();
+                    gui.SendEvent(new Event { type = EventType.Layout });
+                    gui.SendEvent(new Event { type = EventType.Repaint });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(0), "the actual runtime GUI consumed its map events");
+                    Assert.That(menu.SourceBriefingReady, Is.True,
+                        "ordinary first-map Enter/Draw reaches Ready without forced state or shortened motion");
+                }
+                finally
+                {
+                    gui.DrawRuntime = null;
+                    gui.Close();
+                    if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
+                }
                 presentBriefing.Invoke(runtime, null);
                 presentBriefing.Invoke(runtime, null);
                 var speech = (CampaignSpeechPresenter)typeof(MagicCarpetRuntime)
@@ -1927,6 +2006,27 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Save), Is.True);
                 Assert.That(new FileInfo(save).Length, Is.GreaterThan(0));
                 Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash, Is.EqualTo(paused.value.state_hash));
+                var validPausedSave = File.ReadAllBytes(save);
+                var ownerBeforeInvalidLoad = runtime.GameRuntimeProductionIdentity;
+                var preferencesBeforeInvalidLoad = JsonUtility.ToJson(ownerBeforeInvalidLoad.player_preferences);
+                var sessionsBeforeInvalidLoad = NativeSession.ActiveSessionCount;
+                File.WriteAllBytes(save, System.Text.Encoding.UTF8.GetBytes("{\"invalid_saved_campaign\":true}"));
+                try
+                {
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.False,
+                        "the normal Load action must reject an invalid replay before replacing its live paused owner");
+                    var retainedOwner = runtime.GameRuntimeProductionIdentity;
+                    Assert.That(retainedOwner.runtime_id, Is.EqualTo(ownerBeforeInvalidLoad.runtime_id));
+                    Assert.That(retainedOwner.generation, Is.EqualTo(ownerBeforeInvalidLoad.generation));
+                    Assert.That(retainedOwner.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash,
+                        Is.EqualTo(paused.value.state_hash));
+                    Assert.That(JsonUtility.ToJson(retainedOwner.player_preferences), Is.EqualTo(preferencesBeforeInvalidLoad));
+                    Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                    Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(sessionsBeforeInvalidLoad),
+                        "failed load cannot leak a replacement native owner");
+                }
+                finally { File.WriteAllBytes(save, validPausedSave); }
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True);

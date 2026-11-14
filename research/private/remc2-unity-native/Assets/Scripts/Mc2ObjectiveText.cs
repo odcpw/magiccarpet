@@ -6,11 +6,21 @@ namespace MagicCarpet.Native
 {
     // DrawCurrentObjectiveTextbox (GameUI.cpp:568-577) selects an owner
     // language record using the authoritative stage carrier, not a semantic
-    // task name. These are IndexLevelText_DB4EE / LevelEndText_DB507 rows 0..3.
+    // task name. The ordinary tables and the secret-level special case come
+    // from GameUI.cpp IndexLevelText_DB4EE / LevelEndText_DB507 and
+    // DrawCurrentObjectiveTextbox_30630 in the pinned source.
     internal sealed class Mc2ObjectiveText
     {
-        private static readonly int[] FirstRecord = { 0x30, 0x36, 0x3c, 0x42 };
-        private static readonly int[] EndRecord = { 0x35, 0x3b, 0x41, 0x44 };
+        private static readonly int[] FirstRecord = {
+            0x30, 0x36, 0x3c, 0x42, 0x45, 0x48, 0x4d, 0x4f, 0x56, 0x5c,
+            0x61, 0x66, 0x69, 0x6e, 0x73, 0x76, 0x7c, 0x7e, 0x83, 0x85,
+            0x88, 0x8c, 0x8f, 0x97, 0x9c
+        };
+        private static readonly int[] EndRecord = {
+            0x35, 0x3b, 0x41, 0x44, 0x47, 0x4c, 0x4e, 0x55, 0x5b, 0x60,
+            0x65, 0x68, 0x6d, 0x72, 0x75, 0x7b, 0x7d, 0x82, 0x84, 0x87,
+            0x8b, 0x8e, 0x96, 0x9c, 0x9e
+        };
         private readonly string[] records;
 
         internal Mc2ObjectiveText(OwnerAssetCache commonLanguageCache)
@@ -30,9 +40,13 @@ namespace MagicCarpet.Native
 
         internal static int SourceRecordIndex(ushort internalLevel, byte textSelector, bool isLevelEnd)
         {
+            // Source30..34 use the same objective and end strings regardless
+            // of their local objective selector.
+            if (internalLevel >= 30 && internalLevel <= 34)
+                return isLevelEnd ? EndRecord[10] : FirstRecord[0] + 3;
             if (internalLevel >= FirstRecord.Length)
                 throw new ArgumentOutOfRangeException(nameof(internalLevel),
-                    "Only ordinary source levels 0 through 3 are bound");
+                    "Only ordinary source levels 0 through 24 and secret levels 30 through 34 are bound");
             return isLevelEnd ? EndRecord[internalLevel] : FirstRecord[internalLevel] + textSelector;
         }
 
