@@ -1121,6 +1121,8 @@ mod tests {
             transport: Option<SourceEntityHandle>,
             wave: Vec<SourceEntityHandle>,
             sphere_wave: Vec<SourceEntityHandle>,
+            optional_roots: BTreeMap<u16, Vec<SourceEntityHandle>>,
+            model22_parts: BTreeMap<u16, Vec<SourceEntityHandle>>,
             exit: Option<(SourceEntityHandle, Position)>,
             portal: Option<SourceEntityHandle>,
         }
@@ -1161,6 +1163,61 @@ mod tests {
                                 _ => None,
                             }).collect();
                             assert_eq!(receipts.sphere_wave.len(), 16, "all 16 actual group14 spheres are born");
+                        }
+                        if matches!(*group, 3 | 7 | 11 | 12 | 13) {
+                            let (kind, expected_roots) = match *group {
+                                3 => (CreatureKind::Firefly, 14),
+                                7 => (CreatureKind::Skeleton, 32),
+                                _ => (CreatureKind::Creature22, 1),
+                            };
+                            let roots = state.creature_runtime_census().roots_of_kind(kind)
+                                .filter(|row| row.living && matches!(row.origin,
+                                    CreatureRootOrigin::AuthoredRecord { authored_record }
+                                        if expected.contains(&authored_record)))
+                                .map(|row| row.handle).collect::<Vec<_>>();
+                            assert_eq!(roots.len(), expected_roots,
+                                "actual group{group} must publish every authored living root");
+                            if kind == CreatureKind::Creature22 {
+                                let root = roots[0];
+                                let mut parts = Vec::new();
+                                let mut next = Some(root);
+                                let mut previous = None;
+                                while let Some(handle) = next {
+                                    assert!(!parts.contains(&handle), "model22 source links cannot cycle");
+                                    let actor = crate::native_world::creatures::creature_22::mc2::read_actor(
+                                        state.source_arena(), handle).expect("current model22 linked actor");
+                                    assert_eq!(actor.previous, previous);
+                                    if handle != root {
+                                        assert_eq!((actor.root, actor.action, actor.mana), (Some(root), 180, 0));
+                                        let identity = state.creature_identity_for_source_slot(handle.source_slot)
+                                            .expect("current model22 part retains its root identity");
+                                        assert_eq!(identity.root_slot, root.source_slot);
+                                        assert_eq!(identity.role, crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart);
+                                    }
+                                    previous = Some(handle);
+                                    next = actor.next;
+                                    parts.push(handle);
+                                    assert!(parts.len() <= 15);
+                                }
+                                assert_eq!(parts.len(), 15, "authored par1=15 creates seven linked pairs");
+                                let presentations = state.campaign_entity_presentations(0)
+                                    .expect("actual model22 particle bindings project for presentation");
+                                for (ordinal, handle) in parts.iter().enumerate() {
+                                    let actor = crate::native_world::creatures::creature_22::mc2::read_actor(
+                                        state.source_arena(), *handle).unwrap();
+                                    let expected_ordinal = if ordinal == 0 { 15 } else if ordinal % 2 == 1 {
+                                        ((ordinal + 1) / 2) as i8
+                                    } else { -((ordinal / 2) as i8) };
+                                    assert_eq!(actor.length_or_ordinal, expected_ordinal);
+                                    let visual = 59 - (ordinal.div_ceil(2) as u16);
+                                    assert_eq!(actor.visual_index, visual);
+                                    assert!(presentations.iter().any(|row| row.entity_index == handle.source_slot
+                                        && row.source_id == actor.source_id && row.render_parameter_index == visual),
+                                        "the real model22 actor must reach its selected particle presentation");
+                                }
+                                receipts.model22_parts.insert(*group, parts);
+                            }
+                            receipts.optional_roots.insert(*group, roots);
                         }
                         if *group == 9 && authored_indices.contains(&551) {
                             let trigger = state.economy().authored_switch_producers().iter()
@@ -1309,6 +1366,96 @@ mod tests {
             && (row.position.x, row.position.y) == (31 * 256 + 128, 62 * 256 + 128)),
             "actual group6 produces authored transport334");
         assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1);
+
+        // These optional reset areas are ordinary authored producers, not
+        // prerequisites for the 45-percent objective or the exit.
+        for (authored, group, kind) in [
+            (305, 3, CreatureKind::Firefly),
+            (359, 7, CreatureKind::Skeleton),
+            (553, 11, CreatureKind::Creature22),
+            (560, 12, CreatureKind::Creature22),
+            (568, 13, CreatureKind::Creature22),
+        ] {
+            if count(&receipts, group) == 0 {
+                let position = {
+                    let state = sim(game);
+                    let feature = state.mission().authored_features().iter()
+                        .find(|row| row.index == authored && row.kind == 11 && row.subtype == 0
+                            && row.activation_group == 0 && row.stage_tag == group as i16)
+                        .expect("the original optional area record");
+                    let center = feature.world_position(0);
+                    let trigger = state.entities().iter().find(|row| row.active
+                        && (row.class, row.model, row.action, row.source_id) == (11, 0, 0, group)
+                        && (row.position.x, row.position.y) == (center.x, center.y))
+                        .expect("the actual reset area source trigger is current");
+                    let width = i32::from(trigger.array_pitch()).abs();
+                    let depth = i32::from(trigger.array_roll()).abs();
+                    let terrain = state.canonical_terrain();
+                    [-3_i16, 3, -2, 2, -1, 1, 0].into_iter().flat_map(|dy|
+                        [-3_i16, 3, -2, 2, -1, 1, 0].into_iter().map(move |dx| Position {
+                            x: center.x.wrapping_add_signed(dx * 256),
+                            y: center.y.wrapping_add_signed(dy * 256), z: 0,
+                        })).find(|position| {
+                            let dx = i32::from(position.x.wrapping_sub(center.x) as i16).abs();
+                            let dy = i32::from(position.y.wrapping_sub(center.y) as i16).abs();
+                            let floor = i32::from(terrain.ground_height(*position));
+                            dx < width && dy < depth
+                                && terrain.material_mask(*position) != crate::MOVEMENT_REDIRECT_MASK
+                                && terrain.ceiling_height(*position).is_some_and(|ceiling|
+                                    floor + i32::from(state.profile().ground_clearance)
+                                        <= i32::from(ceiling) - i32::from(state.profile().ceiling_clearance))
+                        }).unwrap_or_else(|| panic!("optional area{authored}/group{group} has no admitted cave position: trigger={trigger:?}"))
+                };
+                place(game, player, position.x, position.y);
+                for _ in 0..128 {
+                    if count(&receipts, group) != 0 { break; }
+                    step(game, &mut receipts, GameCommand::default());
+                }
+            }
+            assert_eq!(count(&receipts, group), 1, "the real optional area publishes its group once");
+            let roots = receipts.optional_roots.get(&group).expect("actual authored creature roots").clone();
+            let root = roots[0];
+            assert_eq!(sim(game).source_arena().handle(root.source_slot), Some(root));
+            assert_eq!(sim(game).creature_identity_for_source_slot(root.source_slot).unwrap().kind, kind);
+            sim_mut(game).set_level2_entity_position(player, spawn).unwrap();
+            step(game, &mut receipts, GameCommand::default());
+            let scheduled = sim(game).cf10_production_schedule_receipts().into_iter().any(|receipt|
+                matches!(receipt, crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if slot == root.source_slot));
+            assert!(scheduled, "the actual group{group} root reaches its source callback");
+            assert_eq!(sim(game).source_arena().handle(root.source_slot), Some(root));
+            if kind != CreatureKind::Creature22 {
+                assert!(sim(game).campaign_entity_presentations(0).unwrap().iter()
+                    .any(|row| row.entity_index == root.source_slot),
+                    "the actual group{group} root reaches its particle presentation");
+            } else {
+                let parts = &receipts.model22_parts[&group];
+                assert_eq!(parts.len(), 15);
+                assert!(crate::native_world::creatures::creature_22::enabled(180)
+                    && !crate::native_world::creatures::creature_22::enabled(182),
+                    "the source segment callback is enabled and action182 remains null");
+                assert!(sim(game).cf10_production_schedule_receipts().into_iter().any(|receipt|
+                    matches!(receipt, crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                        if parts.iter().skip(1).any(|part| part.source_slot == slot))),
+                    "a linked model22 part reaches its real action180 callback");
+                if group == 11 {
+                    let before = crate::native_world::creatures::creature_22::mc2::read_actor(
+                        sim(game).source_arena(), root).unwrap();
+                    area_damage::contact(sim_mut(game).source_arena_mut(), None, root.source_slot, 200, player).unwrap();
+                    let admitted = crate::native_world::creatures::creature_22::mc2::read_actor(
+                        sim(game).source_arena(), root).unwrap();
+                    assert_eq!((admitted.hit_source, admitted.damage), (player, 200));
+                    step(game, &mut receipts, GameCommand::default());
+                    let after = crate::native_world::creatures::creature_22::mc2::read_actor(
+                        sim(game).source_arena(), root).expect("the contacted model22 generation remains current");
+                    assert_eq!((after.hit_source, after.life), (0, before.life));
+                    assert!(after.speed > after.maximum_speed,
+                        "source model22 consumes Contact as acceleration rather than generic damage");
+                }
+            }
+            assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1,
+                "optional areas do not fabricate the Castle mana objective");
+        }
 
         // This real reset area produces the source group14 mana wave; it is
         // not a staged objective or a constructed test sphere.
