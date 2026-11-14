@@ -623,7 +623,7 @@ fn acquired_invisible_real_bee_death_drops_holder_and_rejects_stale_activation()
         let root = economy.castle_at_mut(castle).unwrap();
         root.level = 1;
         root.action = 5;
-        root.build_state = 3;
+        root.build_state = 0; // source upgrade; state 3 rebuilds the current tier
         assert!(economy.step_castle_action(castle));
         assert_eq!(
             (

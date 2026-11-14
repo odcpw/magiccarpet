@@ -1508,6 +1508,173 @@ fn configured_head_tail_retains_hidden_flags_and_literal_map_copies() {
     }
 }
 
+#[test]
+fn ammyridia_wyverns_and_real_hydra_death_open_the_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    type Game = GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+    fn sim(game: &Game) -> &crate::native_world::Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut crate::native_world::Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game) {
+        game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+        assert!(sim(game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Ammyridia source dispatch: {:?}", sim(game).dispatch_events());
+    }
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL20_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level20"));
+    let cache = std::env::var_os("MC_LEVEL20_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level20"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2220,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let goals = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 2);
+    assert!(matches!(goals[0].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Wyvern)));
+    assert!(matches!(goals[1].condition(), ObjectiveCondition::TargetDeath(_)));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    let wyverns = [299_u16, 300, 301, 302].map(|slot| {
+        let row = &sim(&game).entities()[usize::from(slot)];
+        assert_eq!((row.class, row.model), (5, 16));
+        assert!(row.life >= 0);
+        sim(&game).source_arena().handle(slot).unwrap()
+    });
+    let gate = sim(&game).source_arena().handle(303).unwrap();
+    let gate_row = &sim(&game).entities()[303];
+    assert_eq!((gate_row.class, gate_row.model, gate_row.action, gate_row.source_id), (11, 29, 29, 1));
+    let mut struck = BTreeSet::new();
+    // Selected arrived contacts leave one genuinely living Wyvern to prove
+    // that both its source absence goal and its producer switch stay closed.
+    for leave_one in [true, false] {
+        for _ in 0..1024 {
+            let live = sim(&game).source_arena().rebuilt_class5_model_slots();
+            if leave_one && live[16] == [wyverns[3].source_slot] { break; }
+            for handle in wyverns {
+                if leave_one && handle == wyverns[3] { continue; }
+                if sim(&game).source_arena().resolve(handle).is_some()
+                    && sim(&game).entities()[usize::from(handle.source_slot)].life >= 0
+                    && struck.insert((handle.source_slot, handle.generation))
+                {
+                    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+                }
+            }
+            step(&mut game);
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+                assert_eq!(sim(&game).source_arena().handle(303), Some(gate));
+                assert!(!sim(&game).dispatch_events().iter().any(|event| matches!(event,
+                    Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 303, group: 1, .. })));
+            } else if sim(&game).source_arena().rebuilt_class5_model_slots()[16].is_empty() { break; }
+        }
+        if leave_one {
+            assert_eq!(sim(&game).source_arena().rebuilt_class5_model_slots()[16], [wyverns[3].source_slot]);
+            assert_eq!(sim(&game).source_arena().handle(wyverns[3].source_slot), Some(wyverns[3]));
+        }
+    }
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[16].is_empty());
+    let mut spawned = None;
+    for _ in 0..256 {
+        step(&mut game);
+        if sim(&game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 303, group: 1, authored_indices, .. }
+                if authored_indices.as_ref() == [328, 342]))
+        {
+            spawned = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Creature27)
+                .find(|root| root.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 328 }))
+                .map(|root| root.handle);
+            break;
+        }
+    }
+    let root = spawned.expect("actual Wyvern absence switch publishes the authored Hydra");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    let stage = &sim(&game).runtime().stages[1];
+    assert_eq!((stage.kind, stage.flags & 1, stage.relation), (1, 1, RuntimeRelation::LiveEntity(root.source_slot)));
+    let chain = multipart::read_chain(sim(&game).source_arena(), root).unwrap();
+    assert_eq!(chain.ordered.len(), 50);
+    step(&mut game);
+    assert!(sim(&game).entities()[usize::from(root.source_slot)].life >= 0);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1,
+        "the bound living Hydra blocks its actual target-death goal");
+
+    // The real head consumer caps each contact at 76 and regenerates heads.
+    // Bring the five current living heads into one admissible finishing
+    // window through repeated mailbox contacts, without setting life/state.
+    let mut ready = false;
+    for _ in 0..2048 {
+        let heads = chain.heads.map(|handle| sim(&game).entities()[usize::from(handle.source_slot)].clone());
+        if heads.iter().all(|row| row.active && row.record_bytes()[74] <= 5 && (0..=76).contains(&row.life)
+            && row.source_upkeep_word_62() == 0) { ready = true; break; }
+        for (handle, row) in chain.heads.into_iter().zip(heads) {
+            if row.active && row.record_bytes()[74] <= 5 && row.life > 76 && row.source_upkeep_word_62() == 0 {
+                area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, 76, player).unwrap();
+            }
+        }
+        step(&mut game);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1);
+    }
+    assert!(ready, "all real heads must reach the source-damage finishing window: {:?}",
+        chain.heads.map(|h| { let row = &sim(&game).entities()[usize::from(h.source_slot)]; (row.life, row.record_bytes()[74], row.source_upkeep_word_62()) }));
+    for head in chain.heads {
+        area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, head.source_slot, 76, player).unwrap();
+    }
+    for _ in 0..128 {
+        step(&mut game);
+        if sim(&game).entities()[usize::from(root.source_slot)].record_bytes()[63] == 0 { break; }
+    }
+    assert_eq!(sim(&game).entities()[usize::from(root.source_slot)].record_bytes()[63], 0,
+        "all five real heads must complete their ordinary death phases");
+    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, root.source_slot, 76, player).unwrap();
+    let parts = std::iter::once(root).chain(chain.ordered.iter().copied()).collect::<Vec<_>>();
+    let mut exit = None;
+    let mut group5 = 0;
+    for _ in 0..1024 {
+        step(&mut game);
+        for event in sim(&game).dispatch_events() {
+            if let Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 317, group: 5, authored_indices, .. } = event {
+                assert_eq!(authored_indices.as_ref(), [385, 399, 400, 479, 480]);
+                group5 += 1;
+                let trigger = sim(&game).economy().authored_switch_producers().iter()
+                    .find(|row| row.active && row.authored_index == 399 && (row.model, row.action) == (12, 12))
+                    .expect("group5 publishes the source exit");
+                assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 385));
+                exit = Some((trigger.position, sim(&game).source_arena().handle(trigger.source_entity_index).unwrap()));
+            }
+        }
+        if group5 != 0 && parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+            && wyverns.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert_eq!(group5, 1);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert!(parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "the Hydra root and all 50 original parts must reclaim naturally");
+    assert!(wyverns.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
+    let (position, trigger) = exit.expect("actual level-complete group produces the exit");
+    let sequence = sim(&game).level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
 fn owner_level20_model27() -> (crate::native_world::Mc2Simulation, u16) {
     use crate::PlayerCommand;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
