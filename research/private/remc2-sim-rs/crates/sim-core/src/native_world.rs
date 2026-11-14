@@ -10416,4 +10416,4 @@ fn validate_content_address(value: &str) -> Result<()> {
 
 #[cfg(test)]
 #[path = "native_world/tests_split/mod.rs"]
-mod tests;
+pub(crate) mod tests;
