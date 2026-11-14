@@ -869,12 +869,28 @@ accept those outcomes. Changed-source UBS findings are triaged test failure
 panics and lexical secret-mission/authentication false positives; no new
 production defect was shown by those findings.
 
-Controlled mission paths now pass for24/25 ordinary and3/5 secret missions.
+Beleem/source33 mandatory path55 passes51.36s through the real Sentinel absence,
+source transports, nested27-root wave/one-survivor negative, actual group14
+sphere production/settlement, paid claim/collector crossing45 and living exit.
+Its actual retained-parent/statistics/coldsave/carry/reopen passes173.77s.
+Local `3dbb9d4e`, remote Original `c2e91d03`. A cfg(test)-only clone prediction
+reuses the actual holder constructor, source lists, frame and acquisition
+kernel to choose the fixed shot; a live-state hash check proves prediction
+does not alter the live world, and actual acquisition/claim/credit still must
+pass. No production factoring or native refresh was needed. Optional Firefly,
+Skeleton and linked model22 area groups remain a separate unfinished check.
+
+Controlled objective/exit paths now pass for24/25 ordinary and4/5 secret missions.
 Jathnar23 is the remaining ordinary check, following all seven real rivals
 through their source deaths rather than reviving a rival that died naturally.
 The exact callback-time current A4 read is authority, including the observed
-freed-slot1 case. Beleem33 is checking real Cave admission, source sphere
-settlement/acquisition and45% mana victory; Ommosyth34 follows. Current
+freed-slot1 case. Run45 reached all seven Castle losses but failed to observe
+the later Hydra560 birth; attempted authored publication was not proof of
+construction. Candidate56 moves the real stage4 House/Hydra path earlier and
+observes callback-time source map/free-slot admission before the long rival
+segment. Ommosyth/source34 is checking its real223-row group23, actor consumer,
+25% source goal and group27 exit; its first actor-consequence gate is unresolved.
+Beleem's optional groups3/7/11–13 are checking their actual source consumers. Current
 Terra owners retain those paths through their actual consumer failures; root
 serializes compilation, shared joins and landing. Setup controls must preserve
 live AI, real source production, timers and HP. Keep full campaign, opening,
