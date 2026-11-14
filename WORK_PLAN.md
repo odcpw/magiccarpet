@@ -848,12 +848,33 @@ new transports moving the actual player, paid mana crossing30 and living exit0A.
 Local `b87de26b`, remote Original `bb44dcbe`, test-only. Source provenance,
 full corpse/reclaim and same-generation living blocker controls are retained.
 
-Controlled mission paths now pass for24/25 ordinary and2/5 secret missions.
+Ymbul now also passes actual retained-parent completion1A, exact mission
+statistics, cold map-save restore and parent reopen with the final carry:
+242.34s on49. Pav Durivium/source32 passes229.66s on52 through real Cave
+opening/sealing/collision, all twelve lowering rings and Magic Mine acquisition,
+Fire Spheres, eight Cymmerian roots/splits/reclaim, actual paid Possession,
+collector credit crossing40 and living exit0A. Its retained-parent1A/statistics/
+coldsave/carry/reopen passes356.77s. Local `bf758f1b`, remote Original `5dcdfcf5`.
+The shared paid delivery extraction retains Karakir52 standalone29.46s and
+parent82.34s regressions. These are test-only additions; native above remains
+current. The parent frontier, incoming Possession and below-goal bank are
+declared controls, not earned campaign progression or live portal entry.
+
+Pav's source-selected collision can legitimately claim neighbouring spheres.
+Its gate now follows the actual generation-bound paid projectile→impact→
+owner mailbox→witnessed source-wave sphere→collector→exact credited payload.
+A zero-strength tier0 pulse is valid for an unprotected sphere; payment is
+independently required. No source rule, goal, HP, AI or timer was changed to
+accept those outcomes. Changed-source UBS findings are triaged test failure
+panics and lexical secret-mission/authentication false positives; no new
+production defect was shown by those findings.
+
+Controlled mission paths now pass for24/25 ordinary and3/5 secret missions.
 Jathnar23 is the remaining ordinary check, following all seven real rivals
 through their source deaths rather than reviving a rival that died naturally.
 The exact callback-time current A4 read is authority, including the observed
-freed-slot1 case. Pav Durivium/source32 is checking real Cave corridor/field/
-creature production and40% mana victory; Beleem33 and Ommosyth34 follow. Current
+freed-slot1 case. Beleem33 is checking real Cave admission, source sphere
+settlement/acquisition and45% mana victory; Ommosyth34 follows. Current
 Terra owners retain those paths through their actual consumer failures; root
 serializes compilation, shared joins and landing. Setup controls must preserve
 live AI, real source production, timers and HP. Keep full campaign, opening,
