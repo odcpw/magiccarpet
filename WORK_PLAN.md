@@ -799,6 +799,57 @@ Implementation and evidence live in
 `research/private/remc2-unity-native/MODERN_RENDERER.md`. Keep incomplete visual
 acceptance open; a working control panel alone does not finish the environment.
 
+## Current Original mission delivery — 2026-11-14
+
+Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
+below are delivered checkpoints, not a reason to restart them. Original
+gameplay remains separate from the Modern/Voxel asset work above.
+
+Latest Original source is canonical `cc819d03`, delivered on
+`codex/original-ending` as `b78e4ec2`; native
+`3cce164b0498a8ae68facd12e89e35dc89cf546674976832ed66d0cf815acc1a`
+is installed. Actual Uluth group7 now constructs its source10/25 Steal Mana
+field through the shared constructor, player lane and natural hide/reclaim.
+The same constructor's Steal Mana/Duel collision extents now write canonical
+pitch/roll/FOV instead of yaw/pitch/FOV. Constructor and both guided consumers
+pass on40; strict Rig native build passed169.2s. Full Uluth boss/exit remains
+unverified: its current check fails the natural approach/visibility boundary.
+
+Earlier `22a73da0` fixed the shared spell-acquisition cache to follow the current
+generation/family after slot reuse. Cross-family and same-family replacement,
+actual Invisible/Bee death/drop/expiry/reuse and source-order checks pass.
+Cresidan21, Hodor22, Gleph18 and Malak24 connected objective/wave/cleanup/exit
+checks pass, alongside the previously delivered ordinary missions. Evidence:
+`research/private/generated/campaign-original-environments/`, particularly
+`*-connected-30.log`, Gleph/Malak `*-connected-33.log` and
+`spell-reuse-installed-smoke/runtime-proof.json`; the latest native smoke is
+`authored-field-installed-smoke/runtime-proof.json`.
+
+The normal installed Original launcher registered all30 packages and reached
+map/loading/NightSpire terrain/HUD with the matching mapped native, one portal
+click and zero retries. Root viewed the captures and stopped the owned smoke.
+This is launch/load plus controlled mission checks, not human combat, FPS,
+hardware audio, an uncontrolled campaign playthrough or old-save proof.
+
+Karakir/source30 now passes actual area-entry production, Firefly-derived mana,
+paid Possession, collector credit crossing85, normal exit0A and restored
+parent-continuation exit1A through real return/carry/reopen. Checks37 passed
+22.61s/64.84s; local `91429dd9`, remote Original `9c4c5e45`. These are test-only
+joins; the installed native above is unchanged. Prior Castle/below85 bank,
+incoming carry, selected contact/poses and parent-frontier fixture are declared
+controls, not earned prior campaign or live secret-portal proof.
+
+Remaining ordinary connected checks are Jathnar23 and Uluth25. Jathnar is
+checking the exact callback-time Castle-holder identity at final loss; an
+earlier outer-turn holder snapshot is not authority for that source read.
+Ymbul/source31 is checking its real Skeleton/Archer absence chains and30%
+mana victory, followed by the other three secret missions. Current
+Terra owners retain those paths through their actual consumer failures; root
+serializes compilation, shared joins and landing. Setup controls must preserve
+live AI, real source production, timers and HP. Keep full campaign, opening,
+secret/carry and presentation acceptance open. Test-only coverage additions
+do not require rebuilding an unchanged installed native.
+
 ## Active request: complete the shared world capabilities
 
 Oliver's 2026-11-09 correction keeps voxel/Modern work in its separate thread.
