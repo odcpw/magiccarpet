@@ -1100,6 +1100,370 @@ fn finalize_closed_direction_one(
 mod tests {
     use super::*;
 
+    /// Complete the actual source33 mission in its incoming secret session.
+    /// Declared player positions, arrived contacts, carried Possession and a
+    /// below-goal Castle bank isolate the final source-owned mana delivery.
+    pub(crate) fn complete_beleem_earned_mana_and_exit(
+        game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+    ) -> u8 {
+        use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+        use crate::game_session::{GameCommand, GameCompletionStatus};
+        use crate::level_definition::{CreatureKind, ObjectiveCondition};
+        use crate::native_world::{Mc2DispatchEvent, area_damage};
+        use crate::native_world::player_lifecycle_tests::{RivalTestGame, rival_test_sim as sim,
+            rival_test_sim_mut as sim_mut};
+        use crate::FlightWorld;
+        use std::collections::BTreeMap;
+
+        #[derive(Default)]
+        struct Receipts {
+            groups: BTreeMap<u16, usize>,
+            transport: Option<SourceEntityHandle>,
+            wave: Vec<SourceEntityHandle>,
+            sphere_wave: Vec<SourceEntityHandle>,
+            exit: Option<(SourceEntityHandle, Position)>,
+            portal: Option<SourceEntityHandle>,
+        }
+        fn observe(game: &RivalTestGame, receipts: &mut Receipts) {
+            let state = sim(game);
+            for event in state.dispatch_events() {
+                match event {
+                    Mc2DispatchEvent::Error { .. } => panic!("Beleem source dispatch: {event:?}"),
+                    Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. }
+                        if !authored_indices.is_empty() => {
+                        let expected = state.mission().authored_features().iter().filter(|row|
+                            row.index != 0 && row.kind != 0 && row.activation_group == *group as i16)
+                            .map(|row| row.index).collect::<Vec<_>>();
+                        assert_eq!(authored_indices.as_ref(), expected.as_slice(),
+                            "all original group{group} records must reach the source producer");
+                        *receipts.groups.entry(*group).or_default() += 1;
+                        if *group == 1 && authored_indices.contains(&74) {
+                            let row = state.entities().iter().find(|row| row.active
+                                && (row.class, row.model, row.action) == (10, 34, 36)
+                                && (row.position.x, row.position.y) == (128 * 256 + 128, 245 * 256 + 128))
+                                .expect("actual group1 transport74");
+                            receipts.transport = state.source_arena().handle(row.index);
+                        }
+                        if *group == 5 && authored_indices.contains(&157) {
+                            receipts.wave = state.creature_runtime_census().roots_of_kind(CreatureKind::Creature21)
+                                .filter(|row| row.living && matches!(row.origin,
+                                    CreatureRootOrigin::AuthoredRecord { authored_record }
+                                        if expected.contains(&authored_record)))
+                                .map(|row| row.handle).collect();
+                            assert_eq!(receipts.wave.len(), 27, "all 27 actual group5 creatures are born");
+                        }
+                        if *group == 14 && authored_indices.contains(&635) {
+                            receipts.sphere_wave = state.economy().events().iter().filter_map(|event| match event {
+                                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                                    sphere_id, source_entity_index, mana: 512,
+                                } if source_entity_index == source_slot => u16::try_from(*sphere_id).ok()
+                                    .and_then(|slot| state.source_arena().handle(slot)),
+                                _ => None,
+                            }).collect();
+                            assert_eq!(receipts.sphere_wave.len(), 16, "all 16 actual group14 spheres are born");
+                        }
+                        if *group == 9 && authored_indices.contains(&551) {
+                            let trigger = state.economy().authored_switch_producers().iter()
+                                .find(|row| row.authored_index == 551 && (row.model, row.action) == (12, 12))
+                                .expect("actual Beleem exit551");
+                            let portal = state.economy().authored_class14().iter()
+                                .find(|row| row.authored_index == 552 && row.model == 3)
+                                .expect("actual Beleem portal552");
+                            receipts.exit = Some((state.source_arena().handle(trigger.source_entity_index).unwrap(), trigger.position));
+                            receipts.portal = state.source_arena().handle(portal.source_entity_index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn step(game: &mut RivalTestGame, receipts: &mut Receipts, command: GameCommand) {
+            game.advance(game.identity().guard(), command).unwrap();
+            observe(game, receipts);
+            assert!(sim(game).canonical_player_life_for_test() >= 0, "the actual Beleem player remains alive");
+        }
+        fn count(receipts: &Receipts, group: u16) -> usize {
+            receipts.groups.get(&group).copied().unwrap_or(0)
+        }
+        fn contact(game: &mut RivalTestGame, player: u16, handle: SourceEntityHandle) {
+            assert_eq!(sim(game).source_arena().handle(handle.source_slot), Some(handle));
+            area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+        }
+        fn place(game: &mut RivalTestGame, player: u16, x: u16, y: u16) {
+            let mut position = Position { x, y, z: 0 };
+            let state = sim(game);
+            let terrain = state.canonical_terrain();
+            position.z = terrain.ground_height(position).wrapping_add(state.profile().ground_clearance);
+            if let Some(ceiling) = terrain.ceiling_height(position) {
+                assert!(position.z <= ceiling.wrapping_sub(state.profile().ceiling_clearance),
+                    "the declared source position ({x},{y}) must fit between cave planes: floor={} ceiling={ceiling} floor_clearance={} ceiling_clearance={}",
+                    terrain.ground_height(position), state.profile().ground_clearance, state.profile().ceiling_clearance);
+            }
+            sim_mut(game).set_level2_entity_position(player, position).unwrap();
+        }
+
+        let objectives = game.definition().level_definition().unwrap().objectives();
+        assert_eq!(objectives.len(), 1);
+        assert_eq!(objectives[0].condition(), ObjectiveCondition::CastleManaPercent(45));
+        let player = sim(game).state.entity_index;
+        let owner = usize::from(sim(game).state.player_color_index);
+        let spawn = sim(game).state.position;
+        assert_ne!(sim(game).shared_spells().local_player().enabled_spell_holders[1], 0,
+            "declared incoming carry includes Possession");
+        let gate = sim(game).source_arena().handle(264).expect("actual source exit gate");
+        assert_eq!((sim(game).entities()[264].class, sim(game).entities()[264].model,
+            sim(game).entities()[264].source_id), (11, 4, 9));
+        assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1);
+        let sentinel = sim(game).creature_runtime_census().roots_of_kind(CreatureKind::Creature18)
+            .find(|row| row.living).expect("actual reset Sentinel41").handle;
+        let mut receipts = Receipts::default();
+        step(game, &mut receipts, GameCommand {
+            select_spell: Some(crate::game_definition::SemanticId::parse("spell.possession").unwrap()),
+            ..GameCommand::default()
+        });
+        assert_eq!(count(&receipts, 1), 0, "the living source Sentinel blocks its absence gate");
+        assert!(sim(game).creature_identity_for_source_slot(sentinel.source_slot)
+            .is_some_and(|row| row.handle == sentinel && row.living));
+        contact(game, player, sentinel);
+        for _ in 0..256 {
+            step(game, &mut receipts, GameCommand::default());
+            if count(&receipts, 1) == 1 && sim(game).source_arena().resolve(sentinel).is_none() { break; }
+        }
+        assert_eq!(count(&receipts, 1), 1);
+        assert!(sim(game).source_arena().resolve(sentinel).is_none());
+
+        let transport = receipts.transport.expect("group1's actual transport74");
+        let row = &sim(game).entities()[usize::from(transport.source_slot)];
+        let destination = crate::world::fields::transport::destination(row);
+        assert_eq!((destination.x, destination.y), (118 * 256 + 128, 245 * 256 + 128));
+        let position = row.position;
+        let entry = Position { y: position.y.wrapping_add(1), ..position };
+        let heading = crate::heading_for_positions(entry, position) as i16;
+        let auxiliary = sim(game).shared_spells().beyond_sight_auxiliary();
+        let yaw = heading.wrapping_add(auxiliary.next_entity);
+        let pitch = auxiliary.entity_index2;
+        sim_mut(game).set_level2_entity_position(player, entry).unwrap();
+        sim_mut(game).set_level2_player_aim_for_test(yaw, pitch);
+        step(game, &mut receipts, GameCommand::default());
+        let actual = sim(game).state.position;
+        let near = |a: u16, b: u16| i32::from(a.wrapping_sub(b) as i16).abs() < 256;
+        assert!(near(actual.x, destination.x) && near(actual.y, destination.y),
+            "the original group1 transport moves the live player to its authored destination");
+        for _ in 0..128 {
+            if count(&receipts, 2) == 1 && count(&receipts, 4) == 1 { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert_eq!((count(&receipts, 2), count(&receipts, 4)), (1, 1));
+        // Enter the real group4 area from its outer side, away from the wave.
+        // The source cave planes can close a tile even inside the switch.
+        let position = {
+            let state = sim(game);
+            let trigger = state.economy().authored_switch_producers().iter()
+                .find(|row| row.active && row.authored_index == 154 && row.model == 0 && row.stage_tag == 5)
+                .expect("actual group4 area switch154");
+            assert_eq!(trigger.word_10, 16);
+            let terrain = state.canonical_terrain();
+            (25_u16..40).flat_map(|y| (218_u16..247).map(move |x|
+                Position { x: x * 256, y: y * 256, z: 0 }))
+                .find(|position| {
+                    let dx = i32::from(position.x.wrapping_sub(trigger.position.x) as i16).abs();
+                    let dy = i32::from(position.y.wrapping_sub(trigger.position.y) as i16).abs();
+                    let floor = i32::from(terrain.ground_height(*position));
+                    let ceiling = terrain.ceiling_height(*position).map(i32::from);
+                    dx < 15 * 256 && dy < 15 * 256
+                        && terrain.material_mask(*position) != crate::MOVEMENT_REDIRECT_MASK
+                        && ceiling.is_some_and(|ceiling| floor + i32::from(state.profile().ground_clearance)
+                            <= ceiling - i32::from(state.profile().ceiling_clearance))
+                }).expect("the actual switch154 admits an open outer cave position")
+        };
+        eprintln!("Beleem switch154 approach {position:?}: floor={} ceiling={:?}",
+            sim(game).canonical_terrain().ground_height(position),
+            sim(game).canonical_terrain().ceiling_height(position));
+        place(game, player, position.x, position.y);
+        for _ in 0..128 {
+            if count(&receipts, 5) == 1 { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert_eq!(count(&receipts, 5), 1);
+        let wave = receipts.wave.clone();
+        assert_eq!(wave.len(), 27);
+        sim_mut(game).set_level2_entity_position(player, spawn).unwrap();
+        let survivor = wave[0];
+        for &handle in &wave[1..] { contact(game, player, handle); }
+        for _ in 0..512 {
+            step(game, &mut receipts, GameCommand::default());
+            assert_eq!(count(&receipts, 6), 0, "one living model21 blocks the actual absence switch");
+            if wave[1..].iter().all(|handle| sim(game).source_arena().resolve(*handle).is_none()) { break; }
+        }
+        assert!(wave[1..].iter().all(|handle| sim(game).source_arena().resolve(*handle).is_none()));
+        assert!(sim(game).creature_identity_for_source_slot(survivor.source_slot)
+            .is_some_and(|row| row.handle == survivor && row.living));
+        contact(game, player, survivor);
+        for _ in 0..512 {
+            step(game, &mut receipts, GameCommand::default());
+            if count(&receipts, 6) == 1 && sim(game).source_arena().resolve(survivor).is_none() { break; }
+        }
+        assert_eq!(count(&receipts, 6), 1);
+        assert!(wave.iter().all(|handle| sim(game).source_arena().resolve(*handle).is_none()));
+        assert!(sim(game).entities().iter().any(|row| row.active && (row.class, row.model, row.action) == (10, 34, 36)
+            && (row.position.x, row.position.y) == (31 * 256 + 128, 62 * 256 + 128)),
+            "actual group6 produces authored transport334");
+        assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1);
+
+        // This real reset area produces the source group14 mana wave; it is
+        // not a staged objective or a constructed test sphere.
+        place(game, player, 130 * 256, 160 * 256);
+        for _ in 0..128 {
+            if count(&receipts, 14) == 1 { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert_eq!(count(&receipts, 14), 1);
+        assert_eq!(receipts.sphere_wave.len(), 16);
+        sim_mut(game).set_level2_entity_position(player, spawn).unwrap();
+        let mut checked_prediction_is_read_only = false;
+        let mut predictions = Vec::new();
+        let sphere = (0..512).find_map(|_| {
+            let candidates = sim(game).economy().spheres().iter().filter(|row|
+                row.active && !row.pending_delete && row.player_entity_index == 0 && row.control_flags & 8 != 0
+                    && row.control_flags & 0x0020_0000 == 0 && row.vertical_velocity == 0
+                    && row.velocity_x == 0 && row.velocity_y == 0 && row.mana > 0
+                    && row.position.z == sim(game).canonical_terrain().ground_height(row.position)
+                    && sim(game).source_arena().handle(row.source_entity_index)
+                        .is_some_and(|handle| receipts.sphere_wave.contains(&handle))
+                    && crate::native_world::tests::paid_sphere_firing_pose_for_test(game, **row).is_some())
+                .filter_map(|row| sim(game).source_arena().handle(row.source_entity_index).map(|handle| (*row, handle)))
+                .collect::<Vec<_>>();
+            // An apex also has velocity0. A real following callback must keep
+            // the same generation and position on the current cave ground.
+            step(game, &mut receipts, GameCommand::default());
+            predictions.clear();
+            candidates.into_iter().find_map(|(row, handle)| {
+                if sim(game).source_arena().handle(row.source_entity_index) != Some(handle)
+                    || !sim(game).economy().spheres().iter().any(|current|
+                    current.active && !current.pending_delete && current.id == row.id
+                        && current.player_entity_index == 0 && current.mana == row.mana
+                        && current.position == row.position
+                        && current.position.z == sim(game).canonical_terrain().ground_height(current.position)) {
+                    return None;
+                }
+                let current = sim(game).economy().spheres().iter().find(|current|
+                    current.active && current.id == row.id).copied().unwrap();
+                let (origin, yaw, pitch) = crate::native_world::tests::paid_sphere_firing_pose_for_test(game, current)?;
+                let before = (!checked_prediction_is_read_only).then(|| sim(game).campaign_state_hash());
+                let prediction = sim(game).possession_target_prediction_for_test(origin, yaw, pitch)
+                    .expect("the source Possession prediction can inspect the cloned current carriers");
+                if let Some(before) = before {
+                    assert_eq!(sim(game).campaign_state_hash(), before,
+                        "source shot prediction must not mutate the live campaign");
+                    checked_prediction_is_read_only = true;
+                }
+                predictions.push((handle, origin, yaw, pitch, prediction));
+                prediction.filter(|(target, _, _)| *target == handle).map(|_| current)
+            })
+        }).unwrap_or_else(|| panic!("no settled group14 sphere has an admitted source-ranked firing pose: wave={:?}, predictions={predictions:?}, live={:?}",
+            receipts.sphere_wave, sim(game).economy().spheres()));
+        eprintln!("Beleem source acquisition preflight: {predictions:?}");
+        assert!(checked_prediction_is_read_only);
+        let sphere_handle = sim(game).source_arena().handle(sphere.source_entity_index).unwrap();
+        let castle = {
+            let state = sim_mut(game);
+            for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+                state.economy_mut().set_castle_stage_footprint(stage, footprint);
+            }
+            let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position { x: x * 2048, y: y * 2048, z: 0 }))
+                .map(|mut position| { position.z = state.canonical_terrain().ground_height(position); position })
+                .filter(|position| {
+                    let dx = i32::from(position.x.wrapping_sub(sphere.position.x) as i16).abs();
+                    let dy = i32::from(position.y.wrapping_sub(sphere.position.y) as i16).abs();
+                    dx.max(dy) >= 4096 && !state.economy().castle_projectile_site_blocked(
+                        *position, state.entities(), state.canonical_terrain())
+                }).min_by_key(|position| crate::distance_3d_wrapped(*position, sphere.position))
+                .expect("the actual cave admits a declared prior Castle");
+            state.economy_mut().build_castle(site, player).unwrap()
+        };
+        step(game, &mut receipts, GameCommand::default());
+        assert_eq!(sim(game).source_arena().handle(sphere_handle.source_slot), Some(sphere_handle));
+        assert!(sim(game).economy().spheres().iter().any(|row| row.active && row.id == sphere.id
+            && row.position == sphere.position && row.mana == sphere.mana),
+            "the real group14 sphere is stationary with its source payload across Castle setup");
+        assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1,
+            "an empty Castle remains below the 45-percent goal");
+        let mut paid_projectile = None;
+        let mut actual_acquisition = false;
+        crate::native_world::tests::deliver_paid_sphere_for_test(game, castle, sphere, spawn, 45,
+            |game| {
+                observe(game, &mut receipts);
+                let state = sim(game);
+                if let Some(projectile) = state.economy().possession_projectiles().iter()
+                    .find(|row| row.active && row.source_id_entity_index == player)
+                {
+                    let handle = state.source_arena().handle(projectile.source_entity_index)
+                        .expect("the paid Possession flyer has a current generation");
+                    if let Some(original) = paid_projectile {
+                        assert_eq!(handle, original, "the paid source flyer must keep its generation");
+                    } else {
+                        paid_projectile = Some(handle);
+                    }
+                    if projectile.target_source_entity_index != 0 {
+                        let actual = state.source_arena().handle(projectile.target_source_entity_index);
+                        assert_eq!(actual, Some(sphere_handle),
+                            "the actual paid source flyer must acquire the predicted group14 sphere: projectile={projectile:?}, preflight={predictions:?}");
+                        actual_acquisition = true;
+                    }
+                }
+            });
+        assert!(paid_projectile.is_some() && actual_acquisition,
+            "the actual paid source flyer must acquire the same generation, not just predict it");
+        for _ in 0..128 {
+            if count(&receipts, 9) == 1 { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 2);
+        assert_eq!(sim(game).runtime().objectives[owner].is_level_end, 1);
+        assert_eq!(count(&receipts, 9), 1);
+        for _ in 0..8 {
+            if sim(game).source_arena().resolve(gate).is_none() { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert!(sim(game).source_arena().resolve(gate).is_none());
+        let (exit, position) = receipts.exit.expect("actual group9 exit551");
+        let portal = receipts.portal.expect("actual group9 portal552");
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+        sim_mut(game).set_level2_entity_position(player, position).unwrap();
+        for _ in 0..700 {
+            if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+            step(game, &mut receipts, GameCommand::default());
+        }
+        assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+        let sequence = sim(game).level_exit_sequence();
+        assert_eq!((sequence.trigger_entity_index, sequence.portal_entity_index), (exit.source_slot, portal.source_slot));
+        sim(game).source_exit_result_byte()
+    }
+
+    #[test]
+    fn beleem_actual_source_chain_paid_mana_and_secret_exit() {
+        use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+        use crate::game_session::GameSession;
+        let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_SECRET33_PACKAGE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| generated.join("mc-paj2-source-secret-33-campaign-package"));
+        let cache = std::env::var_os("MC_SECRET33_OWNER_CACHE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/source33"));
+        let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+        let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2233,
+            Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+            .apply_carried_spell_families(&[1], Some(1)).unwrap();
+        assert_eq!(complete_beleem_earned_mana_and_exit(&mut game), 0x0a);
+    }
+
+    #[test]
+    fn beleem_actual_source_mission_returns_to_retained_parent() {
+        crate::campaign::backend::tests::assert_actual_secret_completed_return(
+            33, complete_beleem_earned_mana_and_exit,
+        );
+    }
+
     fn corridor_properties(
         orientation: i16,
         extent: i16,

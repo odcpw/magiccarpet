@@ -11681,6 +11681,82 @@ impl Level2OrdinaryTestView<'_> {
 }
 
 impl Mc2Simulation {
+    /// Predict one current-source acquisition on cloned carriers only. This
+    /// does not spend mana, advance the live world, or prove the later shot.
+    /// The real source pass may change a target before the actual cast.
+    #[cfg(test)]
+    pub(crate) fn possession_target_prediction_for_test(
+        &self,
+        origin: Position,
+        yaw: i16,
+        pitch: i16,
+    ) -> std::result::Result<
+        Option<(crate::campaign::source_arena::SourceEntityHandle, source_target::View, Position)>,
+        String,
+    > {
+        let mut prediction = self.clone();
+        let player = prediction.session.state.live.core.state.entity_index;
+        prediction.set_level2_entity_position(player, origin)
+            .map_err(|error| error.to_string())?;
+        prediction.set_level2_player_aim_for_test(yaw, pitch);
+        prediction.session.state.live.core.state.actual_speed = 0;
+        prediction.session.state.live.core.state.target_speed = 0;
+        let live = &prediction.session.state.live;
+        let holder_slot = live.shared_spells.local_player().enabled_spell_holders[1];
+        let holder = live.shared_spells.pickup(holder_slot).cloned()
+            .ok_or_else(|| "Possession prediction requires the current holder".to_owned())?;
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        let parent = source_target::status_parent(
+            &live.economy, context, holder.source_spell_parent_entity_index(),
+        )?.ok_or_else(|| "Possession prediction requires the current parent".to_owned())?;
+        let tier = crate::spell_activation::level2_applied_tier(holder.level_gate)
+            .filter(|tier| *tier < 3)
+            .ok_or_else(|| "Possession prediction requires a source cast tier".to_owned())?;
+        let properties = prediction.session.definition.possession_properties;
+        let slot = prediction.spawn_possession_from_holder(
+            &holder, &parent, properties.tiers[usize::from(tier)].source_life, properties,
+        ).ok_or_else(|| "Possession prediction failed ordinary flyer allocation".to_owned())?;
+        let live = &mut prediction.session.state.live;
+        // SourceSlotChain capture rewrites next words. It must operate on
+        // the cloned arena and cloned external actor owners, never on self.
+        let lists = area_damage::capture_effect_lists(
+            &mut live.economy,
+            Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+        );
+        live.economy.rebuild_possession_guidance_source_slots();
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells),
+            particles: Some(&prediction.session.definition.presentation.particles),
+            map_type: Some(live.terrain.map_type()),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        let frame = source_target::possession_collision_frame(
+            &live.economy, context, slot, &live.terrain, Some(&lists),
+        )?;
+        let moved = live.economy.possession_projectile_moved(
+            slot, &live.terrain, live.ordinary.houses(),
+            lists.model45_slots(&live.economy), &live.economy.entities,
+            Some(frame.guidance), Some(&frame.acquisition_candidates),
+        ).ok_or_else(|| "Possession prediction lost its constructed flyer".to_owned())?;
+        let target = moved.target_source_entity_index;
+        if target == 0 {
+            return Ok(None);
+        }
+        let handle = live.economy.handle(target)
+            .ok_or_else(|| "Possession prediction selected a noncurrent target".to_owned())?;
+        let view = source_target::read(&live.economy, context, target)?
+            .ok_or_else(|| "Possession prediction selected an unreadable target".to_owned())?;
+        let top = Position {
+            z: view.position.z.wrapping_add(if view.model == 2 { 0 }
+                else { view.collision.map_or(0, |shape| shape.vertical_offset) }),
+            ..view.position
+        };
+        Ok(Some((handle, view, top)))
+    }
+
     #[cfg(test)]
     pub(crate) fn possession_guidance_target_top_for_test(
         &self,
