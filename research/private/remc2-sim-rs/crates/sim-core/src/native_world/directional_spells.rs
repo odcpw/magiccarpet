@@ -49,6 +49,17 @@ pub(crate) struct StealManaSphereBirthReceipt {
 #[cfg(test)]
 thread_local! {
     static STEAL_MANA_SPHERE_BIRTH_TRACE: std::cell::RefCell<Option<Vec<StealManaSphereBirthReceipt>>> = const { std::cell::RefCell::new(None) };
+    static STEAL_MANA_LANE_TRACE: std::cell::RefCell<Option<Vec<(bool, u16, u16, i32)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_steal_mana_lane_trace() {
+    STEAL_MANA_LANE_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_steal_mana_lane_trace() -> Vec<(bool, u16, u16, i32)> {
+    STEAL_MANA_LANE_TRACE.with(|trace| trace.borrow_mut().as_mut().map_or_else(Vec::new, std::mem::take))
 }
 
 #[cfg(test)]
@@ -415,7 +426,7 @@ pub(crate) fn construct_impact(
         .get(usize::from(projectile_slot))
         .ok_or("directional projectile address is outside source arena")?
         .clone();
-    let (model, action) = match (
+    let model = match (
         projectile.class,
         projectile.model,
         projectile.action,
@@ -428,12 +439,33 @@ pub(crate) fn construct_impact(
             STEAL_MANA_PROJECTILE_MODEL,
             10,
             STEAL_MANA_FIELD_MODEL,
-        ) => (STEAL_MANA_FIELD_MODEL, STEAL_MANA_FIELD_MODEL),
+        ) => STEAL_MANA_FIELD_MODEL,
         (9, DUEL_PROJECTILE_MODEL, DUEL_PROJECTILE_MODEL, 10, DUEL_FIELD_MODEL) => {
-            (DUEL_FIELD_MODEL, DUEL_FIELD_MODEL)
+            DUEL_FIELD_MODEL
         }
         _ => return Err("directional guided impact has a different source selector".to_owned()),
     };
+    construct_field(arena, terrain, particles, projectile.position, model, Some(projectile_slot))
+}
+
+/// The authored class10/model25 row calls sub_4F6A0 directly, without a
+/// projectile parent or an inherited owner/tier.
+pub(crate) fn construct_authored_steal_mana(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    position: Position,
+) -> Result<Option<u16>, String> {
+    construct_field(arena, terrain, &[], position, STEAL_MANA_FIELD_MODEL, None)
+}
+
+fn construct_field(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    position: Position,
+    model: u8,
+    projectile_slot: Option<u16>,
+) -> Result<Option<u16>, String> {
     let particle = if model == DUEL_FIELD_MODEL {
         Some(
             *particles
@@ -446,10 +478,10 @@ pub(crate) fn construct_impact(
     let Some(impact_slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
-    let position = if impact_slot == projectile_slot {
+    let position = if Some(impact_slot) == projectile_slot {
         Position { x: 0, y: 0, z: 0 }
     } else {
-        projectile.position
+        position
     };
     let mut impact = super::cave_features::new_event(
         impact_slot,
@@ -460,7 +492,7 @@ pub(crate) fn construct_impact(
     impact.model = model;
     impact.record[67] = 10;
     impact.record[68] = model;
-    impact.set_source_action(action);
+    impact.set_source_action(model);
     impact.set_max_life(FIELD_LIFETIME);
     impact.set_life(FIELD_LIFETIME);
     impact.set_subspell_index(if model == STEAL_MANA_FIELD_MODEL {
@@ -477,7 +509,8 @@ pub(crate) fn construct_impact(
             super::cave_features::bind_particle(&mut impact, DUEL_PARTICLE, particle)?;
         }
     }
-    for offset in [86, 88, 92] {
+    // SetEntityShiftRot writes pitch, roll and fov; yaw stays unchanged.
+    for offset in [88, 90, 92] {
         impact.record[offset..offset + 2].copy_from_slice(&512_i16.to_le_bytes());
     }
     arena
@@ -642,6 +675,14 @@ fn submit_contacts(
                     true,
                 ) {
                     accepted.push(target_slot);
+                    #[cfg(test)]
+                    if lane == crate::combat::actors::PlayerEffectLane::StealMana {
+                        STEAL_MANA_LANE_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut() {
+                                trace.push((false, target_slot, field.source_id, i32::from(tier)));
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -859,6 +900,12 @@ where
     if let Some(hit) = steal_hit {
         let caster_slot = hit.attacker;
         #[cfg(test)]
+        STEAL_MANA_LANE_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.push((true, actor_slot, caster_slot, hit.payload));
+            }
+        });
+        #[cfg(test)]
         let original_owners = arena.handle(caster_slot).zip(arena.handle(actor_slot));
         outcome.steal_consumed = true;
         outcome.steal_attacker_resolved = arena.handle(caster_slot).is_some();
@@ -1039,6 +1086,22 @@ fn spawn_steal_mana_sphere(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn authored_steal_mana_uses_source_constructor_defaults() {
+        let mut simulation = super::super::tests::level_two_campaign_session();
+        let live = &mut simulation.session.state.live;
+        let position = Position { x: 0x5000, y: 0x6000, z: 0x100 };
+        let slot = construct_authored_steal_mana(&mut live.economy, &mut live.terrain, position)
+            .unwrap().expect("ordinary NewEvent allocation");
+        let row = &live.economy.entities[usize::from(slot)];
+        assert_eq!((row.class, row.model, row.action), (10, 25, 25));
+        assert_eq!((row.position, row.source_id, row.record[74]), (position, slot, 0));
+        assert_eq!((row.max_life, row.life, row.subspell_index), (8, 8, 2_000));
+        assert_eq!((row.control_flags & 0x0f, row.array_yaw(), row.array_pitch(), row.array_roll(), row.array_fov()),
+            (1, 0, 512, 512, 512));
+        assert!(live.economy.economy.map_chains.is_linked(slot));
+    }
 
     fn ready_holder(family: u8, tier: u8) -> (super::super::Mc2Simulation, u16, u16) {
         let mut simulation = super::super::tests::level_two_campaign_session();

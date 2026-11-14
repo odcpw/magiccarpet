@@ -12748,7 +12748,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
+                        0..=9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 25 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
                     )
                     | (11, 0..=44)
                     | (14, 0 | 1 | 2 | 3 | 4 | 5)
@@ -13504,6 +13504,22 @@ impl Mc2Simulation {
                             .live
                             .level2_model22_activated
                             .insert(feature.index);
+                    }
+                }
+                (10, 25) => {
+                    // sub_4A310 calls sub_4F6A0 directly at the authored
+                    // terrain center. There is no projectile or parent whose
+                    // ownership/tier could be inherited by this field.
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = crate::native_world::directional_spells::construct_authored_steal_mana(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }
                 }
                 (2, 6) => {
