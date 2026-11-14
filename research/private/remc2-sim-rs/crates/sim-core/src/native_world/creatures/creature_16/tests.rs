@@ -1,11 +1,20 @@
 use super::super::archer::ArcherStageDescriptor as StageDescriptor;
 use super::*;
 
-#[test]
-fn gleph_source_objectives_produce_the_ordinary_exit() {
-    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+type GlephPlayerReceipt = (i32, u8, Position, u16, u8);
+
+fn gleph_player_receipt(game: &crate::native_world::player_lifecycle_tests::RivalTestGame) -> GlephPlayerReceipt {
+    let state = crate::native_world::player_lifecycle_tests::rival_test_sim(game);
+    let player = &state.entities()[usize::from(state.state.entity_index)];
+    (state.canonical_player_life_for_test(), player.action, player.position,
+        state.economy().player_castle_entity_index(), state.source_exit_result_byte())
+}
+
+pub(crate) fn complete_gleph_objectives_for_test(
+    mut game: &mut crate::native_world::player_lifecycle_tests::RivalTestGame,
+) -> (Vec<(&'static str, GlephPlayerReceipt)>, Option<(usize, GlephPlayerReceipt)>) {
     use crate::campaign::source_arena::CreatureRootOrigin;
-    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::game_session::GameCommand;
     use crate::level_definition::ObjectiveCondition;
     use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
     use crate::FlightWorld;
@@ -14,7 +23,6 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
         rival_test_participation, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
         rival_test_step as step, rival_test_wait_unprotected,
     };
-    use std::path::PathBuf;
 
     fn spell113(game: &RivalTestGame) -> String {
         let state = sim(game);
@@ -26,20 +34,6 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
         format!("handle={:?}, raw={:?}, shared={:?}", state.source_arena().handle(113),
             fields(raw), state.shared_spells().pickup(113).map(fields))
     }
-    fn player_receipt(game: &RivalTestGame) -> (i32, u8, Position, u16, u8) {
-        let state = sim(game);
-        let player = &state.entities()[usize::from(state.state.entity_index)];
-        (state.canonical_player_life_for_test(), player.action, player.position,
-            state.economy().player_castle_entity_index(), state.source_exit_result_byte())
-    }
-    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
-    let package = std::env::var_os("MC_LEVEL18_PACKAGE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("all-spells-20261104-integration/current-owner-package/level18"));
-    let cache = std::env::var_os("MC_LEVEL18_OWNER_CACHE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("campaign-original-environments/level18"));
-    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
-    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2218,
-        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
     let goals = game.definition().level_definition().unwrap().objectives();
     assert_eq!(goals.len(), 4);
     assert!(matches!(goals[0].condition(), ObjectiveCondition::CastleManaPercent(25)));
@@ -48,7 +42,7 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
     assert!(matches!(goals[3].condition(), ObjectiveCondition::DefeatRivalWizard(_)));
     let player = sim(&game).state.entity_index;
     let source_spawn = sim(&game).state.position;
-    let mut player_history = vec![("opened", player_receipt(&game))];
+    let mut player_history = vec![("opened", gleph_player_receipt(&game))];
     let owner = usize::from(sim(&game).state.player_color_index);
     let rival = match &sim(&game).runtime().stages[3].relation {
         RuntimeRelation::LiveEntity(slot) => *slot,
@@ -122,7 +116,7 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
     }
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 2,
         "the original target's real death, not group creation, completes kind1");
-    player_history.push(("wyvern goal", player_receipt(&game)));
+    player_history.push(("wyvern goal", gleph_player_receipt(&game)));
     assert_eq!(rival_test_participation(&game, rival), Some(1));
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[3], 1,
         "one participating target keeps the rival objective incomplete");
@@ -135,10 +129,10 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
     }
     assert!(sim(&game).economy().castle_for_owner(rival).is_some(), "target's source AI supplies its Castle");
     rival_test_wait_unprotected(&mut game, rival);
-    player_history.push(("rival unprotected", player_receipt(&game)));
+    player_history.push(("rival unprotected", gleph_player_receipt(&game)));
     let rival_handle = sim(&game).source_arena().handle(rival).unwrap();
     let original_castle = rival_test_destroy_castle(&mut game, rival, player);
-    player_history.push(("rival castle lost", player_receipt(&game)));
+    player_history.push(("rival castle lost", gleph_player_receipt(&game)));
     let common = sim(&game).session.state.live.nyphur_dispatcher.get(rival_handle).unwrap()
         .common_upkeep(sim(&game).entities()[usize::from(rival)].phase);
     assert_eq!(common.word_0x159, 0, "source protection must admit the real contact");
@@ -168,7 +162,7 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
         position
     };
     sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
-    player_history.push(("retreated to source spawn", player_receipt(&game)));
+    player_history.push(("retreated to source spawn", gleph_player_receipt(&game)));
     let mut group20 = false;
     let mut slot_history = std::collections::VecDeque::new();
     let mut first_tail_death = None;
@@ -182,13 +176,18 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
         assert!(sim(&game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "Gleph source dispatch: {:?}", sim(&game).dispatch_events());
         if first_tail_death.is_none() && sim(&game).canonical_player_life_for_test() < 0 {
-            first_tail_death = Some((turn, player_receipt(&game)));
+            first_tail_death = Some((turn, gleph_player_receipt(&game)));
         }
-        let activated = sim(&game).dispatch_events().iter().any(|event| matches!(event,
-            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 90, group: 20, authored_indices, .. }
-                if authored_indices.contains(&431) && authored_indices.contains(&432)));
-        if activated { assert_eq!(prior_gate, Some(gate_handle)); }
-        group20 |= activated;
+        let activated = sim(&game).dispatch_events().iter().find_map(|event| match event {
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 90, group: 20, authored_indices, .. } =>
+                Some(authored_indices),
+            _ => None,
+        });
+        if let Some(indices) = activated {
+            assert_eq!(prior_gate, Some(gate_handle));
+            assert_eq!(indices.as_ref(), [372, 374, 422, 423, 424, 425, 426, 429, 430, 431, 432]);
+        }
+        group20 |= activated.is_some();
         if group20 && holders.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
     }
     assert_eq!(rival_test_participation(&game, rival), Some(0));
@@ -197,7 +196,29 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2, 2, 2, 2]);
     assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
     assert!(group20, "real level-end switch produces authored exit and portal");
-    player_history.push(("exit produced and holders reclaimed", player_receipt(&game)));
+    player_history.push(("exit produced and holders reclaimed", gleph_player_receipt(&game)));
+    assert!(sim(&game).canonical_player_life_for_test() >= 0,
+        "the participant must be alive before the actual exit: history={player_history:?}, first_tail_death={first_tail_death:?}");
+    (player_history, first_tail_death)
+}
+
+#[test]
+fn gleph_source_objectives_produce_the_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::native_world::Mc2DispatchEvent;
+    use crate::native_world::player_lifecycle_tests::{rival_test_sim as sim, rival_test_sim_mut as sim_mut};
+    use std::path::PathBuf;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL18_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("all-spells-20261104-integration/current-owner-package/level18"));
+    let cache = std::env::var_os("MC_LEVEL18_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level18"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2218,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let (mut player_history, first_tail_death) = complete_gleph_objectives_for_test(&mut game);
+    let player = sim(&game).state.entity_index;
     let exit = *sim(&game).economy().authored_switch_producers().iter()
         .find(|row| row.active && row.authored_index == 432 && row.model == 12 && row.action == 12)
         .expect("real group20 exit432");
@@ -205,7 +226,7 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
     assert!(sim(&game).canonical_player_life_for_test() >= 0,
         "the participant must be alive before the actual exit: history={player_history:?}, first_tail_death={first_tail_death:?}");
     sim_mut(&mut game).set_level2_entity_position(player, exit.position).unwrap();
-    player_history.push(("entered exit", player_receipt(&game)));
+    player_history.push(("entered exit", gleph_player_receipt(&game)));
     let mut first_exit_death = None;
     let mut exit_events = Vec::new();
     for turn in 0..700 {
@@ -242,14 +263,14 @@ fn gleph_source_objectives_produce_the_ordinary_exit() {
                 state.canonical_player_life_for_test(), state.entities()[usize::from(player)].action);
         }
         if first_exit_death.is_none() && sim(&game).canonical_player_life_for_test() < 0 {
-            first_exit_death = Some((turn, player_receipt(&game)));
+            first_exit_death = Some((turn, gleph_player_receipt(&game)));
         }
         exit_events.extend(sim(&game).dispatch_events().iter().filter(|event| matches!(event,
             Mc2DispatchEvent::LevelExitSequenceStarted { .. } | Mc2DispatchEvent::LevelExitSequenceCompleted { .. }
         )).cloned());
     }
     assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }),
-        "real exit did not complete: history={player_history:?}, first_tail_death={first_tail_death:?}, first_exit_death={first_exit_death:?}, exit_events={exit_events:?}, final={:?}", player_receipt(&game));
+        "real exit did not complete: history={player_history:?}, first_tail_death={first_tail_death:?}, first_exit_death={first_exit_death:?}, exit_events={exit_events:?}, final={:?}", gleph_player_receipt(&game));
     assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
 }
 

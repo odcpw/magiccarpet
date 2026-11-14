@@ -1097,7 +1097,7 @@ fn finalize_closed_direction_one(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Complete the actual source33 mission in its incoming secret session.
