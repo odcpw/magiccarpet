@@ -1,4 +1,280 @@
 #[test]
+fn malak_actual_waypoints_house_descendants_absences_and_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition, TilePosition};
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+    use crate::native_world::player_lifecycle_tests::{
+        RivalTestGame, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[derive(Default)]
+    struct Groups {
+        counts: BTreeMap<u16, usize>,
+        exit: Option<(SourceEntityHandle, Position)>,
+        portal: Option<SourceEntityHandle>,
+    }
+    fn visit(game: &mut RivalTestGame, groups: &mut Groups) {
+        step(game);
+        let state = sim(game);
+        let house_published = |source_slot: u16, group: u16| state.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::House { source_slot: house_slot, events, .. }
+                if *house_slot == source_slot && events.iter().any(|event| matches!(event,
+                    crate::house::HouseStepEvent::RemoveFootprint { entity_index, building_index: 53, xtype, .. }
+                        if *entity_index == source_slot && u16::from(*xtype) == group))));
+        for event in state.dispatch_events() {
+            let Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. } = event else { continue };
+            match *group {
+                2 if authored_indices.contains(&234) => {
+                    assert_eq!(*source_slot, 105);
+                    assert!([179, 180, 181, 234, 237, 238, 239, 240].into_iter().all(|row| authored_indices.contains(&row)));
+                }
+                9 if authored_indices.contains(&52) => {
+                    assert_eq!(*source_slot, 136);
+                    assert_eq!(authored_indices.len(), 35);
+                }
+                6 if authored_indices.contains(&342) => {
+                    assert!(authored_indices.contains(&343));
+                    assert!(house_published(*source_slot, *group), "group{group} source{source_slot} must be the actual BUILD53 removal: {:?}", state.dispatch_events());
+                }
+                18 if authored_indices.contains(&501) => {
+                    assert!(house_published(*source_slot, *group), "group{group} source{source_slot} must be the actual BUILD53 removal: {:?}", state.dispatch_events());
+                }
+                19 | 20 | 21 => {
+                    assert!(house_published(*source_slot, *group), "group{group} source{source_slot} must be the actual BUILD53 removal: {:?}", state.dispatch_events());
+                    if *group == 21 { assert!([345, 346, 347, 348].into_iter().all(|row| authored_indices.contains(&row))); }
+                }
+                7 if authored_indices.contains(&297) => {
+                    assert_eq!(*source_slot, 118);
+                    assert_eq!(authored_indices.len(), 60);
+                }
+                10 if authored_indices.contains(&281) => {
+                    assert_eq!(*source_slot, 137);
+                    assert_eq!(authored_indices.as_ref(), [280, 281]);
+                    let trigger = state.economy().authored_switch_producers().iter()
+                        .find(|row| row.authored_index == 281 && (row.model, row.action) == (12, 12))
+                        .expect("actual Malak exit281");
+                    let portal = state.economy().authored_class14().iter()
+                        .find(|row| row.authored_index == 280 && row.model == 3)
+                        .expect("actual Malak portal280");
+                    groups.exit = Some((state.source_arena().handle(trigger.source_entity_index).unwrap(), trigger.position));
+                    groups.portal = Some(state.source_arena().handle(portal.source_entity_index).unwrap());
+                }
+                _ => continue,
+            }
+            *groups.counts.entry(*group).or_default() += 1;
+        }
+    }
+    fn place(game: &mut RivalTestGame, player: u16, x: u16, y: u16) {
+        let mut position = Position { x, y, z: 0 };
+        let terrain = sim(game).canonical_terrain();
+        let floor = terrain.ground_height(position);
+        let ceiling = terrain.ceiling_height(position).expect("Malak cave ceiling");
+        assert!(i32::from(ceiling) > i32::from(floor), "open cave at {x},{y}");
+        position.z = ((i32::from(floor) + i32::from(ceiling)) / 2) as i16;
+        sim_mut(game).set_level2_entity_position(player, position).unwrap();
+    }
+    fn selected_contact(game: &mut RivalTestGame, player: u16, handle: SourceEntityHandle) {
+        assert_eq!(sim(game).source_arena().handle(handle.source_slot), Some(handle));
+        area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+    }
+    fn authored_root(game: &RivalTestGame, kind: CreatureKind, authored: u16) -> SourceEntityHandle {
+        sim(game).creature_runtime_census().roots_of_kind(kind)
+            .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: authored }))
+            .unwrap_or_else(|| panic!("actual living {kind:?} authored{authored}"))
+            .handle
+    }
+    fn count(groups: &Groups, group: u16) -> usize { groups.counts.get(&group).copied().unwrap_or(0) }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL24_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("ribbon-20261104-integration/current-owner-package/level24"));
+    let cache = std::env::var_os("MC_LEVEL24_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level24"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let goals = definition.level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 5);
+    assert_eq!(goals[0].condition(), ObjectiveCondition::ReachLocation(TilePosition { x: 81, y: 47 }));
+    assert_eq!(goals[1].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature18));
+    assert_eq!(goals[2].condition(), ObjectiveCondition::ReachLocation(TilePosition { x: 11, y: 47 }));
+    assert_eq!(goals[3].condition(), ObjectiveCondition::NoStandingBuildings);
+    assert_eq!(goals[4].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Cymmerian));
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2224,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let player = sim(&game).state.entity_index;
+    let retreat = sim(&game).state.position;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [1; 5]);
+    let mut groups = Groups::default();
+    // A later waypoint cannot bypass the current source objective.
+    place(&mut game, player, 11 << 8, 47 << 8);
+    visit(&mut game, &mut groups);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [1; 5]);
+    assert_eq!(count(&groups, 2), 0);
+    // Row178's nine-tile entry area precedes the objective's three-tile
+    // reach radius. Enter that actual area first so its Sentinel population
+    // is present when the selected absence objective is evaluated.
+    place(&mut game, player, 87 << 8, 47 << 8);
+    for _ in 0..128 {
+        visit(&mut game, &mut groups);
+        if count(&groups, 2) == 1 { break; }
+    }
+    assert_eq!(count(&groups, 2), 1);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    let sentinels = [179, 180, 181, 234, 237, 238, 239, 240]
+        .map(|row| authored_root(&game, CreatureKind::Creature18, row));
+    place(&mut game, player, 81 << 8, 47 << 8);
+    for _ in 0..128 {
+        visit(&mut game, &mut groups);
+        if sim(&game).runtime().objectives[owner].stage_selectors[0] == 2 { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 1]);
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    let held = sentinels[3];
+    for handle in sentinels.iter().copied().filter(|handle| *handle != held) {
+        selected_contact(&mut game, player, handle);
+    }
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1,
+            "one actual living Sentinel blocks model18 absence");
+        if sentinels.iter().filter(|handle| **handle != held)
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert!(sentinels.iter().filter(|handle| **handle != held)
+        .all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
+    assert!(sim(&game).creature_identity_for_source_slot(held.source_slot)
+        .is_some_and(|row| row.handle == held && row.living));
+    selected_contact(&mut game, player, held);
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        if count(&groups, 9) == 1 && sim(&game).source_arena().resolve(held).is_none() { break; }
+    }
+    assert_eq!(count(&groups, 9), 1);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..3], [2, 2, 1]);
+    assert!(sim(&game).source_arena().resolve(held).is_none());
+
+    place(&mut game, player, 11 << 8, 47 << 8);
+    for _ in 0..128 {
+        visit(&mut game, &mut groups);
+        if sim(&game).runtime().objectives[owner].stage_selectors[2] == 2 { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2, 2, 2, 1]);
+    // Return only the player to its original package spawn between contacts.
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    let initial = sim(&game).campaign_building_objective_targets(3);
+    assert_eq!(initial.len(), 2, "the two original BUILD53 Houses");
+    let held_position = initial[0].1;
+    let mut struck_houses = BTreeSet::new();
+    let mut house_births = BTreeSet::new();
+    for leave_one in [true, false] {
+        for _ in 0..768 {
+            let targets = sim(&game).campaign_building_objective_targets(3);
+            for (slot, position) in targets.iter().copied() {
+                let house = sim(&game).ordinary().houses().iter().find(|row|
+                    row.active && row.entity_index == slot && row.building_index == 53).copied();
+                if let Some(house) = house {
+                    let handle = sim(&game).source_arena().handle(slot).unwrap();
+                    house_births.insert((handle.source_slot, handle.generation, house.xtype));
+                    if leave_one && (position.x, position.y) == (held_position.x, held_position.y) { continue; }
+                    if house.action == 52 && struck_houses.insert((handle.source_slot, handle.generation)) {
+                        assert!(sim_mut(&mut game).session.state.live.ordinary.houses.submit_source_damage(slot, u16::MAX, player));
+                    }
+                }
+            }
+            if leave_one && !targets.is_empty() && targets.iter().all(|(_, position)|
+                (position.x, position.y) == (held_position.x, held_position.y)) { break; }
+            if !leave_one && count(&groups, 7) == 1 { break; }
+            visit(&mut game, &mut groups);
+            if leave_one { assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[3], 1); }
+        }
+        if leave_one {
+            let remaining = sim(&game).campaign_building_objective_targets(3);
+            assert!(!remaining.is_empty() && remaining.iter().all(|(_, position)|
+                (position.x, position.y) == (held_position.x, held_position.y)));
+            assert_eq!(count(&groups, 7), 0);
+        }
+    }
+    assert!([6, 18, 19, 20, 21].into_iter().all(|group| count(&groups, group) == 1),
+        "actual House xtype groups and descendant groups each publish once: {:?}", groups.counts);
+    assert!([6, 18, 19, 20, 21].into_iter().all(|xtype| house_births.iter().any(|row| row.2 == xtype)),
+        "both original Houses and all three source-produced descendants were observed: {house_births:?}");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [2, 2, 2, 2, 1]);
+    assert_eq!(count(&groups, 7), 1);
+    let cymmerian = authored_root(&game, CreatureKind::Cymmerian, 297);
+    let initial_roots = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+        .filter(|row| row.living && matches!(row.origin, CreatureRootOrigin::AuthoredRecord { .. })).count();
+    assert_eq!(initial_roots, 52, "all actual group7 Cymmerians materialize");
+    let mut seen = BTreeSet::new();
+    let mut struck = BTreeSet::new();
+    let mut split_seen = false;
+    for leave_one in [true, false] {
+        for _ in 0..1024 {
+            for row in sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian) {
+                split_seen |= matches!(row.origin, CreatureRootOrigin::CreatureConversion { .. });
+                seen.insert((row.handle.source_slot, row.handle.generation));
+            }
+            let targets = sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && row.model == 25
+                && row.life >= 0 && (row.action != 200 || row.record_bytes()[74] >= 3))
+                .map(|row| sim(&game).source_arena().handle(row.index).unwrap()).collect::<Vec<_>>();
+            for handle in targets {
+                if leave_one && handle == cymmerian { continue; }
+                if struck.insert((handle.source_slot, handle.generation)) { selected_contact(&mut game, player, handle); }
+            }
+            visit(&mut game, &mut groups);
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[4], 1);
+                let living = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+                    .filter(|row| row.living).map(|row| row.handle).collect::<Vec<_>>();
+                if living == [cymmerian] && seen.iter().all(|&(slot, generation)| {
+                    let handle = SourceEntityHandle { source_slot: slot, generation };
+                    handle == cymmerian || sim(&game).source_arena().resolve(handle).is_none()
+                }) { break; }
+            } else if count(&groups, 10) == 1 && seen.iter().all(|&(slot, generation)|
+                sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()) { break; }
+        }
+        if leave_one {
+            assert!(sim(&game).creature_identity_for_source_slot(cymmerian.source_slot)
+                .is_some_and(|row| row.handle == cymmerian && row.living));
+            assert!(sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+                .filter(|row| row.living).all(|row| row.handle == cymmerian));
+            assert!(seen.iter().all(|&(slot, generation)| {
+                let handle = SourceEntityHandle { source_slot: slot, generation };
+                handle == cymmerian || sim(&game).source_arena().resolve(handle).is_none()
+            }));
+            assert_eq!(count(&groups, 10), 0);
+        }
+    }
+    assert!(split_seen, "large actual Cymmerians produced real descendants");
+    assert!(seen.iter().all(|&(slot, generation)|
+        sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()));
+    assert!(house_births.iter().all(|&(slot, generation, _)|
+        sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()),
+        "original and descendant BUILD53 House generations reclaim naturally");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..5], [2; 5]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert_eq!(count(&groups, 10), 1);
+    let (trigger, position) = groups.exit.expect("actual exit281");
+    let portal = groups.portal.expect("actual portal280");
+    let exit = sim(&game).level_exit_sequence();
+    if !exit.active && !exit.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        visit(&mut game, &mut groups);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    let exit = sim(&game).level_exit_sequence();
+    assert_eq!((exit.trigger_entity_index, exit.portal_entity_index), (trigger.source_slot, portal.source_slot));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn darklava_actual_house_chains_creatures_and_ordinary_exit() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};

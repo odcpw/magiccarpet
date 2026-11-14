@@ -642,6 +642,109 @@ mod authored_spell_family_tests {
     use super::*;
 
     #[test]
+    fn reclaimed_pickup_reuse_reads_current_family_and_source_fields() {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player/arena package");
+        let terrain = SessionTerrain::from_inspection(&inspection);
+        let mut shared = Level2SharedSpellResetSession::from_campaign_parts(
+            inspection.entities(), inspection.players(), inspection.runtime(), terrain.map_type(),
+        ).unwrap();
+        let mut economy = Level2EconomyState::from_parts(
+            terrain.clone(), inspection.entities(), shared.player_entity.mana,
+            shared.player_entity.model, 0, shared.local_player.enabled_spell_holders[2],
+            inspection.runtime().random_state,
+        ).unwrap();
+        let particles = vec![ParticleParameter {
+            base_tmap: 0, word_2: 0, word_4: 0, speed: 0, rotation_speed: 0,
+            byte_10: 0, byte_11: 0, render_mode: 20, byte_13: 0,
+        }; 78];
+        let feature = |index, family| AuthoredFeature {
+            index, kind: 15, subtype: family, tile_x: 8, tile_y: 9,
+            activation_group: 0, word_10: 0, stage_tag: 1,
+            parameter_1: 0, parameter_2: 0, parameter_3: 0,
+        };
+        let player = shared.player_entity.index;
+        let away = Position { x: 40_000, y: 40_000, z: 2_048 };
+        let old = shared.materialize_authored_spell_pickup(
+            &mut economy, feature(50_001, 8), &terrain, &particles,
+        ).unwrap().unwrap();
+        let old_generation = economy.slot_generation(old);
+        let other = shared.materialize_authored_spell_pickup(
+            &mut economy, feature(50_002, 7), &terrain, &particles,
+        ).unwrap().unwrap();
+        assert_ne!(old, other);
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, other, 7, player, away, &terrain,
+        ).unwrap();
+        let other_row = shared.pickup(other).unwrap().clone();
+        let other_state = *shared.persistent_acquisition_states().get(&other).unwrap();
+
+        // One declared near-expiry source boundary; the real callback hides
+        // the old row, then source reclaim and NewEvent own address reuse.
+        shared.pickup_mut(old).unwrap().set_life(1);
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, old, 8, player, away, &terrain,
+        ).unwrap();
+        assert!(shared.pickup(old).unwrap().drawing_disabled());
+        assert_eq!(shared.persistent_acquisition_states().get(&old).unwrap().family, 8);
+        economy.retire_hidden_spell_source(old);
+        economy.reclaim_inactive_slots_at_source_boundary();
+        let before_family8 = *shared.acquisitions.iter().find(|state| state.family == 8).unwrap();
+        let reused = shared.materialize_authored_spell_pickup(
+            &mut economy, feature(50_003, 3), &terrain, &particles,
+        ).unwrap().unwrap();
+        assert_eq!(reused, old);
+        assert_ne!(economy.slot_generation(reused), old_generation);
+        let fresh = shared.dynamic_pickups.iter().rev().find(|row| row.index == reused).unwrap().clone();
+        shared.sync_released_holder(&fresh);
+        assert_eq!(*shared.acquisitions.iter().find(|state| state.family == 8).unwrap(), before_family8,
+            "a current family3 source cannot overwrite a family8 mirror at the reused address");
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, reused, 3, player, away, &terrain,
+        ).unwrap();
+        assert_eq!(shared.persistent_acquisition_states().get(&reused).unwrap().family, 3);
+        assert_eq!((shared.pickup(other).unwrap(), shared.persistent_acquisition_states().get(&other).unwrap()),
+            (&other_row, &other_state), "the other current holder keeps its own lifecycle");
+
+        // Repeat at the same address with the same family, but make the old
+        // row's source word distinct: the new callback must read NewEvent's
+        // current profile rather than inherit even a same-family cache.
+        {
+            let row = shared.pickup_mut(reused).unwrap();
+            row.record[52..54].copy_from_slice(&0x1234_u16.to_le_bytes());
+            row.set_life(1);
+        }
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, reused, 3, player, away, &terrain,
+        ).unwrap();
+        assert_eq!(shared.persistent_acquisition_states().get(&reused).unwrap().word_0x30, 0x1234);
+        assert!(shared.pickup(reused).unwrap().drawing_disabled());
+        let previous_generation = economy.slot_generation(reused);
+        economy.retire_hidden_spell_source(reused);
+        economy.reclaim_inactive_slots_at_source_boundary();
+        let same_family = shared.materialize_authored_spell_pickup(
+            &mut economy, feature(50_004, 3), &terrain, &particles,
+        ).unwrap().unwrap();
+        assert_eq!(same_family, reused);
+        assert_ne!(economy.slot_generation(same_family), previous_generation);
+        let fresh = shared.dynamic_pickups.iter().rev().find(|row| row.index == same_family).unwrap().clone();
+        let expected_word = fresh.source_spell_word_30();
+        assert_ne!(expected_word, 0x1234);
+        shared.sync_released_holder(&fresh);
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, same_family, 3, player, away, &terrain,
+        ).unwrap();
+        assert_eq!(shared.persistent_acquisition_states().get(&same_family).unwrap().word_0x30, expected_word);
+        assert_eq!((shared.pickup(other).unwrap(), shared.persistent_acquisition_states().get(&other).unwrap()),
+            (&other_row, &other_state));
+        shared.step_level2_spell_replacement_acquisition_with_economy(
+            &mut economy, other, 7, player, away, &terrain,
+        ).unwrap();
+        assert_eq!(shared.persistent_acquisition_states().get(&other).unwrap().family, 7,
+            "the independent current holder still receives its own source callback");
+    }
+
+    #[test]
     fn authored_starting_army_mine_and_alliance_rows_use_source_constructors_and_acquisition() {
         let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
             .expect("qualified source player/arena package");
@@ -3635,7 +3738,9 @@ impl Level2SharedSpellResetSession {
         // In particular, its source lifetime is assigned only after the
         // release position/RNG writes; preserve each source-ordered update.
         for state in &mut self.acquisitions {
-            if state.source_slot != source.index {
+            if state.source_slot != source.index || !source.active
+                || source.class != 15 || state.family != source.model
+            {
                 continue;
             }
             state.source_action = source.action;
@@ -4996,6 +5101,11 @@ impl Level2SharedSpellResetSession {
         terrain: &SessionTerrain,
         source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let pickup = self.pickup(source_slot).cloned().filter(|pickup| {
+            pickup.active && pickup.class == 15 && pickup.model == family
+        }).ok_or_else(|| NativeWorldError::new(format!(
+            "Level 2 persistent source row {source_slot} is not current family {family}"
+        )))?;
         self.prepare_source_acquisition(source_slot)?;
         let family_index = self
             .acquisitions
@@ -5004,21 +5114,12 @@ impl Level2SharedSpellResetSession {
             .ok_or_else(|| {
                 NativeWorldError::new(format!("unsupported Level 2 spell family {family}"))
             })?;
-        let pickup = self.pickup(source_slot).cloned().ok_or_else(|| {
-            NativeWorldError::new(format!(
-                "Level 2 persistent source row {source_slot} is absent"
-            ))
-        })?;
         let base_state = self.acquisitions[family_index];
-        let mut source_state = self
-            .persistent_acquisitions
-            .remove(&source_slot)
-            .unwrap_or_else(|| Self::acquisition_from_source(&pickup, &self.local_player));
-        source_state.source_slot = source_slot;
-        source_state.authored_source_index = 0;
-        source_state.source_action = pickup.action;
-        source_state.source_life = pickup.life;
-        source_state.source_draw_enabled = pickup.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        // The numeric address may have been reclaimed and reused since an
+        // earlier callback. Every input is already owned by the current
+        // pickup or player; a cached address is an observation, not authority.
+        self.persistent_acquisitions.remove(&source_slot);
+        let source_state = Self::acquisition_from_source(&pickup, &self.local_player);
         self.acquisitions[family_index] = source_state;
         let result = self.step_level2_spell_acquisition_with_castle_mana(
             family,
