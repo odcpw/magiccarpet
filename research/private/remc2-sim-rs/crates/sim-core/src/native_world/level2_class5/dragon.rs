@@ -48,6 +48,208 @@ const MC2_DRAGON_ASSETS: Mc2DragonAssets = Mc2DragonAssets {
     attack_sound: 8,
 };
 
+/// Adopt a reset-imported Dragon and its current body into the existing
+/// scheduled carriers. This is a representation transfer, not NewEvent:
+/// source slots, generations, gameplay fields, map links and RNG values stay
+/// put. The old raw shadow's synthetic active marker is cleared on handoff.
+pub(crate) fn adopt_imported(
+    arena: &mut SourceArena,
+    root_slot: u16,
+    particles: &[ParticleParameter],
+) -> std::result::Result<bool, String> {
+    use crate::campaign::source_arena::SourceEntityView;
+
+    let Some(handle) = arena.handle(root_slot) else { return Ok(false) };
+    if handle.generation != 0 { return Ok(false); }
+    let Some(SourceEntityView::Imported(root)) = arena.resolve(handle) else { return Ok(false) };
+    if !root.active || root.class != 5 || root.model != DRAGON_MODEL
+        || !matches!(root.action, 1 | 2 | 3 | 4 | 5 | 7)
+        || root.source_id != root_slot
+    {
+        return Ok(false);
+    }
+
+    fn word(row: &EntitySnapshot, offset: usize) -> u16 {
+        u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
+    }
+    fn signed_word(row: &EntitySnapshot, offset: usize) -> i16 {
+        i16::from_le_bytes([row.record[offset], row.record[offset + 1]])
+    }
+    fn particle(row: &EntitySnapshot, particles: &[ParticleParameter]) -> std::result::Result<u16, String> {
+        let index = row.particle_parameter_index
+            .ok_or_else(|| format!("imported Dragon {} has no source particle", row.index))?;
+        if particles.get(usize::from(index)).is_none() {
+            return Err(format!("imported Dragon {} has invalid particle {index}", row.index));
+        }
+        Ok(index)
+    }
+
+    let root_particle = particle(root, particles)?;
+    let descriptor = root.parameter_relation
+        .ok_or_else(|| format!("imported Dragon {root_slot} has no source descriptor"))?;
+    let parent = word(root, 44);
+    let parent_generation = arena.economy.slot_generation(parent);
+    let source = Level2AuthoredClass5Source {
+        source_entity_index: root_slot,
+        entity_rng: root.entity_rng,
+        authored_index: u16::MAX,
+        model: root.model,
+        action: root.action,
+        minimum_speed: signed_word(root, 136),
+        maximum_speed: signed_word(root, 138),
+        actual_speed: root.actual_speed,
+        max_life: root.max_life,
+        life: root.life,
+        mana: root.mana,
+        max_mana: root.max_mana,
+        subspell_index: root.subspell_index,
+        dword_0x10: root.source_dword_10(),
+        pending_word_0x62: root.source_upkeep_word_62(),
+        word_0x26: root.word_26(),
+        word_0x24: root.word_24(),
+        byte_0x3b: root.byte_3b,
+        word_0x96_150: root.source_word_96(),
+        byte_0x46_70: root.record[74],
+        particle_index: root_particle,
+        source_byte_3e: root.phase,
+        source_byte_39: root.record[61],
+        yaw: root.yaw,
+        pitch: root.pitch,
+        roll: root.source_roll(),
+        fov: root.fov,
+        shift_rot_x: root.array_pitch(),
+        shift_rot_y: root.array_fov(),
+        position: root.position,
+        phase: root.phase,
+        drawing_enabled: !root.drawing_disabled(),
+        active: root.active,
+    };
+    let runtime = Level2AuthoredClass5RuntimeState {
+        source_entity_index: root_slot,
+        byte_0x38: root.record[60],
+        xtype: root.record[69],
+        descriptor_index: descriptor,
+        pending_damage: root.source_upkeep_payload(),
+        linked_head: word(root, 56),
+    };
+    let dragon = AuthoredDragonRuntime {
+        source_entity_index: root_slot,
+        entity_id: root.source_id,
+        stage_var1: root.record[76],
+        stage_var2: root.record[77],
+        stage_relation: word(root, 78),
+        parent_entity_index: parent,
+        parent_generation,
+        stage_remaining: signed_word(root, 50),
+        alliance_duration: word(root, 52),
+        linked_entity_index: word(root, 54),
+        word_0x36: signed_word(root, 58),
+        control_flags: root.control_flags,
+        font_type_index: root.font_type_index,
+        dodge_remaining: signed_word(root, 48),
+        render_yaw: root.array_yaw(),
+        render_pitch: root.array_pitch(),
+        render_roll: root.array_roll(),
+        render_fov: root.array_fov(),
+        // The movement result is computed during the current callback before
+        // it is consumed; it is not a retained word in the source record.
+        movement_blocked: false,
+    };
+    let mut parts = Vec::new();
+    let mut next = runtime.linked_head;
+    let mut previous = root_slot;
+    let mut seen = std::collections::BTreeSet::new();
+    while next != 0 {
+        if !seen.insert(next) || parts.len() >= DRAGON_PART_COUNT {
+            return Err(format!("imported Dragon {root_slot} has a cyclic or oversized body at {next}"));
+        }
+        let part_handle = arena.handle(next)
+            .ok_or_else(|| format!("imported Dragon {root_slot} lost body slot {next}"))?;
+        let Some(SourceEntityView::Imported(row)) = arena.resolve(part_handle) else {
+            return Err(format!("imported Dragon {root_slot} body slot {next} is not its raw occupant"));
+        };
+        if !row.active || row.class != 5 || row.model != DRAGON_MODEL
+            || !matches!(row.action, DRAGON_PART_ACTION | DRAGON_KILL_ACTION)
+            || row.source_id != root_slot || word(row, 54) != previous
+        {
+            return Err(format!("imported Dragon {root_slot} has invalid body link {previous}->{next}"));
+        }
+        let part = AuthoredDragonPart {
+            source_entity_index: next,
+            root_authored_index: u16::MAX,
+            entity_id: row.source_id,
+            entity_rng: row.entity_rng,
+            control_flags: row.control_flags,
+            parent_entity_index: word(row, 44),
+            previous_entity_index: word(row, 54),
+            next_entity_index: word(row, 56),
+            word_0x36: signed_word(row, 58),
+            pending_word_0x62: row.source_upkeep_word_62(),
+            pending_damage: row.source_upkeep_payload(),
+            word_0x24: row.word_24(),
+            word_0x26: row.word_26(),
+            model: row.model,
+            action: row.action,
+            source_byte_3e: row.phase,
+            source_byte_39: row.record[61],
+            max_life: row.max_life,
+            life: row.life,
+            mana: row.mana,
+            subspell_index: row.subspell_index,
+            particle_index: particle(row, particles)?,
+            yaw: row.yaw,
+            pitch: row.pitch,
+            roll: row.source_roll(),
+            fov: row.fov,
+            render_yaw: row.array_yaw(),
+            render_pitch: row.array_pitch(),
+            render_roll: row.array_roll(),
+            render_fov: row.array_fov(),
+            position: row.position,
+            drawing_enabled: !row.drawing_disabled(),
+            active: row.active,
+        };
+        previous = next;
+        next = part.next_entity_index;
+        parts.push((part, row.source_player_entity_index()));
+    }
+    let root_owner = root.source_player_entity_index();
+    let mut transferred = Vec::with_capacity(parts.len() + 1);
+    transferred.push(root_slot);
+    transferred.extend(parts.iter().map(|(part, _)| part.source_entity_index));
+    // Validation above completes before the first write. These sidecars
+    // mirror the existing source values without allocating or drawing RNG.
+    arena.economy.source_rng.insert(root_slot, source.entity_rng);
+    arena.economy.source_owner.insert(root_slot, root_owner);
+    for (part, owner) in parts {
+        arena.economy.source_rng.insert(part.source_entity_index, part.entity_rng);
+        arena.economy.source_owner.insert(part.source_entity_index, owner);
+        arena.economy.authored_dragon_parts.push(part);
+    }
+    arena.economy.authored_class5.push(source);
+    arena.economy.authored_class5_runtime.push(runtime);
+    arena.economy.authored_dragons.push(dragon);
+    for slot in transferred {
+        let raw = &mut arena.entities[usize::from(slot)];
+        raw.active = false;
+        raw.record[2] = 0;
+    }
+    Ok(true)
+}
+
+/// Project the current body occupants through their own source particles and
+/// pose. The root is already projected by the shared class-5 owner.
+pub(crate) fn presentation_candidates(
+    arena: &SourceArena,
+) -> Vec<(u16, u16, u16, i16, Position, u32)> {
+    arena.economy.authored_dragon_parts.iter()
+        .filter(|part| part.active && part.drawing_enabled
+            && part.control_flags & (ENTITY_DRAW_DISABLED_BIT | 0x21) == 0)
+        .map(|part| (part.source_entity_index, part.entity_id, part.particle_index,
+            part.yaw, part.position, part.control_flags))
+        .collect()
+}
+
 /// Current class9 carrier fields read by source sub_1F0C0. The caller
 /// projects raw and typed projectiles before the Dragon's actual visit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2563,6 +2765,110 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
 #[cfg(test)]
 mod lightning_consumer_tests {
     use super::*;
+
+    #[test]
+    fn tklom_imported_dragon_adoption_preserves_current_source_carriers() {
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5",
+            ),
+            std::path::PathBuf::from,
+        );
+        let mut campaign = crate::campaign::CampaignSession::open(
+            &package, crate::campaign::spec::CampaignSelection::ordinary(5).unwrap(),
+        ).expect("the real T'Klom owner package opens");
+        let player = campaign.simulation().state.entity_index;
+        let slot = 2;
+        let root_handle = campaign.simulation().source_arena().handle(slot).unwrap();
+        assert_eq!(root_handle.generation, 0);
+        // A selected arrived source contact is a real pending mailbox, not a
+        // staged health or action change. Adoption must retain this packet.
+        crate::native_world::area_damage::contact(
+            campaign.simulation_mut().source_arena_mut(), None, slot, 123, player,
+        ).unwrap();
+        let before = campaign.simulation();
+        let raw = before.source_arena().entities().to_vec();
+        let free = before.source_arena().free_source_slots().to_vec();
+        let map = before.economy().map_chains().clone();
+        let rng = before.cf07_rng_observation();
+        let terrain = before.terrain_hash();
+        let bounty = crate::native_world::area_damage::source_bounty(before.source_arena(), None, slot).unwrap();
+        assert_eq!(bounty, (123, player));
+        let mut body = Vec::new();
+        let mut next = raw[usize::from(slot)].word_34();
+        while next != 0 {
+            body.push(before.source_arena().handle(next).unwrap());
+            next = raw[usize::from(next)].word_34();
+        }
+        assert_eq!(body.len(), DRAGON_PART_COUNT);
+        let mut expected_raw = raw.clone();
+        for source_slot in std::iter::once(slot).chain(body.iter().map(|handle| handle.source_slot)) {
+            let shadow = &mut expected_raw[usize::from(source_slot)];
+            shadow.active = false;
+            shadow.record[2] = 0;
+        }
+        let particles = before.session.definition.presentation.particles.clone();
+        assert!(adopt_imported(campaign.simulation_mut().source_arena_mut(), slot, &particles).unwrap());
+        let after = campaign.simulation();
+        assert_eq!(after.source_arena().entities(), expected_raw.as_slice(),
+            "only each transferred raw shadow's synthetic active marker changes");
+        assert_eq!(after.source_arena().free_source_slots(), free.as_slice(), "adoption is not an allocation");
+        assert_eq!(after.economy().map_chains(), &map);
+        assert_eq!(after.cf07_rng_observation(), rng, "adoption draws no RNG");
+        assert_eq!(after.terrain_hash(), terrain);
+        assert_eq!(after.source_arena().handle(slot), Some(root_handle));
+        assert_eq!(crate::native_world::area_damage::source_bounty(after.source_arena(), None, slot).unwrap(), bounty);
+        let source = after.economy().authored_class5().iter().find(|row| row.source_entity_index == slot).unwrap();
+        let initial = &raw[usize::from(slot)];
+        assert_eq!((source.life, source.max_life, source.mana, source.entity_rng, source.action,
+            source.position, source.source_byte_3e),
+            (initial.life, initial.max_life, initial.mana, initial.entity_rng, initial.action,
+                initial.position, initial.phase));
+        let runtime = after.economy().authored_class5_runtime().iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((runtime.pending_damage, source.pending_word_0x62, runtime.linked_head),
+            (123, player, body[0].source_slot));
+        let root = after.creature_identity_for_source_slot(slot).expect("initial Dragon root identity");
+        assert_eq!((root.handle, root.origin, root.role), (root_handle,
+            CreatureRootOrigin::InitialPackage, crate::campaign::source_arena::CreatureRuntimeRole::Root));
+        assert_eq!(after.source_arena().rebuilt_class5_model_slots()[0].iter()
+            .filter(|&&current| current == slot).count(), 1);
+        let presentation = after.campaign_entity_presentations(0).unwrap();
+        for handle in std::iter::once(&root_handle).chain(body.iter()) {
+            assert_eq!(presentation.iter().filter(|row| row.entity_index == handle.source_slot).count(), 1,
+                "each current Dragon source occupant projects exactly once");
+        }
+        let visible = presentation_candidates(after.source_arena());
+        assert_eq!(visible.len(), DRAGON_PART_COUNT);
+        let mut hidden = after.source_arena().clone();
+        hidden.economy.authored_dragon_parts.iter_mut()
+            .find(|part| part.source_entity_index == body[0].source_slot).unwrap().drawing_enabled = false;
+        hidden.economy.authored_dragon_parts.iter_mut()
+            .find(|part| part.source_entity_index == body[1].source_slot).unwrap().control_flags |= 1;
+        let still_visible = presentation_candidates(&hidden);
+        assert_eq!(still_visible.len(), DRAGON_PART_COUNT - 2);
+        assert!(still_visible.iter().all(|(slot, ..)| *slot != body[0].source_slot && *slot != body[1].source_slot),
+            "draw-disable and source bit0 each suppress only the cloned body occupant");
+        for handle in body {
+            assert_eq!(after.source_arena().handle(handle.source_slot), Some(handle));
+            let identity = after.creature_identity_for_source_slot(handle.source_slot)
+                .expect("initial Dragon body identity");
+            assert_eq!((identity.handle, identity.root_slot, identity.origin, identity.role),
+                (handle, slot, CreatureRootOrigin::InitialPackage,
+                    crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart));
+            let initial = &raw[usize::from(handle.source_slot)];
+            let part = after.economy().authored_dragon_parts().iter()
+                .find(|part| part.source_entity_index == handle.source_slot).unwrap();
+            assert_eq!((part.entity_id, part.entity_rng, part.life, part.max_life, part.mana,
+                part.action, part.position, part.previous_entity_index, part.next_entity_index,
+                part.particle_index, part.source_byte_3e),
+                (initial.source_id, initial.entity_rng, initial.life, initial.max_life, initial.mana,
+                    initial.action, initial.position, initial.word_32(), initial.word_34(),
+                    initial.particle_parameter_index.unwrap(), initial.phase));
+        }
+        assert!(!adopt_imported(campaign.simulation_mut().source_arena_mut(), slot, &particles).unwrap(),
+            "the same generation cannot be adopted twice");
+    }
 
     #[test]
     fn level_nine_authored_dragon_patrol_reaches_its_real_terminal() {
