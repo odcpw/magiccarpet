@@ -26,6 +26,128 @@ use crate::native_world::{
 };
 
 #[test]
+fn clannesh_all_five_real_rival_banishments_open_the_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::ObjectiveCondition;
+    use crate::native_world::player_lifecycle_tests::{
+        rival_test_contact as contact, rival_test_destroy_castle as destroy_castle,
+        rival_test_held_spell_generations as held_spell_generations,
+        rival_test_participation as participation, rival_test_sim as sim,
+        rival_test_sim_mut as sim_mut, rival_test_step as step,
+        rival_test_wait_unprotected as wait_unprotected,
+    };
+
+    let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL17_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level17-package"));
+    let cache = std::env::var_os("MC_LEVEL17_OWNER_CACHE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level17-complete"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2217,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let objectives = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 1);
+    assert!(matches!(objectives[0].condition(), ObjectiveCondition::AllOtherPlayersBanished));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(player, 303);
+    assert_eq!(sim(&game).runtime().player_count, 6);
+    let rivals = [304_u16, 319, 333, 349, 366];
+    let roster = sim(&game).players().iter().take(6).map(|row| row.entity_index).collect::<Vec<_>>();
+    assert_eq!(roster, [303, 304, 319, 333, 349, 366]);
+    assert!(rivals.iter().all(|actor| participation(&game, *actor) == Some(1)));
+    let handles = rivals.map(|actor| sim(&game).source_arena().handle(actor).unwrap());
+    let gate = sim(&game).source_arena().handle(302).unwrap();
+    let gate_row = &sim(&game).entities()[302];
+    assert_eq!((gate_row.class, gate_row.model, gate_row.action, gate_row.source_id), (11, 4, 4, 30));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    let mut castles = Vec::new();
+    let mut holders = Vec::new();
+    let mut group30 = 0;
+    let mut exit = None;
+    for (index, (&actor, &handle)) in rivals.iter().zip(&handles).enumerate() {
+        assert_eq!(participation(&game, actor), Some(1), "the next source participant is still active");
+        wait_unprotected(&mut game, actor);
+        if sim(&game).economy().castle_for_owner(actor).is_some() {
+            castles.push(destroy_castle(&mut game, actor, player));
+        }
+        let state = sim(&game);
+        let row = &state.entities()[usize::from(actor)];
+        let upkeep = state.session.state.live.nyphur_dispatcher.get(handle).unwrap().common_upkeep(row.phase);
+        assert!(row.active && row.action == 1 && row.life > 0 && upkeep.word_0x159 == 0 && !upkeep.high_upkeep,
+            "actual source actor must admit the selected contact after current Castle loss: {row:?}");
+        assert!(state.economy().castle_for_owner(actor).is_none());
+        let life = row.life;
+        holders.extend(held_spell_generations(&game, actor));
+        // Only arrived damage is controlled: the original actor, protection,
+        // AI, Castle tiers, death, participation and cleanup stay scheduled.
+        contact(&mut game, actor, player, life);
+        for _ in 0..768 {
+            step(&mut game);
+            for event in sim(&game).dispatch_events() {
+                if let Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 302, group: 30, authored_indices, .. } = event {
+                    assert_eq!(authored_indices.as_ref(), [444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454]);
+                    group30 += 1;
+                    let trigger = sim(&game).economy().authored_switch_producers().iter()
+                        .find(|row| row.active && row.authored_index == 454 && (row.model, row.action) == (12, 12))
+                        .expect("group30 publishes the actual exit at birth");
+                    assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 453));
+                    assert!(sim(&game).ordinary().houses().iter().any(|row| row.active && row.building_index == 17));
+                    exit = Some((trigger.position, sim(&game).source_arena().handle(trigger.source_entity_index).unwrap()));
+                }
+            }
+            if participation(&game, actor) == Some(0) { break; }
+        }
+        assert_eq!(sim(&game).source_arena().handle(actor), Some(handle));
+        assert_eq!(participation(&game, actor), Some(0), "real rival {actor} reaches banishment");
+        assert_eq!(sim(&game).entities()[usize::from(actor)].action, 3);
+        if index < rivals.len() - 1 {
+            assert!(rivals[index + 1..].iter().any(|actor| participation(&game, *actor) == Some(1)));
+            assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1,
+                "a remaining source participant blocks the kind8 objective");
+            assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 0);
+            assert_eq!(group30, 0);
+            assert_eq!(sim(&game).source_arena().handle(302), Some(gate));
+        }
+    }
+    for _ in 0..512 {
+        if group30 != 0 && castles.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none())
+            && holders.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none()) { break; }
+        step(&mut game);
+        for event in sim(&game).dispatch_events() {
+            if let Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 302, group: 30, authored_indices, .. } = event {
+                assert_eq!(authored_indices.as_ref(), [444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454]);
+                group30 += 1;
+                let trigger = sim(&game).economy().authored_switch_producers().iter()
+                    .find(|row| row.active && row.authored_index == 454 && (row.model, row.action) == (12, 12))
+                    .expect("group30 publishes the actual exit at birth");
+                assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 453));
+                assert!(sim(&game).ordinary().houses().iter().any(|row| row.active && row.building_index == 17));
+                exit = Some((trigger.position, sim(&game).source_arena().handle(trigger.source_entity_index).unwrap()));
+            }
+        }
+    }
+    assert_eq!(group30, 1);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert!(castles.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none()));
+    assert!(holders.iter().all(|h| sim(&game).source_arena().resolve(*h).is_none()));
+    let (position, trigger) = exit.expect("the real level-complete switch publishes group30");
+    let sequence = sim(&game).level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn perilium_real_rival_castles_and_banishments_open_the_ordinary_exit() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::game_session::{GameCompletionStatus, GameSession};
