@@ -1708,6 +1708,20 @@ impl SourceArena {
                 }
 
                 if source.model == 0 {
+                    if dynamic_handle.generation == 0 {
+                        if initial_bindings.get(&source_slot) != Some(&CreatureKind::Dragon) {
+                            return None;
+                        }
+                        return Some(CreatureRuntimeIdentity {
+                            handle: dynamic_handle,
+                            kind: CreatureKind::Dragon,
+                            root_slot: source_slot,
+                            role: CreatureRuntimeRole::Root,
+                            origin: CreatureRootOrigin::InitialPackage,
+                            raw_model: Some(0),
+                            living: source.active && source.drawing_enabled && source.life >= 0,
+                        });
+                    }
                     let authored_record = source.authored_index;
                     let &kind = authored_bindings.get(&authored_record)?;
                     if kind != CreatureKind::Dragon {
@@ -1861,6 +1875,22 @@ impl SourceArena {
                 });
             }
             if source.root_authored_index == u16::MAX {
+                // A retained imported body can outlive its original root's
+                // address. Its own generation and immutable package binding
+                // retain provenance until that body is reclaimed/replaced.
+                if dynamic_handle.generation == 0
+                    && initial_bindings.get(&source.entity_id) == Some(&CreatureKind::Dragon)
+                {
+                    return Some(CreatureRuntimeIdentity {
+                        handle: dynamic_handle,
+                        kind: CreatureKind::Dragon,
+                        root_slot: source.entity_id,
+                        role: CreatureRuntimeRole::MultipartPart,
+                        origin: CreatureRootOrigin::InitialPackage,
+                        raw_model: None,
+                        living: false,
+                    });
+                }
                 return None;
             }
             let &kind = authored_bindings.get(&source.root_authored_index)?;

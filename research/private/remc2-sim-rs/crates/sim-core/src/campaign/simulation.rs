@@ -1431,6 +1431,21 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             PassPhase::RebuildMemberships => {
                 {
                     let live = &mut self.owner.session.state.live;
+                    // Reset packages retain already-constructed Dragon roots
+                    // and bodies. Transfer their current state to the same
+                    // carriers used by later authored births before list
+                    // capture; never reconstruct them through NewEvent.
+                    let dragons = live.economy.entities.iter().filter(|row|
+                        row.active && row.class == 5 && row.model == 0
+                            && (1..=7).contains(&row.action)
+                            && live.economy.live_arena_kind(row.index).is_none())
+                        .map(|row| row.index).collect::<Vec<_>>();
+                    for slot in dragons {
+                        level2_class5::dragon::adopt_imported(
+                            &mut live.economy, slot,
+                            &self.owner.session.definition.presentation.particles,
+                        )?;
+                    }
                     let skeletons = live.economy.authored_class5().iter()
                         .filter(|row| row.active && row.model == 9)
                         .map(|row| row.source_entity_index).collect::<Vec<_>>();
@@ -7881,6 +7896,9 @@ impl Mc2Simulation {
             self.economy().castle_defenders(),
         ));
         candidates.extend(creatures::worm::dynamic::presentation_candidates(
+            self.source_arena(),
+        ));
+        candidates.extend(level2_class5::dragon::presentation_candidates(
             self.source_arena(),
         ));
         candidates.sort_unstable_by_key(|(slot, ..)| *slot);

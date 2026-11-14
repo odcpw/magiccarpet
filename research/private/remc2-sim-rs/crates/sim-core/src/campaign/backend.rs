@@ -39809,6 +39809,207 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn actual_tklom_dragon_absence_secret_entry_and_karakir_parent_return() {
+        use crate::native_world::player_lifecycle_tests::{
+            complete_tklom_rival_objectives_for_test, rival_test_contact as contact,
+            rival_test_sim as sim, rival_test_sim_mut as sim_mut, rival_test_step as step,
+        };
+        use crate::game_runtime::{
+            CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime,
+            RuntimeMode, RuntimeTransitionError, SecretTransitionKind,
+        };
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+            &std::fs::read(resources).expect("normal installed campaign resources"),
+        ).unwrap();
+        assert_eq!(resources.len(), 30);
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+        )).unwrap();
+        let source = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::ordinary(5).unwrap()).unwrap();
+        let secret = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::secret_destination(30).unwrap()).unwrap();
+        let origin = source.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let secret_id = secret.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let origin_index = resolver.flow().entries().iter().position(|row| row.level_id() == &origin).unwrap();
+        let completed_levels = resolver.flow().entries().iter().take(origin_index)
+            .map(|row| row.level_id().clone()).collect::<Vec<_>>();
+        let parent = CampaignSaveState {
+            definition: resolver.package(resolver.flow().entry_level_id()).unwrap().definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None,
+            selected_level_id: Some(origin.clone()),
+            completed_levels,
+            level_statistics: Vec::new(),
+        };
+        // Declared arrival frontier and Possession inventory. All T'Klom
+        // objectives, source producers, contacts and portal outcomes are live.
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8450).unwrap();
+        install_owner_return_media(&mut runtime);
+        let map = runtime.restore_campaign_resolved(runtime.identity().guard(), parent.clone(), Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "T'Klom parent must be installed".to_owned(),
+                    })
+            }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8450).unwrap();
+        runtime.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[1], Some(1)).unwrap();
+        let game = runtime.session_mut().unwrap();
+        let features = sim(game).mission().authored_features();
+        assert_eq!((features[73].kind, features[73].subtype, features[73].activation_group, features[73].stage_tag), (11, 13, 1, 6));
+        assert_eq!((features[75].kind, features[75].subtype, features[75].activation_group), (14, 4, 6));
+        assert_eq!((features[76].kind, features[76].subtype, features[76].activation_group), (11, 31, 6));
+        let expected_group = features.iter().filter(|row| row.kind != 0 && row.activation_group == 6)
+            .map(|row| row.index).collect::<Vec<_>>();
+        let initial_dragons = sim(game).source_arena().rebuilt_class5_model_slots()[0].iter()
+            .map(|slot| sim(game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+        assert_eq!(initial_dragons.len(), 5, "five real reset Dragons block the group6 absence producer");
+        assert!(sim(game).economy().authored_switch_producers().iter().all(|row| row.authored_index != 73));
+        assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 75));
+        complete_tklom_rival_objectives_for_test(game);
+        let player = sim(game).state.entity_index;
+        let gate = *sim(game).economy().authored_switch_producers().iter()
+            .find(|row| row.active && row.authored_index == 73 && row.model == 13 && row.stage_tag == 6)
+            .expect("actual objective-produced Dragon absence controller73");
+        let gate_handle = sim(game).source_arena().handle(gate.source_entity_index).unwrap();
+        let dragons = sim(game).source_arena().rebuilt_class5_model_slots()[0].iter()
+            .filter_map(|slot| sim(game).source_arena().handle(*slot)).collect::<Vec<_>>();
+        assert!(!dragons.is_empty() && dragons.iter().all(|handle| initial_dragons.contains(handle)),
+            "actual source Dragons must still block controller73: initial={initial_dragons:?}, current={dragons:?}");
+        let survivor = *dragons.last().unwrap();
+        for handle in &dragons[..dragons.len()-1] {
+            let life = sim(game).entities()[usize::from(handle.source_slot)].life;
+            contact(game, handle.source_slot, player, life);
+        }
+        for _ in 0..256 {
+            step(game);
+            assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 75),
+                "a living Dragon must prevent the actual group6 portal producer");
+            let remaining = &sim(game).source_arena().rebuilt_class5_model_slots()[0];
+            if remaining.as_slice() == [survivor.source_slot] { break; }
+        }
+        assert_eq!(sim(game).source_arena().handle(survivor.source_slot), Some(survivor));
+        assert_eq!(sim(game).source_arena().rebuilt_class5_model_slots()[0], [survivor.source_slot]);
+        assert_eq!(sim(game).source_arena().handle(gate.source_entity_index), Some(gate_handle));
+        for _ in 0..4 {
+            step(game);
+            assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 75));
+            assert_eq!(sim(game).source_arena().handle(survivor.source_slot), Some(survivor));
+        }
+        let life = sim(game).entities()[usize::from(survivor.source_slot)].life;
+        contact(game, survivor.source_slot, player, life);
+        let mut produced = false;
+        for _ in 0..256 {
+            step(game);
+            if let Some(actual) = sim(game).dispatch_events().iter().find_map(|event| match event {
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 6, authored_indices, .. }
+                    if *source_slot == gate.source_entity_index => Some(authored_indices),
+                _ => None,
+            }) {
+                assert_eq!(actual.as_ref(), expected_group.as_slice());
+                produced = true;
+                break;
+            }
+        }
+        assert!(produced, "actual Dragon absence and source countdown must publish the entire original group6");
+        let group_dragons = sim(game).economy().authored_class5().iter()
+            .filter(|row| row.active && row.model == 0 && [146, 147, 150, 151, 152, 153].contains(&row.authored_index))
+            .map(|row| (row.authored_index, sim(game).source_arena().handle(row.source_entity_index)))
+            .collect::<Vec<_>>();
+        assert_eq!(group_dragons.len(), 6, "the same real group6 scan constructs its six authored Dragons");
+        assert!(group_dragons.iter().all(|(_, handle)| handle.is_some()));
+        let portal = *sim(game).economy().authored_class14().iter()
+            .find(|row| row.active && row.authored_index == 75 && row.model == 4)
+            .expect("actual authored secret portal75");
+        let trigger = *sim(game).economy().authored_switch_producers().iter()
+            .find(|row| row.active && row.authored_index == 76 && row.model == 31)
+            .expect("actual authored secret entry76");
+        let portal_handle = sim(game).source_arena().handle(portal.source_entity_index).unwrap();
+        let trigger_handle = sim(game).source_arena().handle(trigger.source_entity_index).unwrap();
+        assert_ne!(portal_handle, trigger_handle);
+        assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (186, 213));
+        assert_eq!((trigger.position.x >> 8, trigger.position.y >> 8), (161, 222));
+        assert_eq!(portal.control_flags & 1, 1, "actual portal is hidden until the source overlap");
+        assert!(!sim(game).secret_entry_ready());
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+        let mut arrival = trigger.position;
+        arrival.z = sim(game).canonical_terrain().ground_height(arrival)
+            .checked_add(sim(game).profile().ground_clearance).unwrap();
+        assert_eq!(crate::resolve_legacy_movement(&mut crate::FlightState::default(), arrival, arrival,
+            sim(game).profile(), sim(game).canonical_terrain()), crate::MovementResolution::Accept(arrival));
+        sim_mut(game).set_level2_entity_position(player, arrival).unwrap();
+        for _ in 0..700 {
+            if sim(game).secret_entry_ready() { break; }
+            step(game);
+        }
+        let entry = sim(game).level_exit_sequence();
+        assert!(entry.complete && sim(game).secret_entry_ready());
+        assert_eq!((entry.trigger_entity_index, entry.portal_entity_index, entry.result_code),
+            (trigger_handle.source_slot, portal_handle.source_slot, 0x1a));
+        assert!(sim(game).source_arena().resolve(trigger_handle).is_none(), "the actual entry trigger reclaims");
+        assert_eq!(sim(game).source_arena().handle(portal_handle.source_slot), Some(portal_handle));
+        let inherited = game.backend().transition_spell_carry().unwrap();
+        let outer = runtime.identity().guard();
+        let session_guard = runtime.session().unwrap().identity().guard();
+        let entered = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard).unwrap()
+            .expect("the actual source entry result must open Karakir through the resolver");
+        assert!(entered.verify());
+        assert_eq!(entered.kind, SecretTransitionKind::Entry);
+        assert_eq!(runtime.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &secret_id);
+        assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
+        assert_eq!(runtime.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+        assert_eq!(crate::native_world::tests::complete_karakir_earned_mana_and_exit(runtime.session_mut().unwrap()), 0x0a);
+        let won = runtime.session().unwrap();
+        let GameCompletionStatus::Completed { completion } = won.backend().completion_status()
+            else { panic!("Karakir's actual exit must publish completion") };
+        let statistics = completion.statistics.unwrap();
+        let carry = won.backend().transition_spell_carry().unwrap();
+        let session_guard = won.identity().guard();
+        let outer = runtime.identity().guard();
+        let returned = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard)
+            .unwrap().expect("the actual secret completion must return to the retained parent");
+        assert!(returned.verify());
+        assert_eq!(returned.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(returned.origin_level_id, origin);
+        assert_eq!(returned.after.mode, RuntimeMode::Campaign);
+        assert!(runtime.session().is_none());
+        let mut expected_parent = parent;
+        expected_parent.completed_levels.push(origin.clone());
+        assert_eq!(runtime.campaign_save_state().unwrap(), expected_parent);
+        assert_eq!(runtime.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_id));
+        let results = runtime.secret_flow_state().completed_secret_statistics();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].level_id, secret_id);
+        assert_eq!(results[0].statistics, statistics);
+        assert!(runtime.campaign_return_active(), "first T'Klom return queues source CUT1");
+        play_owner_return_clip(&mut runtime, "cut1", 529, None);
+        assert_eq!(runtime.played_cutscenes(), 1);
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8451).unwrap();
+        let cold_guard = cold.identity().guard();
+        let restored = resolver.load_replay(&mut cold, cold_guard, 8451, &bytes).unwrap();
+        assert_eq!(resolver.save_replay(&cold).unwrap(), bytes);
+        let loading = resolver.campaign_menu_command(&mut cold, restored.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut cold, loading.guard(), 8451).unwrap();
+        assert_eq!(cold.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &origin);
+        assert_eq!(cold.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+    }
+
+    #[test]
     fn configured_source_four_secret_portal_produces_real_entry_result() {
         use crate::campaign::{
             mc2_level_definition::Mc2LevelDefinition,
