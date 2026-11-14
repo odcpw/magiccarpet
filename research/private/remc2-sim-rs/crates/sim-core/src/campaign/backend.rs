@@ -4426,16 +4426,11 @@ impl Mc2CampaignBackend {
                     ),
                 }
             })?;
-            if holder_index != 0 && spells::acquired_holder(shared, family).is_none() {
-                return Err(
-                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                        message: format!(
-                            "local acquired semantic spell {} has an invalid holder relation",
-                            kind.as_str()
-                        ),
-                    },
-                );
-            }
+            // CollectLevelStats_5C530 unions the persistent flag, mission
+            // acquisition and nonzero A4 value without dereferencing A4.
+            // Grounded death leaves the source sentinel 1 after releasing
+            // the physical holder. InitialiseSpells recreates learned spells
+            // on the next entry; casting/selection still require a live holder.
             acquired.push(kind);
         }
         for family in 0..player.enabled_spell_holders.len() {
@@ -5153,6 +5148,95 @@ pub(crate) mod tests {
         eprintln!("progression: destination reset complete at {:?}", started.elapsed());
         assert_eq!(next.backend().semantic_spell_carry().unwrap(), entry);
         assert_eq!(next.backend().transition_spell_carry().unwrap(), banked);
+    }
+
+    #[test]
+    fn learned_spell_carry_survives_grounded_release_reclaim_and_next_entry() {
+        use crate::FlightWorld;
+        use crate::native_world::player_lifecycle_tests::{
+            rival_test_sim as sim, rival_test_sim_mut as sim_mut, rival_test_step as step,
+        };
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let source = generated.join("settlement-20261105-integration/owner-closed-v6/level1");
+        let owner = generated.join("settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1");
+        let definition = Arc::new(load_mc2_campaign_with_owner_cache(&source, &owner, &default_catalog().unwrap()).unwrap());
+        let mut game = GameSession::open(&Mc2CampaignAdapter, definition, 7321,
+            Mc2CampaignInputs::with_owner_cache(&source, &owner)).unwrap();
+        let player = sim(&game).state.entity_index;
+        let original = game.backend().semantic_spell_carry().unwrap();
+        let held = [0_u8, 1].map(|family| {
+            let row = spells::acquired_holder(sim(&game).shared_spells(), family)
+                .expect("normal NightSpire starts with both learned held spells");
+            assert_ne!(sim(&game).shared_spells().local_player().spell_enabled_flags[usize::from(family)], 0);
+            sim(&game).source_arena().handle(row.index).unwrap()
+        });
+        assert!(original.acquired.contains(&SpellKind::Fireball));
+        assert!(original.acquired.contains(&SpellKind::Possession));
+        assert!(!original.acquired.contains(&SpellKind::Shield));
+        let attacker = sim(&game).creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Goat)
+            .next().expect("an actual source Goat supplies the selected contact owner").handle;
+        let mut position = sim(&game).state.position;
+        position.z = sim(&game).canonical_terrain().ground_height(position)
+            .wrapping_add(sim(&game).profile().ground_clearance);
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+        // Declared arrived damage and a ground pose isolate the real human
+        // fall/death/release producer. No life, action, holder or timer is set.
+        for _ in 0..512 {
+            if sim(&game).canonical_player_life_for_test() >= 0 {
+                crate::native_world::area_damage::contact(
+                    sim_mut(&mut game).source_arena_mut(), None, player,
+                    u16::MAX, attacker.source_slot,
+                ).unwrap();
+            }
+            step(&mut game);
+            let state = sim(&game);
+            if state.entities()[usize::from(player)].action == 3
+                && state.shared_spells().local_player().enabled_spell_holders[1] == 1
+            { break; }
+        }
+        assert!(sim(&game).canonical_player_life_for_test() < 0);
+        assert_eq!(sim(&game).entities()[usize::from(player)].action, 3);
+        for _ in 0..512 {
+            if held.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+            step(&mut game);
+        }
+        assert!(held.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+            "the actual released holders expire and reclaim without shortened timers");
+        for family in [0_u8, 1] {
+            let shared = sim(&game).shared_spells();
+            assert_eq!(shared.local_player().enabled_spell_holders[usize::from(family)], 1);
+            assert_ne!(shared.local_player().spell_enabled_flags[usize::from(family)], 0);
+            assert!(spells::acquired_holder(shared, family).is_none(),
+                "learned knowledge must not make a missing physical holder available");
+        }
+        let before = game.backend().campaign.state_hash();
+        let carried = game.backend().transition_spell_carry()
+            .expect("source learned ownership survives a released nonzero A4 sentinel");
+        assert_eq!(carried.acquired, original.acquired);
+        assert_eq!(carried.selected, None, "a missing hand is not physically selected");
+        assert!(!carried.acquired.contains(&SpellKind::Shield), "zero/zero/zero remains absent");
+        assert_eq!(game.backend().campaign.state_hash(), before, "carry reads do not revive the source actor or its holders");
+        let bytes = serde_json::to_vec(&carried).unwrap();
+        let saved: Mc2SemanticSpellCarry = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved, carried);
+        // This is a declared continuation boundary, not a fabricated victory.
+        let destination = generated.join("mc-level2-vault-successor-closure-20261025");
+        let destination_owner = generated.join("mc-b9s2-cursor-level2-vault-20261029");
+        let definition = Arc::new(load_mc2_campaign_with_owner_cache(&destination, &destination_owner, &default_catalog().unwrap()).unwrap());
+        let mut next = GameSession::open(&Mc2CampaignAdapter, definition, 7322,
+            Mc2CampaignInputs::with_owner_cache(&destination, &destination_owner)).unwrap();
+        next.backend_mut().apply_semantic_spell_carry(&saved).unwrap();
+        for family in [0_u8, 1] {
+            let shared = sim(&next).shared_spells();
+            let row = spells::acquired_holder(shared, family).expect("real destination initialisation recreates a current learned holder");
+            assert_eq!(row.source_spell_parent_entity_index(), sim(&next).state.entity_index);
+            assert!(sim(&next).source_arena().handle(row.index).is_some());
+        }
+        let entry = next.backend().semantic_spell_carry().unwrap();
+        assert_eq!(entry.acquired, carried.acquired);
+        next.reset(next.identity().guard()).unwrap();
+        assert_eq!(next.backend().semantic_spell_carry().unwrap(), entry);
     }
 
     #[test]
