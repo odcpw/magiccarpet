@@ -1,16 +1,30 @@
 use super::*;
 
-#[test]
-fn level8_ul_buthnen_authored_objectives_through_real_exit() {
-    use crate::PlayerCommand;
-    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+pub(crate) fn complete_ul_buthnen_objectives_for_test(
+    game: &mut crate::native_world::player_lifecycle_tests::RivalTestGame,
+) {
+    use crate::game_session::GameCommand;
     use crate::combat::area::{AreaDamage, Shape};
     use crate::house::HouseStepEvent;
     use crate::native_world::{Mc2DispatchEvent, area_damage};
 
-    fn tick(session: &mut crate::native_world::Mc2Simulation,
+    struct LiveSession<'a> {
+        game: &'a mut crate::native_world::player_lifecycle_tests::RivalTestGame,
+    }
+    impl std::ops::Deref for LiveSession<'_> {
+        type Target = crate::native_world::Mc2Simulation;
+        fn deref(&self) -> &Self::Target {
+            self.game.backend().compatibility_campaign().simulation()
+        }
+    }
+    impl std::ops::DerefMut for LiveSession<'_> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+        }
+    }
+    fn tick(session: &mut LiveSession<'_>,
             groups: &mut Vec<(u16, Vec<u16>)>, deaths: &mut Vec<(u16, u16)>) {
-        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.game.advance(session.game.identity().guard(), GameCommand::default()).unwrap();
         for event in session.dispatch_events() {
             match event {
                 Mc2DispatchEvent::Error { .. } => panic!("Ul'Buthnen dispatch: {event:?}"),
@@ -27,11 +41,13 @@ fn level8_ul_buthnen_authored_objectives_through_real_exit() {
             }
         }
     }
-    fn strike_model(session: &mut crate::native_world::Mc2Simulation, player: u16, model: u8)
+    fn strike_model(session: &mut LiveSession<'_>, player: u16, model: u8,
+                    exclude: Option<crate::campaign::source_arena::SourceEntityHandle>)
         -> Vec<crate::campaign::source_arena::SourceEntityHandle> {
         let roots = session.source_arena().rebuilt_class5_model_slots()[usize::from(model)]
             .iter().map(|slot| session.source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
         for handle in &roots {
+            if Some(*handle) == exclude { continue; }
             let row = &session.entities()[usize::from(handle.source_slot)];
             let request = AreaDamage {
                 position: row.position,
@@ -50,14 +66,14 @@ fn level8_ul_buthnen_authored_objectives_through_real_exit() {
         }
         roots
     }
-    fn wait_absence(session: &mut crate::native_world::Mc2Simulation, player: u16,
+    fn wait_absence(session: &mut LiveSession<'_>, player: u16,
                     model: u8, objective: usize, groups: &mut Vec<(u16, Vec<u16>)>,
                     deaths: &mut Vec<(u16, u16)>) {
         let mut generations = Vec::new();
         for _ in 0..512 {
             let current = session.source_arena().rebuilt_class5_model_slots()[usize::from(model)].clone();
             if !current.is_empty() {
-                let struck = strike_model(session, player, model);
+                let struck = strike_model(session, player, model, None);
                 for handle in struck { if !generations.contains(&handle) { generations.push(handle); } }
             }
             if session.runtime().objectives[0].stage_selectors[objective] == 2
@@ -80,18 +96,14 @@ fn level8_ul_buthnen_authored_objectives_through_real_exit() {
             .map(|row| row.index).collect::<Vec<_>>();
         !expected.is_empty() && groups.iter().any(|(id, rows)| *id == group && *rows == expected)
     }
-    fn travel(session: &mut crate::native_world::Mc2Simulation, player: u16, x: u16, y: u16) {
+    fn travel(session: &mut LiveSession<'_>, player: u16, x: u16, y: u16) {
         let position = Position { x: x * 256, y: y * 256, z: session.state.position.z };
         session.set_level2_entity_position(player, position).unwrap();
         session.state.actual_speed = 0;
         session.state.target_speed = 0;
     }
 
-    let package = std::env::var_os("MC_LEVEL8_PACKAGE").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level8"));
-    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(8).unwrap())
-        .expect("the whole Ul'Buthnen owner package opens").simulation().clone();
+    let mut session = LiveSession { game };
     let player = session.state.entity_index;
     let mut groups = Vec::new();
     let mut house_deaths = Vec::new();
@@ -100,10 +112,22 @@ fn level8_ul_buthnen_authored_objectives_through_real_exit() {
     assert_eq!(initial_houses.len(), 4, "the package has four selector53 objective houses");
     assert_eq!(session.runtime().stages[0].relation, crate::native_world::RuntimeRelation::Scalar(20));
     assert_eq!(session.source_arena().rebuilt_class5_model_slots()[20].len(), 8);
-    let first_spiders = strike_model(&mut session, player, 20);
+    let survivor = session.source_arena().handle(session.source_arena().rebuilt_class5_model_slots()[20][0]).unwrap();
+    let first_spiders = strike_model(&mut session, player, 20, Some(survivor));
     tick(&mut session, &mut groups, &mut house_deaths);
     assert_eq!(session.runtime().objectives[0].stage_selectors[0], 1,
         "the fatal pass uses its frozen living Spider census");
+    for _ in 0..512 {
+        assert_eq!(session.runtime().objectives[0].stage_selectors[0], 1,
+            "one actual living Spider blocks the source absence objective");
+        assert!(session.creature_identity_for_source_slot(survivor.source_slot)
+            .is_some_and(|row| row.handle == survivor && row.living));
+        if first_spiders.iter().filter(|handle| **handle != survivor)
+            .all(|handle| session.source_arena().resolve(*handle).is_none()) { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(first_spiders.iter().filter(|handle| **handle != survivor)
+        .all(|handle| session.source_arena().resolve(*handle).is_none()));
     wait_absence(&mut session, player, 20, 0, &mut groups, &mut house_deaths);
     for _ in 0..256 {
         if has_group(&groups, 3, &[26, 28])
@@ -188,19 +212,40 @@ fn level8_ul_buthnen_authored_objectives_through_real_exit() {
     assert!(session.economy().authored_switch_producers().iter().any(|source|
         source.source_entity_index == exit_slot && source.authored_index == 170));
     assert!(session.economy().authored_class14().iter().any(|source| source.authored_index == 179));
-    session.set_level2_entity_position(player, exit_position).unwrap();
+    assert!(!session.level_exit_sequence().active && !session.level_exit_sequence().complete);
+    let _ = exit_position;
+}
+
+#[test]
+fn level8_ul_buthnen_authored_objectives_through_real_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCommand, GameSession};
+    use crate::native_world::{Mc2DispatchEvent, player_lifecycle_tests::{rival_test_sim as sim,
+        rival_test_sim_mut as sim_mut}};
+    let package = std::env::var_os("MC_LEVEL8_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ul-buthnen-source-closure-20261114/level8"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2208,
+        Mc2CampaignInputs::new(&package)).unwrap();
+    complete_ul_buthnen_objectives_for_test(&mut game);
+    let player = sim(&game).state.entity_index;
+    let (_, exit_position) = sim(&game).campaign_exit_objective_target().expect("real exit");
+    sim_mut(&mut game).set_level2_entity_position(player, exit_position).unwrap();
     for _ in 0..16 {
-        if session.level_exit_sequence().active { break; }
-        tick(&mut session, &mut groups, &mut house_deaths);
+        if sim(&game).level_exit_sequence().active { break; }
+        game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+        assert!(sim(&game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
     }
-    assert!(session.level_exit_sequence().active);
+    assert!(sim(&game).level_exit_sequence().active);
     for _ in 0..700 {
-        if session.level_exit_sequence().complete { break; }
-        tick(&mut session, &mut groups, &mut house_deaths);
+        if sim(&game).level_exit_sequence().complete { break; }
+        game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+        assert!(sim(&game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
     }
-    assert!(session.level_exit_sequence().complete);
-    assert_eq!(session.level_exit_sequence().result_code, 10);
-    assert_eq!(session.session.state.live.source_player_result.result_byte(), 0x0a);
+    assert!(sim(&game).level_exit_sequence().complete);
+    assert_eq!(sim(&game).level_exit_sequence().result_code, 10);
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
 }
 
 struct EmptyRoutes;

@@ -17,7 +17,7 @@ use mc2::{JUMP_SOUND, SOURCE_VISUALS};
 #[cfg(test)]
 use mc2::DESCRIPTOR;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) const SOURCE_MODEL: u8 = 21;
 
