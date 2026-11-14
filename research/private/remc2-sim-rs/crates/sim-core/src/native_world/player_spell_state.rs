@@ -3,6 +3,33 @@
 use super::*;
 use crate::campaign::source_arena::SourceArena;
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct CastleFinalLossReceipt {
+    pub owner: crate::campaign::source_arena::SourceEntityHandle,
+    pub castle: crate::campaign::source_arena::SourceEntityHandle,
+    pub remove_spell: bool,
+    pub holder_slot: u16,
+    pub holder_before: Option<(crate::campaign::source_arena::SourceEntityHandle, EntitySnapshot)>,
+    pub holder_after: Option<EntitySnapshot>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CASTLE_FINAL_LOSS_TRACE: std::cell::RefCell<Option<Vec<CastleFinalLossReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_castle_final_loss_trace() {
+    CASTLE_FINAL_LOSS_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_castle_final_loss_trace() -> Vec<CastleFinalLossReceipt> {
+    CASTLE_FINAL_LOSS_TRACE.with(|trace| trace.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
+}
+
 /// The Castle callback borrows source records for its two mana scans and
 /// player records for reconstruction and final loss. Keeping those operations in one narrow
 /// consumer preserves their source call order without aliasing the arena.
@@ -698,6 +725,19 @@ impl CastlePlayerConsumer<'_> {
             .iter()
             .find(|player| player.entity_index == owner)
             .map_or(0, |player| player.enabled_spell_holders[2]);
+        // Observe the A4 word at its actual callback-time read, after the
+        // final profile update. An outer-turn snapshot can precede an AI
+        // holder replacement in the same numeric source scan.
+        #[cfg(test)]
+        let holder_before = (holder_slot != 0).then(|| {
+            self.entities.get(usize::from(holder_slot)).cloned().map(|row| (
+                crate::campaign::source_arena::SourceEntityHandle {
+                    source_slot: holder_slot,
+                    generation: economy.slot_generation(holder_slot),
+                },
+                row,
+            ))
+        }).flatten();
         if self.entities[usize::from(owner)].model != 1 {
             // 605E0's human final-loss branch clears the current addressed
             // holder, then6D880 acts on this Castle caller's own word2C.
@@ -738,20 +778,35 @@ impl CastlePlayerConsumer<'_> {
                 }
             }
         }
-        if remove_spell
-            && let Some(holder) = self
-                .entities
-                .get_mut(usize::from(holder_slot))
-                .filter(|holder| {
-                    holder_slot != 0
-                        && holder.active
-                        && (holder.class, holder.model) == (15, 2)
-                        && holder.source_spell_parent_entity_index() == owner
-                })
+        // sub_605E0 addresses the current nonzero A4 word directly. The
+        // original slot may already be free or have a different occupant;
+        // source 57F10 still writes its draw-disable bit at that address.
+        if remove_spell && holder_slot != 0
+            && let Some(holder) = self.entities.get_mut(usize::from(holder_slot))
         {
             holder.disable_drawing();
             self.shared_spells.sync_pickup_from_authority(holder);
         }
+        #[cfg(test)]
+        CASTLE_FINAL_LOSS_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.push(CastleFinalLossReceipt {
+                    owner: crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: owner,
+                        generation: economy.slot_generation(owner),
+                    },
+                    castle: crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: castle.source_entity_index,
+                        generation: economy.slot_generation(castle.source_entity_index),
+                    },
+                    remove_spell,
+                    holder_slot,
+                    holder_before,
+                    holder_after: (holder_slot != 0)
+                        .then(|| self.entities.get(usize::from(holder_slot)).cloned()).flatten(),
+                });
+            }
+        });
         for player in self
             .shared_spells
             .players
@@ -1003,14 +1058,14 @@ mod tests {
         let owner = session.state.entity_index;
         let position = session.state.position;
         let root = session.economy_mut().build_castle(position, owner).unwrap();
+        assert!(session.economy_mut().start_castle_construction(root));
         {
             let live = &mut session.session.state.live;
             // Controlled current A4 binding; the ordinary Castle callbacks
             // below must publish through that pointer rather than player caches.
+            // Construction state0 calls source sub_60480; state3 is the
+            // separate rebuild producer and does not publish this relation.
             live.economy.entities[usize::from(owner)].special_relation = EntitySpecialRelation::GlobalSpecialState;
-            let castle = live.economy.castle_at_mut(root).unwrap();
-            castle.action = 5;
-            castle.build_state = 3;
         }
         session.step_level2_source_pass(0);
         assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
