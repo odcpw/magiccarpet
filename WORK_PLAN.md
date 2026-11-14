@@ -920,10 +920,36 @@ gap: imported roots and their current linked bodies never joined the canonical
 typed Dragon callbacks. The first focused gate confirmed state/mailbox/
 provenance preservation but caught a second shared defect: typed Dragon bodies
 were missing from presentation DTOs. Both joins and the real source4 portal
-route are now delivered above; the other four original parent entry paths
-remain open. The next is source7/external8 Ul'Buthnen→Ymbul31; the source table
-does not place that entrance in external10. Fixture-parent checks alone do not
-prove those original portal producers.
+route are now delivered above. Ul'Buthnen/source7/external8→Ymbul31 now also
+passes264.85s on66 through all actual objectives, area314, group31's House315,
+BUILD23→24→28 destruction and exact group32, real portal/controller entry,
+paid secret completion and cold parent return/carry. The ordinary-exit
+regression on the current whole package passes7.67s through actual guarded
+GameSession advancement, including a same-generation living Spider negative.
+
+This found a real content closure defect: the old Level8 MCI3v2 export contained
+BUILD23 but omitted its24/28 successors. A fresh unmodified whole export and
+qualified2100-output environment now occupy the normal Original launcher
+entry8. Local `e62c37cb`, remote Original `66824591`. Package hash is
+`85636e26b079c1c62f566bfedb86bd5342b53fd2b570dcf4bdf1a56aaaf9665d`;
+cache hash is `308267e2e2adfb0b9f1a313d416bbdfc22753d7d7d45596af6d99c34dcdc12bf`.
+All160 current exporter input hashes and the existing embedded byte-exact
+inventory/marker match the executed binary. Structural/package and cache
+validation pass. The old package/cache remain untouched. MCP1 players v4→v5
+and collision bank v2→v4 change encoding/closure; raw byte differences are not
+called changes to source gameplay. The tested current package was selected by
+override; the standalone default now names that same package.
+
+Actual installed Original native2d3d opens and destroys the new package/cache
+successfully0.827s; the normal30-resource launcher routing check passes0.243s.
+No Unity/native rebuild is needed for this content-only follow-through, and
+no native Level8 rendering or human-play claim is made. Proofs are under
+`ul-buthnen-source-closure-20261114/` and mission `*-current-package-66.log`.
+Two of the five original parent entry paths are now exercised with declared
+frontier, inventory, arrived contacts and poses; they are not earned campaign
+or normal player-movement proof. The remaining original entries are ordinary
+12→Pav Durivium32,18→Beleem33 and20→Ommosyth34, per the pinned source table.
+Fixture-parent checks alone do not prove those original portal producers.
 
 Jathnar23 remains the ordinary objective check. Run56 proved early real stage4
 Hydra birth/lifecycle and all seven Castle losses, then failed4503.25s at final
