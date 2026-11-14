@@ -52,11 +52,13 @@ pub(crate) fn rival_test_held_spell_generations(
         .collect()
 }
 pub(crate) fn rival_test_contact(game: &mut RivalTestGame, target: u16, owner: u16, life: i32) {
+    assert!(life >= 0, "a selected contact requires a living source target");
+    let payload = u16::try_from(life.saturating_add(1)).unwrap_or(u16::MAX);
     crate::native_world::area_damage::contact(
         &mut rival_test_sim_mut(game).session.state.live.economy,
         None,
         target,
-        u16::try_from(life + 1).expect("actual target life fits one declared contact"),
+        payload,
         owner,
     )
     .unwrap();
@@ -74,7 +76,7 @@ pub(crate) fn rival_test_destroy_castle(
         .source_arena()
         .handle(castle.source_entity_index)
         .unwrap();
-    let mut hit_level = None;
+    let mut contacts = 0;
     let mut observed_levels = vec![castle.level];
     for _ in 0..2048 {
         let Some(current) = rival_test_sim(game)
@@ -83,7 +85,7 @@ pub(crate) fn rival_test_destroy_castle(
             .copied()
         else {
             eprintln!(
-                "rival owner={owner} Castle final loss: {handle:?}, levels={observed_levels:?}"
+                "rival owner={owner} Castle final loss: {handle:?}, levels={observed_levels:?}, source_packets={contacts}"
             );
             return handle;
         };
@@ -96,18 +98,16 @@ pub(crate) fn rival_test_destroy_castle(
         );
         if observed_levels.last().copied() != Some(current.level) {
             observed_levels.push(current.level);
-            // The rival may rebuild a tier while its Castle is being attacked.
-            // A returning tier is a new damage window, even if the intervening
-            // tier never became attackable before the ordinary AI upgraded it.
-            hit_level = None;
         }
         if current.action == 4
             && current.timer == 0
-            && current.life > 0
-            && hit_level != Some(current.level)
+            && current.life >= 0
+            && current.pending_attacker_entity_index == 0
         {
+            // High-tier life exceeds one source u16 packet. Wait for the
+            // previous owner to be consumed; retain any ownerless residue.
             rival_test_contact(game, current.source_entity_index, attacker, current.life);
-            hit_level = Some(current.level);
+            contacts += 1;
         }
         rival_test_step(game);
     }
