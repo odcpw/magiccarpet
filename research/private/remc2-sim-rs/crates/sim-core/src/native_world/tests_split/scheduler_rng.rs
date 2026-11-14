@@ -3004,7 +3004,28 @@ fn production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule() {
 
 #[test]
 fn ymbul_source_groups_earned_mana_and_live_exit() {
-    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_SECRET31_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-paj2-source-secret-31-campaign-package"));
+    let cache = std::env::var_os("MC_SECRET31_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/source31"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2231,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    // Declared incoming carry for this standalone revisit.
+    game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+        .apply_carried_spell_families(&[1], Some(1)).unwrap();
+    assert_eq!(complete_ymbul_source31_for_test(&mut game), 0x0a);
+}
+
+/// Complete the real source31 mission for the caller's declared arriving
+/// secret session, returning its actual ordinary or retained-parent exit byte.
+pub(crate) fn complete_ymbul_source31_for_test(
+    mut game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+) -> u8 {
+    use crate::campaign::backend::Mc2CampaignBackend;
     use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
     use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
     use crate::level_definition::{CreatureKind, ObjectiveCondition};
@@ -3080,14 +3101,6 @@ fn ymbul_source_groups_earned_mana_and_live_exit() {
         economy.castle_for_owner(player).map_or(0, |castle|
             100 * economy.owner_mana_aggregate(player).saturating_add(castle.mana) / total)
     }
-    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
-    let package = std::env::var_os("MC_SECRET31_PACKAGE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("mc-paj2-source-secret-31-campaign-package"));
-    let cache = std::env::var_os("MC_SECRET31_OWNER_CACHE").map(PathBuf::from)
-        .unwrap_or_else(|| generated.join("campaign-original-environments/source31"));
-    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
-    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2231,
-        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
     let goals = game.definition().level_definition().unwrap().objectives();
     assert_eq!(goals.len(), 1);
     assert!(matches!(goals[0].condition(), ObjectiveCondition::CastleManaPercent(30)));
@@ -3098,8 +3111,8 @@ fn ymbul_source_groups_earned_mana_and_live_exit() {
     assert_eq!((gate.class, gate.model, gate.action, gate.source_id), (11, 4, 4, 6));
     let gate_handle = sim(&game).source_arena().handle(116).unwrap();
     assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
-    // Declared incoming Possession; the holder still pays for the actual cast.
-    sim_mut(&mut game).apply_carried_spell_families(&[1], Some(1)).unwrap();
+    // The caller declares incoming Possession; its holder pays for the cast.
+    assert_ne!(sim(&game).shared_spells().local_player().enabled_spell_holders[1], 0);
     let mut receipts = Receipts::default();
     advance(&mut game, GameCommand {
         select_spell: Some(crate::game_definition::SemanticId::parse("spell.possession").unwrap()),
@@ -3366,5 +3379,650 @@ fn ymbul_source_groups_earned_mana_and_live_exit() {
         advance(&mut game, GameCommand::default(), &mut receipts);
     }
     assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
-    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+    sim(&game).source_exit_result_byte()
+}
+
+#[test]
+fn pav_durivium_cave_groups_earned_mana_and_live_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_SECRET32_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-paj2-source-secret-32-campaign-package"));
+    let cache = std::env::var_os("MC_SECRET32_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/source32"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2232,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    // Declared incoming carry for this standalone revisit.
+    game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+        .apply_carried_spell_families(&[1], Some(1)).unwrap();
+    assert_eq!(complete_pav_source32_for_test(&mut game), 0x0a);
+}
+
+/// Complete the real source32 mission for the caller's declared arriving
+/// secret session, returning its actual ordinary or retained-parent exit byte.
+pub(crate) fn complete_pav_source32_for_test(
+    mut game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+) -> u8 {
+    use crate::campaign::backend::Mc2CampaignBackend;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
+    use crate::FlightWorld;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type Game = GameSession<Mc2CampaignBackend>;
+    #[derive(Default)]
+    struct Receipts {
+        groups: BTreeMap<u16, usize>,
+        wave: Vec<SourceEntityHandle>,
+        close: Option<SourceEntityHandle>,
+        fire_sphere: Option<SourceEntityHandle>,
+        sphere_births: BTreeSet<(u32, u32)>,
+        event_cursor: usize,
+    }
+    fn sim(game: &Game) -> &Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game, command: GameCommand, receipts: &mut Receipts) {
+        let model76_before = sim(game).economy().authored_model76().iter()
+            .filter_map(|row| sim(game).source_arena().handle(row.source_entity_index))
+            .collect::<Vec<_>>();
+        game.advance(game.identity().guard(), command).expect("Pav source advance");
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Pav source dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { group, authored_indices, .. }
+                    if matches!(*group, 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9) && !authored_indices.is_empty() => {
+                    let expected = state.mission().authored_features().iter()
+                        .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == *group as i16)
+                        .map(|row| row.index).collect::<Vec<_>>();
+                    assert_eq!(authored_indices.as_ref(), expected, "real source group {group}");
+                    *receipts.groups.entry(*group).or_default() += 1;
+                    if *group == 6 {
+                        let roots = state.creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+                            .filter_map(|root| match root.origin {
+                                CreatureRootOrigin::AuthoredRecord { authored_record }
+                                    if expected.contains(&authored_record) => Some(root.handle),
+                                _ => None,
+                            }).collect::<Vec<_>>();
+                        assert_eq!(roots.len(), 8, "all eight source group6 roots allocate");
+                        receipts.wave.extend(roots);
+                    }
+                    if *group == 3 {
+                        let source = state.economy().terrain_strip_close_triggers().iter()
+                            .find(|row| row.authored_index == 346)
+                            .expect("group3 constructs the actual terrain command");
+                        receipts.close = state.source_arena().handle(source.source_entity_index);
+                    }
+                    if *group == 9 {
+                        // The generic source constructor has no authored-index
+                        // argument. Bind the unique new generation by this
+                        // exact group's feature420 position and parent chain.
+                        let feature = state.mission().authored_features().iter()
+                            .find(|row| row.index == 420).unwrap();
+                        let position = feature.world_position(state.canonical_terrain()
+                            .ground_height(feature.world_position(0)));
+                        let roots = state.economy().authored_model76().iter()
+                            .filter(|row| row.active && row.position == position)
+                            .filter_map(|row| state.source_arena().handle(row.source_entity_index)
+                                .filter(|handle| !model76_before.contains(handle)).map(|handle| (*row, handle)))
+                            .collect::<Vec<_>>();
+                        assert_eq!(roots.len(), 1, "group9 must allocate exactly one new model76 generation at feature420");
+                        let (root, handle) = roots[0];
+                        assert_eq!(state.economy().model76_children().iter().filter(|child|
+                            child.active && child.parent_entity_index == handle.source_slot
+                                && child.parent_entity_id == root.entity_id).count(), 25,
+                            "the actual root owns the complete source child chain");
+                        receipts.fire_sphere = Some(handle);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for event in &state.economy().events()[receipts.event_cursor..] {
+            if let Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index: 310 | 317, mana } = *event
+                && mana > 0
+            {
+                let slot = u16::try_from(sphere_id).expect("authored sphere is a source slot");
+                receipts.sphere_births.insert((sphere_id, state.economy().slot_generation(slot)));
+            }
+        }
+        receipts.event_cursor = state.economy().events().len();
+    }
+    fn count(receipts: &Receipts, group: u16) -> usize {
+        receipts.groups.get(&group).copied().unwrap_or(0)
+    }
+    fn percent(game: &Game, player: u16) -> i32 {
+        let economy = sim(game).economy();
+        let total = economy.owner_mana_global();
+        assert!(total > 0);
+        economy.castle_for_owner(player).map_or(0, |castle|
+            100 * economy.owner_mana_aggregate(player).saturating_add(castle.mana) / total)
+    }
+    // Player-only geometry control: select an actual open cave position inside
+    // the source switch overlap. The switch, cadence and source group stay real.
+    fn place_at_switch(game: &mut Game, player: u16, slot: u16) {
+        let state = sim(game);
+        let switch = &state.entities()[usize::from(slot)];
+        let body = &state.entities()[usize::from(player)];
+        let extent = |row: &crate::native_world::EntitySnapshot, offset: usize|
+            i16::from_le_bytes(row.record_bytes()[offset..offset + 2].try_into().unwrap());
+        let offsets = [0_i16, -128, 128, -256, 256, -512, 512, -768, 768, -1024, 1024, -1536, 1536, -2048, 2048];
+        let position = offsets.into_iter().flat_map(|dy| offsets.into_iter().map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let mut p = Position { x: switch.position.x.wrapping_add_signed(dx),
+                    y: switch.position.y.wrapping_add_signed(dy), z: 0 };
+                if !crate::level1_mission::source_entities_overlap_xy(switch.position,
+                    extent(switch, 88), extent(switch, 90), p, extent(body, 88), extent(body, 90)) {
+                    return None;
+                }
+                let floor = state.canonical_terrain().ground_height(p);
+                let ceiling = state.canonical_terrain().ceiling_height(p)?;
+                let low = floor.checked_add(state.profile().ground_clearance)?;
+                let high = ceiling.checked_sub(state.profile().ceiling_clearance)?;
+                if low > high { return None; }
+                p.z = ((i32::from(low) + i32::from(high)) / 2) as i16;
+                (!state.canonical_terrain().cave_collision_blocked(p)).then_some(p)
+            }).next().unwrap_or_else(|| panic!("actual switch {slot} has no valid reachable cave overlap"));
+        sim_mut(game).set_level2_entity_position(player, position).unwrap();
+    }
+    fn trigger(game: &mut Game, player: u16, slot: u16, group: u16, receipts: &mut Receipts) {
+        let source = &sim(game).entities()[usize::from(slot)];
+        assert_eq!((source.class, source.source_id), (11, group));
+        let before = count(receipts, group);
+        place_at_switch(game, player, slot);
+        for _ in 0..64 {
+            step(game, GameCommand::default(), receipts);
+            if count(receipts, group) > before { break; }
+        }
+        assert!(count(receipts, group) > before, "actual switch {slot} must publish group {group}");
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+    }
+
+    let goals = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 1);
+    assert!(matches!(goals[0].condition(), ObjectiveCondition::CastleManaPercent(40)));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    let spawn = sim(&game).state.position;
+    let gate = &sim(&game).entities()[350];
+    assert_eq!((gate.class, gate.model, gate.action, gate.source_id), (11, 4, 4, 7));
+    let gate_handle = sim(&game).source_arena().handle(350).unwrap();
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    assert_ne!(sim(&game).shared_spells().local_player().enabled_spell_holders[1], 0,
+        "the caller declares incoming Possession");
+    let mut receipts = Receipts::default();
+    step(&mut game, GameCommand {
+        select_spell: Some(crate::game_definition::SemanticId::parse("spell.possession").unwrap()),
+        ..GameCommand::default()
+    }, &mut receipts);
+    assert_eq!(count(&receipts, 7), 0, "below-goal source gate stays closed");
+
+    // Actual group6 contains eight large source25 roots. Their normal split,
+    // vulnerable landing, death and following-pass reclaims remain scheduled.
+    trigger(&mut game, player, 347, 6, &mut receipts);
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    let mut seen = receipts.wave.clone();
+    let mut struck = BTreeSet::new();
+    let mut split = false;
+    for _ in 0..1024 {
+        split |= sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+            .any(|row| matches!(row.origin, CreatureRootOrigin::CreatureConversion { .. }));
+        let targets = sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && row.model == 25)
+            .map(|row| (sim(&game).source_arena().handle(row.index).unwrap(),
+                row.life >= 0 && (row.action != 200 || row.record_bytes()[74] >= 3))).collect::<Vec<_>>();
+        for (handle, vulnerable) in targets {
+            if !seen.contains(&handle) { seen.push(handle); }
+            if vulnerable && struck.insert((handle.source_slot, handle.generation)) {
+                area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+            }
+        }
+        step(&mut game, GameCommand::default(), &mut receipts);
+        if sim(&game).source_arena().rebuilt_class5_model_slots()[25].is_empty()
+            && seen.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert!(split && seen.len() > receipts.wave.len(), "source25 actual split children must be observed");
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[25].is_empty());
+    assert!(seen.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()), "all source25 generations reclaim");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+
+    // Repeating area switch creates the real opening command and exit switch.
+    // Their controller is the actual class14 row in the authored command cell.
+    let corridor = sim(&game).entities().iter().find(|row| row.active && row.class == 14
+        && matches!(row.model, 1 | 2) && row.position.x >> 8 == 178 && row.position.y >> 8 == 194)
+        .map(|row| row.index).expect("the authored group3 cave controller exists");
+    let corridor_handle = sim(&game).source_arena().handle(corridor).unwrap();
+    let corridor_position = sim(&game).entities()[usize::from(corridor)].position;
+    let closed_floor = sim(&game).canonical_terrain().ground_height(corridor_position);
+    let closed_ceiling = sim(&game).canonical_terrain().ceiling_height(corridor_position).unwrap();
+    assert!(sim(&game).canonical_terrain().cave_collision_blocked(corridor_position));
+    trigger(&mut game, player, 324, 3, &mut receipts);
+    let close = receipts.close.expect("actual model63 generation");
+    for _ in 0..64 {
+        if sim(&game).entities()[usize::from(corridor)].life == 2 { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert_eq!(sim(&game).source_arena().handle(corridor), Some(corridor_handle));
+    assert_eq!(sim(&game).entities()[usize::from(corridor)].life, 2, "real model63 opens the controller");
+    assert!(sim(&game).source_arena().resolve(close).is_none()
+        || sim(&game).economy().terrain_strip_close_triggers().iter().any(|row|
+            row.source_entity_index == close.source_slot && !row.active));
+    let mut open_callback = false;
+    for _ in 0..256 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        open_callback |= sim(&game).cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == corridor));
+        assert_eq!(sim(&game).source_arena().handle(corridor), Some(corridor_handle));
+        if sim(&game).entities()[usize::from(corridor)].life == 4 { break; }
+    }
+    assert!(open_callback);
+    assert_eq!(sim(&game).entities()[usize::from(corridor)].life, 4, "actual controller finishes restoring the corridor");
+    let open_floor = sim(&game).canonical_terrain().ground_height(corridor_position);
+    let open_ceiling = sim(&game).canonical_terrain().ceiling_height(corridor_position).unwrap();
+    assert!(open_floor < closed_floor && open_ceiling > closed_ceiling);
+    assert!(!sim(&game).canonical_terrain().cave_collision_blocked(corridor_position));
+    // Leaving the actual inverse switch admits its group4 model64, which
+    // re-seals the same controller without changing either terrain timer.
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    for _ in 0..64 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        if count(&receipts, 4) > 0 && sim(&game).entities()[usize::from(corridor)].life == 1 { break; }
+    }
+    assert!(count(&receipts, 4) > 0, "actual inverse switch publishes group4");
+    assert_eq!(sim(&game).source_arena().handle(corridor), Some(corridor_handle));
+    assert_eq!(sim(&game).entities()[usize::from(corridor)].life, 1, "real model64 seals the controller");
+    let mut seal_callback = false;
+    for _ in 0..256 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        seal_callback |= sim(&game).cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == corridor));
+        assert_eq!(sim(&game).source_arena().handle(corridor), Some(corridor_handle));
+        if sim(&game).entities()[usize::from(corridor)].life == 3 { break; }
+    }
+    assert!(seal_callback);
+    assert_eq!(sim(&game).entities()[usize::from(corridor)].life, 3, "actual controller finishes sealing the corridor");
+    assert!(sim(&game).canonical_terrain().ground_height(corridor_position) > open_floor);
+    assert!(sim(&game).canonical_terrain().ceiling_height(corridor_position).unwrap() < open_ceiling);
+    assert!(sim(&game).canonical_terrain().cave_collision_blocked(corridor_position));
+
+    // Activate both source mana waves before sampling the global denominator.
+    trigger(&mut game, player, 310, 1, &mut receipts);
+    trigger(&mut game, player, 317, 2, &mut receipts);
+    assert_eq!(receipts.sphere_births.len(), 113, "both real sphere producers allocate their complete source waves");
+    // The two neighboring cave area switches admit both distinct reward and
+    // Fire Spheres groups; keep the entire source-authored lists in receipts.
+    trigger(&mut game, player, 74, 5, &mut receipts);
+    if count(&receipts, 9) == 0 { trigger(&mut game, player, 249, 9, &mut receipts); }
+    let fire = receipts.fire_sphere.expect("group9 has an actual Fire Spheres root");
+    assert!(sim(&game).economy().model76_children().iter().any(|child|
+        child.parent_entity_index == fire.source_slot), "the actual Fire Spheres producer allocates children");
+    let pickup = *sim(&game).economy().spell_pickups().iter().find(|row|
+        row.authored_index == 366 && row.family == 23 && row.active)
+        .expect("group5 constructs the real Magic Mine pickup");
+    assert_eq!(pickup.action, 70);
+    let pickup_handle = sim(&game).source_arena().handle(pickup.source_entity_index).unwrap();
+    let ring_positions = sim(&game).mission().authored_features().iter()
+        .filter(|row| row.kind == 10 && row.subtype == 11 && row.activation_group == 5)
+        .map(|row| (row.tile_x, row.tile_y)).collect::<BTreeSet<_>>();
+    assert_eq!(ring_positions.len(), 12);
+    let rings = sim(&game).entities().iter().filter(|row| row.active
+        && (row.class, row.model, row.action) == (10, 11, 11)
+        && ring_positions.contains(&(row.position.x >> 8, row.position.y >> 8)))
+        .filter_map(|row| sim(&game).source_arena().handle(row.index)).collect::<Vec<_>>();
+    assert_eq!(rings.len(), 12, "the group5 source rings must all construct");
+    // Authored366 starts inside solid Cave terrain. The group's twelve real
+    // lowering rings must excavate it and the pickup's own scheduled callback
+    // must relax it toward the changing floor before a player can overlap it.
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    let mut pose = None;
+    let mut fire_callback = false;
+    let mut ring_callback = false;
+    let mut pickup_callback = false;
+    for _ in 0..512 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        let state = sim(&game);
+        fire_callback |= state.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == fire.source_slot && selector.observed_dynamic_cursor_row().is_some_and(|row|
+                    row.source_slot == fire.source_slot && row.generation == fire.generation
+                        && row.kind == crate::native_world::Level2DynamicArenaKind::AuthoredModel76)));
+        ring_callback |= state.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                if rings.iter().any(|handle| handle.source_slot == *slot)));
+        pickup_callback |= state.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                if *slot == pickup_handle.source_slot));
+        assert_eq!(state.source_arena().handle(pickup_handle.source_slot), Some(pickup_handle), "actual pickup remains current while the cave opens");
+        let jar = state.shared_spells().pickup(pickup_handle.source_slot).expect("actual current shared pickup");
+        let terrain = state.canonical_terrain();
+        let floor = terrain.ground_height(jar.position);
+        let ceiling = terrain.ceiling_height(jar.position).expect("actual pickup is in a cave");
+        let low = floor.saturating_add(state.profile().ground_clearance);
+        let high = ceiling.saturating_sub(state.profile().ceiling_clearance);
+        if low <= high && !terrain.cave_collision_blocked(jar.position) {
+            let body = &state.entities()[usize::from(player)];
+            let offset = |row: &crate::native_world::EntitySnapshot|
+                i16::from_le_bytes(row.record_bytes()[86..88].try_into().unwrap());
+            let center = i32::from(jar.position.z) + i32::from(offset(jar)) - i32::from(offset(body));
+            let mut candidate = jar.position;
+            candidate.z = center.clamp(i32::from(low), i32::from(high)) as i16;
+            let mut probe = body.clone();
+            probe.set_position(candidate);
+            if crate::native_world::world_types::level2_source_intersects(jar, &probe) {
+                pose = Some(candidate);
+                break;
+            }
+        }
+    }
+    let pose = pose.unwrap_or_else(|| {
+        let state = sim(&game);
+        let jar = state.shared_spells().pickup(pickup_handle.source_slot);
+        let terrain = state.canonical_terrain();
+        panic!("group5 never admits its actual pickup: jar={jar:?}, floor={}, ceiling={:?}, blocked={}, ring_callback={ring_callback}, pickup_callback={pickup_callback}, live_rings={:?}",
+            terrain.ground_height(pickup.position), terrain.ceiling_height(pickup.position),
+            terrain.cave_collision_blocked(pickup.position), rings.iter().filter(|h| state.source_arena().resolve(**h).is_some()).collect::<Vec<_>>());
+    });
+    assert!(ring_callback && pickup_callback, "actual lowering rings and pickup must be scheduled");
+    sim_mut(&mut game).set_level2_entity_position(player, pose).unwrap();
+    let mut acquired = false;
+    for _ in 0..16 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        let state = sim(&game);
+        fire_callback |= state.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == fire.source_slot && selector.observed_dynamic_cursor_row().is_some_and(|row|
+                    row.source_slot == fire.source_slot && row.generation == fire.generation
+                        && row.kind == crate::native_world::Level2DynamicArenaKind::AuthoredModel76)));
+        acquired |= state.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::SpellAcquisition { source_slot, family: 23, result: Some(outcome), .. }
+                if *source_slot == pickup.source_entity_index && outcome.parent_entity_index == player
+                    && outcome.holder_action == 69));
+        if acquired && fire_callback { break; }
+    }
+    assert!(acquired && fire_callback, "the real Magic Mine pickup and Fire Spheres callback must reach their consumers");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    for _ in 0..512 {
+        if rings.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert!(rings.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "all group5 lowering-ring generations must finish and reclaim naturally");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+    // The real Magic Mine acquisition may have changed the selected hand.
+    step(&mut game, GameCommand {
+        select_spell: Some(crate::game_definition::SemanticId::parse("spell.possession").unwrap()),
+        ..GameCommand::default()
+    }, &mut receipts);
+    // Select one genuine settled member of the two produced mana waves and a
+    // declared cave-valid player firing pose. Spheres and collectors move only
+    // through their ordinary source callbacks.
+    let mut selection = None;
+    for _ in 0..256 {
+        let state = sim(&game);
+        let fov = state.shared_spells().player_entity().array_fov();
+        for sphere in state.economy().spheres().iter().filter(|row|
+            receipts.sphere_births.contains(&(row.id, state.economy().slot_generation(row.source_entity_index)))
+                && row.active && !row.pending_delete
+                && row.player_entity_index == 0 && row.control_flags & 8 != 0
+                && row.control_flags & 0x0020_0000 == 0 && row.vertical_velocity == 0 && row.mana > 0)
+        {
+            let Some(target) = state.possession_guidance_target_top_for_test(sphere.source_entity_index) else { continue };
+            for dx in [2048_i16, -2048] {
+                let mut hand = Position { x: target.x.wrapping_add_signed(dx), y: target.y,
+                    z: target.z.saturating_add(512) };
+                let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
+                let hand_yaw = yaw.wrapping_sub(state.shared_spells().beyond_sight_auxiliary().next_entity).wrapping_sub(512);
+                let mut origin = Position { z: hand.z.saturating_sub(fov), ..hand };
+                crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+                let floor = state.canonical_terrain().ground_height(origin);
+                let Some(ceiling) = state.canonical_terrain().ceiling_height(origin) else { continue };
+                origin.z = origin.z.max(floor.saturating_add(state.profile().ground_clearance));
+                if origin.z > ceiling.saturating_sub(state.profile().ceiling_clearance)
+                    || state.canonical_terrain().cave_collision_blocked(origin) { continue; }
+                hand.z = origin.z.saturating_add(fov);
+                if hand.z > ceiling.saturating_sub(crate::level1_mission::POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT) { continue; }
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(hand, target);
+                selection = Some((*sphere, origin, yaw, pitch));
+                break;
+            }
+            if selection.is_some() { break; }
+        }
+        if selection.is_some() { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    let (sphere, origin, yaw, pitch) = selection.expect("a real produced sphere has an admitted cave firing pose");
+    let sphere_handle = sim(&game).source_arena().handle(sphere.source_entity_index).unwrap();
+    // Declared prior Castle/bank; source arithmetic below guarantees that the
+    // bank alone is below 40%. The final increment must be actually collected.
+    let castle = {
+        let state = sim_mut(&mut game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            state.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .map(|mut p| { p.z = state.canonical_terrain().ground_height(p); p })
+            .filter(|p| {
+                let dx = i32::from(p.x.wrapping_sub(sphere.position.x) as i16).abs();
+                let dy = i32::from(p.y.wrapping_sub(sphere.position.y) as i16).abs();
+                dx.max(dy) >= 4096 && !state.economy().castle_projectile_site_blocked(*p, state.entities(), state.canonical_terrain())
+            }).min_by_key(|p| crate::distance_3d_wrapped(*p, sphere.position))
+            .expect("source terrain admits the declared prior Castle outside the sphere");
+        state.economy_mut().build_castle(site, player).unwrap()
+    };
+    step(&mut game, GameCommand::default(), &mut receipts);
+    assert_eq!(sim(&game).source_arena().handle(sphere_handle.source_slot), Some(sphere_handle));
+    assert!(sim(&game).economy().spheres().iter().any(|row| row.id == sphere.id && row.active
+        && !row.pending_delete && row.player_entity_index == 0 && row.mana == sphere.mana
+        && row.position == sphere.position), "selected actual sphere remains the same settled generation and payload");
+    let total = i64::from(sim(&game).economy().owner_mana_global());
+    let aggregate = i64::from(sim(&game).economy().owner_mana_aggregate(player));
+    let numerator = total.checked_mul(40).and_then(|n| aggregate.checked_mul(100).and_then(|a| n.checked_sub(a)))
+        .expect("source 40-percent census arithmetic").max(0);
+    let threshold = (numerator + 59) / 60;
+    let bank = i32::try_from(threshold - i64::from(sphere.mana)).expect("prior bank fits i32");
+    assert!(bank >= 0 && sphere.mana > 0);
+    // The source impact can claim multiple nearby spheres. Preserve enough
+    // declared prior capacity for all still-live source-produced payloads;
+    // capacity itself does not contribute to the source percentage.
+    let eligible = sim(&game).economy().spheres().iter().filter_map(|row| {
+        let handle = sim(&game).source_arena().handle(row.source_entity_index)?;
+        (row.active && !row.pending_delete && row.player_entity_index == 0 && row.mana > 0
+            && receipts.sphere_births.contains(&(row.id, handle.generation)))
+            .then_some(((handle.source_slot, handle.generation), row.mana))
+    }).collect::<BTreeMap<_, _>>();
+    assert!(eligible.contains_key(&(sphere_handle.source_slot, sphere_handle.generation)));
+    let eligible_total = eligible.values().try_fold(0_i64, |sum, mana| sum.checked_add(i64::from(*mana)))
+        .expect("real candidate sphere payloads fit i64");
+    let capacity = i32::try_from(aggregate + i64::from(bank) + eligible_total).unwrap();
+    assert!(capacity <= i32::MAX / 100);
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, capacity));
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
+    let castle_handle = sim(&game).source_arena().handle(castle).unwrap();
+    step(&mut game, GameCommand::default(), &mut receipts);
+    assert_eq!(i64::from(sim(&game).economy().owner_mana_global()), total + i64::from(bank),
+        "actual next source census includes the prior bank and both completed waves");
+    assert!(percent(&game, player) < 40);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    assert_eq!(count(&receipts, 7), 0, "the real gate remains closed below 40%");
+
+    let state = sim_mut(&mut game);
+    state.set_level2_entity_position(player, origin).unwrap();
+    state.state.actual_speed = 0;
+    state.state.target_speed = 0;
+    state.set_level2_player_aim_for_test(yaw, pitch);
+    let holder = sim(&game).shared_spells().local_player().enabled_spell_holders[1];
+    let holder_handle = sim(&game).source_arena().handle(holder).unwrap();
+    let player_handle = sim(&game).source_arena().handle(player).unwrap();
+    let cost = sim(&game).shared_spells().pickup(holder).unwrap().max_mana;
+    assert!(cost > 0 && sim(&game).shared_spells().player_entity().mana >= cost);
+    let mut cursor = sim(&game).economy().events().len();
+    let (mut paid, mut debited, mut claimed, mut retreated, mut credited) = (false, false, false, false, false);
+    let mut mana_changes = std::collections::VecDeque::new();
+    let mut mana_events = std::collections::VecDeque::new();
+    let mut projectile_handle = None;
+    let mut paid_effects = BTreeMap::new();
+    let mut impact_targets = BTreeSet::new();
+    let mut claimed_targets = BTreeSet::new();
+    let mut possession_events = std::collections::VecDeque::new();
+    let mut collected = BTreeMap::<(u16, u32), BTreeMap<(u16, u32), i32>>::new();
+    crate::native_world::level2_dynamic_economy::start_possession_trace();
+    let castle_position = sim(&game).economy().castle_at(castle).unwrap().position;
+    let bound = 32 + 2 * (crate::distance_3d_wrapped(sphere.position, castle_position) as usize).div_ceil(48) + 256;
+    for turn in 0..bound {
+        if claimed && !retreated {
+            assert!(sim(&game).canonical_player_life_for_test() >= 0);
+            sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+            retreated = true;
+        }
+        let before = (sim(&game).economy().owner_mana_global(), sim(&game).economy().owner_mana_aggregate(player),
+            sim(&game).economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(&game, player));
+        let unprotected = sim(&game).economy().spheres().iter().filter_map(|row| {
+            let handle = sim(&game).source_arena().handle(row.source_entity_index)?;
+            (row.active && !row.pending_delete && row.control_flags & 0x0020_0000 == 0)
+                .then_some((handle.source_slot, handle.generation))
+        }).collect::<BTreeSet<_>>();
+        step(&mut game, GameCommand { cast_selected: turn == 0, ..GameCommand::default() }, &mut receipts);
+        let state = sim(&game);
+        let after = (state.economy().owner_mana_global(), state.economy().owner_mana_aggregate(player),
+            state.economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(&game, player));
+        if before != after {
+            if mana_changes.len() == 32 { mana_changes.pop_front(); }
+            mana_changes.push_back((turn, before, after));
+        }
+        debited |= state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+            } if slot == player => original.observed_player_resources().zip(selector.observed_player_resources())
+                .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                    && before.2 <= -cost && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1.saturating_sub(after.1) >= cost),
+            _ => false,
+        });
+        if turn == 0 {
+            projectile_handle = state.economy().possession_projectiles().iter().find_map(|row|
+                (row.source_id_entity_index == player && row.holder_entity_index == holder_handle.source_slot)
+                    .then(|| state.source_arena().handle(row.source_entity_index)).flatten());
+            let charged = state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+                } if slot == holder => original.observed_player_resources().zip(selector.observed_player_resources())
+                    .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                        && before.1 >= cost && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) }),
+                _ => false,
+            });
+            paid = projectile_handle.is_some() && charged;
+            assert!(paid, "public Possession launches and queues its real cost");
+        }
+        let trace = crate::native_world::level2_dynamic_economy::take_possession_trace();
+        crate::native_world::level2_dynamic_economy::start_possession_trace();
+        for receipt in trace {
+            if possession_events.len() == 32 { possession_events.pop_front(); }
+            possession_events.push_back((turn, format!("{receipt:?}")));
+            use crate::native_world::level2_dynamic_economy::PossessionSourceReceipt;
+            match receipt {
+                PossessionSourceReceipt::ImpactBirth { effect, projectile, holder, owner, packet }
+                    if Some(projectile) == projectile_handle && holder == holder_handle && owner == player_handle => {
+                        assert!(matches!(packet.source_model, 12 | 70));
+                        paid_effects.insert((effect.source_slot, effect.generation), packet.source_model);
+                    }
+                PossessionSourceReceipt::MailboxWrite { effect, target, source_id, before_possessor, amount, possessor, .. }
+                    if source_id == player && possessor == player && before_possessor != player => {
+                        let key = (target.source_slot, target.generation);
+                        if let Some(model) = paid_effects.get(&(effect.source_slot, effect.generation))
+                            && amount == u32::from(*model == 70)
+                            && (amount != 0 || unprotected.contains(&key))
+                            && eligible.contains_key(&key)
+                        {
+                            impact_targets.insert(key);
+                        }
+                    }
+                _ => {}
+            }
+        }
+        assert_eq!(state.source_arena().handle(castle), Some(castle_handle));
+        for event in &state.economy().events()[cursor..] {
+            if matches!(event, Level2EconomyEvent::ManaSphereSpawned { .. }
+                | Level2EconomyEvent::ManaSphereClaimed { .. }
+                | Level2EconomyEvent::ManaSpheresMerged { .. }
+                | Level2EconomyEvent::ManaSphereCollected { .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. })
+                || matches!(event, Level2EconomyEvent::CastleDefenderArrived { mana, .. } if *mana != 0)
+            {
+                if mana_events.len() == 32 { mana_events.pop_front(); }
+                mana_events.push_back((turn, format!("{event:?}"), before, after));
+            }
+            match *event {
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                    if owner_entity_index == player => {
+                        let slot = u16::try_from(sphere_id).unwrap();
+                        let key = (slot, state.economy().slot_generation(slot));
+                        if impact_targets.contains(&key) {
+                            assert!(eligible.contains_key(&key));
+                            claimed_targets.insert(key);
+                            claimed = true;
+                        }
+                    }
+                Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana } => {
+                    let slot = u16::try_from(sphere_id).unwrap();
+                    let key = (slot, state.economy().slot_generation(slot));
+                    if claimed_targets.contains(&key) {
+                        assert_eq!(eligible.get(&key), Some(&mana));
+                        let defender = state.source_arena().handle(defender_slot).unwrap();
+                        collected.entry((defender.source_slot, defender.generation)).or_default().insert(key, mana);
+                    }
+                }
+                Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                    if castle_id == castle && mana > 0 => {
+                        let defender = state.source_arena().handle(defender_slot).unwrap();
+                        let Some(payloads) = collected.get(&(defender.source_slot, defender.generation)) else { continue };
+                        let payload = payloads.values().try_fold(0_i32, |sum, amount| sum.checked_add(*amount)).unwrap();
+                        assert_eq!(mana, payload, "the same current collector deposits exactly its traced source-sphere payload");
+                        assert_eq!(after.2.unwrap().0.checked_sub(before.2.unwrap().0), Some(mana));
+                        assert!(percent(&game, player) >= 40,
+                            "actual collector credit earns 40%: turn={turn}, total={total}, aggregate={aggregate}, bank={bank}, sphere={sphere:?}");
+                        credited = true;
+                    }
+                _ => {}
+            }
+        }
+        cursor = state.economy().events().len();
+        if !credited {
+            assert!(percent(&game, player) < 40,
+                "source mana crossed before traced credit: turn={turn}, initial=(total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}), aim={sphere:?}, aim_handle={sphere_handle:?}, current_handle={:?}, eligible={eligible:?}, effects={paid_effects:?}, impacts={impact_targets:?}, claims={claimed_targets:?}, collected={collected:?}, possession={possession_events:?}, changes={mana_changes:?}, events={mana_events:?}, objective={:?}",
+                state.source_arena().handle(sphere.source_entity_index), state.runtime().objectives[owner]);
+            assert_eq!(state.runtime().objectives[owner].stage_selectors[0], 1);
+        }
+        if credited && count(&receipts, 7) > 0 { break; }
+    }
+    let _ = crate::native_world::level2_dynamic_economy::take_possession_trace();
+    assert!(paid && debited && claimed && retreated && !collected.is_empty() && credited && count(&receipts, 7) == 1,
+        "paid={paid}/{debited}, claim={claimed}, impacts={impact_targets:?}, collected={collected:?}, credit={credited}, group7={}, bank={bank}, total={total}, sphere={sphere:?}", count(&receipts, 7));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    for _ in 0..8 {
+        if sim(&game).source_arena().handle(350) != Some(gate_handle) { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert_ne!(sim(&game).source_arena().handle(350), Some(gate_handle));
+    let exit = *sim(&game).economy().authored_switch_producers().iter()
+        .find(|row| row.active && row.authored_index == 416 && row.model == 12 && row.action == 12)
+        .expect("actual group7 exit416");
+    assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.model == 3
+        && row.authored_index == 418), "actual group7 visible portal418");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0, "a living player must enter the real exit");
+    sim_mut(&mut game).set_level2_entity_position(player, exit.position).unwrap();
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    sim(&game).source_exit_result_byte()
 }
