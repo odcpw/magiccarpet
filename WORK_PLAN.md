@@ -805,7 +805,24 @@ Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original
 gameplay remains separate from the Modern/Voxel asset work above.
 
-Latest Original runtime is canonical `50174e74`, delivered on
+Latest Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
+native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
+is installed. Learned spell ownership now survives physical-holder release
+and reclaim through the source collection consumer; selection/casting still
+needs a current holder. The real death→drop/expiry/reclaim→semantic carry→
+next-entry holder/reset check passes45.87s, existing progression/two-entry/save
+passes21.04s, strict Rig workspace all-target check passes31.7s. Independent
+bounded source/gate review supports this fix; old v3 fixture preflight failures
+are retained below. Strict native build passes151s with606/606 snapshot inputs
+matching Rig, native-only installation/check-installed pass. Root viewed the
+normal canonical Original map/loading/NightSpire terrain/HUD with that mapped
+native, one click and zero retries, then stopped owned smoke. Evidence:
+`learned-carry-installed-smoke/runtime-proof.json`, `learned-carry-native-*.json/log`
+and `learned-carry-72-qualification.json` in the mission evidence directory.
+This is launch/load plus a controlled continuation check, not human combat,
+earned campaign, hardware audio, FPS, full mission play or old-save proof.
+
+Previous Original runtime is canonical `50174e74`, delivered on
 `codex/original-ending` as `d216723b`; native
 `2d3d6c94e7a4a5ea02fdff79dfef26389ac0c40693be376d6a521fc21bbe13ae`
 is installed. Reset Dragons now join their canonical typed root/body callbacks
@@ -957,10 +974,19 @@ Jaleen's source entrance is independent of mission objectives, so no invented
 objective prerequisite or duplicate objective helper was introduced. Local
 `b46eb684`, remote Original `6d48f96a`; test-only, native2d3d remains current.
 The now-default qualified Level8 ordinary regression also passes7.20s on67.
-The remaining original entries are ordinary18→Beleem33 and20→Ommosyth34, per
-the pinned source table. Gleph18's actual level-end group20→House372→group21
-is the next prerequisite; its current package already has BUILD27→41→49
-closure, so no speculative package replacement is required.
+Gleph18→Beleem33 now passes293.15s on70: actual four-objective completion and
+rival Castle5→1 loss/banishment, exact group20→House372's BUILD27→41→49→
+group21→original source portal/controller→real secret completion→cold parent
+and carry. The ordinary regression passes98.75s on69. BUILD27 has138000 HP;
+the initial69 gate sent only one65535 contact and failed on a still-living
+House. Corrected contacts wait for each real source mailbox to be consumed,
+without changing HP, damage rules, stages or lifetimes. Local `b03a641e`,
+remote Original `d94bff4d`; test-only, native2d3d unchanged. Four original
+parent entries now pass. The only remaining entry is Ammyridia20/source19→
+Ommosyth34. Its normal old MCI3v2 package lacks BUILD44/45 after43; a fresh
+whole package and qualified cache are prepared under
+`ammyridia-source-closure-20261114/`, not yet installed. Actual Hydra
+objective→group7→House24/43→44→45→group8 must still pass.
 Fixture-parent checks alone do not prove those original portal producers.
 
 Fresh bounded post-fix source/receipt review at `e7e8ab87` found no further
@@ -974,8 +1000,34 @@ Hydra birth/lifecycle and all seven Castle losses, then failed4503.25s at final
 Possession carry application because the selected family had no valid local
 holder. Candidate64 puts the declared carry at the actual tick0 destination
 materialization boundary; the focused current-holder/schedule check passes
-9.95s. The full mission64 is running and requires that same holder at its later
-paid cast, without a late regrant; this is not yet a mission pass.
+9.95s. The full mission64 failed4839.15s at its final physical-holder check:
+family1 still refers to sentinel1 but has no current holder (124 free slots).
+It proved the earlier Hydra and all seven Castle paths; it is not a mission
+pass. A short source chronology now isolates real player/NPC death and holder
+release before repeating the long prefix. Package NPC A4 addresses initially
+point to actual holders; source grounded death intentionally replaces nonzero
+relations with1. Final index1 alone cannot establish an initializer or NPC-
+alias defect.
+
+Independent source diagnosis found a real shared carry consumer mismatch:
+CollectLevelStats preserves learned ownership from persistent0x3E9 OR nonzero
+A4 OR mission-acquired0x403, without requiring a live physical holder. The
+Rust backend incorrectly rejected the stale nonzero relation. The collection
+consumer now matches that union; physical selection/casting still requires a
+current holder. Actual Goat-owned contact→human grounded death→drop/natural
+expiry/reclaim→knowledge carry→fresh destination holders/reset passes45.87s
+on72. The existing two-entry/progression/save check passes21.04s and strict
+Rig workspace all-target check passes31.7s. Independent bounded source/gate
+review supports the narrow fix. This is a declared continuation boundary, not
+an earned victory. The two historical map-save/stale-guard checks stop before
+carry behavior on an old Level1v3 package lacking the required collision bank;
+those consumers are not called green. Added-hunk UBS has no critical finding;
+whole-file legacy findings and formatting debt remain. Runtime local
+`ef69ab51`, remote Original `ee9a7ee1` are committed/pushed and native29688f
+is installed with the qualified launch/load smoke recorded above. Failed71 used a private test helper; corrected72 uses canonical
+area-damage Contact. No source Castle filter, late inventory grant or fake
+allocator reservation was added. `mc-paj.3` and full mission acceptance stay
+open.
 Run45's later Hydra gate failure is superseded only for that specific gate.
 Keep full campaign, opening, secret/carry and presentation acceptance open.
 Root serializes compilation, shared joins and landing; owners stay through
