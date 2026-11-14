@@ -805,15 +805,19 @@ Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original
 gameplay remains separate from the Modern/Voxel asset work above.
 
-Latest Original source is canonical `cc819d03`, delivered on
-`codex/original-ending` as `b78e4ec2`; native
-`3cce164b0498a8ae68facd12e89e35dc89cf546674976832ed66d0cf815acc1a`
-is installed. Actual Uluth group7 now constructs its source10/25 Steal Mana
-field through the shared constructor, player lane and natural hide/reclaim.
-The same constructor's Steal Mana/Duel collision extents now write canonical
-pitch/roll/FOV instead of yaw/pitch/FOV. Constructor and both guided consumers
-pass on40; strict Rig native build passed169.2s. Full Uluth boss/exit remains
-unverified: its current check fails the natural approach/visibility boundary.
+Latest Original runtime is canonical `a403c3de`, delivered on
+`codex/original-ending` as `58a092e8`; native
+`c721b455143500eb2282dec84d73c0236a294546e6b16338374b7769c567b85b`
+is installed. Shared boss SEARCH now preserves source cumulative class-prefix
+iteration. Castle feature4 final loss writes the source current nonzero A4
+address, including a freed physical row; it no longer rejects that valid source
+case through a live spell-type filter. The earlier actual Uluth10/25 field and
+Steal Mana/Duel pitch/roll/FOV collision fixes remain installed. Strict Rig native
+build passed170.4s; source-order, Castle loss/A4 and boss approach checks pass.
+Full Uluth46 passes284.32s: actual reset/waves/BUILD68→69→72→73, genuine300000HP
+boss, real contact consumption, natural phases/death/reclaim, both goals and
+living exit0A. Declared controls are safe player poses, renderer observations
+at source visibility boundaries and arrived contacts, without HP/AI/timer edits.
 
 Earlier `22a73da0` fixed the shared spell-acquisition cache to follow the current
 generation/family after slot reuse. Cross-family and same-family replacement,
@@ -823,7 +827,7 @@ checks pass, alongside the previously delivered ordinary missions. Evidence:
 `research/private/generated/campaign-original-environments/`, particularly
 `*-connected-30.log`, Gleph/Malak `*-connected-33.log` and
 `spell-reuse-installed-smoke/runtime-proof.json`; the latest native smoke is
-`authored-field-installed-smoke/runtime-proof.json`.
+`final-encounter-installed-smoke/runtime-proof.json`.
 
 The normal installed Original launcher registered all30 packages and reached
 map/loading/NightSpire terrain/HUD with the matching mapped native, one portal
@@ -835,15 +839,21 @@ Karakir/source30 now passes actual area-entry production, Firefly-derived mana,
 paid Possession, collector credit crossing85, normal exit0A and restored
 parent-continuation exit1A through real return/carry/reopen. Checks37 passed
 22.61s/64.84s; local `91429dd9`, remote Original `9c4c5e45`. These are test-only
-joins; the installed native above is unchanged. Prior Castle/below85 bank,
+joins; no extra runtime change was needed. Prior Castle/below85 bank,
 incoming carry, selected contact/poses and parent-frontier fixture are declared
 controls, not earned prior campaign or live secret-portal proof.
 
-Remaining ordinary connected checks are Jathnar23 and Uluth25. Jathnar is
-checking the exact callback-time Castle-holder identity at final loss; an
-earlier outer-turn holder snapshot is not authority for that source read.
-Ymbul/source31 is checking its real Skeleton/Archer absence chains and30%
-mana victory, followed by the other three secret missions. Current
+Ymbul/source31 passes116.11s on43: real Skeleton/Archer absence chains, all six
+new transports moving the actual player, paid mana crossing30 and living exit0A.
+Local `b87de26b`, remote Original `bb44dcbe`, test-only. Source provenance,
+full corpse/reclaim and same-generation living blocker controls are retained.
+
+Controlled mission paths now pass for24/25 ordinary and2/5 secret missions.
+Jathnar23 is the remaining ordinary check, following all seven real rivals
+through their source deaths rather than reviving a rival that died naturally.
+The exact callback-time current A4 read is authority, including the observed
+freed-slot1 case. Pav Durivium/source32 is checking real Cave corridor/field/
+creature production and40% mana victory; Beleem33 and Ommosyth34 follow. Current
 Terra owners retain those paths through their actual consumer failures; root
 serializes compilation, shared joins and landing. Setup controls must preserve
 live AI, real source production, timers and HP. Keep full campaign, opening,
