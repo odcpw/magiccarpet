@@ -805,10 +805,31 @@ Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original
 gameplay remains separate from the Modern/Voxel asset work above.
 
-Latest Original runtime is canonical `a403c3de`, delivered on
-`codex/original-ending` as `58a092e8`; native
-`c721b455143500eb2282dec84d73c0236a294546e6b16338374b7769c567b85b`
-is installed. Shared boss SEARCH now preserves source cumulative class-prefix
+Latest Original runtime is canonical `50174e74`, delivered on
+`codex/original-ending` as `d216723b`; native
+`2d3d6c94e7a4a5ea02fdff79dfef26389ac0c40693be376d6a521fc21bbe13ae`
+is installed. Reset Dragons now join their canonical typed root/body callbacks
+without reconstruction, preserving current packets, pending contacts, original
+generations, allocator, map links and RNG. Typed Dragon bodies now also reach
+their real particle/presentation consumer, including authored Dragon bodies.
+Exact source4 adoption/presentation check63 passes0.51s; nine affected Dragon
+checks pass5.20s, source-order passes, strict all-target workspace check45.1s.
+Actual original T'Klom objectives→five reset Dragon deaths/absence gate→whole
+group6→Karakir completion→CUT1→cold parent carry passes223.86s on63. Frontier,
+incoming inventory, contacts and admitted arrival pose remain declared controls;
+this is not earned campaign or human movement proof. Strict Rig native build
+passes174.9s with606/606 inventoried snapshot inputs matching the worker.
+The qualified Original snapshot retains its separate source closure; canonical
+test-only additions and unrelated Modern native work are not called installed.
+Normal canonical launcher registered all30 resources and reached
+map/loading/NightSpire terrain/HUD with the exact mapped native, one portal
+click and zero retries. Root viewed the scene and stopped its owned processes.
+Qualified installation receipt matches471 Rust/manifest inputs,200 Unity
+inputs and142 player files. Evidence: `dragon-installed-smoke/runtime-proof.json`
+and `dragon-native-*.json/log` under the mission evidence directory below.
+
+Previous runtime `a403c3de`/`58a092e8` and native `c721b455143500eb2`
+delivered these shared fixes: boss SEARCH preserves source cumulative class-prefix
 iteration. Castle feature4 final loss writes the source current nonzero A4
 address, including a freed physical row; it no longer rejects that valid source
 case through a live spell-type filter. The earlier actual Uluth10/25 field and
@@ -827,7 +848,7 @@ checks pass, alongside the previously delivered ordinary missions. Evidence:
 `research/private/generated/campaign-original-environments/`, particularly
 `*-connected-30.log`, Gleph/Malak `*-connected-33.log` and
 `spell-reuse-installed-smoke/runtime-proof.json`; the latest native smoke is
-`final-encounter-installed-smoke/runtime-proof.json`.
+`dragon-installed-smoke/runtime-proof.json`.
 
 The normal installed Original launcher registered all30 packages and reached
 map/loading/NightSpire terrain/HUD with the matching mapped native, one portal
@@ -877,25 +898,44 @@ Local `3dbb9d4e`, remote Original `c2e91d03`. A cfg(test)-only clone prediction
 reuses the actual holder constructor, source lists, frame and acquisition
 kernel to choose the fixed shot; a live-state hash check proves prediction
 does not alter the live world, and actual acquisition/claim/credit still must
-pass. No production factoring or native refresh was needed. Optional Firefly,
-Skeleton and linked model22 area groups remain a separate unfinished check.
+pass. No production factoring or native refresh was needed. Optional source
+groups3/7/11–13 now pass70.59s and the expanded parent path199.58s on57:
+fourteen Fireflies, thirty-two Skeletons and three linked model22 roots reach
+their real callbacks, sprite descriptors and selected contact consequences.
+Local `155b7c83`, remote Original `17a0f1b6`; these are test-only checks.
 
-Controlled objective/exit paths now pass for24/25 ordinary and4/5 secret missions.
-Jathnar23 is the remaining ordinary check, following all seven real rivals
-through their source deaths rather than reviving a rival that died naturally.
-The exact callback-time current A4 read is authority, including the observed
-freed-slot1 case. Run45 reached all seven Castle losses but failed to observe
-the later Hydra560 birth; attempted authored publication was not proof of
-construction. Candidate56 moves the real stage4 House/Hydra path earlier and
-observes callback-time source map/free-slot admission before the long rival
-segment. Ommosyth/source34 is checking its real223-row group23, actor consumer,
-25% source goal and group27 exit; its first actor-consequence gate is unresolved.
-Beleem's optional groups3/7/11–13 are checking their actual source consumers. Current
-Terra owners retain those paths through their actual consumer failures; root
-serializes compilation, shared joins and landing. Setup controls must preserve
-live AI, real source production, timers and HP. Keep full campaign, opening,
-secret/carry and presentation acceptance open. Test-only coverage additions
-do not require rebuilding an unchanged installed native.
+Ommosyth/source34 passes74.53s on61: actual223-row group23 production, real
+model58 child reclaim, Sentinel death/mana, paid25% crossing and group27 living
+exit. Its retained-parent/statistics/coldsave/carry/reopen passes184.28s.
+Local `f5056075`, remote Original `07c6cb3b`. Incoming Possession, poses and a
+prior below-goal bank are declared controls. Actual source model58 retains its
+terminal controller; only its child reclaims. Source allocation refusal while
+the arena is full is retained. Optional Spider/Worm/BUILD51 consumers and
+earned campaign/live portal proof are not claimed by these test-only additions.
+
+Controlled objective/exit paths now pass for24/25 ordinary and all five secret
+missions, with all five fixture-entered retained-parent return paths. Actual
+unmodified T'Klom5→Karakir30 entry exposed a shared reset Dragon scheduling
+gap: imported roots and their current linked bodies never joined the canonical
+typed Dragon callbacks. The first focused gate confirmed state/mailbox/
+provenance preservation but caught a second shared defect: typed Dragon bodies
+were missing from presentation DTOs. Both joins and the real source4 portal
+route are now delivered above; the other four original parent entry paths
+remain open. The next is source7/external8 Ul'Buthnen→Ymbul31; the source table
+does not place that entrance in external10. Fixture-parent checks alone do not
+prove those original portal producers.
+
+Jathnar23 remains the ordinary objective check. Run56 proved early real stage4
+Hydra birth/lifecycle and all seven Castle losses, then failed4503.25s at final
+Possession carry application because the selected family had no valid local
+holder. Candidate64 puts the declared carry at the actual tick0 destination
+materialization boundary; the focused current-holder/schedule check passes
+9.95s. The full mission64 is running and requires that same holder at its later
+paid cast, without a late regrant; this is not yet a mission pass.
+Run45's later Hydra gate failure is superseded only for that specific gate.
+Keep full campaign, opening, secret/carry and presentation acceptance open.
+Root serializes compilation, shared joins and landing; owners stay through
+consumer failures. Controls preserve live AI, actual production, timers and HP.
 
 ## Active request: complete the shared world capabilities
 
