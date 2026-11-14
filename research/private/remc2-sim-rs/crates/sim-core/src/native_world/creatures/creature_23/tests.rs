@@ -2441,3 +2441,202 @@ fn configured_class3_sentinel_damage_retaliates_and_releases_live_claim() {
     assert_eq!(ctx.spheres[0].control_flags & MANA_SPHERE_CLAIMED, 0);
     assert_eq!(ctx.spheres[0].assigned_defender_slot, 0);
 }
+
+#[test]
+fn tunuk_castle_objectives_real_waves_and_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use crate::native_world::player_lifecycle_tests::{
+        RivalTestGame, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step,
+    };
+    use std::collections::BTreeSet;
+
+    #[derive(Default)]
+    struct Groups {
+        counts: [usize; 4],
+        exit: Option<(u16, Position)>,
+        portal: Option<u16>,
+    }
+    fn visit(game: &mut RivalTestGame, groups: &mut Groups) {
+        step(game);
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            let Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. } = event else { continue };
+            let expected = match *group {
+                15 if authored_indices.contains(&481) => Some((0, 32, 0)),
+                16 if authored_indices.contains(&486) => Some((1, 32, 1)),
+                17 if authored_indices.contains(&518) => Some((2, 32, 2)),
+                13 if authored_indices.contains(&414) => Some((3, 4, 0)),
+                _ => None,
+            };
+            let Some((index, model, gate)) = expected else { continue };
+            groups.counts[index] += 1;
+            let producer = &state.entities()[usize::from(*source_slot)];
+            assert_eq!((producer.class, producer.model, producer.source_id), (11, model, *group));
+            if model == 32 { assert_eq!(producer.level_gate, gate); }
+            if *group == 15 {
+                assert!((417..=480).all(|row| authored_indices.contains(&row)),
+                    "group15 includes all 64 real model58 records");
+            }
+            if *group == 16 {
+                assert!([486, 487, 488, 511, 512, 515].into_iter().all(|row| authored_indices.contains(&row)));
+            }
+            if *group == 17 {
+                assert!([514, 516, 518].into_iter().all(|row| authored_indices.contains(&row)));
+            }
+            if *group == 13 {
+                let trigger = state.economy().authored_switch_producers().iter()
+                    .find(|row| row.authored_index == 414 && (row.model, row.action) == (12, 12))
+                    .expect("actual Tunuk exit414");
+                let portal = state.economy().authored_class14().iter()
+                    .find(|row| row.authored_index == 415 && row.model == 3)
+                    .expect("actual Tunuk portal415");
+                groups.exit = Some((trigger.source_entity_index, trigger.position));
+                groups.portal = Some(portal.source_entity_index);
+            }
+        }
+    }
+    fn actual_authored(game: &RivalTestGame, kind: CreatureKind, authored: u16) -> SourceEntityHandle {
+        sim(game).creature_runtime_census().roots_of_kind(kind)
+            .find(|row| row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: authored }) && row.living)
+            .unwrap_or_else(|| panic!("actual living {kind:?} authored row{authored}"))
+            .handle
+    }
+    fn contact(game: &mut RivalTestGame, player: u16, handle: SourceEntityHandle) {
+        assert_eq!(sim(game).source_arena().handle(handle.source_slot), Some(handle));
+        area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+    }
+
+    let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL14_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level14"));
+    let cache = std::env::var_os("MC_LEVEL14_OWNER_CACHE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level14"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let objectives = definition.level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 4);
+    assert_eq!(objectives[0].condition(), ObjectiveCondition::CastleManaPercent(40));
+    assert!(matches!(objectives[1].condition(), ObjectiveCondition::TargetDeath(_)));
+    assert_eq!(objectives[2].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature23));
+    assert_eq!(objectives[3].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Cymmerian));
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2214,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    let mut groups = Groups::default();
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [1; 4]);
+    // Declared prior acquisition: an existing Castle and pre-earned bank.
+    // The ordinary source census and objective consumer decide the 40% gate.
+    let castle = {
+        let state = sim_mut(&mut game);
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .map(|mut position| { position.z = state.canonical_terrain().ground_height(position); position })
+            .find(|position| !state.economy().castle_projectile_site_blocked(*position, state.entities(), state.canonical_terrain()))
+            .expect("declared prior Castle has a source-admitted site");
+        state.economy_mut().build_castle(site, player).unwrap()
+    };
+    visit(&mut game, &mut groups);
+    let total = sim(&game).economy().owner_mana_global();
+    assert!(total > 0, "real source census supplies a denominator");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1,
+        "empty declared bank remains below the first objective");
+    let prior_bank = total.checked_add(1_000).expect("source bank fits");
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, prior_bank));
+    for _ in 0..128 {
+        visit(&mut game, &mut groups);
+        if groups.counts[0] == 1 { break; }
+    }
+    let economy = sim(&game).economy();
+    let castle_bank = economy.castle_at(castle).expect("declared Castle").mana;
+    assert!(100_i64 * i64::from(economy.owner_mana_aggregate(player) + castle_bank)
+        >= 40_i64 * i64::from(economy.owner_mana_global()), "real census passes 40%");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    assert_eq!(groups.counts[0], 1);
+    let target = actual_authored(&game, CreatureKind::Creature23, 481);
+    assert_eq!(sim(&game).runtime().stages[1].relation, RuntimeRelation::LiveEntity(target.source_slot));
+    contact(&mut game, player, target);
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        if groups.counts[1] == 1 { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..3], [2, 2, 1]);
+    assert_eq!(groups.counts[1], 1);
+    let hunters = [486, 487, 488, 515].map(|row| actual_authored(&game, CreatureKind::Creature23, row));
+    for &handle in &hunters[..3] { contact(&mut game, player, handle); }
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[2], 1,
+            "one living source hunter blocks the absence objective");
+        if hunters[..3].iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert!(hunters[..3].iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
+    assert!(sim(&game).creature_identity_for_source_slot(hunters[3].source_slot)
+        .is_some_and(|row| row.handle == hunters[3] && row.living));
+    contact(&mut game, player, hunters[3]);
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        if groups.counts[2] == 1 { break; }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2, 2, 2, 1]);
+    assert_eq!(groups.counts[2], 1);
+    let authored = [514, 516, 518].map(|row| actual_authored(&game, CreatureKind::Cymmerian, row));
+    let mut seen = BTreeSet::new();
+    let mut contacted = BTreeSet::new();
+    let mut split_seen = false;
+    for leave_one in [true, false] {
+        for _ in 0..768 {
+            for root in sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian) {
+                split_seen |= matches!(root.origin, CreatureRootOrigin::CreatureConversion { .. });
+                seen.insert((root.handle.source_slot, root.handle.generation));
+            }
+            let candidates = sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && row.model == 25
+                && row.life >= 0 && (row.action != 200 || row.record_bytes()[74] >= 3))
+                .map(|row| sim(&game).source_arena().handle(row.index).unwrap()).collect::<Vec<_>>();
+            for handle in candidates {
+                if leave_one && handle == authored[2] { continue; }
+                if contacted.insert((handle.source_slot, handle.generation)) { contact(&mut game, player, handle); }
+            }
+            visit(&mut game, &mut groups);
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[3], 1,
+                    "one real Cymmerian blocks the final absence objective");
+                if seen.iter().all(|&(slot, generation)| {
+                    let handle = SourceEntityHandle { source_slot: slot, generation };
+                    handle == authored[2] || sim(&game).source_arena().resolve(handle).is_none()
+                }) { break; }
+            } else if groups.counts[3] == 1 && seen.iter().all(|&(slot, generation)|
+                sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()) { break; }
+        }
+        if leave_one {
+            assert!(sim(&game).creature_identity_for_source_slot(authored[2].source_slot)
+                .is_some_and(|row| row.handle == authored[2] && row.living));
+            assert!(seen.iter().all(|&(slot, generation)| {
+                let handle = SourceEntityHandle { source_slot: slot, generation };
+                handle == authored[2] || sim(&game).source_arena().resolve(handle).is_none()
+            }));
+            assert_eq!(groups.counts[3], 0, "one survivor blocks actual level-end exit production");
+        }
+    }
+    assert!(authored.iter().all(|handle| seen.contains(&(handle.source_slot, handle.generation))));
+    assert!(split_seen, "actual large Cymmerian death produces natural descendants");
+    assert!(seen.iter().all(|&(slot, generation)|
+        sim(&game).source_arena().resolve(SourceEntityHandle { source_slot: slot, generation }).is_none()));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..4], [2; 4]);
+    assert_eq!(groups.counts, [1; 4]);
+    let (trigger, position) = groups.exit.expect("actual exit414");
+    let portal = groups.portal.expect("actual portal415");
+    let exit = sim(&game).level_exit_sequence();
+    if !exit.active && !exit.complete { sim_mut(&mut game).set_level2_entity_position(player, position).unwrap(); }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        visit(&mut game, &mut groups);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    let exit = sim(&game).level_exit_sequence();
+    assert_eq!((exit.trigger_entity_index, exit.portal_entity_index), (trigger, portal));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
