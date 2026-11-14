@@ -15629,6 +15629,10 @@ impl Mc2Simulation {
                     && row.class == 15
                     && row.model == 3
                     && row.action == 10
+                    && live.economy.entities.get(usize::from(source_slot)).is_some_and(|current| {
+                        current.active && current.index == source_slot && current.class == row.class
+                            && current.model == row.model && current.action == row.action
+                    })
             })
         {
             // Reset-imported family-3 pickups retain the legacy shared row.
@@ -15650,6 +15654,13 @@ impl Mc2Simulation {
                     // dedicated routes below; their dropped pickup roles
                     // still need the shared 68FF0 life/scan/reclaim path.
                     && row.model < 26
+                    // UpdateEntities selects the current fixed arena row.
+                    // A cached holder can outlive its owning reclaim or be
+                    // replaced by NewEvent at the same numeric address.
+                    && live.economy.entities.get(usize::from(source_slot)).is_some_and(|current| {
+                        current.active && current.index == source_slot && current.class == row.class
+                            && current.model == row.model && current.action == row.action
+                    })
                     && ((row.model >= 3
                         && physical_spell_action(row.model, PhysicalSpellActionRole::Active)
                             == Some(row.action))
@@ -30902,6 +30913,66 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_spell_dispatch_uses_current_row_after_reclaim_and_new_event() {
+        let mut campaign = CampaignSession::open(
+            level_one_descriptor_fixture_path(), CampaignSelection::LEVEL1,
+        ).expect("real source package");
+        let base = campaign.simulation_mut();
+        base.apply_carried_spell_families(&[7], Some(7)).unwrap();
+        let player = base.state.entity_index;
+        let slot = base.shared_spells().local_player().enabled_spell_holders[7];
+        for action in [21, 22] {
+            let mut session = base.clone();
+            let live = &mut session.session.state.live;
+            // Declared route controls cover the active and dropped roles of
+            // one real carried holder; both remain current while hidden.
+            let source = &mut live.economy.entities[usize::from(slot)];
+            source.set_source_action(action);
+            source.set_control_flags(source.control_flags | 0x400);
+            live.shared_spells.sync_pickup_from_authority(source);
+            let old = live.economy.handle(slot).unwrap();
+            assert!(matches!(session.resolve_level2_source_plan(slot, player),
+                Some(Level2ResolvedSourcePlan::Callback(visit))
+                    if visit.route == SourceRoute::ImportedSpellSource));
+
+            let live = &mut session.session.state.live;
+            live.economy.finish_source_group();
+            crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, slot);
+            assert!(live.economy.resolve(old).is_none());
+            assert!(live.shared_spells.pickup(slot).unwrap().active,
+                "the stale convenience projection is deliberately retained");
+            assert!(session.resolve_level2_source_plan(slot, player).is_none(),
+                "a reclaimed source must not dispatch its cached spell callback");
+
+            let live = &mut session.session.state.live;
+            let replacement = crate::native_world::alliance_spell::construct_impact(
+                &mut live.economy, &mut live.terrain,
+            ).expect("ordinary NewEvent reuses the reclaimed address");
+            assert_eq!(replacement, slot);
+            assert_ne!(live.economy.handle(slot), Some(old));
+            assert!(matches!(session.resolve_level2_source_plan(slot, player),
+                Some(Level2ResolvedSourcePlan::Callback(visit))
+                    if visit.route == SourceRoute::Imported
+                        && visit.handler == ExistingHandler::Fields
+                        && visit.key.selector == BehaviorSelector::ClassAction {
+                            class: 10, action: 81,
+                        }));
+        }
+        let mut speed = crate::native_world::tests::level_two_campaign_session();
+        let player = speed.state.entity_index;
+        let row = &speed.entities()[75];
+        assert_eq!((row.class, row.model, row.action), (15, 3, 10));
+        assert!(matches!(speed.resolve_level2_source_plan(75, player),
+            Some(Level2ResolvedSourcePlan::Callback(visit)) if visit.route == SourceRoute::SpeedPickup));
+        let live = &mut speed.session.state.live;
+        live.economy.finish_source_group();
+        crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, 75);
+        assert!(live.shared_spells.pickup(75).unwrap().active);
+        assert!(speed.resolve_level2_source_plan(75, player).is_none(),
+            "the legacy Speed route must also reject its reclaimed source");
+    }
 
     #[test]
     fn dynamic_castle_holder_preserves_phase_when_returning_to_ordinary_pickup() {
