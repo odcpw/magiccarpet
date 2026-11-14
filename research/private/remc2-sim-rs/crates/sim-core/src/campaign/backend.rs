@@ -5998,6 +5998,160 @@ pub(crate) mod tests {
         );
     }
 
+    // The installed catalog and arriving parent frontier are declared inputs.
+    // The mission completer must earn its last mana increment and use its real
+    // exit; this helper cannot manufacture a completion or a portal entry.
+    pub(crate) fn assert_actual_secret_completed_return(
+        source: u16,
+        complete: fn(&mut GameSession<Mc2CampaignBackend>) -> u8,
+    ) {
+        use crate::game_runtime::{
+            CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime,
+            RuntimeMode, RuntimeTransitionError, SecretTransitionKind,
+        };
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES")
+            .map(PathBuf::from).unwrap_or_else(|| generated.join(
+                "campaign-original-environments/installed-campaign-resources.json"));
+        // This ignored owner-local input is extracted from the normal
+        // launcher's actual resource table, not a second campaign definition.
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+            &std::fs::read(resources).expect("normal installed campaign resources"),
+        ).unwrap();
+        assert_eq!(resources.len(), 30);
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+        )).unwrap();
+        let destination = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::secret_destination(source).unwrap(),
+        ).unwrap();
+        let secret_level = destination.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let entry = resolver.flow().secret_entry(&secret_level).unwrap();
+        let origin = entry.origin_level_id().clone();
+        let origin_index = resolver.flow().entries().iter()
+            .position(|entry| entry.level_id() == &origin).unwrap();
+        let completed_levels = resolver.flow().entries().iter().take(origin_index)
+            .map(|entry| entry.level_id().clone()).collect::<Vec<_>>();
+        let parent = CampaignSaveState {
+            definition: resolver.package(resolver.flow().entry_level_id()).unwrap()
+                .definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None,
+            selected_level_id: Some(origin.clone()),
+            completed_levels,
+            level_statistics: Vec::new(),
+        };
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8200 + u64::from(source)).unwrap();
+        let map = runtime.restore_campaign_resolved(
+            runtime.identity().guard(), parent.clone(), Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "retained parent must be installed".to_owned(),
+                    })
+            },
+        ).unwrap();
+        let loading = resolver.campaign_menu_command(
+            &mut runtime, map.guard(), CampaignMenuCommand::StartMission,
+        ).unwrap();
+        let playing = resolver.open_pending(
+            &mut runtime, loading.guard(), 8200 + u64::from(source),
+        ).unwrap();
+        // Explicit arriving inventory fixture; no objective, HP, timer or
+        // result is supplied. The exact resulting carry crosses the real seam.
+        runtime.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[1], Some(1)).unwrap();
+        let inherited = runtime.session().unwrap().backend().transition_spell_carry().unwrap();
+        let entered = runtime.enter_secret_resolved(
+            playing.guard(), runtime.session().unwrap().identity().guard(), |parent_session| {
+                let generation = parent_session.identity().generation.checked_add(1)
+                    .and_then(std::num::NonZeroU64::new)
+                    .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+                let mut secret = GameSession::open_with_generation(
+                    &Mc2CampaignAdapter, Arc::clone(&destination.definition),
+                    parent_session.identity().session_id, generation, destination.inputs.clone(),
+                ).map_err(|error| RuntimeTransitionError::InvalidNextDefinition {
+                    message: error.to_string(),
+                })?;
+                secret.backend_mut().apply_semantic_spell_carry(&inherited)?;
+                secret.backend_mut().install_initial_source_context(
+                    parent_session.backend().campaign.source_global_context(),
+                )?;
+                secret.backend_mut().install_initial_mission_rewards(
+                    parent_session.backend().campaign.simulation().mission_rewards(),
+                )?;
+                secret.backend_mut().install_initial_exit_route(
+                    OrdinaryExitRoute::SecretReturnFromParentContinuation,
+                )?;
+                Ok((secret_level.clone(), secret))
+            },
+        ).unwrap();
+        assert!(entered.verify());
+        assert_eq!(entered.kind, SecretTransitionKind::Entry);
+        assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
+        assert!(resolver.advance_secret_if_ready(
+            &mut runtime, entered.after.guard(), entered.after.session.as_ref().unwrap().guard(),
+        ).unwrap().is_none(), "source return bit alone must not complete the mission");
+
+        assert_eq!(complete(runtime.session_mut().unwrap()), 0x1a);
+        let session = runtime.session().unwrap();
+        let GameCompletionStatus::Completed { completion } = session.backend().completion_status()
+            else { panic!("the real secret exit must publish completion") };
+        let statistics = completion.statistics.unwrap();
+        let carry = session.backend().transition_spell_carry().unwrap();
+        let session_guard = session.identity().guard();
+        let outer_guard = runtime.identity().guard();
+        let returned = resolver.advance_secret_if_ready(
+            &mut runtime, outer_guard, session_guard,
+        ).unwrap().expect("actual secret1A must reach its retained-parent consumer");
+        assert!(returned.verify());
+        assert_eq!(returned.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(returned.origin_level_id, origin);
+        assert_eq!(returned.after.mode, RuntimeMode::Campaign);
+        assert!(runtime.session().is_none());
+        let mut expected_parent = parent;
+        expected_parent.completed_levels.push(origin.clone());
+        assert_eq!(runtime.campaign_save_state().unwrap(), expected_parent);
+        assert_eq!(runtime.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_level));
+        let results = runtime.secret_flow_state().completed_secret_statistics();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].level_id, secret_level);
+        assert_eq!(results[0].statistics, statistics);
+        assert!(runtime.secret_flow_state().return_frame().is_none());
+        assert!(!runtime.campaign_return_active());
+
+        // A cold map-save restore must retain the real mission's resulting
+        // progression and pending parent carry, not the entry fixture's carry.
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(9200 + u64::from(source)).unwrap();
+        let guard = cold.identity().guard();
+        let restored = resolver.load_replay(&mut cold, guard, 9200 + u64::from(source), &bytes).unwrap();
+        assert_eq!(resolver.save_replay(&cold).unwrap(), bytes);
+        assert_eq!(cold.secret_flow_state().completed_secret_statistics(), results);
+        let loading = resolver.campaign_menu_command(
+            &mut cold, restored.guard(), CampaignMenuCommand::StartMission,
+        ).unwrap();
+        resolver.open_pending(&mut cold, loading.guard(), 9200 + u64::from(source)).unwrap();
+        assert_eq!(cold.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &origin);
+        assert_eq!(cold.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation()
+            .level_exit_sequence().ordinary_exit_route, OrdinaryExitRoute::CampaignMap);
+    }
+
+    #[test]
+    fn actual_ymbul_completion_returns_to_its_parent_with_carry() {
+        assert_actual_secret_completed_return(31, crate::native_world::tests::complete_ymbul_source31_for_test);
+    }
+
+    #[test]
+    fn actual_pav_completion_returns_to_its_parent_with_carry() {
+        assert_actual_secret_completed_return(32, crate::native_world::tests::complete_pav_source32_for_test);
+    }
+
     #[test]
     fn abandoned_secret_return_preserves_parent_and_entry_carry() {
         use crate::game_runtime::{

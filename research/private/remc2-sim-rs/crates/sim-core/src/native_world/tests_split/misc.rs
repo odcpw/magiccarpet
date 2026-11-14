@@ -1,3 +1,247 @@
+/// Find a declared firing pose using the current source Cave planes; neither
+/// the selected sphere nor the projectile is moved or staged by this check.
+pub(crate) fn paid_sphere_firing_pose_for_test(
+    game: &crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+    sphere: crate::level1_mission::ManaSphere,
+) -> Option<(Position, i16, i16)> {
+    use crate::FlightWorld;
+    let state = game.backend().compatibility_campaign().simulation();
+    let target = state.possession_guidance_target_top_for_test(sphere.source_entity_index)?;
+    let fov = state.shared_spells().player_entity().array_fov();
+    let terrain = state.canonical_terrain();
+    for dx in [2048_i16, -2048] {
+        let mut hand = Position { x: target.x.wrapping_add_signed(dx), y: target.y,
+            z: target.z.checked_add(512)? };
+        let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
+        let hand_yaw = yaw.wrapping_sub(state.shared_spells().beyond_sight_auxiliary().next_entity).wrapping_sub(512);
+        let mut origin = Position { z: hand.z.checked_sub(fov)?, ..hand };
+        crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+        origin.z = origin.z.max(terrain.ground_height(origin).wrapping_add(state.profile().ground_clearance))
+            .max(terrain.ground_height(hand).wrapping_add(crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT).wrapping_sub(fov));
+        hand.z = origin.z.wrapping_add(fov);
+        if terrain.cave_collision_blocked(origin) { continue; }
+        if let Some(ceiling) = terrain.ceiling_height(origin)
+            && origin.z > ceiling.wrapping_sub(state.profile().ceiling_clearance) { continue; }
+        if let Some(ceiling) = terrain.ceiling_height(hand)
+            && hand.z > ceiling.wrapping_sub(crate::level1_mission::POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT) { continue; }
+        let delta_x = i32::from(target.x.wrapping_sub(hand.x) as i16);
+        let delta_y = i32::from(target.y.wrapping_sub(hand.y) as i16);
+        let delta_z = i32::from(target.z) - i32::from(hand.z);
+        let clear = (0..=8).all(|part| {
+            let position = Position {
+                x: hand.x.wrapping_add_signed((delta_x * part / 8) as i16),
+                y: hand.y.wrapping_add_signed((delta_y * part / 8) as i16),
+                z: (i32::from(hand.z) + delta_z * part / 8) as i16,
+            };
+            !terrain.cave_collision_blocked(position)
+                && terrain.ground_height(position) <= position.z
+                && terrain.ceiling_height(position).is_none_or(|ceiling|
+                    position.z <= ceiling.wrapping_sub(crate::level1_mission::POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT))
+        });
+        if !clear { continue; }
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(hand, target);
+        return Some((origin, yaw, pitch));
+    }
+    None
+}
+
+/// Drive one real paid Possession claim through the same sphere generation's
+/// collector and Castle credit, starting from a disclosed below-goal bank.
+pub(crate) fn deliver_paid_sphere_for_test(
+    game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+    castle: u16,
+    sphere: crate::level1_mission::ManaSphere,
+    spawn: Position,
+    goal: i32,
+    mut on_step: impl FnMut(&crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>),
+) {
+    use crate::campaign::backend::Mc2CampaignBackend;
+    use crate::game_session::{GameCommand, GameSession};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+    use crate::FlightWorld;
+
+    type Game = GameSession<Mc2CampaignBackend>;
+    fn sim(game: &Game) -> &Mc2Simulation { game.backend().compatibility_campaign().simulation() }
+    fn sim_mut(game: &mut Game) -> &mut Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game, command: GameCommand) {
+        game.advance(game.identity().guard(), command).unwrap();
+        assert!(sim(game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "paid sphere source dispatch: {:?}", sim(game).dispatch_events());
+    }
+    fn percent(game: &Game, player: u16) -> i32 {
+        let economy = sim(game).economy();
+        let total = economy.owner_mana_global();
+        assert!(total > 0);
+        economy.castle_for_owner(player).map_or(0, |castle|
+            100 * economy.owner_mana_aggregate(player).saturating_add(castle.mana) / total)
+    }
+    assert!((1..100).contains(&goal));
+    let player = sim(game).state.entity_index;
+    let owner = usize::from(sim(game).state.player_color_index);
+    let sphere_handle = sim(game).source_arena().handle(sphere.source_entity_index)
+        .expect("the selected source sphere has a live generation");
+    let total = i64::from(sim(game).economy().owner_mana_global());
+    let aggregate = i64::from(sim(game).economy().owner_mana_aggregate(player));
+    let threshold_numerator = total.checked_mul(i64::from(goal)).and_then(|n| aggregate.checked_mul(100).and_then(|a| n.checked_sub(a)))
+        .expect("actual source census fits the percentage calculation").max(0);
+    let divisor = i64::from(100 - goal);
+    let threshold = (threshold_numerator + divisor - 1) / divisor;
+    let bank = i32::try_from(threshold - i64::from(sphere.mana)).expect("actual sphere supports a prior bank");
+    assert!(bank >= 0 && sphere.mana > 0);
+    let capacity = i32::try_from(aggregate + i64::from(bank) + i64::from(sphere.mana)).unwrap();
+    assert!(capacity <= i32::MAX / 100);
+    assert!(sim_mut(game).economy_mut().set_castle_mana_prerequisite_for_test(castle, capacity));
+    assert!(sim_mut(game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
+    let castle_handle = sim(game).source_arena().handle(castle).unwrap();
+    step(game, GameCommand::default());
+    assert_eq!(i64::from(sim(game).economy().owner_mana_global()), total + i64::from(bank));
+    assert!(percent(game, player) < goal);
+    assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1);
+
+    let current_sphere = sim(game).economy().spheres().iter().find(|row| row.id == sphere.id && row.active).copied();
+    assert_eq!(sim(game).source_arena().handle(sphere.source_entity_index), Some(sphere_handle),
+        "the same source sphere generation must survive the scheduled bank step: initial={sphere:?}, current={current_sphere:?}");
+    let current_sphere = current_sphere.expect("the same source sphere still has its typed carrier");
+    assert!(current_sphere.active && !current_sphere.pending_delete && current_sphere.player_entity_index == 0
+        && current_sphere.owner_entity_index == 0 && current_sphere.mana == sphere.mana,
+        "the same sphere must remain active, neutral and retain its payload: initial={sphere:?}, current={current_sphere:?}");
+    let sphere = current_sphere;
+    let (origin, yaw, pitch) = paid_sphere_firing_pose_for_test(game, sphere)
+        .unwrap_or_else(|| {
+            let state = sim(game);
+            let target = state.possession_guidance_target_top_for_test(sphere.source_entity_index);
+            let terrain = state.canonical_terrain();
+            let geometry = [-2048_i16, 0, 2048].map(|dx| {
+                let position = Position { x: sphere.position.x.wrapping_add_signed(dx), ..sphere.position };
+                (position, terrain.ground_height(position), terrain.ceiling_height(position),
+                    terrain.cave_collision_blocked(position))
+            });
+            panic!("the current source sphere admits no Cave-safe paid firing pose: sphere={sphere:?}, target={target:?}, geometry={geometry:?}")
+        });
+    let state = sim_mut(game);
+    state.set_level2_entity_position(player, origin).unwrap();
+    state.state.actual_speed = 0;
+    state.state.target_speed = 0;
+    state.set_level2_player_aim_for_test(yaw, pitch);
+    let holder = sim(game).shared_spells().local_player().enabled_spell_holders[1];
+    let holder_handle = sim(game).source_arena().handle(holder).unwrap();
+    let cost = sim(game).shared_spells().pickup(holder).unwrap().max_mana;
+    let player_handle = sim(game).source_arena().handle(player).unwrap();
+    assert!(cost > 0 && sim(game).shared_spells().player_entity().mana >= cost);
+    let mut event_cursor = sim(game).economy().events().len();
+    let mut paid_launch = false;
+    let mut paid_debit = false;
+    let mut claimed = false;
+    let mut collected = None;
+    let mut credited = false;
+    let mut retreated = false;
+    let mut census_changes = std::collections::VecDeque::new();
+    let mut mana_events = std::collections::VecDeque::new();
+    let mut shot_samples = Vec::new();
+    let castle_position = sim(game).economy().castle_at(castle).unwrap().position;
+    let bound = 32 + 2 * (crate::distance_3d_wrapped(sphere.position, castle_position) as usize).div_ceil(48) + 256;
+    for turn in 0..bound {
+        if claimed && !retreated {
+            assert!(sim(game).canonical_player_life_for_test() >= 0);
+            let mut position = spawn;
+            let terrain = sim(game).canonical_terrain();
+            let minimum = terrain.ground_height(position).wrapping_add(sim(game).profile().ground_clearance);
+            position.z = position.z.max(minimum);
+            if let Some(ceiling) = terrain.ceiling_height(position) {
+                position.z = position.z.min(ceiling.wrapping_sub(sim(game).profile().ceiling_clearance));
+            }
+            sim_mut(game).set_level2_entity_position(player, position).unwrap();
+            retreated = true;
+        }
+        let before = (sim(game).economy().owner_mana_global(), sim(game).economy().owner_mana_aggregate(player),
+            sim(game).economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(game, player));
+        step(game, GameCommand { cast_selected: turn == 0, ..GameCommand::default() });
+        let state = sim(game);
+        if turn < 16 {
+            shot_samples.push((turn, state.economy().possession_projectiles().iter()
+                .filter(|row| row.source_id_entity_index == player).copied().collect::<Vec<_>>(),
+                state.economy().spheres().iter().find(|row| row.id == sphere.id && row.active).copied()));
+        }
+        let after = (state.economy().owner_mana_global(), state.economy().owner_mana_aggregate(player),
+            state.economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(game, player));
+        if before != after {
+            if census_changes.len() == 32 { census_changes.pop_front(); }
+            census_changes.push_back((turn, before, after));
+        }
+        paid_debit |= state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+            } if slot == player => original.observed_player_resources().zip(selector.observed_player_resources())
+                .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                    && before.2 <= -cost && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1.saturating_sub(after.1) >= cost),
+            _ => false,
+        });
+        if turn == 0 {
+            let launched = state.economy().possession_projectiles().iter().any(|row|
+                row.source_id_entity_index == player && row.holder_entity_index == holder_handle.source_slot
+                    && state.source_arena().handle(row.source_entity_index).is_some());
+            let charged = state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+                } if slot == holder => original.observed_player_resources().zip(selector.observed_player_resources())
+                    .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                        && before.1 >= cost && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) }),
+                _ => false,
+            });
+            paid_launch = launched && charged;
+            assert!(paid_launch, "public Possession launches and queues its real holder cost");
+        }
+        assert_eq!(state.source_arena().handle(castle), Some(castle_handle));
+        for event in &state.economy().events()[event_cursor..] {
+            if matches!(event, Level2EconomyEvent::ManaSphereSpawned { .. }
+                | Level2EconomyEvent::ManaSphereClaimed { .. }
+                | Level2EconomyEvent::ManaSpheresMerged { .. }
+                | Level2EconomyEvent::ManaSphereCollected { .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. })
+                || matches!(event, Level2EconomyEvent::CastleDefenderArrived { mana, .. } if *mana != 0)
+            {
+                if mana_events.len() == 32 { mana_events.pop_front(); }
+                mana_events.push_back((turn, format!("{event:?}"), before, after));
+            }
+            match *event {
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                    if sphere_id == sphere.id && owner_entity_index == player => {
+                        assert_eq!(state.source_arena().handle(sphere.source_entity_index), Some(sphere_handle),
+                            "the accepted claim targets the same selected source sphere generation");
+                        claimed = true;
+                    }
+                Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana }
+                    if sphere_id == sphere.id => {
+                        assert!(claimed && mana == sphere.mana);
+                        collected = Some((state.source_arena().handle(defender_slot).unwrap(), mana));
+                    }
+                Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                    if castle_id == castle && collected.is_some_and(|(handle, payload)| handle.source_slot == defender_slot && payload == mana) => {
+                        assert_eq!(state.source_arena().handle(defender_slot), Some(collected.unwrap().0));
+                        assert!(percent(game, player) >= goal,
+                            "actual collector credit must earn the percentage crossing: turn={turn}, before={before:?}, after={after:?}, seeded=(total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, sphere={sphere:?}), collector={collected:?}, objective={:?}, census_changes={census_changes:?}, mana_events={mana_events:?}",
+                            state.runtime().objectives[owner]);
+                        credited = true;
+                    }
+                _ => {}
+            }
+        }
+        event_cursor = state.economy().events().len();
+        on_step(game);
+        if !credited {
+            assert!(percent(game, player) < goal, "the prior bank must remain below the objective until the actual credit");
+            assert_eq!(state.runtime().objectives[owner].stage_selectors[0], 1);
+        }
+        if credited { break; }
+    }
+    assert!(paid_launch && paid_debit && claimed && retreated && collected.is_some() && credited,
+        "actual paid claim and collector credit must cross the configured source percentage: paid={paid_launch}/{paid_debit}, claim={claimed}, collected={collected:?}, credit={credited}, bank={bank}, total={total}, sphere={sphere:?}, origin={origin:?}, aim=({yaw},{pitch}), shots={shot_samples:?}, objective={:?}", sim(game).runtime().objectives[owner]);
+}
+
+
 /// Complete the actual source30 goal with an earned final mana increment.
 /// The caller supplies the arriving secret session/carry; this helper never
 /// chooses or alters its parent-return route.
@@ -173,146 +417,20 @@ pub(crate) fn complete_karakir_earned_mana_and_exit(
     assert_eq!(sim(game).source_arena().handle(sphere_handle.source_slot), Some(sphere_handle));
     assert!(sim(game).economy().spheres().iter().any(|row| row.id == sphere.id && row.active
         && !row.pending_delete && row.player_entity_index == 0 && row.mana == sphere.mana));
-    let total = i64::from(sim(game).economy().owner_mana_global());
-    let aggregate = i64::from(sim(game).economy().owner_mana_aggregate(player));
-    let threshold_numerator = total.checked_mul(85).and_then(|n| aggregate.checked_mul(100).and_then(|a| n.checked_sub(a)))
-        .expect("actual source census fits the 85-percent calculation").max(0);
-    let threshold = (threshold_numerator + 14) / 15;
-    let bank = i32::try_from(threshold - i64::from(sphere.mana)).expect("actual sphere supports a prior bank");
-    assert!(bank >= 0 && sphere.mana > 0);
-    let capacity = i32::try_from(aggregate + i64::from(bank) + i64::from(sphere.mana)).unwrap();
-    assert!(capacity <= i32::MAX / 100);
-    assert!(sim_mut(game).economy_mut().set_castle_mana_prerequisite_for_test(castle, capacity));
-    assert!(sim_mut(game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
-    let castle_handle = sim(game).source_arena().handle(castle).unwrap();
-    step(game, GameCommand::default());
-    assert_eq!(i64::from(sim(game).economy().owner_mana_global()), total + i64::from(bank));
-    assert!(percent(game, player) < 85);
-    assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 1);
-
-    let target = sim(game).possession_guidance_target_top_for_test(sphere.source_entity_index).unwrap();
-    let state = sim_mut(game);
-    let fov = state.shared_spells().player_entity().array_fov();
-    let mut hand = Position { x: target.x.wrapping_add(2048), y: target.y, z: target.z.checked_add(512).unwrap() };
-    let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
-    let hand_yaw = yaw.wrapping_sub(state.shared_spells().beyond_sight_auxiliary().next_entity).wrapping_sub(512);
-    let mut origin = Position { z: hand.z.checked_sub(fov).unwrap(), ..hand };
-    crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
-    origin.z = origin.z.max(state.canonical_terrain().ground_height(origin).wrapping_add(state.profile().ground_clearance))
-        .max(state.canonical_terrain().ground_height(hand).wrapping_add(crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT).wrapping_sub(fov));
-    hand.z = origin.z.wrapping_add(fov);
-    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(hand, target);
-    state.set_level2_entity_position(player, origin).unwrap();
-    state.state.actual_speed = 0;
-    state.state.target_speed = 0;
-    state.set_level2_player_aim_for_test(yaw, pitch);
-    let holder = sim(game).shared_spells().local_player().enabled_spell_holders[1];
-    let holder_handle = sim(game).source_arena().handle(holder).unwrap();
-    let cost = sim(game).shared_spells().pickup(holder).unwrap().max_mana;
-    let player_handle = sim(game).source_arena().handle(player).unwrap();
-    assert!(cost > 0 && sim(game).shared_spells().player_entity().mana >= cost);
-    let mut event_cursor = sim(game).economy().events().len();
-    let mut paid_launch = false;
-    let mut paid_debit = false;
-    let mut claimed = false;
-    let mut collected = None;
-    let mut credited = false;
     let mut group1 = false;
-    let mut retreated = false;
-    let mut census_changes = std::collections::VecDeque::new();
-    let mut mana_events = std::collections::VecDeque::new();
-    let castle_position = sim(game).economy().castle_at(castle).unwrap().position;
-    let bound = 32 + 2 * (crate::distance_3d_wrapped(sphere.position, castle_position) as usize).div_ceil(48) + 256;
-    for turn in 0..bound {
-        if claimed && !retreated {
-            assert!(sim(game).canonical_player_life_for_test() >= 0);
-            let mut position = spawn;
-            let terrain = sim(game).canonical_terrain();
-            let minimum = terrain.ground_height(position).wrapping_add(sim(game).profile().ground_clearance);
-            position.z = position.z.max(minimum);
-            if let Some(ceiling) = terrain.ceiling_height(position) {
-                position.z = position.z.min(ceiling.wrapping_sub(sim(game).profile().ceiling_clearance));
-            }
-            sim_mut(game).set_level2_entity_position(player, position).unwrap();
-            retreated = true;
-        }
-        let before = (sim(game).economy().owner_mana_global(), sim(game).economy().owner_mana_aggregate(player),
-            sim(game).economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(game, player));
-        step(game, GameCommand { cast_selected: turn == 0, ..GameCommand::default() });
-        let state = sim(game);
-        let after = (state.economy().owner_mana_global(), state.economy().owner_mana_aggregate(player),
-            state.economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(game, player));
-        if before != after {
-            if census_changes.len() == 32 { census_changes.pop_front(); }
-            census_changes.push_back((turn, before, after));
-        }
-        paid_debit |= state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
-            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
-                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
-            } if slot == player => original.observed_player_resources().zip(selector.observed_player_resources())
-                .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
-                    && before.2 <= -cost && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
-                    && before.1.saturating_sub(after.1) >= cost),
-            _ => false,
-        });
-        if turn == 0 {
-            let launched = state.economy().possession_projectiles().iter().any(|row|
-                row.source_id_entity_index == player && row.holder_entity_index == holder_handle.source_slot
-                    && state.source_arena().handle(row.source_entity_index).is_some());
-            let charged = state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
-                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
-                    slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
-                } if slot == holder => original.observed_player_resources().zip(selector.observed_player_resources())
-                    .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
-                        && before.1 >= cost && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) }),
-                _ => false,
-            });
-            paid_launch = launched && charged;
-            assert!(paid_launch, "public Possession launches and queues its real holder cost");
-        }
-        assert_eq!(state.source_arena().handle(castle), Some(castle_handle));
-        for event in &state.economy().events()[event_cursor..] {
-            if matches!(event, Level2EconomyEvent::ManaSphereSpawned { .. }
-                | Level2EconomyEvent::ManaSphereClaimed { .. }
-                | Level2EconomyEvent::ManaSpheresMerged { .. }
-                | Level2EconomyEvent::ManaSphereCollected { .. }
-                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. })
-                || matches!(event, Level2EconomyEvent::CastleDefenderArrived { mana, .. } if *mana != 0)
-            {
-                if mana_events.len() == 32 { mana_events.pop_front(); }
-                mana_events.push_back((turn, format!("{event:?}"), before, after));
-            }
-            match *event {
-                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
-                    if sphere_id == sphere.id && owner_entity_index == player => claimed = true,
-                Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana }
-                    if sphere_id == sphere.id => {
-                        assert!(claimed && mana == sphere.mana);
-                        collected = Some((state.source_arena().handle(defender_slot).unwrap(), mana));
-                    }
-                Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
-                    if castle_id == castle && collected.is_some_and(|(handle, payload)| handle.source_slot == defender_slot && payload == mana) => {
-                        assert_eq!(state.source_arena().handle(defender_slot), Some(collected.unwrap().0));
-                        assert!(percent(game, player) >= 85,
-                            "actual collector credit must earn the 85-percent crossing: turn={turn}, before={before:?}, after={after:?}, seeded=(total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}, sphere={sphere:?}), collector={collected:?}, objective={:?}, census_changes={census_changes:?}, mana_events={mana_events:?}",
-                            state.runtime().objectives[owner]);
-                        credited = true;
-                    }
-                _ => {}
-            }
-        }
-        event_cursor = state.economy().events().len();
-        group1 |= state.dispatch_events().iter().any(|event| matches!(event,
+    deliver_paid_sphere_for_test(game, castle, sphere, spawn, 85, |game| {
+        group1 |= sim(game).dispatch_events().iter().any(|event| matches!(event,
             Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 31, group: 1, authored_indices, .. }
                 if authored_indices.contains(&64) && authored_indices.contains(&65)));
-        if !credited {
-            assert!(percent(game, player) < 85, "the prior bank must remain below the objective until the actual credit");
-            assert_eq!(state.runtime().objectives[owner].stage_selectors[0], 1);
-        }
-        if credited && group1 { break; }
+    });
+    for _ in 0..128 {
+        if group1 { break; }
+        step(game, GameCommand::default());
+        group1 |= sim(game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 31, group: 1, authored_indices, .. }
+                if authored_indices.contains(&64) && authored_indices.contains(&65)));
     }
-    assert!(paid_launch && paid_debit && claimed && retreated && collected.is_some() && credited && group1,
-        "actual paid claim and collector credit must open Karakir: paid={paid_launch}/{paid_debit}, claim={claimed}, collected={collected:?}, credit={credited}, group1={group1}, bank={bank}, total={total}, sphere={sphere:?}, objective={:?}", sim(game).runtime().objectives[owner]);
+    assert!(group1, "the actual source completion gate must publish Karakir group1");
     assert_eq!(sim(game).runtime().objectives[owner].stage_selectors[0], 2);
     assert_eq!(sim(game).runtime().objectives[owner].is_level_end, 1);
     for _ in 0..8 {
