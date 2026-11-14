@@ -1,4 +1,188 @@
 #[test]
+fn hodor_real_hydra_and_castle_objectives_produce_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use crate::native_world::player_lifecycle_tests::{
+        RivalTestGame, rival_test_sim as sim, rival_test_sim_mut as sim_mut,
+        rival_test_step as step,
+    };
+
+    #[derive(Default)]
+    struct Groups {
+        first: usize,
+        end: usize,
+        new_hydras: Vec<SourceEntityHandle>,
+        trigger: Option<(SourceEntityHandle, Position)>,
+        portal: Option<SourceEntityHandle>,
+    }
+    fn visit(game: &mut RivalTestGame, groups: &mut Groups) {
+        step(game);
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            let Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. } = event else { continue };
+            if *group == 6 && authored_indices.contains(&86) {
+                assert_eq!(*source_slot, 57);
+                assert_eq!(authored_indices.len(), 62);
+                assert!(authored_indices.contains(&87) && authored_indices.contains(&92));
+                groups.first += 1;
+                for authored in [86, 87] {
+                    let root = state.creature_runtime_census().roots_of_kind(CreatureKind::Creature27)
+                        .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: authored }))
+                        .unwrap_or_else(|| panic!("actual group6 Hydra{authored}"));
+                    groups.new_hydras.push(root.handle);
+                }
+            }
+            if *group == 10 && authored_indices.contains(&393) {
+                assert_eq!(*source_slot, 252);
+                assert_eq!(authored_indices.len(), 20);
+                assert!(authored_indices.contains(&392));
+                groups.end += 1;
+                let trigger = state.economy().authored_switch_producers().iter()
+                    .find(|row| row.authored_index == 393 && (row.model, row.action) == (12, 12))
+                    .expect("actual Hodor exit393");
+                let portal = state.economy().authored_class14().iter()
+                    .find(|row| row.authored_index == 392 && row.model == 3)
+                    .expect("actual Hodor portal392");
+                groups.trigger = Some((state.source_arena().handle(trigger.source_entity_index).unwrap(), trigger.position));
+                groups.portal = Some(state.source_arena().handle(portal.source_entity_index).unwrap());
+            }
+        }
+    }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL22_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("volcano-quake-20261104-integration/current-owner-package/level22"));
+    let cache = std::env::var_os("MC_LEVEL22_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level22"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let objectives = definition.level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 2);
+    assert!(matches!(objectives[0].condition(), ObjectiveCondition::TargetDeath(_)));
+    assert_eq!(objectives[1].condition(), ObjectiveCondition::CastleManaPercent(85));
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2222,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    assert_eq!(sim(&game).runtime().stages[0].relation, RuntimeRelation::LiveEntity(2));
+    let feature = sim(&game).mission().authored_features().iter().find(|row| row.index == 69).unwrap();
+    assert_eq!((feature.kind, feature.subtype, feature.activation_group), (5, 27, 0));
+    let root = sim(&game).source_arena().handle(2).unwrap();
+    let mut parts = vec![root];
+    let mut heads = Vec::new();
+    for row in sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && row.model == 27
+        && matches!(row.action, 233 | 234)) {
+        let handle = sim(&game).source_arena().handle(row.index).unwrap();
+        if sim(&game).source_arena().model27_part_root(handle) == Some(root) {
+            parts.push(handle);
+            if row.action == 233 { heads.push(handle); }
+        }
+    }
+    assert_eq!((parts.len(), heads.len()), (51, 5), "actual original Hydra source generations");
+    // One fixed player-only retreat keeps the contact control out of the
+    // Hydra encounter. Neither its parts, health, AI nor timers are staged.
+    let mut retreat = Position { x: 0x8000, y: 0x2000, z: 0 };
+    retreat.z = sim(&game).canonical_terrain().ground_height(retreat).wrapping_add(4096);
+    sim_mut(&mut game).set_level2_entity_position(player, retreat).unwrap();
+    let mut groups = Groups::default();
+    visit(&mut game, &mut groups);
+    assert!(sim(&game).entities()[usize::from(root.source_slot)].life >= 0);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1],
+        "the actual living target blocks objective0");
+    assert_eq!((groups.first, groups.end), (0, 0));
+
+    // Source head damage caps every mailbox at76. Use the same real
+    // synchronized finishing window as the delivered Hydra lifecycle check.
+    let mut ready = false;
+    for _ in 0..2048 {
+        let rows = heads.iter().map(|handle| sim(&game).entities()[usize::from(handle.source_slot)].clone()).collect::<Vec<_>>();
+        if rows.iter().all(|row| row.active && row.record_bytes()[74] <= 5
+            && (0..=76).contains(&row.life) && row.source_upkeep_word_62() == 0) { ready = true; break; }
+        for (&handle, row) in heads.iter().zip(rows) {
+            if row.active && row.record_bytes()[74] <= 5 && row.life > 76 && row.source_upkeep_word_62() == 0 {
+                area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, handle.source_slot, 76, player).unwrap();
+            }
+        }
+        visit(&mut game, &mut groups);
+        assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    }
+    assert!(ready, "real Hydra heads reach an admissible finishing window");
+    for head in &heads {
+        area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, head.source_slot, 76, player).unwrap();
+    }
+    for _ in 0..128 {
+        visit(&mut game, &mut groups);
+        if sim(&game).entities()[usize::from(root.source_slot)].record_bytes()[63] == 0 { break; }
+    }
+    assert_eq!(sim(&game).entities()[usize::from(root.source_slot)].record_bytes()[63], 0);
+    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, root.source_slot, 76, player).unwrap();
+    for _ in 0..1024 {
+        visit(&mut game, &mut groups);
+        if groups.first == 1 && parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert_eq!(groups.first, 1, "actual objective0 gate57 publishes group6 once");
+    assert_eq!(groups.new_hydras.len(), 2);
+    assert!(groups.new_hydras.iter().all(|handle|
+        sim(&game).creature_identity_for_source_slot(handle.source_slot)
+            .is_some_and(|row| row.handle == *handle && row.living)),
+        "group6's unrelated new Hydra roots remain live");
+    assert!(parts.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "original Hydra root and all 50 part generations reclaim naturally");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 1]);
+    assert_eq!(groups.end, 0, "85% gate remains incomplete without a Castle");
+
+    // Declared prior Castle and bank: the ordinary source census must still
+    // evaluate the 85% predicate after the actual group6 births.
+    let castle = {
+        let state = sim_mut(&mut game);
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .map(|mut position| { position.z = state.canonical_terrain().ground_height(position); position })
+            .find(|position| !state.economy().castle_projectile_site_blocked(*position, state.entities(), state.canonical_terrain()))
+            .expect("declared prior Castle has a source-admitted site");
+        state.economy_mut().build_castle(site, player).unwrap()
+    };
+    visit(&mut game, &mut groups);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1,
+        "empty Castle bank does not satisfy 85%");
+    let economy = sim(&game).economy();
+    let total = i64::from(economy.owner_mana_global());
+    let aggregate = i64::from(economy.owner_mana_aggregate(player));
+    assert!(total > 0);
+    let bank = ((85 * total - 100 * aggregate).max(0) + 14) / 15 + 1_000;
+    assert!(bank <= i64::from(i32::MAX / 100), "source arithmetic stays in range");
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank as i32));
+    for _ in 0..256 {
+        visit(&mut game, &mut groups);
+        if groups.end == 1 { break; }
+    }
+    let economy = sim(&game).economy();
+    let current_bank = economy.castle_at(castle).expect("declared Castle remains live").mana;
+    assert!(100_i64 * i64::from(economy.owner_mana_aggregate(player) + current_bank)
+        >= 85_i64 * i64::from(economy.owner_mana_global()), "actual source census reaches 85%");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert_eq!(groups.end, 1, "actual level-end switch252 publishes group10 once");
+    let (trigger, position) = groups.trigger.expect("actual exit393");
+    let portal = groups.portal.expect("actual portal392");
+    let exit = sim(&game).level_exit_sequence();
+    if !exit.active && !exit.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        visit(&mut game, &mut groups);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    let exit = sim(&game).level_exit_sequence();
+    assert_eq!((exit.trigger_entity_index, exit.portal_entity_index), (trigger.source_slot, portal.source_slot));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn baraghan_six_real_rival_banishments_produce_ordinary_exit() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::campaign::source_arena::SourceEntityHandle;

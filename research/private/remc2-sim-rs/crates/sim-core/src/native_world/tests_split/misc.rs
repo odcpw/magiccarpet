@@ -1,3 +1,158 @@
+#[test]
+fn cresidan_two_source_absence_objectives_produce_waves_and_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    type Game = GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+    #[derive(Default)]
+    struct Receipts {
+        wave: Vec<SourceEntityHandle>,
+        group21: u32,
+        group24: u32,
+        exit: Option<(Position, SourceEntityHandle)>,
+    }
+    fn sim(game: &Game) -> &crate::native_world::Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut crate::native_world::Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game, receipt: &mut Receipts) {
+        game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Cresidan source dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 99, group: 21, authored_indices, .. } => {
+                    let expected = state.mission().authored_features().iter()
+                        .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == 21)
+                        .map(|row| row.index).collect::<Vec<_>>();
+                    assert_eq!(expected.len(), 29);
+                    assert_eq!(authored_indices.as_ref(), expected);
+                    receipt.group21 += 1;
+                    let roots = state.creature_runtime_census().roots_of_kind(CreatureKind::Creature26)
+                        .filter_map(|root| match root.origin {
+                            CreatureRootOrigin::AuthoredRecord { authored_record }
+                                if expected.contains(&authored_record) => Some((authored_record, root.handle)),
+                            _ => None,
+                        }).collect::<Vec<_>>();
+                    assert_eq!(roots.len(), 20, "all real group21 Spell Thieves must allocate");
+                    assert!(roots.iter().any(|(row, _)| *row == 867));
+                    receipt.wave.extend(roots.into_iter().map(|(_, handle)| handle));
+                }
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 100, group: 24, authored_indices, .. } => {
+                    assert_eq!(authored_indices.as_ref(), [493, 494, 746, 907, 908]);
+                    receipt.group24 += 1;
+                    let trigger = state.economy().authored_switch_producers().iter()
+                        .find(|row| row.active && row.authored_index == 493 && (row.model, row.action) == (12, 12))
+                        .expect("the real level-complete group publishes exit493");
+                    assert!(state.economy().authored_class14().iter().any(|row| row.active && row.authored_index == 494));
+                    receipt.exit = Some((trigger.position, state.source_arena().handle(trigger.source_entity_index).unwrap()));
+                }
+                _ => {}
+            }
+        }
+    }
+    fn hit(game: &mut Game, player: u16, handle: SourceEntityHandle) {
+        area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+    }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL21_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level21"));
+    let cache = std::env::var_os("MC_LEVEL21_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level21"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2221,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let goals = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 2);
+    assert!(matches!(goals[0].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature24)));
+    assert!(matches!(goals[1].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature26)));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!((sim(&game).runtime().stages[0].relation, sim(&game).runtime().stages[1].relation),
+        (RuntimeRelation::Scalar(24), RuntimeRelation::Scalar(26)));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    for (slot, selector, group) in [(99, 32, 21), (100, 4, 24)] {
+        let row = &sim(&game).entities()[slot];
+        assert_eq!((row.class, row.model, row.action, row.source_id), (11, selector, selector, group));
+    }
+    let initial24 = sim(&game).source_arena().rebuilt_class5_model_slots()[24].iter()
+        .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+    let initial26 = sim(&game).source_arena().rebuilt_class5_model_slots()[26].iter()
+        .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+    assert_eq!(initial24.len(), 24);
+    assert_eq!(initial26.len(), 18);
+    let survivor = *initial24.last().unwrap();
+    let mut seen24 = initial24;
+    let mut seen26 = initial26;
+    let mut struck24 = BTreeSet::new();
+    let mut receipt = Receipts::default();
+    // Selected arrived contacts leave one genuine living objective root.
+    // No actor, health, stage, timer or scheduler state is fabricated.
+    for leave_one in [true, false] {
+        for _ in 0..2048 {
+            let roots = sim(&game).source_arena().rebuilt_class5_model_slots()[24].iter()
+                .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+            if leave_one && roots == [survivor] { break; }
+            for handle in roots {
+                if !seen24.contains(&handle) { seen24.push(handle); }
+                if leave_one && handle == survivor { continue; }
+                if struck24.insert((handle.source_slot, handle.generation)) { hit(&mut game, player, handle); }
+            }
+            step(&mut game, &mut receipt);
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+                assert_eq!(receipt.group21, 0, "one live model24 blocks the real objective gate");
+            } else if receipt.group21 != 0 { break; }
+        }
+        if leave_one {
+            assert_eq!(sim(&game).source_arena().rebuilt_class5_model_slots()[24], [survivor.source_slot]);
+            assert_eq!(sim(&game).source_arena().handle(survivor.source_slot), Some(survivor));
+        }
+    }
+    assert_eq!(receipt.group21, 1, "the actual stage0 gate publishes group21");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 1]);
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[24].is_empty());
+    for handle in &receipt.wave { if !seen26.contains(handle) { seen26.push(*handle); } }
+    let mut struck26 = BTreeSet::new();
+    for _ in 0..2048 {
+        let roots = sim(&game).source_arena().rebuilt_class5_model_slots()[26].iter()
+            .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+        for handle in roots {
+            if !seen26.contains(&handle) { seen26.push(handle); }
+            if struck26.insert((handle.source_slot, handle.generation)) { hit(&mut game, player, handle); }
+        }
+        step(&mut game, &mut receipt);
+        if receipt.group24 != 0 && seen24.iter().chain(&seen26)
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+    }
+    assert_eq!(receipt.group24, 1);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[26].is_empty());
+    assert!(seen24.iter().chain(&seen26).all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "actual initial and produced creature generations reclaim naturally");
+    let (position, trigger) = receipt.exit.expect("real level-complete group24 exit");
+    let sequence = sim(&game).level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game, &mut receipt);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
 fn authored_status_reward_prerequisite(
     session: &mut Mc2Simulation,
     family: u8,
