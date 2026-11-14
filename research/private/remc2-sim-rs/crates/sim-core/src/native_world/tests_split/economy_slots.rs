@@ -3212,3 +3212,560 @@ fn level_two_direct_starting_spell_allocation_is_transactional_when_full() {
         vec![2, 3]
     );
 }
+
+#[test]
+fn ommosyth_source_groups_earned_mana_and_live_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_SECRET34_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-paj2-source-secret-34-campaign-package"));
+    let cache = std::env::var_os("MC_SECRET34_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/source34"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2234,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    // Declared arriving carry; the final mana increment is earned in this session.
+    game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+        .apply_carried_spell_families(&[1], Some(1)).unwrap();
+    assert_eq!(complete_ommosyth_source34_for_test(&mut game), 0x0a);
+}
+
+/// Complete source34 for an already-open secret session and return its actual
+/// ordinary or retained-parent result. Poses and the prior bank are controls.
+pub(crate) fn complete_ommosyth_source34_for_test(
+    mut game: &mut crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+) -> u8 {
+    use crate::campaign::backend::Mc2CampaignBackend;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
+    use crate::FlightWorld;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type Game = GameSession<Mc2CampaignBackend>;
+    #[derive(Default)]
+    struct Receipts {
+        groups: BTreeMap<u16, usize>,
+        sphere_births: BTreeSet<(u32, u32)>,
+        event_cursor: usize,
+        effects: Vec<SourceEntityHandle>,
+        effect_child: Option<(SourceEntityHandle, SourceEntityHandle)>,
+    }
+    fn sim(game: &Game) -> &Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game, command: GameCommand, receipts: &mut Receipts) {
+        game.advance(game.identity().guard(), command).expect("Ommosyth source advance");
+        let state = sim(game);
+        for event in state.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Ommosyth source dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. }
+                    if matches!(*group, 1 | 23 | 27) && !authored_indices.is_empty() => {
+                    let expected = state.mission().authored_features().iter()
+                        .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == *group as i16)
+                        .map(|row| row.index).collect::<Vec<_>>();
+                    assert_eq!(authored_indices.as_ref(), expected, "complete source group {group}");
+                    match *group {
+                        1 => assert_eq!((*source_slot, expected.len()), (72, 6)),
+                        23 => {
+                            assert_eq!((*source_slot, expected.len()), (96, 223));
+                            let census = state.creature_runtime_census();
+                            for kind in [CreatureKind::Creature28, CreatureKind::Dragon,
+                                CreatureKind::Cymmerian, CreatureKind::Creature18,
+                                CreatureKind::Creature21, CreatureKind::Bee, CreatureKind::Wyvern]
+                            {
+                                assert!(census.roots_of_kind(kind).any(|root| matches!(root.origin,
+                                    CreatureRootOrigin::AuthoredRecord { authored_record }
+                                        if expected.contains(&authored_record))),
+                                    "the real group23 must allocate a typed {kind:?} root");
+                            }
+                            receipts.effects.extend(state.economy().authored_model53().iter()
+                                .filter(|row| expected.contains(&row.authored_index))
+                                .filter_map(|row| state.source_arena().handle(row.source_entity_index)));
+                            assert!(!receipts.effects.is_empty(), "real group23 action58 effects allocate");
+                        }
+                        27 => {
+                            assert_eq!(*source_slot, 99);
+                            assert!(expected.contains(&587) && expected.contains(&588));
+                        }
+                        _ => unreachable!(),
+                    }
+                    *receipts.groups.entry(*group).or_default() += 1;
+                }
+                _ => {}
+            }
+        }
+        if receipts.effect_child.is_none() {
+            receipts.effect_child = state.economy().model17_spawned_children().iter()
+                .filter(|child| child.active && child.model == 0)
+                .find_map(|child| {
+                    let parent = receipts.effects.iter().copied().find(|handle|
+                        handle.source_slot == child.parent_entity_index
+                            && handle.source_slot == child.parent_entity_id
+                            && state.source_arena().handle(handle.source_slot) == Some(*handle))?;
+                    let handle = state.source_arena().handle(child.source_entity_index)?;
+                    Some((parent, handle))
+                });
+        }
+        for event in &state.economy().events()[receipts.event_cursor..] {
+            if let Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index: 72, mana } = *event
+                && mana > 0
+            {
+                let slot = u16::try_from(sphere_id).unwrap();
+                receipts.sphere_births.insert((sphere_id, state.economy().slot_generation(slot)));
+            }
+        }
+        receipts.event_cursor = state.economy().events().len();
+    }
+    fn count(receipts: &Receipts, group: u16) -> usize {
+        receipts.groups.get(&group).copied().unwrap_or(0)
+    }
+    fn percent(game: &Game, player: u16) -> i32 {
+        let economy = sim(game).economy();
+        let total = economy.owner_mana_global();
+        assert!(total > 0);
+        economy.castle_for_owner(player).map_or(0, |castle|
+            100 * economy.owner_mana_aggregate(player).saturating_add(castle.mana) / total)
+    }
+    let goals = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(goals.len(), 1);
+    assert!(matches!(goals[0].condition(), ObjectiveCondition::CastleManaPercent(25)));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    let spawn = sim(&game).state.position;
+    let source = &sim(&game).entities()[96];
+    assert_eq!((source.class, source.model, source.action, source.source_id), (11, 1, 1, 23));
+    let switch_position = source.position;
+    let gate = &sim(&game).entities()[99];
+    assert_eq!((gate.class, gate.model, gate.action, gate.source_id), (11, 32, 32, 27));
+    let gate_handle = sim(&game).source_arena().handle(99).unwrap();
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    assert_ne!(sim(&game).shared_spells().local_player().enabled_spell_holders[1], 0);
+    assert_eq!(sim(&game).shared_spells().local_player().enabled_spell_holders[14], 0,
+        "the declared incoming carry leaves the actual Duel pickup available");
+    let mut receipts = Receipts::default();
+    // Source action1 is an inverse area switch. While still inside, a real
+    // cadence must leave the entire group unpublished.
+    for _ in 0..8 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        assert_eq!(count(&receipts, 23), 0, "inside the start area blocks its exit switch");
+    }
+    let mut outside = switch_position;
+    outside.x = outside.x.wrapping_add(0x6000);
+    outside.z = sim(&game).canonical_terrain().ground_height(outside)
+        .wrapping_add(sim(&game).profile().ground_clearance);
+    sim_mut(&mut game).set_level2_entity_position(player, outside).unwrap();
+    for _ in 0..16 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        if count(&receipts, 23) > 0 { break; }
+    }
+    assert_eq!(count(&receipts, 23), 1, "actual source switch publishes group23");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    // The three nested absence switches are optional paths, not win gates.
+    // Observe their real callback with a current living family member.
+    let mut blocked = [false; 3];
+    for _ in 0..32 {
+        let slots = sim(&game).source_arena().rebuilt_class5_model_slots();
+        let before = [572_u16, 575, 582].map(|authored| *sim(&game).economy()
+            .authored_switch_producers().iter().find(|row| row.active && row.authored_index == authored)
+            .expect("actual group23 absence switch"));
+        let present = [21_usize, 0, 2].map(|model| !slots[model].is_empty());
+        step(&mut game, GameCommand::default(), &mut receipts);
+        let state = sim(&game);
+        for index in 0..3 {
+            let callback = state.cf10_production_schedule_receipts().into_iter().any(|receipt| matches!(receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if slot == before[index].source_entity_index));
+            let after = state.economy().authored_switch_producers().iter()
+                .find(|row| row.source_entity_index == before[index].source_entity_index);
+            if present[index] && callback {
+                assert!(after.is_some_and(|row| row.active && !row.fired
+                    && row.dword_0x10 == before[index].dword_0x10));
+                blocked[index] = true;
+            }
+        }
+        if blocked == [true; 3] { break; }
+    }
+    assert_eq!(blocked, [true; 3], "live source families block each optional absence countdown");
+    // Model53 action58 retains its root after its life expires; its emitted
+    // model0 children finish and reclaim. Observe one real parent/child chain,
+    // then require actual capacity for the death sphere and burst. Build58
+    // separately observed the source null-allocation death under full pressure.
+    for _ in 0..32 {
+        let terminal = receipts.effect_child.is_some_and(|(parent, child)|
+            sim(&game).source_arena().handle(parent.source_slot) == Some(parent)
+                && sim(&game).economy().authored_model53().iter().any(|row|
+                    row.source_entity_index == parent.source_slot && row.active
+                        && row.drawing_enabled && row.life < 0)
+                && sim(&game).source_arena().resolve(child).is_none());
+        if terminal && sim(&game).economy().free_source_slots().len() >= 2 { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    let (effect, child) = receipts.effect_child.expect("actual action58 parent emits a model0 child");
+    assert_eq!(sim(&game).source_arena().handle(effect.source_slot), Some(effect));
+    assert!(sim(&game).economy().authored_model53().iter().any(|row|
+        row.source_entity_index == effect.source_slot && row.active && row.drawing_enabled && row.life < 0),
+        "the same source58 root reaches its retained terminal state");
+    assert!(sim(&game).source_arena().resolve(child).is_none(),
+        "the source-emitted model0 child naturally reclaims");
+    assert!(sim(&game).economy().free_source_slots().len() >= 2,
+        "actual mana and death-burst constructors have admission capacity");
+    // One declared arrived player contact reaches an actual group23 model18.
+    // Its source damage, mana transfer, death animation and reclaim remain
+    // scheduled normally; no creature life, action, timer or AI is staged.
+    let actor = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Creature18)
+        .find(|root| root.living && matches!(root.origin,
+            CreatureRootOrigin::AuthoredRecord { authored_record } if sim(&game).mission()
+                .authored_features().iter().any(|row| row.index == authored_record && row.activation_group == 23)))
+        .expect("a living real group23 Creature18").handle;
+    let life = sim(&game).entities()[usize::from(actor.source_slot)].life;
+    let initial_actor = sim(&game).entities()[usize::from(actor.source_slot)].clone();
+    let damage = u16::try_from(life.checked_add(1).unwrap()).unwrap();
+    let kills_before = sim(&game).economy().authored_bee_kill_census(player);
+    area_damage::contact(sim_mut(&mut game).source_arena_mut(), None, actor.source_slot, damage, player).unwrap();
+    let submitted = area_damage::source_bounty(sim(&game).source_arena(), None, actor.source_slot).unwrap();
+    let mut actor_trace = Vec::new();
+    let mut actor_births = BTreeSet::new();
+    let (mut prekill, mut released_mana, mut hidden, mut reclaimed) = (false, false, false, false);
+    for turn in 0..32 {
+        let was_hidden = hidden;
+        let before_free = sim(&game).economy().free_source_slots().len();
+        let event_start = sim(&game).economy().events().len();
+        step(&mut game, GameCommand::default(), &mut receipts);
+        let state = sim(&game);
+        if was_hidden {
+            assert!(state.source_arena().resolve(actor).is_none(),
+                "the hidden actor generation reclaims on the next source pass");
+        }
+        if state.source_arena().handle(actor.source_slot) == Some(actor) {
+            let row = &state.entities()[usize::from(actor.source_slot)];
+            prekill |= row.action == 148;
+            hidden |= row.drawing_disabled();
+        }
+        released_mana |= state.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index, mana, .. }, .. }
+                if *source_entity_index == actor.source_slot && *mana > 0));
+        for event in &state.economy().events()[event_start..] {
+            if let Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index, mana } = *event
+                && source_entity_index == actor.source_slot
+            {
+                assert_eq!(mana, initial_actor.mana, "the actual death transfers its source payload");
+                let slot = u16::try_from(sphere_id).unwrap();
+                actor_births.insert((sphere_id, state.economy().slot_generation(slot)));
+            }
+        }
+        reclaimed |= state.source_arena().resolve(actor).is_none();
+        let row = &state.entities()[usize::from(actor.source_slot)];
+        actor_trace.push((turn, state.source_arena().handle(actor.source_slot),
+            (row.active, row.class, row.model, row.action, row.phase, row.life, row.mana, row.control_flags),
+            area_damage::source_bounty(state.source_arena(), None, actor.source_slot).ok(),
+            before_free, state.economy().free_source_slots().len(),
+            state.economy().events()[event_start..].iter().filter(|event| matches!(event,
+                Level2EconomyEvent::ManaSphereSpawned { source_entity_index, .. }
+                    if *source_entity_index == actor.source_slot)).cloned().collect::<Vec<_>>(),
+            state.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::Economy { event: Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index, .. }, .. } if *source_entity_index == actor.source_slot))
+                .map(|event| format!("{event:?}")).collect::<Vec<_>>()));
+        if hidden && reclaimed && released_mana { break; }
+    }
+    assert!(prekill && released_mana && hidden && reclaimed,
+        "the real group23 actor must die, transfer mana, hide and reclaim: actor={actor:?}, initial={initial_actor:?}, contact={damage}, submitted={submitted:?}, prekill={prekill}, mana={released_mana}, hidden={hidden}, reclaimed={reclaimed}, trace={actor_trace:?}");
+    assert_eq!(actor_births.len(), 1, "the admitted source death creates its real sphere generation");
+    assert_eq!(sim(&game).economy().authored_bee_kill_census(player), kills_before + 1,
+        "the source death credits the actual player");
+    let pickup = *sim(&game).shared_spells().authored_pickup_slots().get(&755)
+        .expect("group23 constructs the actual Duel pickup");
+    let pickup_row = sim(&game).shared_spells().pickup(pickup).unwrap();
+    assert_eq!((pickup_row.class, pickup_row.model, pickup_row.action), (15, 14, 43));
+    let pickup_handle = sim(&game).source_arena().handle(pickup).unwrap();
+    assert!(sim(&game).campaign_entity_presentations(0).unwrap().iter().any(|dto| dto.entity_index == pickup),
+        "actual group23 pickup has a presentation binding");
+    let mut acquired = false;
+    for _ in 0..12 {
+        let position = sim(&game).shared_spells().pickup(pickup).unwrap().position;
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+        step(&mut game, GameCommand::default(), &mut receipts);
+        acquired |= sim(&game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::SpellAcquisition { source_slot, family: 14, result: Some(outcome), .. }
+                if *source_slot == pickup && outcome.parent_entity_index == player && outcome.holder_action == 42));
+        if acquired { break; }
+    }
+    assert!(acquired && sim(&game).source_arena().handle(pickup) == Some(pickup_handle));
+    assert_eq!(sim(&game).shared_spells().local_player().enabled_spell_holders[14], pickup);
+    assert!(sim(&game).canonical_player_life_for_test() >= 0);
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    step(&mut game, GameCommand {
+        select_spell: Some(crate::game_definition::SemanticId::parse("spell.possession").unwrap()),
+        ..GameCommand::default()
+    }, &mut receipts);
+    // Real reset area72 creates the group1 neutral spheres; no source objects
+    // or fields are moved, freed, or bypassed.
+    let trigger = &sim(&game).entities()[72];
+    assert_eq!((trigger.class, trigger.model, trigger.action, trigger.source_id), (11, 0, 0, 1));
+    let mut position = trigger.position;
+    position.z = sim(&game).canonical_terrain().ground_height(position)
+        .wrapping_add(sim(&game).profile().ground_clearance);
+    sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    for _ in 0..16 {
+        step(&mut game, GameCommand::default(), &mut receipts);
+        if count(&receipts, 1) > 0 { break; }
+    }
+    assert_eq!(count(&receipts, 1), 1);
+    assert_eq!(receipts.sphere_births.len(), 3, "three actual group1 spheres allocate");
+    sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+    // Let the real launched spheres settle under source physics. Their current
+    // generation must still descend from the witnessed group1 publication.
+    let mut selected = None;
+    for _ in 0..256 {
+        selected = sim(&game).economy().spheres().iter().find(|row|
+            receipts.sphere_births.contains(&(row.id, sim(&game).economy().slot_generation(row.source_entity_index)))
+                && row.active && !row.pending_delete && row.player_entity_index == 0
+                && row.control_flags & 8 != 0 && row.control_flags & 0x0020_0000 == 0
+                && row.vertical_velocity == 0 && row.mana > 0).copied();
+        if selected.is_some() { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    let sphere = selected.expect("a real group1 sphere settles without fixture movement");
+    let sphere_handle = sim(&game).source_arena().handle(sphere.source_entity_index).unwrap();
+    let castle = {
+        let state = sim_mut(&mut game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            state.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .map(|mut p| { p.z = state.canonical_terrain().ground_height(p); p })
+            .filter(|p| {
+                let dx = i32::from(p.x.wrapping_sub(sphere.position.x) as i16).abs();
+                let dy = i32::from(p.y.wrapping_sub(sphere.position.y) as i16).abs();
+                dx.max(dy) >= 4096 && !state.economy().castle_projectile_site_blocked(*p, state.entities(), state.canonical_terrain())
+            }).min_by_key(|p| crate::distance_3d_wrapped(*p, sphere.position))
+            .expect("source terrain admits the declared prior Castle outside the sphere");
+        state.economy_mut().build_castle(site, player).unwrap()
+    };
+    step(&mut game, GameCommand::default(), &mut receipts);
+    assert_eq!(sim(&game).source_arena().handle(sphere_handle.source_slot), Some(sphere_handle));
+    assert!(sim(&game).economy().spheres().iter().any(|row| row.id == sphere.id && row.active
+        && !row.pending_delete && row.player_entity_index == 0 && row.mana == sphere.mana));
+    // Source census includes the sphere already. 25(D+B) <= 100(A+B+S)
+    // gives B >= ceil((25D-100A)/75)-S. B is a declared prior bank.
+    let total = i64::from(sim(&game).economy().owner_mana_global());
+    let aggregate = i64::from(sim(&game).economy().owner_mana_aggregate(player));
+    let numerator = total.checked_mul(25).and_then(|n| aggregate.checked_mul(100).and_then(|a| n.checked_sub(a)))
+        .expect("source 25-percent census arithmetic").max(0);
+    let threshold = (numerator + 74) / 75;
+    let bank = i32::try_from(threshold - i64::from(sphere.mana)).expect("prior bank fits i32");
+    assert!(bank >= 0 && sphere.mana > 0);
+    let eligible = sim(&game).economy().spheres().iter().filter_map(|row| {
+        let handle = sim(&game).source_arena().handle(row.source_entity_index)?;
+        (row.active && !row.pending_delete && row.player_entity_index == 0 && row.mana > 0
+            && (receipts.sphere_births.contains(&(row.id, handle.generation))
+                || actor_births.contains(&(row.id, handle.generation))))
+            .then_some(((handle.source_slot, handle.generation), row.mana))
+    }).collect::<BTreeMap<_, _>>();
+    assert!(eligible.contains_key(&(sphere_handle.source_slot, sphere_handle.generation)));
+    let eligible_total = eligible.values().try_fold(0_i64, |sum, mana| sum.checked_add(i64::from(*mana))).unwrap();
+    let capacity = i32::try_from(aggregate + i64::from(bank) + eligible_total).unwrap();
+    assert!(capacity <= i32::MAX / 100);
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, capacity));
+    assert!(sim_mut(&mut game).economy_mut().set_castle_mana_prerequisite_for_test(castle, bank));
+    let castle_handle = sim(&game).source_arena().handle(castle).unwrap();
+    step(&mut game, GameCommand::default(), &mut receipts);
+    assert_eq!(i64::from(sim(&game).economy().owner_mana_global()), total + i64::from(bank),
+        "the next real census includes the declared bank");
+    assert!(percent(&game, player) < 25);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 1);
+    assert_eq!(count(&receipts, 27), 0, "the actual exit remains blocked below 25%");
+
+    let target = sim(&game).possession_guidance_target_top_for_test(sphere.source_entity_index).unwrap();
+    let state = sim_mut(&mut game);
+    let fov = state.shared_spells().player_entity().array_fov();
+    let mut hand = Position { x: target.x.wrapping_add(2048), y: target.y, z: target.z.checked_add(512).unwrap() };
+    let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
+    let hand_yaw = yaw.wrapping_sub(state.shared_spells().beyond_sight_auxiliary().next_entity).wrapping_sub(512);
+    let mut origin = Position { z: hand.z.checked_sub(fov).unwrap(), ..hand };
+    crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+    origin.z = origin.z.max(state.canonical_terrain().ground_height(origin).wrapping_add(state.profile().ground_clearance))
+        .max(state.canonical_terrain().ground_height(hand).wrapping_add(crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT).wrapping_sub(fov));
+    hand.z = origin.z.wrapping_add(fov);
+    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(hand, target);
+    let state = sim_mut(&mut game);
+    state.set_level2_entity_position(player, origin).unwrap();
+    state.state.actual_speed = 0;
+    state.state.target_speed = 0;
+    state.set_level2_player_aim_for_test(yaw, pitch);
+    let holder = sim(&game).shared_spells().local_player().enabled_spell_holders[1];
+    let holder_handle = sim(&game).source_arena().handle(holder).unwrap();
+    let player_handle = sim(&game).source_arena().handle(player).unwrap();
+    let cost = sim(&game).shared_spells().pickup(holder).unwrap().max_mana;
+    assert!(cost > 0 && sim(&game).shared_spells().player_entity().mana >= cost);
+    let mut cursor = sim(&game).economy().events().len();
+    let (mut paid, mut debited, mut claimed, mut retreated, mut credited) = (false, false, false, false, false);
+    let mut mana_changes = std::collections::VecDeque::new();
+    let mut mana_events = std::collections::VecDeque::new();
+    let mut projectile_handle = None;
+    let mut paid_effects = BTreeMap::new();
+    let mut impact_targets = BTreeSet::new();
+    let mut claimed_targets = BTreeSet::new();
+    let mut possession_events = std::collections::VecDeque::new();
+    let mut collected = BTreeMap::<(u16, u32), BTreeMap<(u16, u32), i32>>::new();
+    crate::native_world::level2_dynamic_economy::start_possession_trace();
+    let castle_position = sim(&game).economy().castle_at(castle).unwrap().position;
+    let bound = 32 + 2 * (crate::distance_3d_wrapped(sphere.position, castle_position) as usize).div_ceil(48) + 256;
+    for turn in 0..bound {
+        if claimed && !retreated {
+            assert!(sim(&game).canonical_player_life_for_test() >= 0);
+            sim_mut(&mut game).set_level2_entity_position(player, spawn).unwrap();
+            retreated = true;
+        }
+        let before = (sim(&game).economy().owner_mana_global(), sim(&game).economy().owner_mana_aggregate(player),
+            sim(&game).economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(&game, player));
+        let unprotected = sim(&game).economy().spheres().iter().filter_map(|row| {
+            let handle = sim(&game).source_arena().handle(row.source_entity_index)?;
+            (row.active && !row.pending_delete && row.control_flags & 0x0020_0000 == 0)
+                .then_some((handle.source_slot, handle.generation))
+        }).collect::<BTreeSet<_>>();
+        step(&mut game, GameCommand { cast_selected: turn == 0, ..GameCommand::default() }, &mut receipts);
+        let state = sim(&game);
+        let after = (state.economy().owner_mana_global(), state.economy().owner_mana_aggregate(player),
+            state.economy().castle_at(castle).map(|row| (row.mana, row.mana_capacity)), percent(&game, player));
+        if before != after {
+            if mana_changes.len() == 32 { mana_changes.pop_front(); }
+            mana_changes.push_back((turn, before, after));
+        }
+        debited |= state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+            } if slot == player => original.observed_player_resources().zip(selector.observed_player_resources())
+                .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                    && before.2 <= -cost && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1.saturating_sub(after.1) >= cost),
+            _ => false,
+        });
+        if turn == 0 {
+            projectile_handle = state.economy().possession_projectiles().iter().find_map(|row|
+                (row.source_id_entity_index == player && row.holder_entity_index == holder_handle.source_slot)
+                    .then(|| state.source_arena().handle(row.source_entity_index)).flatten());
+            let charged = state.cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+                crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+                } if slot == holder => original.observed_player_resources().zip(selector.observed_player_resources())
+                    .is_some_and(|(before, after)| before.0 == player_handle && after.0 == player_handle
+                        && before.1 >= cost && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) }),
+                _ => false,
+            });
+            paid = projectile_handle.is_some() && charged;
+            assert!(paid, "public Possession launches and queues its real cost");
+        }
+        let trace = crate::native_world::level2_dynamic_economy::take_possession_trace();
+        crate::native_world::level2_dynamic_economy::start_possession_trace();
+        for receipt in trace {
+            if possession_events.len() == 32 { possession_events.pop_front(); }
+            possession_events.push_back((turn, format!("{receipt:?}")));
+            use crate::native_world::level2_dynamic_economy::PossessionSourceReceipt;
+            match receipt {
+                PossessionSourceReceipt::ImpactBirth { effect, projectile, holder, owner, packet }
+                    if Some(projectile) == projectile_handle && holder == holder_handle && owner == player_handle => {
+                        assert!(matches!(packet.source_model, 12 | 70));
+                        paid_effects.insert((effect.source_slot, effect.generation), packet.source_model);
+                    }
+                PossessionSourceReceipt::MailboxWrite { effect, target, source_id, before_possessor, amount, possessor, .. }
+                    if source_id == player && possessor == player && before_possessor != player => {
+                        let key = (target.source_slot, target.generation);
+                        if let Some(model) = paid_effects.get(&(effect.source_slot, effect.generation))
+                            && amount == u32::from(*model == 70)
+                            && (amount != 0 || unprotected.contains(&key))
+                            && eligible.contains_key(&key)
+                        {
+                            impact_targets.insert(key);
+                        }
+                    }
+                _ => {}
+            }
+        }
+        assert_eq!(state.source_arena().handle(castle), Some(castle_handle));
+        for event in &state.economy().events()[cursor..] {
+            if matches!(event, Level2EconomyEvent::ManaSphereSpawned { .. }
+                | Level2EconomyEvent::ManaSphereClaimed { .. }
+                | Level2EconomyEvent::ManaSpheresMerged { .. }
+                | Level2EconomyEvent::ManaSphereCollected { .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. })
+                || matches!(event, Level2EconomyEvent::CastleDefenderArrived { mana, .. } if *mana != 0)
+            {
+                if mana_events.len() == 32 { mana_events.pop_front(); }
+                mana_events.push_back((turn, format!("{event:?}"), before, after));
+            }
+            match *event {
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                    if owner_entity_index == player => {
+                        let slot = u16::try_from(sphere_id).unwrap();
+                        let key = (slot, state.economy().slot_generation(slot));
+                        if impact_targets.contains(&key) {
+                            assert!(eligible.contains_key(&key));
+                            claimed_targets.insert(key);
+                            claimed = true;
+                        }
+                    }
+                Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana } => {
+                    let slot = u16::try_from(sphere_id).unwrap();
+                    let key = (slot, state.economy().slot_generation(slot));
+                    if claimed_targets.contains(&key) {
+                        assert_eq!(eligible.get(&key), Some(&mana));
+                        let defender = state.source_arena().handle(defender_slot).unwrap();
+                        collected.entry((defender.source_slot, defender.generation)).or_default().insert(key, mana);
+                    }
+                }
+                Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                    if castle_id == castle && mana > 0 => {
+                        let defender = state.source_arena().handle(defender_slot).unwrap();
+                        let Some(payloads) = collected.get(&(defender.source_slot, defender.generation)) else { continue };
+                        let payload = payloads.values().try_fold(0_i32, |sum, amount| sum.checked_add(*amount)).unwrap();
+                        assert_eq!(mana, payload, "the same current collector deposits exactly its traced source-sphere payload");
+                        assert_eq!(after.2.unwrap().0.checked_sub(before.2.unwrap().0), Some(mana));
+                        assert!(percent(&game, player) >= 25,
+                            "actual collector credit earns 25%: turn={turn}, total={total}, aggregate={aggregate}, bank={bank}, sphere={sphere:?}");
+                        credited = true;
+                    }
+                _ => {}
+            }
+        }
+        cursor = state.economy().events().len();
+        if !credited {
+            assert!(percent(&game, player) < 25,
+                "source mana crossed before traced credit: turn={turn}, initial=(total={total}, aggregate={aggregate}, bank={bank}, capacity={capacity}), aim={sphere:?}, aim_handle={sphere_handle:?}, current_handle={:?}, eligible={eligible:?}, effects={paid_effects:?}, impacts={impact_targets:?}, claims={claimed_targets:?}, collected={collected:?}, possession={possession_events:?}, changes={mana_changes:?}, events={mana_events:?}, objective={:?}",
+                state.source_arena().handle(sphere.source_entity_index), state.runtime().objectives[owner]);
+            assert_eq!(state.runtime().objectives[owner].stage_selectors[0], 1);
+        }
+        if credited && count(&receipts, 27) > 0 { break; }
+    }
+    let _ = crate::native_world::level2_dynamic_economy::take_possession_trace();
+    assert!(paid && debited && claimed && retreated && !collected.is_empty() && credited && count(&receipts, 27) == 1,
+        "paid={paid}/{debited}, claim={claimed}, impacts={impact_targets:?}, collected={collected:?}, credit={credited}, group27={}, bank={bank}, total={total}, sphere={sphere:?}", count(&receipts, 27));
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    for _ in 0..8 {
+        if sim(&game).source_arena().handle(99) != Some(gate_handle) { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert_ne!(sim(&game).source_arena().handle(99), Some(gate_handle));
+    let exit = *sim(&game).economy().authored_switch_producers().iter()
+        .find(|row| row.active && row.authored_index == 587 && row.model == 12 && row.action == 12)
+        .expect("actual group27 exit587");
+    assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.model == 3
+        && row.authored_index == 588), "actual group27 visible portal588");
+    assert!(sim(&game).canonical_player_life_for_test() >= 0, "a living player must enter the real exit");
+    sim_mut(&mut game).set_level2_entity_position(player, exit.position).unwrap();
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game, GameCommand::default(), &mut receipts);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    sim(&game).source_exit_result_byte()
+}
