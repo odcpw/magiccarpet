@@ -1,6 +1,161 @@
 use super::*;
 
 #[test]
+fn zyggogg_authored_creature_objectives_produce_the_real_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    type Game = GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+    fn sim(game: &Game) -> &crate::native_world::Mc2Simulation {
+        game.backend().compatibility_campaign().simulation()
+    }
+    fn sim_mut(game: &mut Game) -> &mut crate::native_world::Mc2Simulation {
+        game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+    }
+    fn step(game: &mut Game) {
+        game.advance(game.identity().guard(), GameCommand::default()).unwrap();
+        assert!(sim(game).dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Zyg Gogg source dispatch: {:?}", sim(game).dispatch_events());
+    }
+    fn contact(game: &mut Game, player: u16, handle: SourceEntityHandle) {
+        area_damage::contact(sim_mut(game).source_arena_mut(), None, handle.source_slot, u16::MAX, player).unwrap();
+    }
+
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL15_PACKAGE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level15"));
+    let cache = std::env::var_os("MC_LEVEL15_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level15"));
+    let definition = load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition), 2215,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache)).unwrap();
+    let objectives = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 2);
+    assert!(matches!(objectives[0].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Cymmerian)));
+    assert!(matches!(objectives[1].condition(), ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature24)));
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [1, 1]);
+    let initial = sim(&game).source_arena().rebuilt_class5_model_slots()[25].iter()
+        .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+    assert_eq!(initial.len(), 9, "the actual reset has nine model25 roots");
+    let expected_group10 = sim(&game).mission().authored_features().iter()
+        .filter(|row| row.index != 0 && row.kind != 0 && row.activation_group == 10)
+        .map(|row| row.index).collect::<Vec<_>>();
+    assert_eq!(expected_group10.len(), 125);
+    let mut seen25 = initial.clone();
+    let mut struck25 = BTreeSet::new();
+    let mut split = false;
+    let mut wave24 = Vec::<SourceEntityHandle>::new();
+    let mut group10 = 0;
+    // Selected arrived contacts act on the source roots and split descendants;
+    // ordinary landing protection, callbacks, frozen census and reclaim run.
+    for _ in 0..2048 {
+        split |= sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Cymmerian)
+            .any(|row| matches!(row.origin, CreatureRootOrigin::CreatureConversion { .. }));
+        let targets = sim(&game).entities().iter().filter(|row| row.active && row.class == 5 && row.model == 25)
+            .map(|row| (sim(&game).source_arena().handle(row.index).unwrap(),
+                row.life >= 0 && (row.action != 200 || row.record_bytes()[74] >= 3))).collect::<Vec<_>>();
+        for (handle, vulnerable) in targets {
+            if !seen25.contains(&handle) { seen25.push(handle); }
+            if vulnerable && struck25.insert((handle.source_slot, handle.generation)) { contact(&mut game, player, handle); }
+        }
+        step(&mut game);
+        for event in sim(&game).dispatch_events() {
+            if let Mc2DispatchEvent::AuthoredGroupActivated { group: 10, authored_indices, .. } = event {
+                assert_eq!(authored_indices.as_ref(), expected_group10);
+                group10 += 1;
+                let roots = sim(&game).creature_runtime_census().roots_of_kind(CreatureKind::Creature24)
+                    .filter_map(|root| match root.origin {
+                        CreatureRootOrigin::AuthoredRecord { authored_record }
+                            if expected_group10.contains(&authored_record) => Some((authored_record, root.handle)),
+                        _ => None,
+                    }).collect::<Vec<_>>();
+                assert_eq!(roots.len(), 54, "actual group10 must allocate every model24 root");
+                assert!(roots.iter().any(|(row, _)| *row == 630));
+                wave24.extend(roots.into_iter().map(|(_, handle)| handle));
+            }
+        }
+        if group10 != 0 { break; }
+    }
+    assert_eq!(group10, 1, "row261 must publish the actual stage0 wave");
+    assert!(split && seen25.len() > initial.len(), "the real model25 split generations participate");
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[0], 2);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1);
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[25].is_empty());
+    for _ in 0..128 {
+        if seen25.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) { break; }
+        step(&mut game);
+    }
+    assert!(seen25.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "source census and the later model25 reclaim must both run");
+
+    // Retain one ordinary living wave root while removing its peers to prove
+    // the active objective's actual negative census, then contact that root.
+    let survivor = *wave24.last().unwrap();
+    let mut struck24 = BTreeSet::new();
+    let mut group11 = 0;
+    let mut exit = None;
+    for leave_one in [true, false] {
+        for _ in 0..2048 {
+            let targets = sim(&game).source_arena().rebuilt_class5_model_slots()[24].iter()
+                .map(|slot| sim(&game).source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+            if leave_one && targets.len() == 1 && targets[0] == survivor { break; }
+            for handle in targets {
+                if leave_one && handle == survivor { continue; }
+                if struck24.insert((handle.source_slot, handle.generation)) { contact(&mut game, player, handle); }
+            }
+            step(&mut game);
+            for event in sim(&game).dispatch_events() {
+                if let Mc2DispatchEvent::AuthoredGroupActivated { group: 11, authored_indices, .. } = event {
+                    assert_eq!(authored_indices.as_ref(), [466, 467]);
+                    group11 += 1;
+                    let trigger = sim(&game).economy().authored_switch_producers().iter()
+                        .find(|row| row.active && row.authored_index == 466 && (row.model, row.action) == (12, 12))
+                        .expect("the source group publishes the real exit");
+                    assert!(sim(&game).economy().authored_class14().iter().any(|row| row.active && row.authored_index == 467));
+                    exit = Some((trigger.position, sim(&game).source_arena().handle(trigger.source_entity_index).unwrap()));
+                }
+            }
+            if leave_one {
+                assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[1], 1,
+                    "a living model24 root blocks source absence");
+                assert_eq!(group11, 0);
+            } else if group11 != 0 && wave24.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()) {
+                break;
+            }
+        }
+        if leave_one {
+            let live = sim(&game).source_arena().rebuilt_class5_model_slots();
+            assert_eq!(live[24], [survivor.source_slot]);
+            assert_eq!(sim(&game).source_arena().handle(survivor.source_slot), Some(survivor));
+        }
+    }
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[..2], [2, 2]);
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert!(sim(&game).source_arena().rebuilt_class5_model_slots()[24].is_empty());
+    assert!(wave24.iter().all(|handle| sim(&game).source_arena().resolve(*handle).is_none()));
+    assert_eq!(group11, 1);
+    let (position, trigger) = exit.expect("row465 publishes group11 and the exit");
+    let sequence = sim(&game).level_exit_sequence();
+    if !sequence.active && !sequence.complete {
+        assert!(sim(&game).source_arena().resolve(trigger).is_some());
+        sim_mut(&mut game).set_level2_entity_position(player, position).unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }) { break; }
+        step(&mut game);
+    }
+    assert!(matches!(game.completion_status(game.identity().guard()).unwrap().value, GameCompletionStatus::Completed { .. }));
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn alliance_follows_retained_parent_and_expires_when_dead() {
     let (package, mut arena, mut runtime, mut terrain, particles) = cave_owner_arena();
     let player = arena.entities.iter().find(|row| row.active && row.class == 3 && row.model == 0).unwrap().index;

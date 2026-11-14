@@ -2,6 +2,12 @@
 // This child module preserves native_world's prior effective visibility boundary.
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static OWNER_MANA_PUBLICATIONS: std::cell::RefCell<Option<Vec<(i32, Vec<Level2OwnerManaRow>)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ParticleParameter {
     pub(crate) fn animation_limit(&self) -> Option<u8> {
         campaign_shared_families::particle_animation_limit(self.render_mode)
@@ -5702,6 +5708,22 @@ impl Level2EconomyState {
         let (aggregate, global) = level2_owner_mana_projection(&self.owner_mana_rows);
         self.owner_mana_aggregate = aggregate;
         self.owner_mana_global = global;
+        #[cfg(test)]
+        OWNER_MANA_PUBLICATIONS.with(|trace| {
+            if let Some(receipts) = trace.borrow_mut().as_mut() {
+                receipts.push((global, self.owner_mana_rows.clone()));
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_owner_mana_projection_trace() {
+        OWNER_MANA_PUBLICATIONS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_owner_mana_projection_trace() -> Vec<(i32, Vec<Level2OwnerManaRow>)> {
+        OWNER_MANA_PUBLICATIONS.with(|trace| trace.borrow_mut().take().unwrap_or_default())
     }
 
     /// Run the source `sub_60F00` owner-row reset at the owning-pass
