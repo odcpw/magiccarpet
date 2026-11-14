@@ -805,6 +805,18 @@ Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original
 gameplay remains separate from the Modern/Voxel asset work above.
 
+All25 ordinary objective/exit paths and all five secret mission bodies now
+have controlled connected passes. Jathnar23's strict final82 passes717.33s:
+real Hydra/feature4/seven rival Castle-loss and banishment paths, remaining
+Wyvern/Cymmerian deaths/splits/reclaim, paid Possession/current sphere merges/
+collector/Castle credit necessary for65%, all seven goals and normal exit0A.
+All five original parent-entry/secret-body/return/carry paths also pass below.
+These use declared frontier, incoming inventory, prior bank, arrived contacts
+and poses; they do not prove earned campaign progression, normal movement,
+native all-mission visuals, human combat, FPS, hardware audio or old saves.
+Full `mc-xa7.1`, opening and secret/carry acceptance remain open. Jathnar's
+additions are cfg(test)-only; the installed runtime/native below is unchanged.
+
 Latest Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
 native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
 is installed. Learned spell ownership now survives physical-holder release
@@ -1004,7 +1016,7 @@ T'Klom→Karakir or Ul'Buthnen→Ymbul paths. Inspected revision/hashes and
 uninspected earned movement/native Level8/full-campaign scope remain explicit;
 that review is not a full-engine or human-play certification.
 
-Jathnar23 remains the ordinary objective check. Run56 proved early real stage4
+Jathnar23's earlier diagnostic sequence is retained here. Run56 proved early real stage4
 Hydra birth/lifecycle and all seven Castle losses, then failed4503.25s at final
 Possession carry application because the selected family had no valid local
 holder. Candidate64 puts the declared carry at the actual tick0 destination
@@ -1026,11 +1038,57 @@ write and retained packet/identity rather than invented zeroing. Frozen75
 passes all seven Castle-loss paths, including the exact raw-packet writes and
 live-holder reclaim, then fails531.16s because the declared local Castle597,
 generation1 is no longer current during paid collection. No pre-turn Castle
-state or destruction events were retained at that failure, so its cause is
-not yet established. The owner is tracing actual damage/stage/destruction/
-reclaim in a shorter source path and adding those receipts to the full gate
-before another long prefix. No mission pass, HP/AI/timer change, inferred
-Castle repair or repaired runtime is claimed from these negatives.
+state or destruction events were retained at that failure. Instrumented76
+then reproduces the loss: real Cymmerian500 projectile hits and Wyvern316's
+1600-payload hits (sometimes accumulated to3200) kill the local Castle at
+collection turn192, with stage1→0/destruction/reclaim at193. Root and owner
+checked the actual remc2500/1600 constructors, mailbox accumulation and Castle
+loss order; no production mismatch was shown. The short76 continuation failed
+before its Castle setup because that earlier reachable prefix had no settled
+neutral sphere. Its losing extension was removed; exact patch/log are retained.
+Max-clearance geometry77 still fails529.52s on a genuinely killed player during
+collection (turn2587, life−1310), with original holder618 still current. No
+geometry-only success or Castle repair is claimed. Actual threat defense78
+completes96 creature generations, including43 genuine split children, through
+admitted contacts, protected landing and natural death/reclaim. Its following
+Castle constructor returnsNone;79 shows zero ordinary free slots/no typed
+replacement candidate, then two ordinary free slots after one unforced source
+turn. Castle creation proceeds without fake allocator changes. The paid check79
+then fails566.83s on an obsolete original-sphere payload assumption. Frozen80
+follows the actual paid projectile/effect, current target/merge lineage and
+collector load instead; strict Rig release compilation passes378.8s and its
+full mission check passes712.09s through the normal exit0A. Bounded independent
+review finds that simultaneous unrelated mana could still cause that check's
+threshold crossing. Frozen81 tightens attribution: only the paid subtotal
+survives verified actual merges and collector generation, and removing it from
+the numerator at the actual objective sample must leave the percentage below65
+with the same frozen denominator. Independent source/gate review supports this
+correction. Actual81 fails634.04s at that strict necessity check: the real
+collector deposits30000 paid plus1993 unpaid merged mana, and the fixture bank
+was only one unit below the goal. The unrelated portion alone can finish it.
+Frozen82 keeps every strict81 assertion and uses the existing Pav prior-bank
+control: one-time threshold minus the initial witnessed sphere's payload,
+checked nonnegative before casting. Both bounded reviewers support this fixture
+correction. Strict Rig82 release compilation passes379.0s and the full exact
+mission passes717.33s with the strict paid-subtotal necessity assertion intact.
+Root checked frozen source560bb9ad/mc2 observer20246d67 against the run; the
+changed-hunk UBS scan has no critical finding. Its295 warnings/72 informational
+findings are test failure assertions, guarded indices, deliberate source
+arithmetic and bounded diagnostic allocations; legacy formatting/scanner debt
+remains. No late bank/goal or production-rule edit was made. Installed Original
+native copies still match29688f; no Unity/native rebuild is needed for these
+cfg(test)-only additions. No native Jathnar visual or human/earned campaign
+proof is claimed. See `jathnar-full-{75,76,77,78,79,80,81,82}-release.log`,
+`jathnar-{80,81,82}-result.json` and `mission-source-82.json`.
+
+The same observed House-successor defect class was independently checked across
+all25 normal launcher packages: all593 authored class10/model45 records have
+MCI rows for every retained BLDGPRM successor until0/repeat, with matching
+parameters; all25 BLDGPRM files share the same hash, including fresh8/20. Root
+reran the read-only parser against current source. Owner/presentation directories
+exist; no missing successor was found. This is static data/consumer availability,
+not admission, cyclic-chain semantics, atlas completeness or gameplay proof.
+Receipt: `normal-house-successor-closure-20261114.json`.
 
 Independent source diagnosis found a real shared carry consumer mismatch:
 CollectLevelStats preserves learned ownership from persistent0x3E9 OR nonzero

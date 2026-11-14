@@ -16,6 +16,33 @@ use super::{combat, multipart, stage};
 #[cfg(test)]
 thread_local! {
     static PART_ALLOCATIONS_BEFORE_FAILURE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static CONSTRUCTION_TRACE: std::cell::RefCell<Option<Vec<ConstructionReceipt>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ConstructionReceipt {
+    pub(super) authored_record: u16,
+    pub(super) map_allowed: bool,
+    pub(super) free_slots: usize,
+    pub(super) root: Option<SourceEntityHandle>,
+}
+
+#[cfg(test)]
+pub(super) fn start_construction_trace() {
+    CONSTRUCTION_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(super) fn take_construction_trace() -> Vec<ConstructionReceipt> {
+    CONSTRUCTION_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn record_construction(receipt: ConstructionReceipt) {
+    CONSTRUCTION_TRACE.with(|trace| {
+        if let Some(receipts) = trace.borrow_mut().as_mut() { receipts.push(receipt); }
+    });
 }
 
 #[cfg(test)]
@@ -200,9 +227,15 @@ pub(crate) fn allocate_authored(
     position: Position,
     authored_record: u16,
 ) -> Result<Option<Allocation>, String> {
+    #[cfg(test)]
+    let map_allowed = multipart::map_type_allows_model27(terrain);
+    #[cfg(test)]
+    let free_slots = arena.economy.free_slot_count();
     if !multipart::map_type_allows_model27(terrain)
         || arena.economy.free_slot_count() < PROPERTIES.roots_require_free_slots
     {
+        #[cfg(test)]
+        record_construction(ConstructionReceipt { authored_record, map_allowed, free_slots, root: None });
         return Ok(None);
     }
     for particle_index in [ROOT_PARTICLE, HEAD_PARTICLE, BODY_PARTICLE] {
@@ -216,6 +249,8 @@ pub(crate) fn allocate_authored(
     }
 
     let Some(root_slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        #[cfg(test)]
+        record_construction(ConstructionReceipt { authored_record, map_allowed, free_slots, root: None });
         return Ok(None);
     };
     let root_handle = SourceEntityHandle {
@@ -315,10 +350,16 @@ pub(crate) fn allocate_authored(
         Ok(Some(allocation))
     })();
     match result {
-        Ok(Some(allocation)) => Ok(Some(allocation)),
+        Ok(Some(allocation)) => {
+            #[cfg(test)]
+            record_construction(ConstructionReceipt { authored_record, map_allowed, free_slots, root: Some(allocation.root) });
+            Ok(Some(allocation))
+        }
         Ok(None) => {
             arena.clear_raw_creature_origin(root_handle.source_slot);
             multipart::hide_unregistered(arena, &allocated);
+            #[cfg(test)]
+            record_construction(ConstructionReceipt { authored_record, map_allowed, free_slots, root: None });
             Ok(None)
         }
         Err(error) => {
