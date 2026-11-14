@@ -40486,6 +40486,207 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn actual_gleph_house_secret_entry_and_beleem_parent_return() {
+        use crate::combat::area::{AreaDamage, Shape};
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState,
+            GameRuntime, RuntimeMode, RuntimeTransitionError, SecretTransitionKind};
+        use crate::native_world::{Mc2DispatchEvent, area_damage, player_lifecycle_tests::{
+            rival_test_sim as sim, rival_test_sim_mut as sim_mut, rival_test_step as step,
+        }};
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+            &std::fs::read(resources).expect("normal installed campaign resources"),
+        ).unwrap();
+        assert_eq!(resources.len(), 30);
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+        )).unwrap();
+        let source = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::ordinary(18).unwrap()).unwrap();
+        let secret = resolver.by_level.values().find(|package|
+            package.selection == CampaignSelection::secret_destination(33).unwrap()).unwrap();
+        let origin = source.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let secret_id = secret.definition.runtime_flow().unwrap().bound_level_id().clone();
+        let origin_index = resolver.flow().entries().iter().position(|row| row.level_id() == &origin).unwrap();
+        let completed_levels = resolver.flow().entries().iter().take(origin_index)
+            .map(|row| row.level_id().clone()).collect::<Vec<_>>();
+        let parent = CampaignSaveState {
+            definition: resolver.package(resolver.flow().entry_level_id()).unwrap().definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect, completed_level_id: None,
+            selected_level_id: Some(origin.clone()), completed_levels, level_statistics: Vec::new(),
+        };
+        // Declared arrival frontier and family1 inventory. The objective helper
+        // declares its prior Castle/bank and selected arrived contacts; source
+        // objectives, House stages, portal and return remain live.
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(2218).unwrap();
+        let map = runtime.restore_campaign_resolved(runtime.identity().guard(), parent.clone(), Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "Gleph parent must be installed".to_owned(),
+                    })
+            }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 2218).unwrap();
+        runtime.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[1], Some(1)).unwrap();
+        let game = runtime.session_mut().unwrap();
+        let features = sim(game).mission().authored_features();
+        assert_eq!((features[371].kind, features[371].subtype, features[371].activation_group, features[371].stage_tag),
+            (11, 4, 0, 20));
+        assert_eq!((features[372].kind, features[372].subtype, features[372].activation_group,
+            features[372].parameter_1, features[372].parameter_2), (10, 45, 20, 27, 21));
+        assert_eq!((features[420].kind, features[420].subtype, features[420].activation_group), (14, 4, 21));
+        assert_eq!((features[421].kind, features[421].subtype, features[421].activation_group), (11, 31, 21));
+        let group21 = features.iter().filter(|row| row.kind != 0 && row.activation_group == 21)
+            .map(|row| row.index).collect::<Vec<_>>();
+        assert_eq!(group21, [373, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421]);
+        crate::native_world::creatures::creature_16::tests::complete_gleph_objectives_for_test(game);
+        let player = sim(game).state.entity_index;
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+        let initial_house = *sim(game).ordinary().houses().iter().find(|row|
+            row.active && row.building_index == 27 && row.xtype == 21)
+            .expect("real group20 House372 begins at BUILD27 with xtype21");
+        let house_handle = sim(game).source_arena().handle(initial_house.entity_index).unwrap();
+        assert!(initial_house.life >= 0);
+        assert!(sim(game).economy().authored_class14().iter().all(|row| row.authored_index != 420),
+            "the living source House has not published the secret portal");
+        let mut struck = BTreeSet::new();
+        let mut stages = Vec::new();
+        let mut produced = false;
+        for _ in 0..512 {
+            if let Some(house) = sim(game).ordinary().houses().iter()
+                .find(|row| row.active && row.xtype == 21 && row.action == 52 && row.life >= 0).copied()
+            {
+                let handle = sim(game).source_arena().handle(house.entity_index).unwrap();
+                if struck.insert((handle.source_slot, handle.generation)) {
+                    stages.push(house.building_index);
+                }
+                // Each source House must consume the prior packet before the
+                // next selected contact; BUILD27 starts with 138,000 life.
+                if house.pending_attacker == 0 && house.pending_damage == 0 {
+                    let request = AreaDamage { position: house.position,
+                        shape: Shape { half_width: 1, half_depth: 1,
+                            vertical_offset: house.collision_vertical_offset, half_height: 1 },
+                        owner: player, payload: u16::MAX, selector: (10, 45), mode: 0 };
+                    let live = &mut sim_mut(game).session.state.live;
+                    let hits = area_damage::apply(&mut live.economy,
+                        Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                        Some((player, live.core.state.position)), request).unwrap();
+                    assert!(hits > 0, "source area admission must accept House372 generation {handle:?}");
+                    let admitted = sim(game).ordinary().houses().iter()
+                        .find(|row| row.active && row.entity_index == handle.source_slot)
+                        .expect("current House still owns its accepted mailbox");
+                    assert!(admitted.pending_damage > 0 && admitted.pending_attacker == player as i16,
+                        "actual House372 must receive the admitted player packet: {admitted:?}");
+                }
+            }
+            step(game);
+            if let Some((slot, actual)) = sim(game).dispatch_events().iter().find_map(|event| match event {
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 21, authored_indices, .. } =>
+                    Some((*source_slot, authored_indices)),
+                _ => None,
+            }) {
+                assert!(sim(game).ordinary().houses().iter().any(|row| row.entity_index == slot
+                    && row.building_index == 49 && row.xtype == 21),
+                    "the actual final House stage publishes group21");
+                assert_eq!(actual.as_ref(), group21.as_slice());
+                produced = true;
+                break;
+            }
+        }
+        assert_eq!(stages, [27, 41, 49], "actual House372 source stages receive selected contacts");
+        assert!(produced, "the real House final destruction must publish group21");
+        assert!(sim(game).source_arena().resolve(house_handle).is_none(), "original House generation reclaims");
+        let portal = *sim(game).economy().authored_class14().iter()
+            .find(|row| row.active && row.authored_index == 420 && row.model == 4).expect("real portal420");
+        let trigger = *sim(game).economy().authored_switch_producers().iter()
+            .find(|row| row.active && row.authored_index == 421 && row.model == 31).expect("real secret entry421");
+        let portal_handle = sim(game).source_arena().handle(portal.source_entity_index).unwrap();
+        let entry_handle = sim(game).source_arena().handle(trigger.source_entity_index).unwrap();
+        assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (10, 248));
+        assert_eq!((trigger.position.x >> 8, trigger.position.y >> 8), (139, 248));
+        assert_eq!(portal.control_flags & 1, 1);
+        assert!(!sim(game).secret_entry_ready());
+        assert!(sim(game).canonical_player_life_for_test() >= 0);
+        let arrival = {
+            let state = sim(game);
+            let terrain = state.canonical_terrain();
+            (-2_i16..=2).flat_map(|dy| (-2_i16..=2).map(move |dx| {
+                let mut position = crate::Position { x: trigger.position.x.wrapping_add_signed(dx * 128),
+                    y: trigger.position.y.wrapping_add_signed(dy * 128), z: 0 };
+                position.z = terrain.ground_height(position).wrapping_add(state.profile().ground_clearance);
+                position
+            })).find(|position| crate::resolve_legacy_movement(&mut crate::FlightState::default(),
+                *position, *position, state.profile(), terrain) == crate::MovementResolution::Accept(*position))
+                .expect("actual entry421 admits a cave-valid player position")
+        };
+        sim_mut(game).set_level2_entity_position(player, arrival).unwrap();
+        for _ in 0..700 {
+            if sim(game).secret_entry_ready() { break; }
+            step(game);
+        }
+        let entry = sim(game).level_exit_sequence();
+        assert!(entry.complete && sim(game).secret_entry_ready());
+        assert_eq!((entry.trigger_entity_index, entry.portal_entity_index, entry.result_code),
+            (entry_handle.source_slot, portal_handle.source_slot, 0x1a));
+        assert!(sim(game).source_arena().resolve(entry_handle).is_none());
+        assert_eq!(sim(game).source_arena().handle(portal_handle.source_slot), Some(portal_handle));
+        let inherited = game.backend().transition_spell_carry().unwrap();
+        let outer = runtime.identity().guard();
+        let session_guard = runtime.session().unwrap().identity().guard();
+        let entered = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard).unwrap()
+            .expect("actual source17 entry must open Beleem through the resolver");
+        assert!(entered.verify());
+        assert_eq!(entered.kind, SecretTransitionKind::Entry);
+        assert_eq!(runtime.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &secret_id);
+        assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
+        assert_eq!(runtime.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+        assert_eq!(crate::native_world::terrain_strip::tests::complete_beleem_earned_mana_and_exit(runtime.session_mut().unwrap()), 0x0a);
+        let won = runtime.session().unwrap();
+        let GameCompletionStatus::Completed { completion } = won.backend().completion_status()
+            else { panic!("Beleem's actual exit must publish completion") };
+        let statistics = completion.statistics.unwrap();
+        let carry = won.backend().transition_spell_carry().unwrap();
+        let session_guard = won.identity().guard();
+        let outer = runtime.identity().guard();
+        let returned = resolver.advance_secret_if_ready(&mut runtime, outer, session_guard)
+            .unwrap().expect("actual Beleem completion must return to the retained parent");
+        assert!(returned.verify());
+        assert_eq!(returned.kind, SecretTransitionKind::CompletedReturn);
+        assert_eq!(returned.origin_level_id, origin);
+        assert_eq!(returned.after.mode, RuntimeMode::Campaign);
+        assert!(runtime.session().is_none());
+        let mut expected_parent = parent;
+        expected_parent.completed_levels.push(origin.clone());
+        assert_eq!(runtime.campaign_save_state().unwrap(), expected_parent);
+        assert_eq!(runtime.secret_flow_state().completed_secret_levels(), std::slice::from_ref(&secret_id));
+        let results = runtime.secret_flow_state().completed_secret_statistics();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].level_id, secret_id);
+        assert_eq!(results[0].statistics, statistics);
+        assert!(!runtime.campaign_return_active(), "source17 has no first-return cutscene");
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(2219).unwrap();
+        let cold_guard = cold.identity().guard();
+        let restored = resolver.load_replay(&mut cold, cold_guard, 2219, &bytes).unwrap();
+        assert_eq!(resolver.save_replay(&cold).unwrap(), bytes);
+        let loading = resolver.campaign_menu_command(&mut cold, restored.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut cold, loading.guard(), 2219).unwrap();
+        assert_eq!(cold.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &origin);
+        assert_eq!(cold.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
+            OrdinaryExitRoute::CampaignMap);
+    }
+
+    #[test]
     fn configured_source_four_secret_portal_produces_real_entry_result() {
         use crate::campaign::{
             mc2_level_definition::Mc2LevelDefinition,
