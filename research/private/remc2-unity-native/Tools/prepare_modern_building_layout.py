@@ -19,9 +19,12 @@ ENTITIES = ROOT / 'research/private/generated/level1-export-m/entities.bin'
 TERRAIN = ROOT / 'research/private/generated/level1-export-m/terrain.bin'
 CLOSURE = ROOT / 'research/private/generated/level1-asset-closure.json'
 BUILD = ROOT / 'research/private/remc2-native-runtime/CD_Files/DATA/BUILD0-0.DAT'
+BUILD_TAB = BUILD.with_suffix('.TAB')
+OPENING_LAYOUT = ROOT / 'research/private/generated/level1-assets-20261110/buildings/level1-source-layout.json'
 EXPECTED_BUILD_SHA = '3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d'
 EXPECTED_PLANE_SHA = 'e62920eb0d61c4a78b9173210f1611797cc714b8edee425b927fd9b8bd06dfbf'
 ARCHITECTURAL_INVENTORY = {26: 9, 29: 11, 30: 8, 31: 3, 34: 1, 42: 4, 47: 2, 50: 3}
+BUILDER_SELECTORS = (19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74)
 
 
 def sha(data):
@@ -100,10 +103,117 @@ def collect_footprints(value, found):
             collect_footprints(child, found)
 
 
+def source_library(layout, tab, build):
+    """Source art profiles; this does not assert a live terrain replacement.
+
+    CreateIndexes doubles raw TAB dimensions in VGA mode 1, and
+    ApplyTerrainModification_37240 halves those indexed dimensions: the
+    source handler reads the whole raw record. Rust's current construction
+    decoder instead halves the raw dimensions; record both for integration.
+    """
+    if len(tab) % 6 or sha(build) != EXPECTED_BUILD_SHA:
+        raise ValueError('unexpected BUILD table or data')
+    opening = {p['build_index']: p for p in layout['profiles']}
+    if set(opening) != set(ARCHITECTURAL_INVENTORY):
+        raise ValueError('unexpected opening source profiles')
+    profiles, rows = list(opening.values()), []
+    for selector in BUILDER_SELECTORS:
+        offset, width, height = struct.unpack_from('<IBB', tab, selector * 6)
+        end = offset + width * height * 2
+        if not width or not height or end > len(build):
+            raise ValueError(f'BUILD {selector} escapes owner data')
+        cells = build[offset:end]
+        effective_width, effective_height = width >> 1, height >> 1
+        prefix = cells[:2 * effective_width * effective_height]
+        positions = [(i % width, i // width) for i, h in enumerate(cells[1::2]) if h not in (0, 255)]
+        materials = sorted(set(cells[::2]))
+        role = 'architectural' if any(16 <= v < 255 for v in materials) else 'terrain_stamp'
+        rows.append({'build_index': selector, 'role': role, 'raw_width': width, 'raw_height': height,
+                     'offset': offset, 'source_cells_sha256': sha(cells),
+                     'source_positive_heights': len(positions), 'materials': materials,
+                     'rust_prefix_width': effective_width, 'rust_prefix_height': effective_height,
+                     'rust_prefix_positive_heights': sum(v not in (0, 255) for v in prefix[1::2])})
+        if selector in opening:
+            continue
+        if not positions:
+            continue
+        minx, minz = min(x for x, _ in positions), min(z for _, z in positions)
+        maxx, maxz = max(x for x, _ in positions), max(z for _, z in positions)
+        # A one-cell zero skirt preserves sloping source facets against a flat
+        # reference ground. FF is retained as unknown in metadata, not a claim
+        # about the actual live terrain beneath the stamp.
+        minx, minz = max(0, minx - 1), max(0, minz - 1)
+        maxx, maxz = min(width - 1, maxx + 1), min(height - 1, maxz + 1)
+        samples = []
+        for z in range(minz, maxz + 2):
+            for x in range(minx, maxx + 2):
+                value = cells[2 * (z * width + x) + 1] if x < width and z < height else 0
+                samples.append(0 if value == 255 else value / 2)
+        profiles.append({'build_index': selector, 'diagonal_parity': (minx + minz) & 1,
+                         'terrain_only': role == 'terrain_stamp',
+                         'columns': maxx - minx + 2, 'rows': maxz - minz + 2,
+                         'heights': samples})
+    profiles.sort(key=lambda p: p['build_index'])
+    castle_profiles = []
+    for stage in range(1, 8):
+        _, raw_width, raw_height = struct.unpack_from('<IBB', tab, stage * 6)
+        if not raw_width or not raw_height:
+            raise ValueError(f'empty castle BUILD {stage}')
+        heights = [0] * (raw_width * raw_height)
+        for layer in range(1, stage + 1):
+            offset, width, height = struct.unpack_from('<IBB', tab, layer * 6)
+            source = build[offset:offset + 2 * width * height]
+            if len(source) != 2 * width * height:
+                raise ValueError(f'truncated castle BUILD {layer}')
+            # Castle action 44 iterates width rows of height cells, centred
+            # with axes exchanged, and retains earlier values on FF.
+            start_x, start_z = (raw_width >> 1) - (height >> 1), (raw_height >> 1) - (width >> 1)
+            for z in range(width):
+                for x in range(height):
+                    dx, dz = start_x + x, start_z + z
+                    if not (0 <= dx < raw_width and 0 <= dz < raw_height):
+                        raise ValueError(f'castle layer {layer} escapes stage {stage}')
+                    value = source[2 * (z * height + x) + 1]
+                    if value != 255:
+                        heights[dz * raw_width + dx] = value / 2
+        # Append the same flat reference-ground skirt used for house previews.
+        samples = [heights[z * raw_width + x] if x < raw_width and z < raw_height else 0
+                   for z in range(raw_height + 1) for x in range(raw_width + 1)]
+        castle_profiles.append({'build_index': stage, 'diagonal_parity': 0,
+                                'columns': raw_width + 1, 'rows': raw_height + 1, 'heights': samples})
+    return {'schema': 'mc-source-building-art-library/v1',
+            'provenance': {'build_sha256': sha(build), 'tab_sha256': sha(tab),
+                           'source_dimensions': 'raw TAB; VGA loader doubles and handler halves',
+                           'unknown_height': 'FF uses flat reference ground in art only',
+                           'scope': 'source art preview; not live stamp or collision'},
+            'profiles': profiles, 'sources': rows, 'castle_profiles': castle_profiles}
+
+
+def write_new_json(output, value):
+    output = output.resolve()
+    if output.exists():
+        if json.loads(output.read_text()) != value:
+            raise ValueError(f'existing descriptor differs; preserve and inspect {output}')
+        return 'verified existing descriptor'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open('x') as stream:
+        json.dump(value, stream, indent=2)
+        stream.write('\n')
+    return 'created descriptor'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True, help='Fresh owner-local descriptor path; existing different output is preserved')
+    parser.add_argument('--art-library', action='store_true', help='Extract source art library without the frozen replay')
+    parser.add_argument('--opening-layout', type=Path, default=OPENING_LAYOUT)
     args = parser.parse_args()
+    if args.art_library:
+        library = source_library(json.loads(args.opening_layout.read_text()), BUILD_TAB.read_bytes(), BUILD.read_bytes())
+        disposition = write_new_json(args.output, library)
+        print(json.dumps({'output': str(args.output.resolve()), 'disposition': disposition,
+                          'profiles': len(library['profiles']), 'sources': len(library['sources'])}))
+        return
     profile = json.loads((PROJECT / 'sandbox-inputs.json').read_text())
     plane, replay_sha, native_sha = read_frozen_height(profile)
     entities, terrain, build, closure = (p.read_bytes() for p in (ENTITIES, TERRAIN, BUILD, CLOSURE))
