@@ -37,6 +37,7 @@ namespace MagicCarpet.Native
         private string configuredSavePath;
         private string lastLaunchedMission, lastRuntimeId;
         private bool sourceLeftHeld;
+        private bool sourcePauseMenuDrawn;
         private bool sourceMapCursorOwned, previousCursorVisible;
         internal bool IsSourceDialogOpen => scrollDialog != null ||
             campaignCache?.PauseMenu?.IsSourceDialogOpen == true ||
@@ -145,6 +146,31 @@ namespace MagicCarpet.Native
         internal string GameplayLanguageText(int selector) => SourceText(selector);
         internal OwnerCampaignMenuCache.GameplayHelpBinding GameplayHelpForRow(int row) =>
             LocaleCache.GameplayHelpForRow(row);
+        internal int PauseHoverHelpRow => campaignCache?.PauseMenu?.HoverHelpRow ?? 0;
+        internal Vector2Int PauseHoverHelpAnchor => campaignCache?.PauseMenu?.HoverHelpAnchor ?? Vector2Int.zero;
+        internal void ClearPauseHoverHelp()
+        {
+            sourcePauseMenuDrawn = false;
+            campaignCache?.PauseMenu?.ClearHoverHelp();
+        }
+        internal void ResetPauseHoverHelp()
+        {
+            sourcePauseMenuDrawn = false;
+            campaignCache?.PauseMenu?.Reset();
+        }
+        internal void DrawPauseHoverHelp(GameRuntimeTransport.Identity identity,
+            Texture scene, ulong generation, ulong revision, Rect view, byte[] palette, bool sceneTopDown)
+        {
+            if (!sourcePauseMenuDrawn || identity?.mode != GameRuntimeTransport.PausedMode || preferences?.IsOpen == true)
+            {
+                ClearPauseHoverHelp();
+                return;
+            }
+            var mission = LocaleCache.ForMission(identity.active_runtime_flow.bound_level_id);
+            campaignCache.PauseMenu.DrawHoverHelp(campaignCache, mission.pause_profile,
+                scene, generation, revision, view, palette,
+                identity.player_preferences?.preferences?.show_help == true, sceneTopDown);
+        }
         internal bool DismissPauseSubmenu() => campaignCache?.PauseMenu?.DismissSubmenu() == true;
 
         internal SourcePauseMenu.ConfirmationResult DrawAbandonConfirmation(
@@ -240,11 +266,15 @@ namespace MagicCarpet.Native
 
         internal Action Draw(GameRuntimeTransport.Identity identity, bool canSave, bool canLoad, bool objectivesSatisfied, string status)
         {
+            ClearPauseHoverHelp();
             var mode = identity.mode;
             sourceBriefingSuppressed = false;
             OwnSourceMapCursor(mode == GameRuntimeTransport.CampaignMode && preferences?.IsOpen != true);
             if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
+            {
+                ResetPauseHoverHelp();
                 return Action.None;
+            }
             if (campaignCache == null && (campaignCachePath != null || mode == GameRuntimeTransport.CampaignMode))
                 campaignCache = new OwnerCampaignMenuCache(campaignCachePath ??
                     throw new InvalidOperationException("campaign map requires its decoded owner cache"));
@@ -303,6 +333,7 @@ namespace MagicCarpet.Native
                 {
                     GUI.color = Color.white;
                     GUI.enabled = true;
+                    sourcePauseMenuDrawn = true;
                     return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
                         preferences, canSave, canLoad);
                 }

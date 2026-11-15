@@ -43,6 +43,14 @@ namespace MagicCarpet.Native
         private CampaignMenuPresenter.Action confirmation;
         private bool options;
         private int volume;
+        private bool pauseBaseVisible, pauseLoadEnabled, pauseSoundEnabled, pauseMusicEnabled;
+        private SourceObjectiveTextboxPresenter pauseHelp;
+        private OwnerCampaignMenuCache.ObjectiveAssets pauseHelpAssets;
+        private ulong pausePriorGeneration;
+        private bool pausePriorReady;
+        private bool priorLoadEnabled, priorSoundEnabled, priorMusicEnabled;
+        internal int HoverHelpRow { get; private set; }
+        internal Vector2Int HoverHelpAnchor { get; private set; }
         private static readonly int[] OnText = { 400, 390, 392, 469, 398, 7, 382, 13, 359, 363, 357, 395, 365, 441, 442, 468, 402 };
         private static readonly int[] OffText = { 401, 391, 393, 470, 399, 7, 381, 14, 360, 364, 358, 396, 366, 440, 443, 468, 403 };
 
@@ -100,7 +108,15 @@ namespace MagicCarpet.Native
             catch { Dispose(); throw; }
         }
 
-        internal void Reset() { confirmation = CampaignMenuPresenter.Action.None; options = false; volume = 0; }
+        internal void Reset()
+        {
+            confirmation = CampaignMenuPresenter.Action.None; options = false; volume = 0;
+            HoverHelpRow = 0; HoverHelpAnchor = default;
+            pauseBaseVisible = false;
+            pauseHelp?.Dispose(); pauseHelp = null; pauseHelpAssets = null;
+            pausePriorReady = false;
+        }
+        internal void ClearHoverHelp() { HoverHelpRow = 0; HoverHelpAnchor = default; }
         internal SourceMenuText GameplayText(string profile) => profiles.TryGetValue(profile, out var value)
             ? value.Text : throw new InvalidDataException("source gameplay font profile is unbound: " + profile);
         internal Texture2D GameplayBitmap(string profile, int selector) => profiles[profile].Bitmaps.TryGetValue(selector, out var value)
@@ -191,6 +207,9 @@ namespace MagicCarpet.Native
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
             bool canSave, bool canLoad)
         {
+            HoverHelpRow = 0;
+            HoverHelpAnchor = default;
+            pauseBaseVisible = false;
             if (!profiles.TryGetValue(profileId, out var profile))
                 throw new InvalidDataException("mission has no source pause palette: " + profileId);
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
@@ -234,7 +253,7 @@ namespace MagicCarpet.Native
                 // DrawPauseMenu places Music immediately after its 51px art;
                 // hit-testing divides the 104px region at52px instead.
                 var drawX = selector == 177 ? (int)rect.x - (int)rect.width + profile.Bitmaps[177].width : (int)rect.x;
-                DrawBitmap(selector, drawX, (int)rect.y, enabled);
+                DrawBitmap(selector, drawX, (int)rect.y, selector is 174 or 178 || enabled);
                 if (enabled && Click(rect))
                 {
                     Event.current.Use();
@@ -244,9 +263,86 @@ namespace MagicCarpet.Native
                     else options = true;
                 }
             }
+            pauseBaseVisible = true;
+            pauseLoadEnabled = canLoad;
+            pauseSoundEnabled = prefs?.sound_enabled == true;
+            pauseMusicEnabled = prefs?.music_enabled == true;
             if (volume != 0 && prefs != null)
                 DrawVolume(profile, preferences, At);
+            if (confirmation == CampaignMenuPresenter.Action.None && !options && volume == 0)
+            {
+                var menu = IconRect(174, profile.Bitmaps[178].width, profile.Bitmaps[178].height);
+                for (var slot = 0; slot < 5; slot++)
+                {
+                    var hit = IconRect(174 + slot, profile.Bitmaps[178].width, profile.Bitmaps[178].height);
+                    if (!At(hit).Contains(Event.current.mousePosition)) continue;
+                    HoverHelpRow = 86 + slot;
+                    var anchorX = slot == 2 ? menu.x + menu.width / 2 - 12 : menu.xMax - 12;
+                    var anchorY = menu.y + (slot < 2 ? slot : slot < 4 ? 2 : 3) * menu.height + 6;
+                    HoverHelpAnchor = new Vector2Int((int)anchorX, (int)anchorY);
+                    break;
+                }
+            }
             return CampaignMenuPresenter.Action.None;
+        }
+
+        internal void DrawHoverHelp(OwnerCampaignMenuCache cache, string profile, Texture scene,
+            ulong generation, ulong revision, Rect view, byte[] palette, bool showHelp, bool sceneTopDown)
+        {
+            if (!pauseBaseVisible || scene == null || Event.current == null || Event.current.type != EventType.Repaint) return;
+            var assets = cache.ObjectiveForProfile(profile);
+            if (!ReferenceEquals(assets, pauseHelpAssets))
+            {
+                pauseHelp?.Dispose();
+                pauseHelp = new SourceObjectiveTextboxPresenter(assets);
+                pauseHelpAssets = assets;
+                pausePriorReady = false;
+            }
+            if (!pausePriorReady || pausePriorGeneration != generation || priorLoadEnabled != pauseLoadEnabled ||
+                priorSoundEnabled != pauseSoundEnabled || priorMusicEnabled != pauseMusicEnabled)
+            {
+                var sprites = assets.PauseSprites;
+                var menu = IconRect(174, sprites[4].Width, sprites[4].Height);
+                var rect = new RectInt((int)menu.x, (int)menu.y, (int)menu.width, (int)menu.height * 4);
+                var pixels = new Color32[rect.width * rect.height];
+                for (var slot = 0; slot < 5; slot++)
+                {
+                    var sprite = sprites[slot];
+                    var y = (slot < 2 ? slot : slot < 4 ? 2 : 3) * (int)menu.height;
+                    var x = slot == 3 ? sprite.Width : 0;
+                    if (x + sprite.Width > rect.width || y + sprite.Height > rect.height)
+                        throw new InvalidDataException("source pause sprite exceeds its menu rectangle");
+                    for (var sy = 0; sy < sprite.Height; sy++)
+                    for (var sx = 0; sx < sprite.Width; sx++)
+                    {
+                        var source = sy * sprite.Width + sx;
+                        if (sprite.Mask[source] == 0) continue;
+                        var target = (y + sy) * rect.width + x + sx;
+                        pixels[target] = new Color32(sprite.Indices[source], pixels[target].g, 0, 255);
+                    }
+                    var shade = slot == 1 && !pauseLoadEnabled || slot == 2 && !pauseSoundEnabled ||
+                        slot == 3 && !pauseMusicEnabled;
+                    if (!shade) continue;
+                    var shadeWidth = slot == 1 ? rect.width - 2 : sprite.Width;
+                    var shadeHeight = slot == 1 ? (int)menu.height : sprite.Height;
+                    for (var sy = 0; sy < shadeHeight; sy++)
+                    for (var sx = 0; sx < shadeWidth; sx++)
+                    {
+                        var target = (y + sy) * rect.width + x + sx;
+                        var pixel = pixels[target]; pixel.g = 255; pixels[target] = pixel;
+                    }
+                }
+                pauseHelp.SetPausePrior(rect, pixels, generation);
+                pausePriorGeneration = generation;
+                pausePriorReady = true;
+                priorLoadEnabled = pauseLoadEnabled; priorSoundEnabled = pauseSoundEnabled;
+                priorMusicEnabled = pauseMusicEnabled;
+            }
+            pauseHelp.DrawPausePrior(scene, generation, view, palette, sceneTopDown);
+            if (!showHelp || HoverHelpRow == 0) return;
+            var row = cache.GameplayHelpForRow(HoverHelpRow);
+            pauseHelp.PresentPauseHint(language(row.TextRecord), generation, HoverHelpAnchor.x, HoverHelpAnchor.y);
+            pauseHelp.Draw(1, scene, generation, revision, view, palette, sceneTopDown);
         }
 
         private void DrawVolume(Profile profile, PlayerPreferencesPresenter preferences, Func<Rect, Rect> at)
@@ -349,6 +445,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            pauseHelp?.Dispose(); pauseHelp = null; pauseHelpAssets = null;
             foreach (var profile in profiles.Values) profile.Dispose();
             profiles.Clear();
         }

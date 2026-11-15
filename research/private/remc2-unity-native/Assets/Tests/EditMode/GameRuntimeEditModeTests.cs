@@ -745,7 +745,10 @@ namespace MagicCarpet.Native.Tests
             // capability is requested; absence cannot become invented metadata.
             using (var legacy = new OwnerCampaignMenuCache(Path.Combine(PrivateRoot,
                 "generated/locale-source-menu-20261115-candidate2")))
+            {
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(72));
+                Assert.Throws<InvalidDataException>(() => { var ignored = legacy.ObjectiveForProfile("night").PauseSprites; });
+            }
 
             var fixture = Path.Combine(Path.GetTempPath(), "mc-context-help-negative-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(fixture);
@@ -786,8 +789,226 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
                     Does.Contain("source gameplay help table identity"),
                     "a coherent output receipt cannot replace the pinned source table");
+                File.WriteAllText(manifestPath, originalManifest);
+                File.WriteAllBytes(tablePath, originalTable);
+                var pauseMaskPath = Path.Combine(fixture, "pause-night-177.mask.u8");
+                var pauseMask = File.ReadAllBytes(pauseMaskPath);
+                pauseMask[0] ^= 1;
+                File.WriteAllBytes(pauseMaskPath, pauseMask);
+                Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
+                    Does.Contain("campaign cache output receipt mismatch"), "indexed pause planes retain their exact owner receipts");
             }
             finally { Directory.Delete(fixture, true); }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator PauseHoverUsesSourceRowsAndBlendsThePriorMenuBeforeItsTextbox()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-pause-hover-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            Texture2D scene = null;
+            NativeSession native = null;
+            CampaignMenuPresenter menu = null;
+            try
+            {
+                // This component check uses the supported headless resource
+                // binding. The retained, receipt-qualified source frame below
+                // is explicit input, not a claimed fresh native world capture.
+                native = NativeSession.OpenGameRuntime(ResolverPackages());
+                native.GameRuntimePause();
+                var preferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    native.Handle, native.GameRuntimeIdentity(), json), Path.Combine(temporary, "profile"));
+                var ownerRoot = Path.Combine(PrivateRoot, "generated/settlement-20261105-integration/owner-closed-v6");
+                var owner = OwnerAssetCache.OpenAndValidate(Path.Combine(ownerRoot, "night-presentation-v6"),
+                    MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
+                    Path.Combine(ownerRoot, "level1"));
+                menu = new CampaignMenuPresenter(owner, CampaignMenuCache);
+                preferences.BindLanguages(menu.LocaleCache);
+                menu.AttachPreferences(preferences);
+                Assert.That(preferences.ApplySource(next => next.music_enabled = false), Is.True);
+                Assert.That(preferences.Current.preferences.show_help, Is.True);
+                var identity = native.GameRuntimeIdentity();
+                Assert.That(identity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(identity.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.night_spire"));
+                var generation = ulong.Parse(identity.session.generation);
+                var frame = owner.ReadOutput(CampaignTransitionPresenter.IndicesPath);
+                var rgb6 = owner.ReadOutput(CampaignTransitionPresenter.PalettePath);
+                var palette = Array.ConvertAll(rgb6, value => checked((byte)(value * 4)));
+                scene = new Texture2D(320, 200, TextureFormat.R8, false, true)
+                    { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+                scene.LoadRawTextureData(frame); scene.Apply(false, false);
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var background = (Texture2D)typeof(CampaignMenuPresenter).GetField("background", flags).GetValue(menu);
+                var view = new Rect();
+                var origin = Vector2.zero;
+                var received = Vector2.zero;
+                var controlledCursor = new Vector2(10, 10);
+                CampaignMenuPresenter.Action action = CampaignMenuPresenter.Action.None;
+                SourceObjectiveTextboxPresenter Presenter() => (SourceObjectiveTextboxPresenter)typeof(SourcePauseMenu)
+                    .GetField("pauseHelp", flags).GetValue(menu.LocaleCache.PauseMenu);
+                var stateBefore = JsonUtility.ToJson(identity);
+                var replayBefore = native.GameRuntimeSaveReplay();
+                void Unchanged()
+                {
+                    Assert.That(JsonUtility.ToJson(native.GameRuntimeIdentity()), Is.EqualTo(stateBefore));
+                    CollectionAssert.AreEqual(replayBefore, native.GameRuntimeSaveReplay(),
+                        "actual hover/layout/repaint cannot advance the paused owner or its replay");
+                }
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    // EditorWindow.SendEvent forwards injected mouse positions
+                    // for input events but Repaint reads the OS cursor. This
+                    // component check owns one logical cursor across all GUI
+                    // callbacks; it does not claim physical mouse delivery.
+                    var input = Event.current;
+                    var hostCursor = input.mousePosition;
+                    try
+                    {
+                        input.mousePosition = view.position + controlledCursor * scale;
+                        received = input.mousePosition;
+                        GUI.DrawTexture(view, background);
+                        identity = native.GameRuntimeIdentity();
+                        action = menu.Draw(identity, true, false, false, null);
+                        menu.DrawPauseHoverHelp(identity, scene, generation, 0, view, palette, true);
+                    }
+                    finally { input.mousePosition = hostCursor; }
+                };
+                gui.wantsMouseMove = true;
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), "the real GUI host must draw its fitted viewport");
+                    gui.Repaint();
+                    UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                    yield return null;
+                }
+                void Send(EventType type, Vector2 source, int button = 0)
+                {
+                    controlledCursor = source;
+                    var local = view.position + source * (view.width / 640f);
+                    var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = type, mousePosition = local + origin, button = button });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw), "the actual GUI host must dispatch the component event");
+                }
+                void Hover(Vector2 source)
+                {
+                    Send(EventType.MouseMove, source);
+                    Send(EventType.Layout, source);
+                    Send(EventType.Repaint, source);
+                    Assert.That(received, Is.EqualTo(view.position + source * (view.width / 640f)),
+                        "every GUI callback passes the declared controlled cursor to real source hit testing");
+                }
+                var texts = new[] { "Save Level", "Load Level", "Sound Volume", "Music Volume", "Options" };
+                var anchors = new[] { new Vector2Int(360, 82), new Vector2Int(360, 114),
+                    new Vector2Int(308, 146), new Vector2Int(360, 146), new Vector2Int(360, 178) };
+                for (var slot = 0; slot < 5; slot++)
+                {
+                    var hit = SourcePauseMenu.IconRect(174 + slot);
+                    Hover(hit.center);
+                    Assert.That(menu.PauseHoverHelpRow, Is.EqualTo(86 + slot));
+                    Assert.That(menu.PauseHoverHelpAnchor, Is.EqualTo(anchors[slot]));
+                    var binding = menu.GameplayHelpForRow(86 + slot);
+                    Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(texts[slot]));
+                    Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(Presenter()),
+                        Is.EqualTo(texts[slot]), "the actual fitted source hover reaches selected owner glyphs");
+                    Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.None));
+                    Unchanged();
+                }
+                Hover(SourcePauseMenu.IconRect(174).center);
+                var presenter = Presenter();
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", flags).GetValue(presenter);
+                Assert.That((raster.X, raster.Y, raster.Width, raster.Height), Is.EqualTo((321, 82, 128, 85)));
+                Assert.That((raster.BlendX, raster.BlendY, raster.BlendWidth, raster.BlendHeight), Is.EqualTo((337, 139, 96, 18)));
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var pixels = ReadObjectivePixels(output);
+                Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                Color32 At(int x, int y) => pixels[(raster.Height - 1 - (y - raster.Y)) * raster.Width + x - raster.X];
+                var assets = menu.ObjectiveForProfile("night");
+                Assert.That(assets.HelpTextColor, Is.EqualTo(176));
+                Assert.That(At(346, 143), Is.EqualTo(Colour(176)), "HFONT3 S first mask pixel at source text345/141 +(1,2)");
+                var sourcePixel = (144 - raster.Y) * raster.Width + 338 - raster.X;
+                Assert.That(raster.IndicesThenMask[raster.Width * raster.Height + sourcePixel], Is.Zero);
+                Assert.That(assets.PauseSprites[3].Mask[4 * 51 + 19], Is.EqualTo(1));
+                Assert.That(assets.PauseSprites[3].Indices[4 * 51 + 19], Is.EqualTo(150));
+                Assert.That(At(338, 144), Is.EqualTo(Colour(57)),
+                    "real Music177 index150 is shaded twice before the popup's third source LUT application");
+                Assert.That(frame[60 * 320 + 169], Is.EqualTo(28));
+                Assert.That(At(338, 144), Is.Not.EqualTo(Colour(223)), "world-only sampling of this real retained frame must fail");
+                Send(EventType.Repaint, SourcePauseMenu.IconRect(174).center);
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Unchanged();
+
+                // Declared shader boundary control: shipped owner masks are
+                // opaque. A synthetic mask0/shade1 cell must shade the actual
+                // underlying frame, independently of sprite opacity.
+                using (var synthetic = new SourceObjectiveTextboxPresenter(assets))
+                {
+                    synthetic.SetPausePrior(new RectInt(338, 144, 1, 1),
+                        new[] { new Color32(0, 255, 0, 0) }, generation);
+                    var shade = assets.TableOffset + assets.BlendSelector * 256;
+                    var twice = assets.Tables[shade + assets.Tables[shade + 28]];
+                    var actual = ReadObjectivePixels(synthetic.RenderPausePrior(scene, generation, palette, true));
+                    Assert.That(actual[0], Is.EqualTo(Colour(twice)));
+                    Assert.That(synthetic.RenderPausePrior(scene, generation + 1, palette, true), Is.Null);
+                }
+
+                Hover(new Vector2(10, 10));
+                Assert.That(menu.PauseHoverHelpRow, Is.Zero, "pointer leave clears the source byte_aa selection");
+                Assert.That(preferences.ApplySource(next => next.show_help = false), Is.True);
+                stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Hover(SourcePauseMenu.IconRect(175).center);
+                Assert.That(menu.PauseHoverHelpRow, Is.EqualTo(87), "help-off changes draw admission, not source cursor hit testing");
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(Presenter()),
+                    Is.EqualTo("Save Level"), "disabled help does not present the newly hovered Load text");
+                Unchanged();
+                Assert.That(preferences.ApplySource(next => next.show_help = true), Is.True);
+                stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Send(EventType.MouseDown, SourcePauseMenu.IconRect(174).center);
+                Send(EventType.Repaint, SourcePauseMenu.IconRect(174).center);
+                Assert.That(menu.PauseHoverHelpRow, Is.Zero, "the actual save confirmation owns the cursor");
+                Unchanged();
+                menu.ResetPauseHoverHelp();
+                Hover(SourcePauseMenu.IconRect(178).center);
+                Send(EventType.MouseDown, SourcePauseMenu.IconRect(178).center);
+                Send(EventType.Repaint, SourcePauseMenu.IconRect(178).center);
+                Assert.That(menu.PauseHoverHelpRow, Is.Zero, "the actual options page clears pause-icon hover");
+                Unchanged();
+                menu.ResetPauseHoverHelp();
+                Hover(SourcePauseMenu.IconRect(174).center);
+                menu.ResetPauseHoverHelp();
+                Assert.That(menu.PauseHoverHelpRow, Is.Zero);
+                Assert.That(Presenter(), Is.Null, "reset disposes the old-generation indexed popup owner");
+                native.GameRuntimeResume();
+                stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Hover(SourcePauseMenu.IconRect(174).center);
+                Assert.That(menu.PauseHoverHelpRow, Is.Zero, "normal resume no longer admits pause hover");
+                Unchanged();
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                try { if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui); }
+                finally
+                {
+                    try { menu?.Dispose(); }
+                    finally
+                    {
+                        native?.Dispose();
+                        if (scene != null) UnityEngine.Object.DestroyImmediate(scene);
+                        Directory.Delete(temporary, true);
+                    }
+                }
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
         [TestCase((ushort)5, (ushort)4, (byte)0, "dragon-bee-20261105-integration/level5-owner-current/level5",

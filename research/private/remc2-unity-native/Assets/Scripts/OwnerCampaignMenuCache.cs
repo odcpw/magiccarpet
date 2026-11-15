@@ -98,7 +98,7 @@ namespace MagicCarpet.Native
         [Serializable] private sealed class ObjectiveSpriteBinding
         { public int selector, width, height; public string indices_path, mask_path; }
         [Serializable] private sealed class ObjectiveProfileBinding
-        { public string id, palette_path, colours_path, tables_path; public ObjectiveSpriteBinding[] sprites; }
+        { public string id, palette_path, colours_path, tables_path; public ObjectiveSpriteBinding[] sprites, pause_sprites; }
         [Serializable] private sealed class ObjectiveBinding
         { public string font_id; public int table_offset; public ObjectiveProfileBinding[] profiles; }
         [Serializable] private sealed class GameplayHelpRecord
@@ -122,17 +122,21 @@ namespace MagicCarpet.Native
             internal readonly ObjectiveTextboxCompositor.Glyph[] Glyphs;
             internal readonly byte[] GlyphMasks, Tables, PaletteRgb8;
             internal readonly ObjectiveTextboxCompositor.Sprite Corner, Side, Horizontal;
+            private readonly ObjectiveTextboxCompositor.Sprite[] pauseSprites;
+            internal ObjectiveTextboxCompositor.Sprite[] PauseSprites => pauseSprites ??
+                throw new InvalidDataException("source indexed pause sprites are not bound");
             internal readonly int TableOffset;
             internal readonly byte BlendSelector, TextColor, HelpTextColor;
             internal ObjectiveAssets(ObjectiveTextboxCompositor.Glyph[] glyphs, byte[] glyphMasks,
                 ObjectiveTextboxCompositor.Sprite[] sprites,
                 byte[] tables, int tableOffset, byte blendSelector, byte textColor, byte[] paletteRgb8,
-                byte helpTextColor = 0)
+                byte helpTextColor = 0, ObjectiveTextboxCompositor.Sprite[] pauseSprites = null)
             {
                 Glyphs = glyphs; GlyphMasks = glyphMasks; Corner = sprites[0]; Side = sprites[1];
                 Horizontal = sprites[2]; Tables = tables;
                 TableOffset = tableOffset; BlendSelector = blendSelector; TextColor = textColor;
                 HelpTextColor = helpTextColor;
+                this.pauseSprites = pauseSprites;
                 PaletteRgb8 = paletteRgb8;
             }
         }
@@ -270,22 +274,24 @@ namespace MagicCarpet.Native
                     if (manifest.gameplay_help_path != "gameplay-help.json")
                         throw new InvalidDataException("source gameplay help path is unbound");
                     var helpReceipt = manifest.outputs.SingleOrDefault(row => row.path == manifest.gameplay_help_path);
-                    if (helpReceipt == null || helpReceipt.bytes != 1226)
+                    if (helpReceipt == null || helpReceipt.bytes != 1771)
                         throw new InvalidDataException("source gameplay help receipt is incomplete");
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
-                    if (Digest(helpBytes) != "d2b8d993ba46ce4f31d9c05060b83b4ed7781e4836043d369f99c0d6a3db994e")
+                    if (Digest(helpBytes) != "237afc3b849ab7bb23fe783f9afaaf6ef8dcdea2da03ba19971ee9c5d43d0b4c")
                         throw new InvalidDataException("source gameplay help table identity differs");
                     var help = JsonUtility.FromJson<GameplayHelpDocument>(Encoding.ASCII.GetString(helpBytes));
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
-                        help.rows?.Length != 10)
+                        help.rows?.Length != 15)
                         throw new InvalidDataException("source gameplay help table is incomplete");
                     for (var index = 0; index < help.rows.Length; index++)
                     {
                         var row = help.rows[index];
-                        var expectedRow = index == 0 ? 41 : 71 + index;
-                        if (row == null || row.row != expectedRow || row.kind != (index == 0 ? 5 : 7) ||
-                            row.text_record < 0 || row.text_record >= 471 || row.duration <= 0 ||
+                        var expectedRow = index == 0 ? 41 : index < 10 ? 71 + index : 76 + index;
+                        var expectedKind = index == 0 ? 5 : index < 10 ? 7 : 11;
+                        if (row == null || row.row != expectedRow || row.kind != expectedKind ||
+                            row.text_record < 0 || row.text_record >= 471 ||
+                            (expectedKind == 11 ? row.duration != 0 : row.duration <= 0) ||
                             row.flags < 0 || row.x < 0 || row.y < 0 || row.age_threshold < 0 ||
                             row.priority < 0 || row.priority > 6 || localeBindings.Count == 0 ||
                             localeBindings.Values.Any(locale => string.IsNullOrEmpty(locale.Record(row.text_record))))
@@ -494,9 +500,31 @@ namespace MagicCarpet.Native
                                 throw new InvalidDataException("source objective frame mask is not binary");
                             sprites[i] = new ObjectiveTextboxCompositor.Sprite(row.width, row.height, objectiveIndices, mask);
                         }
+                        ObjectiveTextboxCompositor.Sprite[] pauseSprites = null;
+                        if (profile.pause_sprites != null)
+                        {
+                            if (profile.pause_sprites.Length != 5)
+                                throw new InvalidDataException("source indexed pause sprites are incomplete");
+                            pauseSprites = new ObjectiveTextboxCompositor.Sprite[5];
+                            for (var i = 0; i < pauseSprites.Length; i++)
+                            {
+                                var row = profile.pause_sprites[i];
+                                var selector = 174 + i;
+                                var prefix = "pause-" + profile.id + "-" + selector.ToString("D3");
+                                if (row == null || row.selector != selector || row.width <= 0 || row.height <= 0 ||
+                                    row.width > 256 || row.height > 256 || row.indices_path != prefix + ".indices.u8" ||
+                                    row.mask_path != prefix + ".mask.u8")
+                                    throw new InvalidDataException("source indexed pause sprite is invalid");
+                                var pauseIndices = Read(row.indices_path, checked(row.width * row.height));
+                                var pauseMask = Read(row.mask_path, checked(row.width * row.height));
+                                if (pauseMask.Any(value => value > 1))
+                                    throw new InvalidDataException("source indexed pause mask is not binary");
+                                pauseSprites[i] = new ObjectiveTextboxCompositor.Sprite(row.width, row.height, pauseIndices, pauseMask);
+                            }
+                        }
                         objectiveProfiles.Add(profile.id, new ObjectiveAssets(objectiveGlyphs, objectiveGlyphMasks,
                             sprites, tables, binding.table_offset, colours[0], colours[3840],
-                            objectivePalette.Select(channel => checked((byte)(channel * 4))).ToArray(), colours[4095]));
+                            objectivePalette.Select(channel => checked((byte)(channel * 4))).ToArray(), colours[4095], pauseSprites));
                     }
                 }
                 if (manifest.campaign != null)
