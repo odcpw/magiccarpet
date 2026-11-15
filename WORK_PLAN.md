@@ -1046,7 +1046,7 @@ checks/push/install. Use actual source producers and current selected-record/fon
 bindings; do not restart delivered save/carry/catalog/HUD diagnostics or the
 all30 controlled mission passes. Preserve complete original acceptance.
 
-Current help/narration source checkpoint is canonical `47ddb6ab`, Original branch
+Prior help/narration source checkpoint is canonical `47ddb6ab`, Original branch
 `941332df`; it is NOT installed. The real unaffordable Volcano
 path now uses source help eligibility, typed assignment closure, selected GOG
 record 329 and indexed original frame/font rendering. Help preference changes are
@@ -1108,7 +1108,8 @@ serialized checks and delivery. Installation and full acceptance stay open;
 no claim that byte corruption was fixed. Preserve original criteria and the
 separate queued secret announcements/recursive-help work.
 
-Objective-expiry context source batch is now integrated and frozen. It ports
+Current context-help source is canonical `d5b05613`, pushed Original `1a07d37e`
+on `codex/original-ending` (remote verified). It is NOT installed. The batch ports
 `sub_88BA0` stage selection/KeepPending to the existing ordered effect path,
 then source pending selection, eight-pass delay, selected-language rows334–342,
 original type1 top-centred frame/glyphs, fifty draws and cleanup. Hint41 shares
