@@ -1,5 +1,69 @@
 # Shared-engine delivery plan
 
+## Operator scope — art alongside Original completion (2026-11-15)
+
+Oliver clarified that Modern/Voxel assets and environment should be completed
+in parallel while the Original Rust port reaches full gameplay completion.
+Continue the existing Level 1 art inventory, source-faithful animation, both
+rendering styles and presentation bindings with two asset owners plus root
+integration. Preserve approved work and use existing Rust behavior; do not add
+alternative gameplay routes, change gameplay rules or interfere with the OG
+team. Review representative frames in the actual asset consumer. Keep final
+full-mission gameplay qualification pending the completed Original port, without
+mistaking art readiness for that acceptance. No paid 3D generation.
+
+Current art results: `c255ed5b`/`775905c5` add smooth, source-coloured Modern
+mana and source-sized fireballs beside the existing Voxel variants; `3ad54c0b`
+adds the separate blue Possession projectile. `482d9278`/`8cb7034a` replace
+source-bound fire/impact artwork while retaining transparent source tail frames.
+`f228721f` fixes the exit target's import scale, URP materials, facing and open
+mouth in both derivatives. `7783c615` supplies 17 source building profiles and
+seven cumulative Castle composites, Modern/Voxel LOD meshes and visible glazing.
+`867407c8` refines tree wood/leaves, distant meshes and burned materials. These
+have actual isolated Unity renders checked by root and their owners, not new
+mission-playthrough or installed-player proof. Media and XML are compact under
+generated/level1-assets-20261115. The Castle head projectile and whole-map Voxel
+terrain remain active; rejected head candidates have detached geometry and are
+not accepted as finished assets. Full gameplay/performance/install acceptance
+below remains open pending OG completion.
+
+The building extraction found a source-consumer discrepancy for the OG owner:
+remc2 DatTabIndexes.cpp:5–13,105–114 doubles runtime TAB dimensions in VGA mode1;
+EventsFunctions.cpp:27240–27251 halves those indexed dimensions in the ordinary
+building handler, leaving the raw owner extent. Rust house.rs:82–91 instead
+halves raw exported dimensions and consumes their prefix. Art uses full raw
+source shapes; do not invent houses around the sparse prefix or silently fix
+Rust from this asset work. Castle construction uses a separate cumulative
+overlay. The source art library records this distinction; dynamic runtime
+placement remains gated on the real native consumer.
+
+## Current asset delivery — 2026-11-13
+
+The selected Modern scroll is committed as `292f5562`; its broad paper layer and
+rolled end replace the rejected rail-like edges. The accepted Voxel FBX is
+unchanged and passed an earned 100-frame integrated11 view. Dolmen fix `eaf0f0e6`
+preserves its imported transform: actual Voxel height 0.048828→6.25. Source
+Dolmens are static; player contact selects recharge, without a charged or
+exhausted appearance. The existing shared-consumer test distinguishes that
+recharge path; the Level1 HUD-only near/away experiment did not.
+
+Both jars passed earned on-screen pickup removal, four actual-player F5/R
+cycles, fresh-player pre-reset save loads and independent native checks of all
+eight pre/post-reset saves. Collector collision admission is fixed in source
+`74cc4999` with a passing constructor→projectile-consumer regression, but that
+fix is not in the pinned `ed08` native used for the asset captures. Keep Collector
+loss/reclaim and the next native installation open.
+
+Eight combined Scroll/Dolmen Unity checks pass against the private integration
+project. The new disk-backed player at generated/level1-assets-20261110/player
+built successfully with the proven `ed08` plugin. Earned Modern scroll and normal-
+camera Voxel Dolmen captures are the current installation gate; the normal
+Presentation launcher still selects the previous player until those pass.
+Seven superseded settlement/benchmark player copies were removed after their
+top-level receipts were retained, recovering about 3.4 GiB. Source, masters,
+installed/rollback players and warm build caches were preserved. Large outputs
+stay off tmpfs. Keep two asset owners plus root integration and compact media.
+
 ## Active Modern/Voxel Level 1 asset completion — 2026-11-09
 
 Oliver confirms Rust Level 1 is playable and requests completing its Modern
