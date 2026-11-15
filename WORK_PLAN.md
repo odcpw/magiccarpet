@@ -938,6 +938,23 @@ for C# compilation/taint limits with no critical/warning in the changed regions.
 All previous passing native/codec/tier-drag/GPU checks were reused; no native
 rebuild was needed for these managed/test corrections. Installed physical input
 remains the next delivery gate, not a claim made by this Editor-window test.
+
+Spell-menu batch is now committed canonical9152adcb and pushed/remote-verified
+Originalccd69323, excluding unrelated Modern ancestry. Matching Original
+build-afsiqvfu/nativee51b38785177 is installed; --check-installed and all626
+source/header/data inputs match the strict Rig receipt. The678-output source
+menu cache was independently rehashed and published under the player-install
+lock. Root viewed normal canonical map/loading/NightSpire and physical Ctrl
+hover selecting FIREBALL/RAPID FIRE/FIRE STORM, then POSSESSION/MANA MAGNET/MANA
+LOCK with original glyphs, indexed panels/bars and selected-tier highlight.
+Physical Ctrl release clears the bottom menu and popup. All30 resource roles
+and mapped native match, one portal click, zero retries and no cursor/integrity/
+loading errors; owned player/display stopped without escalation. This is
+installed UI/launch-load proof, not human combat, FPS, hardware audio, full
+missions or old saves. Evidence: generated/spell-help-20261115/installed-hover-1.
+The next confirmed control gap is source Shift+F6/pause option13 transparency,
+including real panels, notices and GAME/LevelInit lifetime. Full mc-oi6.6 and
+mc-5r5.2 acceptance remain open.
 Source SetKeysDialog's immediate default action keeps the dialog open and resets
 ten keys, sound/music volumes127, showHelp and brightness11/13. It preserves
 brightness12, selected language/font, minimap/topbar and other settings: langIndex_4
