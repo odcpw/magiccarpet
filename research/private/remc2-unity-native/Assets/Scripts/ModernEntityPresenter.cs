@@ -39,6 +39,7 @@ namespace MagicCarpet.Native
         private ushort sceneryReviewSource;
         private ulong sceneryReviewGeneration = ulong.MaxValue;
         private readonly Shader smokeShader;
+        private readonly Shader effectShader;
         private bool loggedSmoke;
         private bool loggedFamilies;
         private bool loggedGeometry;
@@ -66,6 +67,7 @@ namespace MagicCarpet.Native
             palette = cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path);
             shader = Resources.Load<Shader>("ModernEntity");
             smokeShader = Resources.Load<Shader>("ModernSmoke");
+            effectShader = Resources.Load<Shader>("ModernSpellEffect");
             if (shader == null) throw new InvalidOperationException("Missing ModernEntity shader");
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
@@ -125,12 +127,14 @@ namespace MagicCarpet.Native
                 // These source TMAPs are blend-table operands, not opaque RGB artwork.
                 var smoke = (row.baseTmap == 57 || row.baseTmap == 63) && (row.pixelMode == 2 || row.pixelMode == 6);
                 var visual = node.GetComponent<MeshRenderer>();
-                visual.sharedMaterial = GetMaterial(texture, smoke);
+                var effect = HotEffectKind(row);
+                visual.sharedMaterial = GetMaterial(texture, smoke, effect);
                 emission.Clear();
                 var lightKind = ModernNightLighting.SourceKind(row);
-                emission.SetFloat("_EmissionStrength", lightKind >= 1 && lightKind <= 4 ? 2.5f : 0);
+                emission.SetFloat("_EmissionStrength", lightKind >= 1 && lightKind <= 5 ? 2.5f : 0);
+                emission.SetFloat("_EffectSeed", row.entityIndex * 1.37f);
                 visual.SetPropertyBlock(emission);
-                visual.shadowCastingMode = smoke ? ShadowCastingMode.Off : ShadowCastingMode.TwoSided;
+                visual.shadowCastingMode = smoke || effect != 0 ? ShadowCastingMode.Off : ShadowCastingMode.TwoSided;
                 if (smoke && !loggedSmoke)
                 {
                     var actor = session.Entities().First(entity => entity.entityIndex == row.entityIndex);
@@ -248,10 +252,27 @@ namespace MagicCarpet.Native
             return true;
         }
 
-        private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke)
+        // Cold ash/splash and unrelated sprites keep their own source assets.
+        internal static int HotEffectKind(NativeSim.CampaignEntityPresentation row)
         {
-            var key = row.index + (smoke ? 1000 : 0);
+            var source = ModernNightLighting.SourceKind(row);
+            return source == 4 ? 2 : source == 2 || source == 3 || source == 5 ? 1 : 0;
+        }
+
+        private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke, int effect)
+        {
+            var key = row.index + (smoke ? 1000 : effect == 1 ? 2000 : effect == 2 ? 3000 : 0);
             if (materials.TryGetValue(key, out var material)) return material;
+            if (effect != 0)
+            {
+                if (effectShader == null) throw new InvalidOperationException("Missing ModernSpellEffect shader");
+                material = new Material(effectShader) { name = effect == 2 ? "Native flame impact" : "Native source fire" };
+                material.SetFloat("_Impact", effect == 2 ? 1 : 0);
+                material.SetFloat("_Voxel", Voxels.VoxelModernWorld.Requested ? 1 : 0);
+                material.SetColor("_Tint", Voxels.VoxelManaSpheres.ColorFromIndexedSprite(cache.ReadOutput(row.indices_path), palette));
+                materials.Add(key, material);
+                return material;
+            }
             if (smoke)
             {
                 if (smokeShader == null) throw new InvalidOperationException("Missing ModernSmoke shader");
