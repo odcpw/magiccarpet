@@ -867,8 +867,17 @@ Modern MCPO binary publication is not extended or claimed qualified here.
 Rust UBS reports whole-file legacy totals; no added critical, and added warnings
 are assert/unwrap/create-only output in the focused test. C# UBS remains partial
 on flow/conditional budgets; no added critical/warning. Fresh bounded source review
-supports the fixed joins, not complete help certification. Root owns final native
-source binding and source landing. Normal player installation, sound/read-integrity,
+supports the fixed joins, not complete help certification. Wall source is canonical `53e77024`, pushed/remote-verified Original `5059d5b7`.
+Final native `c87093c3b42f0fffe6dc5ef9ae6d73b6ee081a86971dba250378e4b3ec4a3fc2`
+matches606/606 isolated Original/Rig inputs and the consumed Editor plugin;
+the final test-only correction leaves that native byte-identical. This is NOT a
+whole published-branch source match: a direct check finds38 existing Rust path
+differences between the isolated Original cohort and the publication baseline
+(37 paths unchanged by this batch, plus preexisting backend differences). They
+include extra class14 publication and test visibility/coverage in the branch;
+do not overwrite either side or claim all are defects. Preserve the explicit
+profile boundary and qualify its source composition before full remote/install
+match. Evidence: wall-original-publication-closure-limit.json. Normal player installation, sound/read-integrity,
 full tutorial/help/speech, selected non-ASCII installed proof and presentation/
 performance acceptance remain open. The off_DB558 sentinel stream is credits;
 do not invent a tutorial producer from it. Continue remaining source guidance and
