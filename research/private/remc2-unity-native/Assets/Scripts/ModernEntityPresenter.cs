@@ -261,6 +261,18 @@ namespace MagicCarpet.Native
             return source == 4 ? 2 : source == 2 || source == 3 || source == 5 ? 1 : 0;
         }
 
+        internal static Color EffectTint(byte[] indices, byte[] sourcePalette)
+        {
+            int visible = 0;
+            foreach (var index in indices) if (index != 0) visible++;
+            // The impact animation ends with six real, fully transparent frames.
+            // They must neither throw during colour sampling nor emit invented fire.
+            if (visible == 0) return Color.clear;
+            var tint = Voxels.VoxelManaSpheres.ColorFromIndexedSprite(indices, sourcePalette);
+            tint.a = Mathf.Clamp01(visible * 3f / indices.Length);
+            return tint;
+        }
+
         private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke, int effect)
         {
             var key = row.index + (smoke ? 1000 : effect == 1 ? 2000 : effect == 2 ? 3000 : 0);
@@ -271,7 +283,7 @@ namespace MagicCarpet.Native
                 material = new Material(effectShader) { name = effect == 2 ? "Native flame impact" : "Native source fire" };
                 material.SetFloat("_Impact", effect == 2 ? 1 : 0);
                 material.SetFloat("_Voxel", Voxels.VoxelModernWorld.Requested ? 1 : 0);
-                material.SetColor("_Tint", Voxels.VoxelManaSpheres.ColorFromIndexedSprite(cache.ReadOutput(row.indices_path), palette));
+                material.SetColor("_Tint", EffectTint(cache.ReadOutput(row.indices_path), palette));
                 materials.Add(key, material);
                 return material;
             }

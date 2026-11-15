@@ -10,6 +10,20 @@ namespace MagicCarpet.Native.Tests
     public sealed class ModernSpellEffectEditModeTests
     {
         [Test]
+        public void TransparentSourceTailEmitsNothingAndSparseFramesFade()
+        {
+            var palette = new byte[768]; palette[3] = 255; palette[4] = 120;
+            Assert.That(ModernEntityPresenter.EffectTint(new byte[16], palette), Is.EqualTo(Color.clear));
+            var sparse = new byte[16]; sparse[7] = 1;
+            var tint = ModernEntityPresenter.EffectTint(sparse, palette);
+            Assert.That(tint.a, Is.EqualTo(3f/16));
+            Assert.That(tint.r, Is.EqualTo(1));
+            Assert.That(tint.g, Is.EqualTo(120f/255).Within(.0001));
+            Array.Fill(sparse, (byte)1);
+            Assert.That(ModernEntityPresenter.EffectTint(sparse, palette).a, Is.EqualTo(1));
+        }
+
+        [Test]
         public void HotSubstitutionRequiresBoundSourceAndPreservesColdSplashAndProjectileOwners()
         {
             var row = new NativeSim.CampaignEntityPresentation { renderParameterIndex = 7, baseTmap = 38 };
