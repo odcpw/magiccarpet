@@ -1046,6 +1046,38 @@ checks/push/install. Use actual source producers and current selected-record/fon
 bindings; do not restart delivered save/carry/catalog/HUD diagnostics or the
 all30 controlled mission passes. Preserve complete original acceptance.
 
+Current help/narration source checkpoint is canonical `47ddb6ab`, Original branch
+`941332df`; it is NOT installed. The real unaffordable Volcano
+path now uses source help eligibility, typed assignment closure, selected GOG
+record 329 and indexed original frame/font rendering. Help preference changes are
+receipt-covered in replay v8. Normal objective timing/narration no longer stops
+after the first four missions; all 25 ordinary source rows and normal secret
+aliases are bound, with all 27 available GOG tracks verified. No other installed
+language is available; L1/D2 are identical English, not non-ASCII proof.
+Focused native checks and workspace pass; qualified native `0819741810f6` has
+606/606 matching Rig inputs. Unity checks reached actual map briefing track 21,
+Ammyridia objective track 20, O suppression/release, real hint pixels, natural expiry,
+reset and same-value assignment closure. Final live-selection/cold-load check
+is still pending: replay entry carry correctly remains Possession, while live
+Volcano selection belongs to replayed commands. Two test oracles were corrected:
+logical 640x480 coordinates must sample actual 320x200 scene UVs, and the complete
+event interval must be read rather than the recent 256 HUD rows. The actual
+blend region is non-discriminating against a flat substitute; do not claim that
+negative passed. Final Unity check 10 failed before gameplay on a real environment
+integrity mismatch. Its create-new diagnostic captured the exact rejected buffer:
+77,889,580 bytes, offset 32,096,805 is `0xfc` instead of disk `0xfd` (one differing
+byte). Python confirms captured SHA `692223b83edc` and disk SHA `03b3f9510485`;
+the native digest agrees. This is a real read-buffer difference, not merely a
+bad checksum report. Cause remains unknown; do not infer hardware failure,
+overwrite owner data, weaken hashes or run retry/build loops. Evidence is
+`unity-help-10-failed-read.bin` and `unity10-failed-read-comparison.json` in the
+batch directory. All agents are frozen/completed; installation and expensive
+qualification are held pending a concrete safe integrity resolution. The last
+installed player remains `build-af5fng7c` with native `ed42fbf3c3f9`.
+Special switch 31 announcements,
+objective-expiry context help and broader recursive help remain open. Evidence:
+`research/private/generated/help-20261115/`. Full `.6`/`.10` stay open.
+
 Evidence is `research/private/generated/continuity-20261115/`. Source completions
 use declared frontier/inventory/placement controls; this is not earned human
 campaign progress, human combat, hardware audio, FPS, full missions or old live
