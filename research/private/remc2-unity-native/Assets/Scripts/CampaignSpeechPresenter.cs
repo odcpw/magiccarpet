@@ -42,7 +42,7 @@ namespace MagicCarpet.Native
             var catalog = JsonUtility.FromJson<Catalog>(
                 File.ReadAllText(Path.Combine(directory, "speech.json")));
             if (catalog?.schema != "mc2-campaign-speech/v1" || catalog.sample_rate != 44100 ||
-                catalog.channels != 2 || catalog.sample_width != 2 || catalog.tracks?.Length != 4)
+                catalog.channels != 2 || catalog.sample_width != 2 || catalog.tracks?.Length != 27)
                 throw new InvalidDataException("Invalid campaign speech catalog");
             root = new GameObject("MC2 campaign speech");
             root.transform.SetParent(parent, false);
@@ -53,7 +53,7 @@ namespace MagicCarpet.Native
             {
                 foreach (var track in catalog.tracks)
                 {
-                    if (track == null || track.track < 1 || track.track > 4 || clips.ContainsKey(track.track) ||
+                    if (track == null || track.track < 1 || track.track > 27 || clips.ContainsKey(track.track) ||
                         track.path != $"TRACK{track.track:00}.wav" || track.frames <= 0)
                         throw new InvalidDataException("Invalid campaign speech track binding");
                     var bytes = File.ReadAllBytes(Path.Combine(directory, track.path));

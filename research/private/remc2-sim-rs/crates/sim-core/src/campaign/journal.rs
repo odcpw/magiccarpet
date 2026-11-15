@@ -421,6 +421,7 @@ fn hash_flight(hasher: &mut Sha256, event: FlightEvent) {
             hasher.update([5, state]);
             hasher.update(hint_index.to_le_bytes());
         }
+        FlightEvent::CloseHelpPopup => hasher.update([6]),
     }
 }
 

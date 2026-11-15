@@ -502,6 +502,8 @@ typedef struct McCampaignDayHudSpellSlotV2 {
     uint16_t icon_selector;
     uint8_t level_text_selector;
     uint8_t draw_admitted;
+    uint8_t help_unavailable;
+    uint8_t reserved_padding;
     uint32_t reserved[2];
 } McCampaignDayHudSpellSlotV2;
 

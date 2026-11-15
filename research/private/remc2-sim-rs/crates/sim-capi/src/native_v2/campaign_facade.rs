@@ -173,6 +173,7 @@ pub(super) fn campaign_effect_snapshot(
                     row.value_0 = i32::from(hint_index);
                     row.value_1 = i32::from(state);
                 }
+                FlightEvent::CloseHelpPopup => row.code = 6,
             }
         }
         CampaignEffect::SceneChange { scene } => {
@@ -887,6 +888,15 @@ mod tests {
             generation: identity.generation,
             expected_tick: identity.tick,
         }
+    }
+
+    #[test]
+    fn help_close_projects_as_distinct_campaign_flight_effect() {
+        let record = EffectRecord { sequence: 4, turn: 8,
+            effect: CampaignEffect::Flight(FlightEvent::CloseHelpPopup), audio: None };
+        let event = campaign_effect_snapshot(2, 7, &record);
+        assert_eq!((event.kind, event.code, event.sequence), (MC_CAMPAIGN_EFFECT_FLIGHT, 6, 5));
+        assert_eq!(event.asset_ref_index, MC_ASSET_REF_NONE);
     }
 
     #[test]

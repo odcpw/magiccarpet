@@ -627,6 +627,8 @@ pub struct Level2DayHudSpellSlot {
     pub frame_selector: u16,
     pub icon_selector: u16,
     pub level_text_selector: u8,
+    /// Source help41 eligibility for this physical hand and current owner.
+    pub help_unavailable: bool,
     /// Final source admission for `DrawSpellIcon_2E260`. Unity presents the
     /// carried decision and never reconstructs the enabled/active/phase
     /// suppression predicate.
@@ -654,6 +656,7 @@ impl Level2DayHudSpellSlot {
             frame_selector: 0,
             icon_selector: 0,
             level_text_selector: 0,
+            help_unavailable: false,
             draw_admitted: false,
         }
     }

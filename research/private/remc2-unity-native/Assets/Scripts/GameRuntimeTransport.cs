@@ -35,7 +35,7 @@ namespace MagicCarpet.Native
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
-            "carpet-flight-mc2-campaign-replay-save/v7";
+            "carpet-flight-mc2-campaign-replay-save/v8";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string CampaignMode = "campaign";
@@ -1375,7 +1375,7 @@ namespace MagicCarpet.Native
                     var menu = identity.campaign_menu;
                     if (menu.briefing_speech != null &&
                         (menu.phase != "mission_select" || string.IsNullOrEmpty(menu.briefing_level_id) ||
-                         menu.briefing_speech.track < 1 || menu.briefing_speech.track > 4 ||
+                         menu.briefing_speech.track < 1 || menu.briefing_speech.track > 27 ||
                          menu.briefing_speech.segment != 0 || menu.briefing_speech.start_ms != 0 ||
                          menu.briefing_speech.length_ms == 0))
                         throw new InvalidOperationException("campaign briefing speech is not a source-bound map segment");

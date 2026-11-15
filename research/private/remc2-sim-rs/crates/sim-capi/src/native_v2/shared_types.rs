@@ -138,6 +138,7 @@ pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_STARTED: u32 = 35;
 pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
 pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
+pub const MC_EVENT_CLOSE_HELP_POPUP: u32 = 39;
 
 /// Campaign event kinds (`mc_sim_campaign.h`).
 pub const MC_CAMPAIGN_EVENT_SPELL_ACQUISITION: u8 = 2;
@@ -909,6 +910,8 @@ pub struct McCampaignDayHudSpellSlotV2 {
     pub icon_selector: u16,
     pub level_text_selector: u8,
     pub draw_admitted: u8,
+    pub help_unavailable: u8,
+    pub reserved_padding: u8,
     pub reserved: [u32; 2],
 }
 

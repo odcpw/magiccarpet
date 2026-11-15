@@ -1193,6 +1193,7 @@ fn append_flight_event(hasher: &mut Sha256, event: FlightEvent) {
             hasher.update(hint_index.to_le_bytes());
             hasher.update([state]);
         }
+        FlightEvent::CloseHelpPopup => hasher.update([5]),
     }
 }
 

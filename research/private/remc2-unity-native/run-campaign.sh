@@ -24,6 +24,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --loading-assets DIR    Optional destination loading artwork cache override
   --menu-cache DIR        Optional original campaign-map/menu cache override
   --media-cache DIR       Optional original intro, cutscene and credits cache override
+  --speech-cache DIR      Optional original campaign speech cache override
 
 The default is the installed Original campaign (25 ordinary and 5 secret
 missions). An explicit package set replaces all defaults; Rust validates its
@@ -122,7 +123,7 @@ def default_campaign_resources():
 
 def main(arguments):
     resources, player = [], []
-    route, replay, save, loading, media = None, None, None, None, None
+    route, replay, save, loading, media, speech = None, None, None, None, None, None
     menu_cache = None
     loading_assets = None
     aliases = {
@@ -136,6 +137,7 @@ def main(arguments):
         '--loading-assets': 'loading_assets', '-mc-runtime-loading-assets': 'loading_assets',
         '--menu-cache': 'menu', '-mc-runtime-menu-cache': 'menu',
         '--media-cache': 'media', '-mc-runtime-media-cache': 'media',
+        '--speech-cache': 'speech', '-mc-runtime-speech-cache': 'speech',
         '--save': 'save', '-mc-runtime-replay-save': 'save',
         '--load-save': 'replay', '--replay': 'replay',
         '-mc-runtime-replay-load': 'replay',
@@ -200,6 +202,10 @@ def main(arguments):
                 if loading_assets is not None:
                     raise LaunchError('Specify the loading artwork cache only once')
                 loading_assets = value
+            elif kind == 'speech':
+                if speech is not None:
+                    raise LaunchError('Specify the speech cache only once')
+                speech = value
             else:
                 if media is not None:
                     raise LaunchError('Specify the media cache only once')
@@ -255,6 +261,13 @@ def main(arguments):
     if media is not None:
         directory(media, 'media cache')
         native.extend(('-mc-runtime-media-cache', str(media)))
+    if speech is None:
+        installed_speech = GENERATED / 'mc2-campaign-speech-current'
+        if installed_speech.is_dir():
+            speech = installed_speech
+    if speech is not None:
+        directory(speech, 'speech cache')
+        native.extend(('-mc-runtime-speech-cache', str(speech)))
     if loading_assets is not None:
         # The runtime owns missing-artwork recovery and retry for this selection.
         native.extend(('-mc-runtime-loading-assets', str(loading_assets)))

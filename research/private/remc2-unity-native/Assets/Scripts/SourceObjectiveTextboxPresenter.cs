@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         private ObjectiveTextboxCompositor.Raster raster;
         private ulong generation;
         private string currentText;
+        private int currentAnchor = -1;
 
         internal SourceObjectiveTextboxPresenter(OwnerCampaignMenuCache.ObjectiveAssets assets)
         {
@@ -39,16 +40,38 @@ namespace MagicCarpet.Native
 
         internal void Present(string sourceText, ulong sessionGeneration)
         {
+            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == -1) return;
+            var bytes = SourceBytes(sourceText);
+            var next = ObjectiveTextboxCompositor.BuildSourceForeground(bytes, assets.Glyphs,
+                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.TextColor);
+            PresentRaster(next, sourceText, sessionGeneration, -1);
+        }
+
+        internal void PresentHint(string sourceText, ulong sessionGeneration, int anchorX)
+        {
+            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == anchorX) return;
+            var bytes = SourceBytes(sourceText);
+            var next = ObjectiveTextboxCompositor.BuildSourceHintForeground(bytes, assets.Glyphs,
+                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor,
+                assets.BlendSelector, assets.TextColor, anchorX, 48);
+            PresentRaster(next, sourceText, sessionGeneration, anchorX);
+        }
+
+        private static byte[] SourceBytes(string sourceText)
+        {
             if (sourceText == null) throw new ArgumentNullException(nameof(sourceText));
-            if (raster != null && generation == sessionGeneration && currentText == sourceText) return;
             var bytes = new byte[sourceText.Length];
             for (var i = 0; i < bytes.Length; i++)
             {
                 if (sourceText[i] > byte.MaxValue) throw new ArgumentException("objective text is not source bytes");
                 bytes[i] = (byte)sourceText[i];
             }
-            var next = ObjectiveTextboxCompositor.BuildSourceForeground(bytes, assets.Glyphs,
-                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.TextColor);
+            return bytes;
+        }
+
+        private void PresentRaster(ObjectiveTextboxCompositor.Raster next, string sourceText,
+            ulong sessionGeneration, int anchorX)
+        {
             var nextForeground = new Texture2D(next.Width, next.Height, TextureFormat.RGBA32, false, true)
                 { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
             var colors = new Color32[next.Width * next.Height];
@@ -69,6 +92,7 @@ namespace MagicCarpet.Native
             raster = next;
             generation = sessionGeneration;
             currentText = sourceText;
+            currentAnchor = anchorX;
             material.SetTexture("_Foreground", foreground);
             material.SetVector("_Raster", new Vector4(next.X, next.Y, next.Width, next.Height));
             material.SetVector("_BlendRect", new Vector4(next.BlendX - next.X, next.BlendY - next.Y,
@@ -114,7 +138,7 @@ namespace MagicCarpet.Native
         {
             ReleaseTexture(output); ReleaseTexture(foreground); ReleaseTexture(blendRow);
             ReleaseTexture(palette); ReleaseTexture(material);
-            output = null; foreground = null; raster = null; currentText = null;
+            output = null; foreground = null; raster = null; currentText = null; currentAnchor = -1;
         }
 
         private static void ReleaseTexture(UnityEngine.Object value)

@@ -840,7 +840,8 @@ pub(crate) fn load_configured_mc2_campaign_for_test(
 // Earlier contracts did not retain ordered animation demands. Replaying them
 // cannot reconstruct source animation allocation order; reject instead of
 // inventing historical draw inputs.
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v7";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v8";
+const PRE_HELP_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v7";
 const LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
@@ -856,6 +857,13 @@ const fn dynamic_lighting_is_default(enabled: &bool) -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Mc2DynamicLightingChange {
+    before_operation: usize,
+    enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Mc2HelpPreferenceChange {
     before_operation: usize,
     enabled: bool,
 }
@@ -888,6 +896,8 @@ struct Mc2CampaignReplaySave {
     initial_dynamic_lighting: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    help_preference_changes: Vec<Mc2HelpPreferenceChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -933,6 +943,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     initial_dynamic_lighting: bool,
     #[serde(skip_serializing_if = "<[Mc2DynamicLightingChange]>::is_empty")]
     dynamic_lighting_changes: &'a [Mc2DynamicLightingChange],
+    #[serde(skip_serializing_if = "<[Mc2HelpPreferenceChange]>::is_empty")]
+    help_preference_changes: &'a [Mc2HelpPreferenceChange],
     #[serde(skip_serializing_if = "<[Mc2PrimaryVisibilityChange]>::is_empty")]
     primary_visibility_changes: &'a [Mc2PrimaryVisibilityChange],
     #[serde(skip_serializing_if = "<[voxels::VoxelModeChange]>::is_empty")]
@@ -979,6 +991,7 @@ impl Mc2CampaignReplaySave {
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
+            help_preference_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             completed_levels: Some(completed_levels),
@@ -1011,6 +1024,7 @@ impl Mc2CampaignReplaySave {
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
+            help_preference_changes: &self.help_preference_changes,
             primary_visibility_changes: &self.primary_visibility_changes,
             voxel_mode_changes: &self.voxel_mode_changes,
             completed_levels: self.completed_levels.as_deref(),
@@ -1034,7 +1048,9 @@ impl Mc2CampaignReplaySave {
     }
 
     fn verify(&self) -> bool {
-        (self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+            || (self.save_contract == PRE_HELP_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+                && self.help_preference_changes.is_empty()))
             && self.completed_levels.is_some())
             && self.receipt_sha256 == self.compute_receipt_sha256()
     }
@@ -1988,6 +2004,7 @@ impl Mc2RuntimePackageResolver {
             .player_preferences
             .preferences
             .dynamic_lighting;
+        let show_help = runtime.identity().player_preferences.preferences.show_help;
         let opened = runtime.open_level_resolved_with_candidate(
             guard,
             &Mc2CampaignAdapter,
@@ -2065,6 +2082,7 @@ impl Mc2RuntimePackageResolver {
                 candidate
                     .backend_mut()
                     .install_initial_mission_rewards(policy)?;
+                candidate.backend_mut().initialize_fresh_help_preference(show_help);
                 Ok(())
             },
         );
@@ -2266,6 +2284,7 @@ impl Mc2RuntimePackageResolver {
             .source_arena()
             .dynamic_lighting_enabled;
         save.dynamic_lighting_changes = session.backend().dynamic_lighting_changes.clone();
+        save.help_preference_changes = session.backend().help_preference_changes.clone();
         save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
         save.voxel_mode_changes = session.backend().voxel_mode_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -2535,6 +2554,19 @@ impl Mc2RuntimePackageResolver {
                 message: "dynamic-light changes have an invalid replay boundary".to_owned(),
             });
         }
+        // One fresh-entry initial policy and one late profile hydration may
+        // precede operation zero; guarded gameplay binds at most once per
+        // accepted operation thereafter.
+        if save.help_preference_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 2
+            || save.help_preference_changes.len() > save.operations.len() + 2
+            || save.help_preference_changes.iter().any(|change| change.before_operation > save.operations.len())
+            || save.help_preference_changes.windows(2)
+                .any(|pair| pair[0].before_operation > pair[1].before_operation)
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "help preference changes have an invalid replay boundary".to_owned(),
+            });
+        }
         if save.primary_visibility_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
             || save.primary_visibility_changes.iter().any(|change| {
                 change.before_operation > save.operations.len()
@@ -2651,6 +2683,7 @@ impl Mc2RuntimePackageResolver {
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
+        let mut help_preference_changes = save.help_preference_changes.into_iter().peekable();
         let mut primary_visibility_changes = save.primary_visibility_changes.into_iter().peekable();
         let mut voxel_mode_changes = save.voxel_mode_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
@@ -2727,6 +2760,12 @@ impl Mc2RuntimePackageResolver {
                         candidate
                             .backend_mut()
                             .set_dynamic_lighting_enabled(change.enabled);
+                    }
+                    while help_preference_changes.peek()
+                        .is_some_and(|change| change.before_operation == operation_index)
+                    {
+                        let change = help_preference_changes.next().expect("matched help preference boundary");
+                        candidate.backend_mut().set_help_enabled(change.enabled);
                     }
                     if global_context_changes
                         .peek()
@@ -2960,6 +2999,7 @@ impl Mc2RuntimePackageResolver {
             let carry = session.backend().transition_spell_carry()?;
             let context = session.backend().campaign.source_global_context();
             let rewards = simulation.mission_rewards();
+            let show_help = runtime.identity().player_preferences.preferences.show_help;
             let receipt =
                 runtime.enter_secret_resolved(guard, session_guard, |source_session| {
                     let generation = source_session
@@ -2996,6 +3036,7 @@ impl Mc2RuntimePackageResolver {
                             OrdinaryExitRoute::SecretReturnFromParentContinuation,
                         )?;
                     }
+                    candidate.backend_mut().initialize_fresh_help_preference(show_help);
                     Ok((secret_id, candidate))
                 })?;
             return Ok(Some(receipt));
@@ -3325,6 +3366,10 @@ pub struct Mc2CampaignBackend {
     replay_operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     global_context_changes: Vec<Mc2GlobalContextChange>,
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
+    help_preference_changes: Vec<Mc2HelpPreferenceChange>,
+    // Fresh direct entry may install its profile after opening tick0. Replay
+    // candidates never set this process-local marker.
+    fresh_help_profile_pending: bool,
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
     initial_final_reward: bool,
@@ -3416,6 +3461,43 @@ impl Mc2CampaignBackend {
     pub fn restore_dynamic_lighting_after_rejection(&mut self, enabled: bool, change_count: usize) {
         self.campaign.set_dynamic_lighting_enabled(enabled);
         self.dynamic_lighting_changes.truncate(change_count);
+    }
+
+    #[must_use]
+    pub fn help_enabled(&self) -> bool {
+        self.campaign.simulation().help_enabled()
+    }
+
+    fn initialize_fresh_help_preference(&mut self, enabled: bool) {
+        self.set_help_enabled(enabled);
+        self.fresh_help_profile_pending = true;
+    }
+
+    /// Synchronize the one late initial profile install on a fresh tick0
+    /// owner. A cold replay, including v7, never receives this marker.
+    pub fn hydrate_fresh_help_preference(&mut self, enabled: bool) {
+        if !self.fresh_help_profile_pending || self.campaign.tick() != 0
+            || !self.replay_operations.is_empty() { return; }
+        self.set_help_enabled(enabled);
+        self.fresh_help_profile_pending = false;
+    }
+
+    pub fn set_help_enabled(&mut self, enabled: bool) {
+        if self.help_enabled() == enabled { return; }
+        self.campaign.simulation_mut().set_help_enabled(enabled);
+        self.help_preference_changes.push(Mc2HelpPreferenceChange {
+            before_operation: self.replay_operations.len(), enabled,
+        });
+    }
+
+    #[must_use]
+    pub fn help_preference_change_count(&self) -> usize {
+        self.help_preference_changes.len()
+    }
+
+    pub fn restore_help_after_rejection(&mut self, enabled: bool, change_count: usize) {
+        self.campaign.simulation_mut().set_help_enabled(enabled);
+        self.help_preference_changes.truncate(change_count);
     }
 
     fn install_initial_mission_rewards(
@@ -3698,6 +3780,8 @@ impl GameAdapter for Mc2CampaignAdapter {
             replay_operations: Vec::new(),
             global_context_changes: Vec::new(),
             dynamic_lighting_changes: Vec::new(),
+            help_preference_changes: Vec::new(),
+            fresh_help_profile_pending: false,
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             initial_final_reward: false,
@@ -4244,6 +4328,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .simulation_mut()
             .finish_source_menu_action(command.abandon_action, menu_admitted);
         self.campaign = candidate;
+        self.fresh_help_profile_pending = false;
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::Step { command });
         Ok(())
@@ -4326,6 +4411,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let next_generation = self.campaign.generation().wrapping_add(1);
         let source_context = self.campaign.source_global_context();
         let dynamic_lighting_enabled = self.dynamic_lighting_enabled();
+        let help_enabled = self.help_enabled();
         let mut campaign = self.package_campaign.clone();
         campaign
             .apply_semantic_level_variant(
@@ -4372,11 +4458,14 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.replay_operations.clear();
         self.global_context_changes.clear();
         self.dynamic_lighting_changes.clear();
+        self.help_preference_changes.clear();
+        self.fresh_help_profile_pending = false;
         self.primary_visibility_changes.clear();
         self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
         // option then takes effect at the new replay's operation-zero boundary.
         self.set_dynamic_lighting_enabled(dynamic_lighting_enabled);
+        self.set_help_enabled(help_enabled);
         Ok(())
     }
 }
@@ -4862,6 +4951,7 @@ impl Mc2CampaignBackend {
                     None,
                 ),
                 FlightEvent::ShowHelpHint { .. } => ("ui.help_hint_requested", None, None),
+                FlightEvent::CloseHelpPopup => ("ui.help_popup_closed", None, None),
             },
             CampaignEffect::SceneChange { .. } => ("session.scene_changed", None, None),
             CampaignEffect::ObjectivePresentation { .. } => ("ui.objective_presented", None, None),
@@ -5849,6 +5939,180 @@ pub(crate) mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn actual_v7_secret_parent_volcano_hint_preference_replays_at_source_boundary() {
+        use crate::game_runtime::{CampaignMenuCommand, GameRuntime, RuntimeMode};
+        use crate::game_session::{SpellAssignment, SpellAssignmentHand};
+        use crate::campaign::journal::CampaignEffect;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(&fs::read(resources).unwrap()).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]))).unwrap();
+        let path = std::env::var_os("MC_HELP_V7_SAVE").map(PathBuf::from).unwrap_or_else(||
+            generated.join("continuity-20261115/installed-parent-hud-5/parent-entry-save.mcs"));
+        let old_bytes = fs::read(path).expect("actual retained v7 secret-parent save");
+        let old: Mc2CampaignReplaySave = serde_json::from_slice(&old_bytes).unwrap();
+        assert_eq!(old.save_contract, PRE_HELP_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);
+        assert!(old.help_preference_changes.is_empty() && old.verify());
+        assert_eq!(old.expected_tick, 21);
+        let map_path = generated.join("continuity-20261115/controlled-secret-map.mcs");
+        let map_bytes = fs::read(map_path).expect("actual retained completed-secret map save");
+        let open_parent = |id| {
+            let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(id).unwrap();
+            let title = runtime.identity();
+            let map = resolver.load_replay(&mut runtime, title.guard(), id, &map_bytes).unwrap();
+            let loading = resolver.campaign_menu_command(
+                &mut runtime, map.guard(), CampaignMenuCommand::StartMission,
+            ).unwrap();
+            let playing = resolver.open_pending(&mut runtime, loading.guard(), id).unwrap();
+            assert_eq!(playing.mode, RuntimeMode::Playing);
+            assert_eq!(runtime.session().unwrap().backend().campaign.definition().identity,
+                CampaignSelection::ordinary(20).unwrap());
+            runtime
+        };
+        let live = open_parent(8838);
+        let live_identity = live.identity();
+        let live_before = resolver.save_replay(&live).unwrap();
+        let mut invalid_v7 = old.clone();
+        invalid_v7.help_preference_changes.push(Mc2HelpPreferenceChange { before_operation: 0, enabled: true });
+        invalid_v7.receipt_sha256 = invalid_v7.compute_receipt_sha256();
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(8839).unwrap();
+        let before = rejected.identity();
+        assert!(resolver.load_replay(&mut rejected, before.guard(), 8839,
+            &serde_json::to_vec(&invalid_v7).unwrap()).is_err());
+        assert_eq!(rejected.identity(), before);
+        let error = resolver.load_replay(&mut rejected, before.guard(), 8839, &old_bytes)
+            .expect_err("the authentic late-level v7 packet must reject its old clock receipt");
+        assert!(error.to_string().contains("replayed campaign state does not match the saved receipts"),
+            "the old packet must reach receipt verification: {error}");
+        assert_eq!(rejected.identity(), before);
+        assert_eq!(live.identity(), live_identity);
+        assert_eq!(resolver.save_replay(&live).unwrap(), live_before);
+
+        for enabled in [false, true] {
+            let id = if enabled { 8842 } else { 8841 };
+            let mut runtime = open_parent(id);
+            runtime.session_mut().unwrap().backend_mut().hydrate_fresh_help_preference(enabled);
+            let session = runtime.session_mut().unwrap();
+            let features = session.backend().campaign.simulation().mission().authored_features();
+            assert_eq!((features[25].kind, features[25].subtype, features[25].activation_group), (11, 31, 8));
+            assert!(features.iter().filter(|row| row.kind == 11 && row.subtype == 31)
+                .all(|row| row.activation_group != 0));
+            for _ in 0..10 {
+                assert!(session.backend().campaign.simulation().economy().authored_switch_producers()
+                    .iter().all(|row| !row.active || row.model != 31),
+                    "no secret-announcement switch is present during source20 opening admission");
+                session.step(guard(session), GameCommand::default()).unwrap();
+            }
+            let assignment_cursor = session.backend().campaign.effect_cursor();
+            session.step(guard(session), GameCommand {
+                assign_spell: Some(SpellAssignment {
+                    spell_id: SemanticId::parse("spell.volcano").unwrap(),
+                    tier: 0, hand: SpellAssignmentHand::Left, holder_actor: None,
+                }), ..GameCommand::default()
+            }).unwrap();
+            let assignment = session.backend().campaign.effects_after(assignment_cursor, usize::MAX).unwrap();
+            let close = assignment.records.iter().position(|record| matches!(record.effect,
+                CampaignEffect::Flight(FlightEvent::CloseHelpPopup)));
+            let assignment_sound = assignment.records.iter().position(|record| matches!(record.effect,
+                CampaignEffect::Flight(FlightEvent::PrepareSound { sound_id: 14, .. })));
+            assert_eq!(close.is_some(), enabled);
+            assert!(assignment_sound.is_some());
+            if let Some(close) = close { assert!(assignment_sound.unwrap() < close); }
+            let hud = session.backend().campaign.simulation().day_hud_for(
+                CampaignSelection::ordinary(20).unwrap()).unwrap();
+            assert_eq!(hud.left.model, 18);
+            assert!(hud.left.caster_mana < hud.left.max_mana && hud.left.help_unavailable);
+            let cursor = session.backend().campaign.effect_cursor();
+            session.step(guard(session), GameCommand { cast_left: true, ..GameCommand::default() }).unwrap();
+            let page = session.backend().campaign.effects_after(cursor, usize::MAX).unwrap();
+            let hint = page.records.iter().position(|record| matches!(record.effect,
+                CampaignEffect::Flight(FlightEvent::ShowHelpHint { hint_index: 41, state: 6 })));
+            let sound = page.records.iter().position(|record| matches!(record.effect,
+                CampaignEffect::Flight(FlightEvent::PrepareSound { sound_id: 29, .. })));
+            assert_eq!(hint.is_some(), enabled);
+            assert!(sound.is_some());
+            if let Some(hint) = hint { assert!(hint < sound.unwrap()); }
+            let backend = session.backend_mut();
+            backend.set_help_enabled(!enabled);
+            backend.set_help_enabled(enabled);
+            let expected = backend.snapshot();
+            let saved = resolver.save_replay(&runtime).unwrap();
+            let packet: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(packet.save_contract, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);
+            let mut invalid = packet.clone();
+            invalid.help_preference_changes.last_mut().unwrap().before_operation = invalid.operations.len() + 1;
+            invalid.receipt_sha256 = invalid.compute_receipt_sha256();
+            let before = rejected.identity();
+            assert!(resolver.load_replay(&mut rejected, before.guard(), 8839,
+                &serde_json::to_vec(&invalid).unwrap()).is_err());
+            assert_eq!(rejected.identity(), before);
+            assert_eq!(live.identity(), live_identity);
+            assert_eq!(resolver.save_replay(&live).unwrap(), live_before);
+            let mut cold = GameRuntime::<Mc2CampaignBackend>::title(id + 10).unwrap();
+            let title = cold.identity();
+            resolver.load_replay(&mut cold, title.guard(), id + 10, &saved).unwrap();
+            assert_eq!(cold.session().unwrap().backend().snapshot(), expected);
+            assert_eq!(cold.session().unwrap().backend().help_enabled(), enabled);
+            assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn fresh_help_preference_matches_reset_baseline_and_replays_at_operation_zero() {
+        use crate::game_runtime::GameRuntime;
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8849).unwrap();
+        let title = runtime.identity();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8849).unwrap();
+        let zero_save = resolver.save_replay(&runtime).unwrap();
+        let mut zero_cold = GameRuntime::<Mc2CampaignBackend>::title(8851).unwrap();
+        let title = zero_cold.identity();
+        resolver.load_replay(&mut zero_cold, title.guard(), 8851, &zero_save).unwrap();
+        zero_cold.session_mut().unwrap().backend_mut().hydrate_fresh_help_preference(false);
+        assert!(zero_cold.session().unwrap().backend().help_enabled(), "cold v8 is never a fresh owner");
+        assert_eq!(resolver.save_replay(&zero_cold).unwrap(), zero_save);
+        let mut invalid: Mc2CampaignReplaySave = serde_json::from_slice(&zero_save).unwrap();
+        invalid.help_preference_changes.extend([
+            Mc2HelpPreferenceChange { before_operation: 0, enabled: false },
+            Mc2HelpPreferenceChange { before_operation: 0, enabled: true },
+        ]);
+        invalid.receipt_sha256 = invalid.compute_receipt_sha256();
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(8852).unwrap();
+        let before = rejected.identity();
+        let before_save = resolver.save_replay(&rejected).unwrap();
+        assert!(resolver.load_replay(&mut rejected, before.guard(), 8852,
+            &serde_json::to_vec(&invalid).unwrap()).is_err(), "third zero-operation help change exceeds source boundary");
+        assert_eq!(rejected.identity(), before);
+        assert_eq!(resolver.save_replay(&rejected).unwrap(), before_save);
+        let session = runtime.session_mut().unwrap();
+        assert!(session.backend().help_enabled());
+        assert_eq!(session.backend().help_preference_changes,
+            [Mc2HelpPreferenceChange { before_operation: 0, enabled: true }]);
+        let baseline = session.snapshot().value;
+        session.step(guard(session), GameCommand::default()).unwrap();
+        session.reset(guard(session)).unwrap();
+        assert_eq!(session.snapshot().value.state_hash, baseline.state_hash);
+        assert_eq!(session.snapshot().value.terrain_hash, baseline.terrain_hash);
+        assert!(session.backend().help_enabled());
+        assert_eq!(session.backend().help_preference_changes,
+            [Mc2HelpPreferenceChange { before_operation: 0, enabled: true }]);
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8850).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8850, &saved).unwrap();
+        assert_eq!(cold.session().unwrap().snapshot().value.state_hash, baseline.state_hash);
+        assert!(cold.session().unwrap().backend().help_enabled());
     }
 
     #[test]

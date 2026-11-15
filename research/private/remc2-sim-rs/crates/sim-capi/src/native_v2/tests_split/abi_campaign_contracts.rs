@@ -675,6 +675,9 @@ fn layouts_and_versions_are_stable() {
         std::mem::offset_of!(McCampaignDayHudSpellSlotV2, draw_admitted),
         37
     );
+    assert_eq!(std::mem::offset_of!(McCampaignDayHudSpellSlotV2, help_unavailable), 38);
+    assert_eq!(std::mem::offset_of!(McCampaignDayHudSpellSlotV2, reserved_padding), 39);
+    assert_eq!(std::mem::offset_of!(McCampaignDayHudSpellSlotV2, reserved), 40);
     assert_eq!(
         std::mem::offset_of!(McCampaignDayHudSnapshotV2, global_mana_denominator),
         52

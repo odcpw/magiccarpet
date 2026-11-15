@@ -458,12 +458,11 @@ impl CampaignSession {
         let evidence = self
             .simulation
             .step_outer_turn_with_tuning(command, speed_index, tuning);
-        if self.definition.identity.internal_level < 4
-            && !self
-                .simulation
-                .dispatch_events()
-                .iter()
-                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+        if !self
+            .simulation
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
         {
             self.simulation.service_campaign_objective_presentation(
                 self.definition.identity.internal_level,
@@ -1178,6 +1177,52 @@ mod tests {
                 "paused outer frames advance the same sixteen-step fade"
             );
         }
+    }
+
+    #[test]
+    fn ordinary_source_twenty_objective_speech_and_textbox_follow_outer_frames() {
+        use crate::campaign::{journal::CampaignEffect, objective_speech::ordinary_speech_segment};
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ammyridia-source-closure-20261114/level20");
+        let mut session =
+            CampaignSession::open(root, CampaignSelection::ordinary(20).unwrap()).unwrap();
+        session.set_show_foreign_objective_text(true);
+        let local = usize::from(session.simulation.runtime().local_player_slot);
+        let owner = usize::from(session.simulation.players()[local].player_color_index());
+        let objective = session.simulation.runtime().objectives[owner].text_selector;
+        let expected = ordinary_speech_segment(19, objective + 1).unwrap();
+        let mut heard = false;
+        for _ in 0..16 {
+            session.step(PlayerCommand::default(), 0);
+            assert!(!session
+                .simulation
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            if session
+                .simulation
+                .effect_journal()
+                .records()
+                .iter()
+                .any(|record| {
+                    matches!(record.effect, CampaignEffect::ObjectivePresentation(actions) if actions.speech == Some(expected))
+                })
+            {
+                heard = true;
+                break;
+            }
+        }
+        assert!(
+            heard,
+            "the real source 20 opening selects its source objective speech"
+        );
+        assert_eq!(session.simulation.runtime().objective_textbox_ticks, 200);
+        session.step(PlayerCommand::default(), 0);
+        assert_eq!(session.simulation.runtime().objective_textbox_ticks, 199);
+        let tick = session.simulation.state.tick;
+        session.paused_frame();
+        assert_eq!(session.simulation.state.tick, tick);
+        assert_eq!(session.simulation.runtime().objective_textbox_ticks, 198);
     }
 
     #[test]

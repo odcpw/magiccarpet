@@ -788,6 +788,8 @@ namespace MagicCarpet.Native
             internal ushort iconSelector;
             internal byte levelTextSelector;
             internal byte drawAdmitted;
+            internal byte helpUnavailable;
+            internal byte reservedPadding;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
             internal uint[] reserved;
         }
@@ -3550,6 +3552,9 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.visibilityFlags), 80);
             RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.maxMana), 20);
             RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.drawAdmitted), 37);
+            RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.helpUnavailable), 38);
+            RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.reservedPadding), 39);
+            RequireOffset<CampaignDayHudSpellSlot>(nameof(CampaignDayHudSpellSlot.reserved), 40);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.globalManaDenominator), 52);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.playerPanelSelector), 62);
             RequireOffset<CampaignDayHudSnapshot>(nameof(CampaignDayHudSnapshot.lifePaletteIndex), 68);

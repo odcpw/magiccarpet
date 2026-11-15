@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retain owner-local PCM for the first four MC2 campaign speech tracks."""
+"""Retain the available owner-local MC2 campaign speech tracks."""
 import argparse
 import hashlib
 import json
@@ -10,7 +10,7 @@ import wave
 def build(source: Path, destination: Path):
     tracks = []
     payloads = []
-    for track in (1, 2, 3, 4):
+    for track in range(1, 28):
         name = f"TRACK{track:02d}.wav"
         path = source / name
         data = path.read_bytes()
