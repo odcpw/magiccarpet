@@ -915,6 +915,11 @@ native, one portal click and zero load retries. Root viewed actual original
 glyph/frame objective display while O was held and its removal after release;
 no movement/cast input, combat, playthrough or FPS claim. Owned processes stopped
 without escalation. Previous cache data and unrelated Modern work are untouched.
+Implementation is committed as canonical `bdc35444` and pushed/remote-verified
+Original `77e6732b` on `codex/original-ending`; installed native/player and
+qualified source receipts above match this delivered capability. The next
+remaining text-family work is selected-locale and tutorial/help consumption;
+keep one team and finish each connected path before taking another.
 Evidence: `research/private/generated/objective-glyph-20261115/`. This proves
 the default-language objective capability, not selected locale, recursive help,
 full campaign play, FPS or hardware audio. Keep full `mc-oi6.6` acceptance open.
