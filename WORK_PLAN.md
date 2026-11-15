@@ -22,10 +22,23 @@ seven cumulative Castle composites, Modern/Voxel LOD meshes and visible glazing.
 `867407c8` refines tree wood/leaves, distant meshes and burned materials. These
 have actual isolated Unity renders checked by root and their owners, not new
 mission-playthrough or installed-player proof. Media and XML are compact under
-generated/level1-assets-20261115. The Castle head projectile and whole-map Voxel
-terrain remain active; rejected head candidates have detached geometry and are
-not accepted as finished assets. Full gameplay/performance/install acceptance
-below remains open pending OG completion.
+generated/level1-assets-20261115. Clean Castle head `7201c8ec`, whole-map sectioned
+Voxel terrain `be7c2958`, Collector Voxel LODs `ab6237c0` and all-opening-building
+Voxel selection `ae8479dc` are now prepared and reviewed. Root join `224f10b9`
+grounds consumers on the rendered block surface, connects the new assets and
+keeps coloured ownership halos distinct from fire. The combined isolated Unity
+run passes 59/59 checks; paired actual-map art views include 41 architectural
+buildings, window lighting, terrain, water and sky. Decorative Voxel vegetation
+`c2892a24` and root join `1a17198b` now cover all seven scenery parts with
+prebuilt shared meshes and cheap, Voxel-derived distant foliage impostors.
+The paired terrain/nature run passes 26/26 checks. Low shoreline views exposed
+floating cliff-house bases; sampled foundation meshes now close those gaps in
+both styles and pass 9/9 focused checks, including the paired map gallery.
+Rejected candidates are not accepted as finished assets. Full gameplay/FPS/
+install acceptance below remains open pending OG completion; LEVEL1_ASSETS.md
+is the current detailed art status. Castle auxiliary art reuses the Archer;
+its observation/animation consumer and dynamic-building consumer still need
+OG-connected qualification. No alternative gameplay route was implemented.
 
 The building extraction found a source-consumer discrepancy for the OG owner:
 remc2 DatTabIndexes.cpp:5–13,105–114 doubles runtime TAB dimensions in VGA mode1;

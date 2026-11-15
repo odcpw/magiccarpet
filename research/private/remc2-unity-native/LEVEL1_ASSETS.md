@@ -23,7 +23,34 @@ recipes and presenters are committed. Compact images/XML are under
 generated/level1-assets-20261115. None of these isolated reviews establishes a
 new installed-player, complete-mission or gameplay-performance result.
 
-The Castle projectile head and whole-map Voxel terrain are still being reviewed.
+The clean Castle projectile head (`7201c8ec`) and whole-map Voxel terrain
+(`be7c2958`) have now passed their actual Unity reviews. The head replaces the
+source class9/model10/action10 visual without independent gameplay. Terrain
+uses visible section surfaces at 1m/2m detail and a 0.5m vertical quantum;
+this is whole-map rendering, not whole-map destructive physics. The existing
+fine local destruction patch remains separate. Collector Voxel near/far art
+and all eight native owner colours pass five checks (`ab6237c0`), with paired
+front/side/night/far frames inspected. Building presenter `ae8479dc` selects
+all three Voxel LODs for every admitted opening building, retaining the same
+source identity/stamp validation and the selected physical house exclusion.
+Root join `224f10b9` connects these assets, grounds characters/scenery/pickups
+to the rendered stepped surface, and keeps ownership halos distinct from fire.
+The combined isolated Unity run passes 59/59 checks. Paired actual-map day/night
+art views include the 41 prepared architectural buildings, water, sky and
+terrain; they are frozen-source art workbench views, not live mission evidence.
+
+Decorative Voxel vegetation is now prepared (`c2892a24`) and connected
+(`1a17198b`): grass, fern, shrub, decorative tree trunk/branches/leaves and
+rocks have shared exterior meshes. Four distant foliage kinds retain two-
+triangle, relightable impostors baked from the actual Voxel models. The new
+owner-local authoring commands are `VoxelVegetationBaker.Generate` followed by
+`VoxelVegetationBaker.GenerateImpostors`; the game only loads the results.
+The paired terrain/nature review passes 26/26 checks. At the four pinned art
+views, Voxel vegetation submissions are about 3–27% more triangles than Modern,
+with comparable draw counts; this is a geometry counter, not a frame-rate claim.
+The low shoreline review caught exposed cliff-house bases; bounded sampled
+foundations now close them in both styles and pass 9/9 checks, including the
+same paired real-map gallery. Flat-ground cases add no foundation faces.
 Building art uses full owner records; Rust's current builder consumer instead
 halves raw dimensions into a sparse prefix. Keep that OG discrepancy and dynamic
 placement open. Castle auxiliary class5/model15 uses the existing Archer sprite
@@ -41,11 +68,11 @@ another creature master. Its animation/observation binding remains to qualify.
 | Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; genuine Level1 demolition birth, public combat and positive-life entry | Candidate Modern/Voxel combat, living-entry and F5/R/coldload checks pass; latest installed launchers and performance remain open in mc-oi5 |
 | Firefly | Original-inspired olive/bronze body, violet eyes, warm wings and amber underside; actual Unity25-pose import, coloured Modern/Voxel bindings | Real Level1 combat and F5/R/coldload pass both styles; Modern fade0.167s; clearer breakup camera/media and installation pending in mc-eb8 |
 | Worm | Source-inspired red lens/curved jaws and repeating segment master; corrected baked size/culling, actual Unity25+2-pose imports, independent native multipart placement | Natural group4 birth, all16linked bodies, actual combat, one8192-cell breakup and both-style F5/R/coldload verified; clearer breakup media, performance and installation remain open in mc-7uj |
-| Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
-| Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
-| Buildings | Installed:32 opening buildings/four profiles. Current candidate:all41 architectural buildings/eight profiles, imported in Unity | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
-| Mana spheres | Native-owned 3D representation in Voxel | Modern replacement, ownership colours and capture/collection feedback |
-| Fireballs | Native-owned voxel representation and impact fragments | Modern replacement and consistent emission/impact/expiry presentation |
+| Terrain, water, shore, sky/clouds, wind and moonlight | Shared environment retained; whole-map section-based Voxel land reviewed | Real gameplay/streaming/performance checks after OG completion; smooth water is intentional hybrid rendering |
+| Decorative vegetation and rocks | Separate Modern/Voxel meshes, three LOD paths, instanced placement; Voxel-derived far foliage impostors | Decorative instances do not replace source-owned scenery; final gameplay/performance/install checks remain open |
+| Buildings | Installed:32 opening buildings/four profiles. Art:all41 architectural buildings/eight profiles, Modern and Voxel LODs; library17 profiles plus seven Castle stages | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
+| Mana spheres | Native-owned Modern smooth and source-coloured Voxel representations | Final capture/carry/collection and installation qualification |
+| Fireballs | Native-owned source-sized Modern/Voxel projectiles and impact fragments | Final emission/impact/expiry and installation qualification; projectile never independently bounces |
 
 Unclaimed visible entities still use original sprite billboards. Existing
 attractive scenery does not prove that every gameplay object is converted.
@@ -163,15 +190,18 @@ height-plane hash; Unity generated all three mesh LODs per profile. This is
 preparation evidence, not installed dynamic-building coverage.
 
 Builder construction can choose additional selectors19/22/32/33/35/39/40/62/74,
-along with the opening architectural styles. The source construction payload
-uses effective dimensions rawWidth>>1/rawHeight>>1 and the contiguous prefix
-of its cells; downsampling the entire raw matrix gives the wrong geometry.
-These later templates and their actual living constructor consumers remain open.
+along with the opening architectural styles. All source art profiles are prepared.
+The earlier claim that ordinary remc2 houses consume half the raw dimensions was
+wrong: VGA mode doubles TAB dimensions before the handler halves them. Art uses
+the full raw extent; Rust currently consumes a halved raw prefix instead. Keep
+that OG consumer discrepancy open, rather than altering art to match the prefix.
 
 Modern substitution requires an original intact occupant with expected slot
 generation, selector, action, position and stamped terrain cells. It does not
-cover every later constructor or changed building. Voxel currently has one
-selected house and a local terrain patch; whole-level coverage is integration work.
+cover every later constructor or changed building. Voxel now selects prepared
+brick meshes for all admitted opening buildings and section meshes for whole-map
+land. The selected physical house/local terrain patch retains its separate
+destruction ownership. Dynamic whole-level destructive coverage is still open.
 
 ## Pickups, player presentation and effects
 
