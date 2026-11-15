@@ -393,6 +393,7 @@ mod tests {
             runtime_id: 42,
             generation: runtime_generation,
             mode,
+            display_settings: crate::game_runtime::DisplaySettings::default(),
             frontend_media: None,
             player_preferences: PreferencesSnapshot {
                 preferences: PlayerPreferences::default(),

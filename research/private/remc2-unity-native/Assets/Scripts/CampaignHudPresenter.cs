@@ -110,7 +110,7 @@ namespace MagicCarpet.Native
 
             internal void Advance(bool leftUnavailable, bool rightUnavailable,
                 bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
-                bool levelEnd = false)
+                bool levelEnd = false, bool minimapEnabled = true)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -153,6 +153,9 @@ namespace MagicCarpet.Native
                                 // mask after normal eligibility when IsLevelEnd
                                 // is set. Forced word88 selection bypasses it.
                                 if (levelEnd && (row.Binding.Flags & 0x4ff) != 0) eligible = false;
+                                // The source separately masks minimap-related
+                                // rows whenever icons and map are hidden.
+                                if (!minimapEnabled && (row.Binding.Flags & 0x2ff) != 0) eligible = false;
                                 var overdue = row.Age - row.Binding.AgeThreshold;
                                 if (!eligible || row.Priority != priority || overdue <= bestOverdue) continue;
                                 currentRow = row;
@@ -261,10 +264,11 @@ namespace MagicCarpet.Native
         }
 
         private void AdvanceGameRuntimeHelpHint(bool leftUnavailable, bool rightUnavailable,
-            bool showHelp, bool paused, bool suppressed, sbyte wallContactCounter, bool levelEnd)
+            bool showHelp, bool paused, bool suppressed, sbyte wallContactCounter, bool levelEnd,
+            bool minimapEnabled)
         {
             gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
-                wallContactCounter, levelEnd);
+                wallContactCounter, levelEnd, minimapEnabled);
         }
 
         private void DrawGameRuntimeHelpHint()

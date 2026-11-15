@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 pub(crate) enum PlayerLifeNoticeKind {
     Died,
     Banished,
+    IconsMapHidden,
+    IconsMapVisible,
 }
 
 impl PlayerLifeNoticeKind {
@@ -16,6 +18,8 @@ impl PlayerLifeNoticeKind {
         match self {
             Self::Died => "participant.died",
             Self::Banished => "participant.banished",
+            Self::IconsMapHidden => "participant.icons_map_hidden",
+            Self::IconsMapVisible => "participant.icons_map_visible",
         }
     }
 }
@@ -60,7 +64,10 @@ impl PlayerLifecycleNotifications {
         *entry = PlayerLifeNotice {
             kind: Some(kind),
             source_owner,
-            state: 1,
+            state: match kind {
+                PlayerLifeNoticeKind::IconsMapHidden | PlayerLifeNoticeKind::IconsMapVisible => 3,
+                _ => 1,
+            },
             remaining_frames: frames,
         };
         Ok(())
@@ -74,7 +81,7 @@ impl PlayerLifecycleNotifications {
             return;
         }
         for entry in &mut self.entries {
-            if entry.state != 1 {
+            if entry.state != 1 && entry.state != 3 {
                 continue;
             }
             entry.remaining_frames = entry.remaining_frames.wrapping_sub(1);
@@ -109,6 +116,8 @@ impl PlayerLifecycleNotifications {
                 None => 0,
                 Some(PlayerLifeNoticeKind::Died) => 1,
                 Some(PlayerLifeNoticeKind::Banished) => 2,
+                Some(PlayerLifeNoticeKind::IconsMapHidden) => 3,
+                Some(PlayerLifeNoticeKind::IconsMapVisible) => 4,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -120,6 +129,30 @@ impl PlayerLifecycleNotifications {
 #[cfg(test)]
 mod tests {
     use super::{PlayerLifeNoticeKind, PlayerLifecycleNotifications};
+
+    #[test]
+    fn display_notice_replaces_local_life_slot_and_uses_source_fifty_draw_clock() {
+        let mut notices = PlayerLifecycleNotifications::default();
+        notices.publish(0, 111, PlayerLifeNoticeKind::Died, 200).unwrap();
+        notices.publish(7, 425, PlayerLifeNoticeKind::Banished, 200).unwrap();
+        notices.publish(0, 111, PlayerLifeNoticeKind::IconsMapHidden, 50).unwrap();
+        assert_eq!(notices.entries()[0].state, 3);
+        assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_hidden");
+        assert_eq!(notices.entries()[7].kind, Some(PlayerLifeNoticeKind::Banished));
+        let before = notices.clone();
+        notices.presentation_frame(false);
+        assert_eq!(notices, before);
+        for remaining in (0..50).rev() {
+            notices.presentation_frame(true);
+            assert_eq!(notices.entries()[0].remaining_frames, remaining);
+            assert_eq!(notices.entries()[0].state, 3, "zero is the last visible draw");
+        }
+        notices.presentation_frame(true);
+        assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (0, -1));
+        notices.publish(0, 111, PlayerLifeNoticeKind::IconsMapVisible, 50).unwrap();
+        assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_visible");
+        assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (3, 50));
+    }
 
     #[test]
     fn source_zero_timer_still_draws_and_banishment_keeps_its_own_participant() {

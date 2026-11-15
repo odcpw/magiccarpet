@@ -801,13 +801,59 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Newest operator direction (2026-11-15): continue the remaining port work and give
-the WAV/read-integrity blocker one Astra/high owner. VioletCastle owns that
-diagnosis through real player qualification; root serializes builds/installation.
-Keep strict resource hashes and honest proof limits. No silent repair/retry loop
-or speculative loader replacement. Complete connected capabilities with the
-existing small team, committing/pushing coherent batches and preserving full
-acceptance and open installation/dependency gaps.
+Newest operator direction (2026-11-15): complete the source Shift+F5 display
+control through HUD, original notice, help cleanup and ordinary F5 preservation.
+The Astra diagnostic worker is stopped at Oliver's request; the installed route
+passed with strict WAV hashes, while the historical corruption cause remains
+unknown. QuietIsland owns the connected managed capability; BoldForge implements
+the Rust state/replay/notification joins; root serializes builds/push/installation.
+Source GAME saves retain the16-byte GameSettings block including minimap/topbar;
+CONFIG.DAT does not. Use one accepted Rust carrier, the existing local notice
+slot and source presentation clock. Preserve complete acceptance and all unrelated
+work; no silent retry/hash weakening or isolated consumer handoffs.
+
+Shared display-control batch is implemented and installed (2026-11-15): source
+Shift+F5 and pause Options row12 now call the same guarded Rust operation. One
+runtime-global minimap/topbar carrier survives mission/retry/map and GAME save
+round trips without entering CONFIG/profile preferences. The existing local
+participant notice slot receives source type3, replacing its prior notice;
+the admitted PresentationFrame owns its50 ->0 ->-1 clock. Both Alt keys retain
+source precedence; held-menu modifiers cannot leak a bare F5 save. Source Shift
+dispatch precedes Ctrl spell-menu handling. Accepted hide closes ordinary help
+only when showHelp permits it, and applies the source0x2ff minimap-off mask;
+forced objective context and pause-hover help remain distinct. WEB/full map
+remain visible independently. Source selects record365 on hide/366 on show;
+the local English On/Off wording is counterintuitive and deliberately retained.
+
+Five focused native checks pass: new and existing notice lifetimes, actual
+session display/guards/reset/map+live save/cold receipts, CABI transitions, and
+the existing fresh-help/reset boundary. One integrated workspace all-targets
+check passes57.5s. Strict Rig native build passes48s; all626 captured source/
+header/data inputs and returned bytes match. This is source hashing, not626tests.
+Managed checks pass: five initial source/option/input regressions plus the one
+connected paused/notice/cold/F5 check rerun145.96s after fixing the qualified
+Original client's stale menu-action whitelist to the already published canonical
+guard. Unknown actions still reject. The older client uses its full snapshot
+getter in place of the canonical render-only getter; no compatibility wrapper or
+guard relaxation was introduced. UBS is partial/legacy-scoped; changed-hunk
+review finds no added critical source finding.
+
+Matching Original build-3ct3fc6i/native
+48d553ad3279f10fa10ec97114b984268201fec6f91f7be1429cdebf57bed490
+is installed and --check-installed passes. Root viewed actual NightSpire left-
+and right-Shift+F5 hide/show, source notices, the options row12 hide and retained
+submenu, and ordinary F5 publication. No Shift action wrote a save; the actual
+file records exactly three toggles. A fresh process restored its paused hidden
+HUD, then physical Shift+F5/resume restored both HUD parts and F5 wrote the
+four-toggle continuation. These are actual UI controls without flight/casting or
+an automated playthrough; they do not establish human combat/FPS/hardware audio,
+all-mission visual coverage or a WAV root-cause fix. Both owned players stopped.
+Evidence is generated/help-20261115/icons-map-{native-checks-1,rig-proof},
+icons-map-managed-{2,3} XML/logs and icons-map-installed-1/icons-map-cold-1.
+Full existing settings/HUD/help acceptance remains open. Source SetKeysDefault
+selector109 is still an absent control; ordinary key Apply/Cancel must not reset
+display as a substitute. Remaining help/speech and earned intermediate Results
+save -> cold restart -> next-mission carry proof remain as recorded below.
 
 Pause-menu hover source is canonical `fc6d503a`, pushed/remote-verified Original
 `1e0d98f1` on `codex/original-ending`; unrelated Modern ancestry was excluded.

@@ -120,6 +120,7 @@ namespace MagicCarpet.Native.Tests
             var suffix = boundLevelId.Substring(boundLevelId.LastIndexOf('.') + 1);
             return new GameRuntimeTransport.Identity {
                 runtime_contract = GameRuntimeTransport.RuntimeContract,
+                display_settings = new GameRuntimeTransport.DisplaySettings { minimap = true, top_bar = true },
                 runtime_id = "771",
                 generation = runtimeGeneration,
                 mode = mode,
@@ -138,6 +139,7 @@ namespace MagicCarpet.Native.Tests
         {
             return new GameRuntimeTransport.Identity {
                 runtime_contract = GameRuntimeTransport.RuntimeContract,
+                display_settings = new GameRuntimeTransport.DisplaySettings { minimap = true, top_bar = true },
                 runtime_id = "771",
                 generation = "8",
                 mode = GameRuntimeTransport.LoadingMode,
@@ -166,6 +168,7 @@ namespace MagicCarpet.Native.Tests
             var boundOrdinary = levels[1];
             return new GameRuntimeTransport.Identity {
                 runtime_contract = GameRuntimeTransport.RuntimeContract,
+                display_settings = new GameRuntimeTransport.DisplaySettings { minimap = true, top_bar = true },
                 runtime_id = "771",
                 generation = runtimeGeneration,
                 mode = GameRuntimeTransport.CampaignMode,
@@ -767,6 +770,30 @@ namespace MagicCarpet.Native.Tests
             var ended = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             for (var i = 0; i < 25; i++) ended.Advance(false, false, true, false, false, 0, true);
             Assert.That(ended.Visible, Is.False, "IsLevelEnd masks ordinary row1");
+            var hiddenMap = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 25; i++) hiddenMap.Advance(true, true, true, false, false, 1, false, false);
+            Assert.That(hiddenMap.Visible, Is.False, "source flags 0x2ff mask ordinary rows while the minimap is hidden");
+            hiddenMap.RequestObjectiveContext(76, true);
+            for (var i = 0; i < 9; i++) hiddenMap.Advance(true, true, true, false, false, 1, false, false);
+            Assert.That(hiddenMap.VisibleRow, Is.EqualTo(76), "pending objective context bypasses the ordinary minimap mask");
+            var closed = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 3; i++) closed.Advance(false, false, true, false, false);
+            Assert.That(closed.VisibleRow, Is.EqualTo(1));
+            closed.CloseCurrent(true);
+            for (var i = 0; i < 20; i++)
+            {
+                closed.Advance(false, false, true, false, false, 1);
+                Assert.That(closed.Visible, Is.False, "disabling icons closes the popup and retains the source 20-pass poll delay");
+            }
+            closed.Advance(false, false, true, false, false, 0);
+            Assert.That(closed.VisibleRow, Is.EqualTo(3), "the source poll selects before the next draw");
+            var helpDisabled = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 3; i++) helpDisabled.Advance(false, false, true, false, false);
+            helpDisabled.CloseCurrent(false);
+            helpDisabled.Advance(false, false, false, false, false, 0, false, false);
+            Assert.That(helpDisabled.Visible, Is.False, "disabled help hides and freezes the carrier");
+            helpDisabled.Advance(false, false, true, false, false, 0, false, false);
+            Assert.That(helpDisabled.VisibleRow, Is.EqualTo(1), "source sub_87C10 does not clear while help is disabled");
             var context = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             context.RequestObjectiveContext(76, true);
             for (var i = 0; i < 9; i++) context.Advance(false, false, true, false, false);
@@ -1315,6 +1342,17 @@ namespace MagicCarpet.Native.Tests
                 Send(EventType.Repaint, SourcePauseMenu.IconRect(178).center);
                 Assert.That(menu.PauseHoverHelpRow, Is.Zero, "the actual options page clears pause-icon hover");
                 Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 12 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleIconsAndMap),
+                    "the real source options row produces the same display action");
+                native.GameRuntimeToggleIconsAndMap();
+                Assert.That(native.GameRuntimeIdentity().display_settings.minimap, Is.False);
+                Send(EventType.MouseDown, new Vector2(320, 67 + 12 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleIconsAndMap),
+                    "the options submenu remains open after the first toggle");
+                native.GameRuntimeToggleIconsAndMap();
+                Assert.That(native.GameRuntimeIdentity().display_settings.minimap, Is.True);
+                stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
                 menu.ResetPauseHoverHelp();
                 Hover(SourcePauseMenu.IconRect(174).center);
                 menu.ResetPauseHoverHelp();
@@ -2763,10 +2801,99 @@ namespace MagicCarpet.Native.Tests
                 CollectionAssert.AreEqual(currentBytes, runtime.QualificationSaveGameRuntimeProductionReplay());
                 Assert.That(((CampaignPresentationSurface)Field("gameRuntimeSecretSurface")).NativeSceneComplete, Is.True);
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+
+                // The same real paused owner exercises the modifier dispatch
+                // without adding a gameplay step or inventing a display state.
+                var f5 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags);
+                void F5(bool physicalShift, bool admittedShift, bool alt = false) =>
+                    f5.Invoke(runtime, new object[] { true, physicalShift, admittedShift, alt });
+                var pausedOwner = (NativeSession)Field("session");
+                var beforeToggle = runtime.GameRuntimeProductionIdentity;
+                Assert.That((beforeToggle.display_settings.minimap, beforeToggle.display_settings.top_bar), Is.EqualTo((true, true)));
+                var surfaceAfterLoad = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                Assert.That(surfaceAfterLoad.MinimapVisible, Is.True);
+                F5(true, false); // Physical modifier is still behind the release barrier.
+                F5(true, true, true); // Original Alt branch has precedence.
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.True);
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False,
+                    "neither a blocked Shift chord nor Alt+Shift+F5 becomes a bare save");
+                F5(true, true);
+                var hidden = runtime.GameRuntimeProductionIdentity;
+                Assert.That((hidden.display_settings.minimap, hidden.display_settings.top_bar), Is.EqualTo((false, false)));
+                Assert.That((hidden.generation, hidden.session.generation, hidden.session.tick),
+                    Is.EqualTo((beforeToggle.generation, beforeToggle.session.generation, beforeToggle.session.tick)));
+                Assert.That(surfaceAfterLoad.MinimapVisible, Is.False, "the actual indexed minimap consumer is hidden immediately");
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "Shift+F5 must not queue a save");
+                var notices = pausedOwner.GameRuntimeParticipantNotifications().value;
+                Assert.That(notices, Has.Length.EqualTo(1));
+                Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo(("participant.icons_map_hidden", (short)50)));
+                var rows = SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14, menu.GameplayLanguageText);
+                Assert.That(rows[0].Text, Is.EqualTo("Icons and Map On"), "source indexes record365 when the new flag is zero");
+                Assert.That(pausedOwner.GameRuntimeParticipantNotifications().value[0].remaining_frames, Is.EqualTo(50),
+                    "observing the notice does not consume a source draw");
+                var hiddenReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                using (var coldHidden = NativeSession.OpenGameRuntimeReplayFrom(pausedOwner, hiddenReplay,
+                    (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages")))
+                {
+                    var coldIdentity = coldHidden.GameRuntimeIdentity();
+                    Assert.That((coldIdentity.display_settings.minimap, coldIdentity.display_settings.top_bar), Is.EqualTo((false, false)));
+                    Assert.That(coldHidden.GameRuntimeParticipantNotifications().value[0].kind, Is.EqualTo("participant.icons_map_hidden"));
+                    Assert.That(coldHidden.GameRuntimePresentationFrame(false).value[0].remaining_frames, Is.EqualTo(50),
+                        "a source-hidden notice frame does not consume the timer");
+                    for (var draw = 0; draw < 50; draw++)
+                    {
+                        var frame = coldHidden.GameRuntimePresentationFrame(true);
+                        Assert.That(frame.value, Has.Length.EqualTo(1));
+                        Assert.That(frame.value[0].remaining_frames, Is.EqualTo(49 - draw));
+                    }
+                    Assert.That(coldHidden.GameRuntimePresentationFrame(true).value, Is.Empty,
+                        "source timer zero is the last drawn frame");
+                    Assert.That(coldHidden.GameRuntimeIdentity().session.tick, Is.EqualTo(coldIdentity.session.tick));
+                }
+                F5(false, false);
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its save edge");
+                typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False);
+                CollectionAssert.AreEqual(hiddenReplay, File.ReadAllBytes(save), "bare F5 publishes the real hidden-display replay");
+                F5(true, true);
+                Assert.That((runtime.GameRuntimeProductionIdentity.display_settings.minimap,
+                    runtime.GameRuntimeProductionIdentity.display_settings.top_bar), Is.EqualTo((true, true)));
+                Assert.That(surfaceAfterLoad.MinimapVisible, Is.True);
+                notices = pausedOwner.GameRuntimeParticipantNotifications().value;
+                Assert.That(notices[0].kind, Is.EqualTo("participant.icons_map_visible"));
+                rows = SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14, menu.GameplayLanguageText);
+                Assert.That(rows[0].Text, Is.EqualTo("Icons and Map Off"), "source indexes record366 when the new flag is one");
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Resume), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(ulong.Parse(runtime.GameRuntimeProductionIdentity.session.tick),
                     Is.EqualTo(ulong.Parse(savedIdentity.session.tick) + 1));
+                var sourceMenus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                // These are the two ordered consumers of a single declared
+                // Ctrl+Shift+F5 input frame: source Shift processing first,
+                // then the Ctrl spell-menu proposal and real admission.
+                var simultaneousTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                F5(true, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.False);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(simultaneousTick));
+                var spellInput = sourceMenus.Step(false, true, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(spellInput.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, spellInput), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.SpellOpen, Is.True, "held Ctrl reaches the actual Rust spell-menu admission");
+                Assert.That((bool)Field("gameRuntimeSpellMenuOpen"), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.False,
+                    "Ctrl menu admission must not discard or replay the preceding Shift+F5 action");
+                var spellTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                F5(true, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.True,
+                    "source Shift+F5 remains admitted while the Ctrl spell menu is open");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(spellTick));
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False);
+                var closeSpells = sourceMenus.Step(false, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(closeSpells.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, closeSpells), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.SpellOpen, Is.False);
                 runtime.QualificationApplyGameRuntimeProductionInput(true, false);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
                 Assert.That(Field("gameRuntimeManaHint"), Is.Null);
@@ -3129,6 +3256,7 @@ namespace MagicCarpet.Native.Tests
             const string third = "level.magic_carpet_2.revealed_way";
             var identity = new GameRuntimeTransport.Identity {
                 runtime_contract = GameRuntimeTransport.RuntimeContract, runtime_id = "771", generation = "4",
+                display_settings = new GameRuntimeTransport.DisplaySettings { minimap = true, top_bar = true },
                 mode = GameRuntimeTransport.CampaignMode,
                 active_runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition {
                     game_id = "game.magic_carpet_2", bound_level_id = first, entry_level_id = first,

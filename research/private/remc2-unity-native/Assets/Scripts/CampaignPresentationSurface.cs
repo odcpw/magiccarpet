@@ -505,6 +505,9 @@ namespace MagicCarpet.Native
         internal int LiveSpellSurfaceCount { get; private set; }
         internal string CacheContentHash { get; private set; }
 
+        internal void SetIconsAndMapVisible(bool visible) => minimapOverlay?.SetIconsAndMapVisible(visible);
+        internal bool MinimapVisible => minimapOverlay?.MapVisible == true;
+
         internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw, bool fullMap = false)
         {
             if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw, fullMap); return; }

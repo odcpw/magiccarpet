@@ -378,6 +378,12 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class DisplaySettings
+        {
+            public bool minimap, top_bar;
+        }
+
+        [Serializable]
         internal sealed class Identity
         {
             public string runtime_contract;
@@ -386,6 +392,7 @@ namespace MagicCarpet.Native
             public string mode;
             [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
+            public DisplaySettings display_settings;
             public RuntimePresentationCue presentation;
             [OptionalField] public CampaignMenuSnapshot campaign_menu;
             [OptionalField] public DefinitionIdentity pending_definition;
@@ -1055,6 +1062,7 @@ namespace MagicCarpet.Native
                 runtime_contract = before.runtime_contract, runtime_id = before.runtime_id,
                 generation = before.generation, mode = before.mode,
                 frontend_media = before.frontend_media, player_preferences = before.player_preferences,
+                display_settings = before.display_settings,
                 presentation = before.presentation, campaign_menu = before.campaign_menu,
                 pending_definition = before.pending_definition, active_runtime_flow = before.active_runtime_flow,
                 session = sessionIdentity, secret_campaign = before.secret_campaign
@@ -1089,6 +1097,24 @@ namespace MagicCarpet.Native
                 ParseCounter(before.session.tick, "tick"), notificationsVisible ? (byte)1 : (byte)0),
                 "service presentation frame");
             return ParticipantNotifications();
+        }
+
+        internal Identity ToggleIconsAndMap()
+        {
+            RequireSessionMode(allowPaused: true, "toggle icons and map");
+            var before = Current;
+            Check(NativeSim.mc_game_runtime_toggle_icons_map_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick")), "toggle icons and map");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.display_settings.minimap == before.display_settings.minimap ||
+                after.display_settings.top_bar == before.display_settings.top_bar)
+                throw new InvalidDataException("icons and map toggle changed the wrong source state");
+            return after;
         }
 
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignStep(
@@ -1343,7 +1369,7 @@ namespace MagicCarpet.Native
 
         internal static void ValidateIdentity(Identity identity, ulong handle)
         {
-            if (identity == null || identity.runtime_contract != RuntimeContract ||
+            if (identity == null || identity.display_settings == null || identity.runtime_contract != RuntimeContract ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
                 !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }
                     .Contains(identity.mode))

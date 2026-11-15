@@ -2956,7 +2956,8 @@ mod tests {
         let title_guard = runtime.identity().guard();
         runtime.restore_playing_resolved(
             title_guard, definition, &Mc2CampaignAdapter, 61925,
-            std::iter::empty::<ReplayOperation<GameCommand>>(), false, Vec::new(), Vec::new(),
+            std::iter::empty::<ReplayOperation<GameCommand>>(), false,
+            crate::game_runtime::DisplaySettings::default(), Vec::new(), Vec::new(),
             |_| Ok(Mc2CampaignInputs::with_owner_cache(&package, &cache)),
             |session| {
                 assert_eq!(session.backend().compatibility_campaign().definition().package_sha256,
@@ -2970,7 +2971,9 @@ mod tests {
                 assert_eq!(session.identity().tick, expected_tick);
                 Ok(())
             },
-            |_, _, _| {}, |_| {},
+            |_, _, _| {},
+            |session, minimap| session.backend_mut().publish_display_notice(minimap),
+            |_| {},
         ).expect("controlled admission of the unchanged completed session");
         let playing = runtime.identity();
         let receipt = runtime.accept_transition_resolved(
