@@ -32,6 +32,7 @@ namespace MagicCarpet.Native
         private float briefingElapsed;
         private bool sourceBriefingSuppressed;
         private SourceScrollDialog scrollDialog;
+        private SourceScrollDialog pendingSlotDialog;
         private SourceCampaignSaveSlots.Selection saveSlot;
         private string configuredSavePath;
         private string lastLaunchedMission, lastRuntimeId;
@@ -46,6 +47,20 @@ namespace MagicCarpet.Native
             campaignCache?.Campaign?.Motion is { Ready: true, Travelling: false } && statisticsLevel == null &&
             !sourceBriefingSuppressed;
         internal void ConfigureSavePath(string path) { configuredSavePath = path; }
+        internal bool CanQuickSave => scrollDialog == null && pendingSlotDialog == null &&
+            preferences?.IsOpen != true && campaignCache?.PauseMenu?.IsSourceDialogOpen != true &&
+            !(lastMode == GameRuntimeTransport.CampaignMode && campaignCache?.Campaign?.Motion is { } motion &&
+                (motion.Travelling || (!motion.Ready && lastCampaignPhase != "results")));
+        internal void CompleteSlotAction(bool success)
+        {
+            if (pendingSlotDialog == null) return;
+            if (!success)
+            {
+                pendingSlotDialog.ReopenAfterFailure();
+                scrollDialog = pendingSlotDialog;
+            }
+            pendingSlotDialog = null;
+        }
         internal SourceCampaignSaveSlots.Selection TakeSaveSlot()
         { var result = saveSlot; saveSlot = null; return result; }
 
@@ -348,6 +363,14 @@ namespace MagicCarpet.Native
                             stats, campaignCache.SourceView(menu), campaignCache.ForMission,
                             PortalSelector, SourceText);
                         DrawMapCommands(menu, status, false, false, identity.secret_campaign);
+                        // F5 is the host save edge, not a Results dismissal.
+                        // The runtime owns the save request and consumes it once.
+                        if (Event.current.type == EventType.KeyDown &&
+                            Event.current.keyCode == KeyCode.F5)
+                        {
+                            Event.current.Use();
+                            return Action.None;
+                        }
                         // NewGameDraw states4/5 consume any key or mouse
                         // button, with the map itself retained behind the sheet.
                         if (Event.current.type == EventType.KeyDown || Event.current.type == EventType.MouseDown)
@@ -764,9 +787,12 @@ namespace MagicCarpet.Native
                 640 * scale, 480 * scale) : campaignCache.SourceView(menu);
             var result = scrollDialog.Draw(campaignCache, view, advance, now, PlayClick);
             if (result == null) return Action.None;
+            var completedDialog = scrollDialog;
             scrollDialog = null;
             if (!result.Confirmed) return Action.None;
             saveSlot = result.Slot;
+            if (result.Operation is SourceScrollDialog.Kind.Save or SourceScrollDialog.Kind.Load)
+                pendingSlotDialog = completedDialog;
             return result.Operation switch {
                 SourceScrollDialog.Kind.Save => Action.Save,
                 SourceScrollDialog.Kind.Load => Action.Load,

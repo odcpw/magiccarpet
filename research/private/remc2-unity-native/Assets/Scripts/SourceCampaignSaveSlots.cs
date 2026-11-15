@@ -44,11 +44,12 @@ namespace MagicCarpet.Native
                     using var stream = File.OpenRead(path);
                     entries[index - 1] = new Entry(true, ReadHeader(stream));
                 }
-                // CreateOrOpenFile returning null or an invalid source
-                // signature leaves the corresponding row empty. Selecting
-                // Save/Load still reports its actual host I/O failure.
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                // Keep an existing but invalid/unreadable slot selectable.
+                // Read still validates its actual header and reports the
+                // failure; scanning never changes the existing file.
+                catch (InvalidDataException) { entries[index - 1] = new Entry(true, "INVALID SLOT"); }
+                catch (IOException) { entries[index - 1] = new Entry(true, "UNREADABLE SLOT"); }
+                catch (UnauthorizedAccessException) { entries[index - 1] = new Entry(true, "UNREADABLE SLOT"); }
             }
             return entries;
         }
