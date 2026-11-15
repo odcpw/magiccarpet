@@ -6,14 +6,15 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class ModernBuildingsEditModeTests
     {
-        [Test]
-        public void FailedPlacementRemovesAlreadyCreatedBuildings()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void FailedPlacementRemovesAlreadyCreatedBuildings(bool voxel)
         {
             var root=new GameObject("Building rollback test");
             var layout=ModernBuildingLayoutEditModeTests.Layout(out var source);
             try
             {
-                using(var buildings=new ModernBuildings(root.transform,null,layout))
+                using(var buildings=new ModernBuildings(root.transform,null,layout,voxel))
                 {
                     Assert.Throws<System.InvalidOperationException>(()=>buildings.Stage(Vector3.zero));
                     buildings.PrepareTerrain(source);
@@ -28,14 +29,15 @@ namespace MagicCarpet.Native.Tests
             finally { Object.DestroyImmediate(root); }
         }
 
-        [Test]
-        public void StagedSourceBuildingsShareMeshesHaveLodsAndExcludeWrappedFootprints()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void StagedSourceBuildingsShareMeshesHaveLodsAndExcludeWrappedFootprints(bool voxel)
         {
             var root=new GameObject("Source building placement test");
             var layout=ModernBuildingLayoutEditModeTests.Layout(out var source);
             try
             {
-                using(var buildings=new ModernBuildings(root.transform,null,layout))
+                using(var buildings=new ModernBuildings(root.transform,null,layout,voxel))
                 {
                     buildings.PrepareTerrain(source);buildings.Stage(new Vector3(100,10,100));
                     Assert.That(buildings.Count,Is.EqualTo(5));
@@ -47,11 +49,21 @@ namespace MagicCarpet.Native.Tests
                     {
                         var levels=group.GetLODs();Assert.That(levels.Length,Is.EqualTo(3));
                         Assert.That(levels[0].screenRelativeTransitionHeight,Is.GreaterThan(levels[1].screenRelativeTransitionHeight));
-                        foreach(var level in levels) Assert.That(level.renderers.Length,Is.EqualTo(1));
+                        for(var lod=0;lod<levels.Length;lod++)
+                        {
+                            Assert.That(levels[lod].renderers.Length,Is.EqualTo(1));
+                            var mesh=levels[lod].renderers[0].GetComponent<MeshFilter>().sharedMesh;
+                            Assert.That(mesh.name,Does.StartWith(voxel?"Voxel BUILD ":"BUILD "));
+                            Assert.That(mesh.name,Does.EndWith("LOD"+lod));
+                        }
                         Assert.That(group.transform.localScale,Is.EqualTo(Vector3.one),"Source geometry must not be stretched");
                     }
                     Assert.That(groups[0].GetComponentInChildren<MeshFilter>().sharedMesh,
                         Is.SameAs(groups[4].GetComponentInChildren<MeshFilter>().sharedMesh));
+                    var expected=voxel ? ModernBuildingMeshes.VoxelWindowCenters(layout.profiles[0],0)
+                        : ModernBuildingMeshes.WindowCenters(layout.profiles[0]);
+                    Assert.That(expected.Length,Is.GreaterThan(0));
+                    Assert.That(buildings.WindowCenters[0],Is.EqualTo(groups[0].transform.position+expected[0]));
                     buildings.Render(new Vector3(1124,10,100));
                     foreach(var group in groups) Assert.That(Mathf.Abs(group.transform.position.x-1124),Is.LessThan(512));
                     buildings.Stage(Vector3.zero);Assert.That(buildings.Count,Is.EqualTo(5));
@@ -61,8 +73,9 @@ namespace MagicCarpet.Native.Tests
             finally { Object.DestroyImmediate(root); }
         }
 
-        [Test]
-        public void LiveBuildingsFollowSourceOwnerAndNeverFlattenChangedStamp()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LiveBuildingsFollowSourceOwnerAndNeverFlattenChangedStamp(bool voxel)
         {
             var root=new GameObject("Live source buildings");
             var layout=ModernBuildingLayoutEditModeTests.Layout(out var source);
@@ -72,7 +85,7 @@ namespace MagicCarpet.Native.Tests
                 Y=(ushort)entry.source_entity_position.y, Z=(short)entry.source_entity_position.z }).ToArray();
             try
             {
-                using(var buildings=new ModernBuildings(root.transform,null,layout))
+                using(var buildings=new ModernBuildings(root.transform,null,layout,voxel))
                 {
                     // An unrelated source height change invalidates the old
                     // global digest, but not any of the five intact stamps.

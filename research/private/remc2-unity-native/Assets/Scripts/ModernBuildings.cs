@@ -30,6 +30,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int,Mesh[]> meshes=new();
         private readonly Material material;
         private readonly ModernBuildingLayout layout;
+        private readonly bool voxel;
         private readonly List<Vector3> windowCenters=new(),windowNormals=new();
         private readonly List<Bounds> changedFootprints=new();
         private bool prepared;
@@ -46,9 +47,10 @@ namespace MagicCarpet.Native
         internal int VisibleCount => liveVisible?.Count ?? instances.Count;
         internal bool Ready => Count>0;
 
-        internal ModernBuildings(Transform parent,ModernTerrainMesh terrain,ModernBuildingLayout source=null)
+        internal ModernBuildings(Transform parent,ModernTerrainMesh terrain,ModernBuildingLayout source=null,bool voxel=false)
         {
             this.parent=parent;
+            this.voxel=voxel;
             layout=source??ModernBuildingLayout.LoadRequested();
             if(layout==null) return;
             layout.ValidateProfiles();
@@ -61,7 +63,8 @@ namespace MagicCarpet.Native
                 foreach(var profile in layout.profiles)
                 {
                     var levels=new Mesh[3];meshes.Add(profile.build_index,levels);
-                    for(var lod=0;lod<3;lod++) levels[lod]=ModernBuildingMeshes.Create(profile,lod);
+                    for(var lod=0;lod<3;lod++) levels[lod]=voxel
+                        ? ModernBuildingMeshes.CreateVoxel(profile,lod) : ModernBuildingMeshes.Create(profile,lod);
                 }
             }
             catch { Dispose();throw; }
@@ -179,7 +182,8 @@ namespace MagicCarpet.Native
                 lods[lod]=new LOD(thresholds[lod],new Renderer[] { renderer });
             }
             var group=node.AddComponent<LODGroup>();group.SetLODs(lods);group.RecalculateBounds();
-            var centers=ModernBuildingMeshes.WindowCenters(profile);var normals=ModernBuildingMeshes.WindowNormals(profile);
+            var centers=voxel ? ModernBuildingMeshes.VoxelWindowCenters(profile,0) : ModernBuildingMeshes.WindowCenters(profile);
+            var normals=ModernBuildingMeshes.WindowNormals(profile);
             instance.WindowCenters=new Vector3[centers.Length];instance.WindowNormals=normals;
             for(var i=0;i<centers.Length;i++) { instance.WindowCenters[i]=best+centers[i];windowCenters.Add(instance.WindowCenters[i]);windowNormals.Add(normals[i]); }
         }
