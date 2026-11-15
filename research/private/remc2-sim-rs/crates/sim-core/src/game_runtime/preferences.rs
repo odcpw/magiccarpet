@@ -222,8 +222,16 @@ pub enum PreferencesCommand {
     InstallLanguages {
         cache_dir: String,
     },
+    InstallLanguagesChecked {
+        cache_dir: String,
+        expected_locale_binding: LocaleSnapshot,
+    },
     Apply {
         preferences: PlayerPreferences,
+    },
+    ApplyChecked {
+        preferences: PlayerPreferences,
+        expected_locale_binding: LocaleSnapshot,
     },
     PreviewAudio {
         sound_enabled: bool,
@@ -353,13 +361,28 @@ impl PreferenceStore {
                 // publish preferences; neither missing nor corrupt data touches saves.
                 self.path = Some(path);
             }
-            PreferencesCommand::InstallLanguages { cache_dir } => {
+            command @ (PreferencesCommand::InstallLanguages { .. }
+            | PreferencesCommand::InstallLanguagesChecked { .. }) => {
+                let (cache_dir, expected) = match command {
+                    PreferencesCommand::InstallLanguages { cache_dir } => (cache_dir, None),
+                    PreferencesCommand::InstallLanguagesChecked {
+                        cache_dir,
+                        expected_locale_binding,
+                    } => (cache_dir, Some(expected_locale_binding)),
+                    _ => unreachable!(),
+                };
                 let candidate = InstalledLanguages::load(&cache_dir)?;
                 let (locale, recovered) =
                     match candidate.binding(self.current.selected_locale.as_deref()) {
                         Ok(locale) => (locale, false),
                         Err(_) => (candidate.binding(None)?, true),
                     };
+                if expected
+                    .as_ref()
+                    .is_some_and(|expected| *expected != locale.identity)
+                {
+                    return Err("installed locale changed after preflight".into());
+                }
                 if recovered {
                     self.current.selected_locale = None;
                 }
@@ -371,7 +394,16 @@ impl PreferenceStore {
                 self.languages = Some(Arc::new(candidate));
                 self.locale = Some(locale);
             }
-            PreferencesCommand::Apply { mut preferences } => {
+            command @ (PreferencesCommand::Apply { .. }
+            | PreferencesCommand::ApplyChecked { .. }) => {
+                let (mut preferences, expected) = match command {
+                    PreferencesCommand::Apply { preferences } => (preferences, None),
+                    PreferencesCommand::ApplyChecked {
+                        preferences,
+                        expected_locale_binding,
+                    } => (preferences, Some(expected_locale_binding)),
+                    _ => unreachable!(),
+                };
                 preferences.player_name.make_ascii_uppercase();
                 preferences.validate()?;
                 let path = self
@@ -390,6 +422,13 @@ impl PreferenceStore {
                     .as_ref()
                     .map(|languages| languages.binding(preferences.selected_locale.as_deref()))
                     .transpose()?;
+                if expected.as_ref().is_some_and(|expected| {
+                    locale
+                        .as_ref()
+                        .is_none_or(|locale| locale.identity != *expected)
+                }) {
+                    return Err("installed locale changed after preflight".into());
+                }
                 if language_candidate.is_none()
                     && preferences.selected_locale != self.current.selected_locale
                 {
@@ -979,6 +1018,85 @@ mod tests {
             "validated D2 source binding is index 2"
         );
         let before = store.snapshot();
+        let expected = before.locale_binding.clone().unwrap();
+        store
+            .command(PreferencesCommand::InstallLanguagesChecked {
+                cache_dir: isolated.to_string_lossy().into_owned(),
+                expected_locale_binding: expected.clone(),
+            })
+            .unwrap();
+        store
+            .command(PreferencesCommand::ApplyChecked {
+                preferences: before.preferences.clone(),
+                expected_locale_binding: expected.clone(),
+            })
+            .unwrap();
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(
+            fs::read(profile.join("player-preferences.json")).unwrap(),
+            saved
+        );
+
+        // Reorder the source provenance rows in an isolated copy and renew
+        // its canonical manifest receipt. Both versions validate against the
+        // same real owner bytes, but their complete binding hashes differ.
+        // This models a valid cache replacement between managed preflight and
+        // native reload without inventing another locale or corrupting data.
+        use sha2::{Digest, Sha256};
+        let manifest_path = isolated.join("manifest.json");
+        let original_manifest = fs::read(&manifest_path).unwrap();
+        let mut changed: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+        changed["sources"].as_array_mut().unwrap().reverse();
+        changed
+            .as_object_mut()
+            .unwrap()
+            .remove("binding_sha256")
+            .unwrap();
+        let changed_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&changed).unwrap())
+        );
+        assert_ne!(changed_digest, expected.binding_sha256);
+        changed["binding_sha256"] = serde_json::Value::String(changed_digest);
+        fs::write(&manifest_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let replacement = InstalledLanguages::load(&isolated)
+            .unwrap()
+            .binding(None)
+            .unwrap();
+        assert_eq!(replacement.identity.id, expected.id);
+        assert_ne!(replacement.identity.binding_sha256, expected.binding_sha256);
+        let install_request = serde_json::json!({
+            "operation": "install_languages_checked",
+            "cache_dir": isolated.to_string_lossy(),
+            "expected_locale_binding": &expected,
+        });
+        let apply_request = serde_json::json!({
+            "operation": "apply_checked",
+            "preferences": &before.preferences,
+            "expected_locale_binding": &expected,
+        });
+        assert!(
+            store
+                .command(serde_json::from_value(install_request).unwrap())
+                .is_err()
+        );
+        assert!(
+            store
+                .command(serde_json::from_value(apply_request).unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            store.snapshot(),
+            before,
+            "a changed valid binding cannot replace the retained owner"
+        );
+        assert_eq!(
+            fs::read(profile.join("player-preferences.json")).unwrap(),
+            saved,
+            "a changed valid binding cannot rewrite the profile"
+        );
+        fs::write(&manifest_path, original_manifest).unwrap();
+
         let mut invalid = before.preferences.clone();
         invalid.selected_locale = Some("uninstalled-source-locale".into());
         assert!(
@@ -1200,9 +1318,16 @@ mod tests {
         let mut prefs = PlayerPreferences::default();
         prefs.player_name = "Oliver".into();
         prefs.keys = [
-            InputKey::W, InputKey::Minus, InputKey::Equals, InputKey::Semicolon,
-            InputKey::Backslash, InputKey::Comma, InputKey::Period, InputKey::Slash,
-            InputKey::RightShift, InputKey::LeftAlt,
+            InputKey::W,
+            InputKey::Minus,
+            InputKey::Equals,
+            InputKey::Semicolon,
+            InputKey::Backslash,
+            InputKey::Comma,
+            InputKey::Period,
+            InputKey::Slash,
+            InputKey::RightShift,
+            InputKey::LeftAlt,
         ];
         prefs.sound_volume = 63;
         prefs.show_help = false;
@@ -1247,8 +1372,11 @@ mod tests {
             store.snapshot().preferences
         );
         assert_eq!(cold.snapshot().preferences.player_name, "OLIVER");
-        assert_eq!(cold.snapshot().preferences.keys, store.snapshot().preferences.keys,
-            "source punctuation bindings survive a cold profile load");
+        assert_eq!(
+            cold.snapshot().preferences.keys,
+            store.snapshot().preferences.keys,
+            "source punctuation bindings survive a cold profile load"
+        );
         assert!(!cold.snapshot().preferences.dynamic_lighting);
         assert_eq!(fs::read(&save).unwrap(), b"existing campaign save");
         fs::remove_file(path).unwrap();

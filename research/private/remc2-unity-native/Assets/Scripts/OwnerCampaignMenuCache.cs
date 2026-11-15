@@ -83,6 +83,10 @@ namespace MagicCarpet.Native
             public PortalSound sound;
         }
         [Serializable] private sealed class LanguageBinding { public string path, binding_sha256, default_locale_id; }
+        [Serializable] private sealed class LanguageScreenFlag
+        { public string locale_id, indices_path, mask_path; public int selector, width, height; }
+        [Serializable] private sealed class LanguageScreenBinding
+        { public int width, height; public string background_path, palette_path; public BitmapBinding cursor; public LanguageScreenFlag[] flags; }
         [Serializable] private sealed class LanguageRecord { public string id, sha256; public int selector, offset, bytes; }
         [Serializable] private sealed class ObjectiveGlyph
         {
@@ -117,7 +121,28 @@ namespace MagicCarpet.Native
         [Serializable] private sealed class LanguageLocale
         {
             public string id, pack_sha256, records_path, text_sha256;
+            public string[] font_ids;
             public LanguageRecord[] records;
+        }
+        internal sealed class LocaleTextBinding
+        {
+            internal readonly string CachePath, BindingSha256, Id, PackSha256, TextSha256;
+            private readonly string[] fontIds;
+            private readonly string[] records;
+            internal LocaleTextBinding(string path, string binding, string id, string pack, string text,
+                string[] fonts, string[] values)
+            {
+                CachePath = path; BindingSha256 = binding; Id = id;
+                PackSha256 = pack; TextSha256 = text;
+                fontIds = (string[])fonts.Clone(); records = values;
+            }
+            internal string Record(int index) => index >= 0 && index < records.Length ? records[index] :
+                throw new InvalidDataException("unbound source menu language record " + index);
+            internal bool MatchesFonts(string[] values) => values != null && fontIds.SequenceEqual(values);
+            internal PlayerLocaleBinding Identity => new PlayerLocaleBinding {
+                cache_path = CachePath, binding_sha256 = BindingSha256, id = Id,
+                pack_sha256 = PackSha256, text_sha256 = TextSha256, font_ids = (string[])fontIds.Clone()
+            };
         }
         [Serializable] private sealed class LanguageManifest
         {
@@ -131,6 +156,7 @@ namespace MagicCarpet.Native
         {
             public string schema, source_commit, source_language_sha256, source_catalog_path;
             public LanguageBinding language_cache;
+            public LanguageScreenBinding language_screen;
             public int width, height, view_width, view_height;
             public Mission[] missions;
             public Portal[] portals;
@@ -150,7 +176,13 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, Texture2D> portalFrames = new();
         private byte[] portalSound;
         private byte[] clickSound;
-        private string[] languageRecords;
+        private readonly Dictionary<string, LocaleTextBinding> localeBindings = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> briefingSelectors = new(StringComparer.Ordinal);
+        private string languageCachePath, defaultLocaleId;
+        private LocaleTextBinding currentLocale;
+        private readonly Dictionary<string, Texture2D> languageFlags = new(StringComparer.Ordinal);
+        internal Texture2D LanguageBackground { get; private set; }
+        internal Texture2D LanguageCursor { get; private set; }
         private byte[] startupPalette;
         private ObjectiveTextboxCompositor.Glyph[] objectiveGlyphs;
         private byte[] objectiveGlyphMasks;
@@ -240,6 +272,47 @@ namespace MagicCarpet.Native
                     rgba[i * 4 + 3] = 255;
                 }
                 World = Texture(rgba, 1280, 960, "MC2 owner campaign world map");
+                if (manifest.language_screen != null)
+                {
+                    var screen = manifest.language_screen;
+                    if (screen.width != 640 || screen.height != 480 || screen.cursor == null ||
+                        screen.cursor.selector != 37 || screen.cursor.width <= 0 || screen.cursor.height <= 0 ||
+                        screen.cursor.width > 256 || screen.cursor.height > 256 || screen.flags == null ||
+                        screen.flags.Length != localeBindings.Count)
+                        throw new InvalidDataException("source language screen is incomplete");
+                    var screenIndices = Read(screen.background_path, 640 * 480);
+                    var screenPalette = Read(screen.palette_path, 768);
+                    if (screenPalette.Any(channel => channel > 63))
+                        throw new InvalidDataException("source language screen palette is not RGB6");
+                    byte[] Pixels(byte[] pixelIndices, byte[] mask)
+                    {
+                        var pixels = new byte[checked(pixelIndices.Length * 4)];
+                        for (var i = 0; i < pixelIndices.Length; i++)
+                        {
+                            if (mask != null && mask[i] > 1) throw new InvalidDataException("source language flag mask is invalid");
+                            var p = pixelIndices[i] * 3;
+                            pixels[i * 4] = (byte)(screenPalette[p] * 4);
+                            pixels[i * 4 + 1] = (byte)(screenPalette[p + 1] * 4);
+                            pixels[i * 4 + 2] = (byte)(screenPalette[p + 2] * 4);
+                            pixels[i * 4 + 3] = mask == null || mask[i] != 0 ? (byte)255 : (byte)0;
+                        }
+                        return pixels;
+                    }
+                    LanguageBackground = Texture(Pixels(screenIndices, null), 640, 480, "MC2 source language screen 12");
+                    LanguageCursor = Texture(Read(screen.cursor.path, checked(screen.cursor.width * screen.cursor.height * 4)),
+                        screen.cursor.width, screen.cursor.height, "MC2 source language cursor 37");
+                    foreach (var flag in screen.flags)
+                    {
+                        if (flag == null || !localeBindings.ContainsKey(flag.locale_id) || flag.selector != 1 ||
+                            flag.width <= 0 || flag.height <= 0 || flag.width > 640 || flag.height > 480 ||
+                            languageFlags.ContainsKey(flag.locale_id))
+                            throw new InvalidDataException("source language flag binding is invalid");
+                        var size = checked(flag.width * flag.height);
+                        var flagIndices = Read(flag.indices_path, size); var flagMask = Read(flag.mask_path, size);
+                        languageFlags.Add(flag.locale_id, Texture(Pixels(flagIndices, flagMask), flag.width, flag.height,
+                            "MC2 source language flag"));
+                    }
+                }
                 foreach (var portal in manifest.portals)
                 {
                     if ((portal.kind != "completed" && portal.kind != "available") ||
@@ -453,10 +526,41 @@ namespace MagicCarpet.Native
         internal byte[] ReadPortalOpeningSound() => portalSound ??
             throw new InvalidDataException("unbound source portal opening sound");
         internal byte[] ReadClickSound() => clickSound ?? throw new InvalidDataException("source menu click sound is unbound");
-        internal string LanguageText(int selector) => languageRecords != null &&
-            selector >= 0 && selector < languageRecords.Length ? languageRecords[selector] :
+        internal string LanguageText(int selector) => currentLocale != null ? currentLocale.Record(selector) :
             throw new InvalidDataException("unbound source menu language record " + selector);
-        internal bool HasLanguage => languageRecords != null;
+        internal bool HasLanguage => currentLocale != null;
+        internal string LanguageCachePath => languageCachePath;
+        internal string DefaultLocaleId => defaultLocaleId;
+        internal Texture2D LanguageFlag(string localeId) => localeId != null && languageFlags.TryGetValue(localeId, out var flag)
+            ? flag : throw new InvalidDataException("source locale flag is unbound");
+        internal string BriefingText(Mission mission) => briefingSelectors.TryGetValue(mission.level_id, out var selector)
+            ? LanguageText(selector) : mission.briefing;
+
+        internal LocaleTextBinding PrepareLocale(string cachePath, string requestedLocale)
+        {
+            if (string.IsNullOrEmpty(cachePath) || languageCachePath == null ||
+                !string.Equals(Path.GetFullPath(cachePath), languageCachePath, StringComparison.Ordinal))
+                throw new InvalidDataException("selected language cache differs from the campaign binding");
+            var id = requestedLocale ?? defaultLocaleId;
+            if (!localeBindings.TryGetValue(id, out var binding))
+                throw new ArgumentOutOfRangeException(nameof(requestedLocale), "selected source locale is not installed");
+            _ = new Mc2ObjectiveText(binding);
+            return binding;
+        }
+
+        internal LocaleTextBinding PrepareLocale(PlayerLocaleBinding accepted)
+        {
+            if (accepted == null) throw new InvalidDataException("native selected locale is unbound");
+            var binding = PrepareLocale(accepted.cache_path, accepted.id);
+            if (binding.Id != accepted.id || binding.BindingSha256 != accepted.binding_sha256 || binding.PackSha256 != accepted.pack_sha256 ||
+                binding.TextSha256 != accepted.text_sha256 || !binding.MatchesFonts(accepted.font_ids))
+                throw new InvalidDataException("native and campaign locale identities differ");
+            return binding;
+        }
+
+        // Publish only a prepared, native-accepted candidate. All consumers
+        // read this one retained reference, so no partial record table appears.
+        internal void PublishLocale(LocaleTextBinding binding) => currentLocale = binding;
 
         private static string Digest(byte[] bytes)
         {
@@ -557,36 +661,50 @@ namespace MagicCarpet.Native
                 objectiveGlyphs = glyphs;
                 objectiveGlyphMasks = masks;
             }
-            var locale = language.locales.SingleOrDefault(row => row.id == binding.default_locale_id);
-            if (locale?.records?.Length != 471 || locale.pack_sha256 != menu.source_language_sha256 ||
-                !payloads.TryGetValue(locale.records_path, out var text) || Digest(text) != locale.text_sha256)
-                throw new InvalidDataException("campaign default language is unbound");
-            var cursor = 0;
-            for (var selector = 0; selector < locale.records.Length; selector++)
+            languageCachePath = Path.GetFullPath(Path.Combine(root, binding.path));
+            defaultLocaleId = binding.default_locale_id;
+            foreach (var locale in language.locales)
             {
-                var record = locale.records[selector];
-                if (record.selector != selector || record.id != "text.mc2.record." + selector ||
-                    record.offset != cursor || record.bytes < 0 || (long)cursor + record.bytes >= text.Length ||
-                    text[cursor + record.bytes] != 0)
-                    throw new InvalidDataException("campaign language record extent is invalid");
-                var bytes = new byte[record.bytes];
-                Buffer.BlockCopy(text, cursor, bytes, 0, bytes.Length);
-                if (Array.IndexOf(bytes, (byte)0) >= 0 || Digest(bytes) != record.sha256)
-                    throw new InvalidDataException("campaign language record identity mismatch");
-                cursor += bytes.Length + 1;
+                if (locale?.records?.Length != 471 || locale.font_ids == null ||
+                    !locale.font_ids.SequenceEqual(new[] { "font0", "font1", "font2", "hfont3" }) ||
+                    !payloads.TryGetValue(locale.records_path, out var text) || Digest(text) != locale.text_sha256 ||
+                    string.IsNullOrEmpty(locale.id) || string.IsNullOrEmpty(locale.pack_sha256))
+                    throw new InvalidDataException("campaign source language is unbound");
+                var cursor = 0;
+                for (var selector = 0; selector < locale.records.Length; selector++)
+                {
+                    var record = locale.records[selector];
+                    if (record.selector != selector || record.id != "text.mc2.record." + selector ||
+                        record.offset != cursor || record.bytes < 0 || (long)cursor + record.bytes >= text.Length ||
+                        text[cursor + record.bytes] != 0)
+                        throw new InvalidDataException("campaign language record extent is invalid");
+                    var bytes = new byte[record.bytes];
+                    Buffer.BlockCopy(text, cursor, bytes, 0, bytes.Length);
+                    if (Array.IndexOf(bytes, (byte)0) >= 0 || Digest(bytes) != record.sha256)
+                        throw new InvalidDataException("campaign language record identity mismatch");
+                    cursor += bytes.Length + 1;
+                }
+                if (cursor != text.Length) throw new InvalidDataException("campaign language contains unbound bytes");
+                var values = locale.records.Select(record =>
+                    Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes)).ToArray();
+                if (!localeBindings.TryAdd(locale.id, new LocaleTextBinding(languageCachePath,
+                    binding.binding_sha256, locale.id, locale.pack_sha256, locale.text_sha256, locale.font_ids, values)))
+                    throw new InvalidDataException("duplicate source locale identity");
             }
-            if (cursor != text.Length) throw new InvalidDataException("campaign language contains unbound bytes");
-            languageRecords = locale.records.Select(record =>
-                Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes)).ToArray();
+            var defaultLocale = language.locales.SingleOrDefault(row => row.id == binding.default_locale_id);
+            if (defaultLocale == null || defaultLocale.pack_sha256 != menu.source_language_sha256)
+                throw new InvalidDataException("campaign default language is unbound");
+            currentLocale = localeBindings[defaultLocale.id];
             for (var index = 0; index < menu.missions.Length; index++)
             {
                 var mission = menu.missions[index];
                 var selector = 23 + (menu.schema == "mc2-owner-campaign-menu-cache/v3"
                     ? mission.source_ordinary_index : index);
-                var record = locale.records[selector];
+                var record = defaultLocale.records[selector];
                 if (record.selector != selector || mission.briefing_text_id != record.id)
                     throw new InvalidDataException("campaign briefing is bound to the wrong source record");
-                mission.briefing = Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes);
+                briefingSelectors.Add(mission.level_id, selector);
+                mission.briefing = currentLocale.Record(selector);
             }
         }
 
@@ -661,6 +779,15 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            currentLocale = null;
+            localeBindings.Clear();
+            briefingSelectors.Clear();
+            foreach (var flag in languageFlags.Values) Destroy(flag);
+            languageFlags.Clear();
+            Destroy(LanguageBackground);
+            LanguageBackground = null;
+            Destroy(LanguageCursor);
+            LanguageCursor = null;
             objectiveProfiles.Clear();
             objectiveGlyphs = null;
             objectiveGlyphMasks = null;

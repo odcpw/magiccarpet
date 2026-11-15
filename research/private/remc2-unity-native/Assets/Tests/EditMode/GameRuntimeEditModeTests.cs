@@ -898,6 +898,80 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        [Timeout(180000)]
+        public void RealInstalledLocaleRejectsBadPackAndRebindsColdNativeOwner()
+        {
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-real-locale-" + Guid.NewGuid().ToString("N"));
+            var cachePath = Path.Combine(temporary, "menu");
+            var profile = Path.Combine(temporary, "profile");
+            Directory.CreateDirectory(temporary);
+            try
+            {
+                CopyOwnerMenuFixture(CampaignMenuCache, cachePath);
+                using var cache = new OwnerCampaignMenuCache(cachePath);
+                using var native = NativeSession.OpenGameRuntimeFrontend(ResolverPackages());
+                var preferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    native.Handle, native.GameRuntimeIdentity(), json), profile);
+                preferences.BindLanguages(cache);
+                var identity = preferences.Current.locale_binding;
+                Assert.That(identity, Is.Not.Null);
+                var active = cache.PrepareLocale(identity);
+                var objective = new Mc2ObjectiveText(cache);
+                var stage = new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 0 };
+                Assert.That(objective.Resolve(4, stage), Is.EqualTo(active.Record(0x45)));
+                Assert.That(cache.BriefingText(cache.ForMission(SecretOriginLevel)), Is.EqualTo(active.Record(27)));
+                Assert.That(cache.LanguageText(444), Is.EqualTo(active.Record(444)));
+                var forged = JsonUtility.FromJson<PlayerLocaleBinding>(JsonUtility.ToJson(identity));
+                forged.text_sha256 = new string('0', 64);
+                Assert.Throws<InvalidDataException>(() => cache.PrepareLocale(forged));
+                Assert.Throws<ArgumentOutOfRangeException>(() => cache.PrepareLocale(cache.LanguageCachePath, "not-installed"));
+                Assert.That(cache.PrepareLocale(preferences.Current.locale_binding), Is.SameAs(active));
+                Assert.That(preferences.Current.preferences.selected_locale, Is.Null);
+                Assert.That(preferences.ApplySource(next => next.show_help = !next.show_help), Is.True);
+                Assert.That(preferences.Current.preferences.selected_locale, Is.Null,
+                    "cloning an unrelated source preference preserves the nullable default locale");
+                Assert.That(preferences.ApplySource(next => next.selected_locale = identity.id), Is.True);
+                var saved = File.ReadAllBytes(Path.Combine(profile, "player-preferences.json"));
+                var masks = Path.Combine(cache.LanguageCachePath, "fonts/font0.masks.u8");
+                var originalMasks = File.ReadAllBytes(masks);
+                var damagedMasks = (byte[])originalMasks.Clone();
+                damagedMasks[0] ^= 1;
+                File.WriteAllBytes(masks, damagedMasks);
+                try
+                {
+                    preferences.Open(SourceSettingsDialog.Page.Language);
+                    Assert.That(preferences.Apply(), Is.False,
+                        "real native checked Apply rejects changed owner glyph bytes before publication");
+                    Assert.That(preferences.IsOpen, Is.True, "the rejected source dialog remains recoverable");
+                    CollectionAssert.AreEqual(saved, File.ReadAllBytes(Path.Combine(profile, "player-preferences.json")));
+                    Assert.That(native.GameRuntimeIdentity().player_preferences.locale_binding.text_sha256,
+                        Is.EqualTo(identity.text_sha256));
+                    Assert.That(cache.PrepareLocale(preferences.Current.locale_binding), Is.SameAs(active));
+                    Assert.That(objective.Resolve(4, stage), Is.EqualTo(active.Record(0x45)));
+                    preferences.Cancel();
+                    Assert.That(preferences.IsOpen, Is.False);
+                }
+                finally { File.WriteAllBytes(masks, originalMasks); }
+                using var coldCache = new OwnerCampaignMenuCache(cachePath);
+                using var coldNative = NativeSession.OpenGameRuntimeFrontend(ResolverPackages());
+                Assert.That(coldNative.Handle, Is.Not.EqualTo(native.Handle));
+                var cold = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    coldNative.Handle, coldNative.GameRuntimeIdentity(), json), profile);
+                cold.BindLanguages(coldCache);
+                Assert.That(cold.Current.preferences.selected_locale, Is.EqualTo(identity.id));
+                Assert.That(JsonUtility.ToJson(cold.Current.locale_binding), Is.EqualTo(JsonUtility.ToJson(identity)));
+                var coldBinding = coldCache.PrepareLocale(cold.Current.locale_binding);
+                Assert.That(new Mc2ObjectiveText(coldCache).Resolve(4, stage), Is.EqualTo(coldBinding.Record(0x45)));
+                Assert.That(coldCache.BriefingText(coldCache.ForMission(SecretOriginLevel)), Is.EqualTo(coldBinding.Record(27)));
+                Assert.That(coldCache.LanguageText(444), Is.EqualTo(coldBinding.Record(444)));
+                Assert.That(coldCache.LanguageFlag(identity.id).width, Is.EqualTo(88));
+                // This is a fresh native/profile owner. The installed-client
+                // qualification separately exits and relaunches the player.
+            }
+            finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }
+        }
+
+        [Test]
         public void SourceClosedLevelTwoCacheBindsActualNativeAndClientConsumers()
         {
             var generated = Path.Combine(PrivateRoot, "generated");
@@ -2004,6 +2078,104 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty,
                     "menu startup has not opened a hidden gameplay session");
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
+                installPreferences();
+                // This focused locale fixture enters the ordinary returned-Title
+                // route. Installed-client qualification covers cold startup/skip.
+                Assert.That(runtime.StepGameRuntimeTitleMedia(0, false, false, startup: false), Is.True,
+                    "the real Title media owner is installed before source controls play their click");
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.active, Is.False);
+                var localePreferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime).GetField(
+                    "playerPreferences", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .GetValue(runtime);
+                var localeMenu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                var localeCache = localeMenu.LocaleCache;
+                var localeSnapshot = localePreferences.Current.locale_binding;
+                Assert.That(localeSnapshot, Is.Not.Null, "normal Title startup installs the real source language owner");
+                Assert.That(localePreferences.Current.installed_locales, Is.Not.Empty);
+                var localeBinding = localeCache.PrepareLocale(localeSnapshot);
+                Assert.That(localeCache.PrepareLocale(localeCache.LanguageCachePath, localeSnapshot.id), Is.SameAs(localeBinding));
+                Assert.That(localeCache.BriefingText(localeCache.ForMission(SecretOriginLevel)), Is.EqualTo(localeBinding.Record(27)));
+                Assert.That(localeCache.LanguageText(444), Is.EqualTo(localeBinding.Record(444)),
+                    "source key-dialog labels read the retained language owner");
+                var originalSelection = localePreferences.Current.preferences.selected_locale;
+                Assert.That(originalSelection, Is.Null, "the fresh source profile uses the nullable default locale");
+                var localeGui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                var localeScreen = Vector2.zero;
+                var localeGuiOrigin = Vector2.zero;
+                Vector2? localeReceivedDown = null, localeReceivedUp = null;
+                localeGui.DrawRuntime = () => {
+                    var eventType = Event.current.type;
+                    var pointer = Event.current.mousePosition;
+                    localeScreen = new Vector2(Screen.width, Screen.height);
+                    localeGuiOrigin = GUIUtility.GUIToScreenPoint(Vector2.zero) - localeGui.position.position;
+                    if (eventType == EventType.MouseDown) localeReceivedDown = pointer;
+                    if (eventType == EventType.MouseUp) localeReceivedUp = pointer;
+                    typeof(MagicCarpetRuntime).GetMethod("OnGUI",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(runtime, null);
+                };
+                try
+                {
+                    localeGui.minSize = new Vector2(640, 480);
+                    localeGui.position = new Rect(0, 0, 640, 480);
+                    localeGui.Show();
+                    localeGui.position = new Rect(0, 0, 640, 480);
+                    localeGui.SendEvent(new Event { type = EventType.Layout });
+                    localeGui.SendEvent(new Event { type = EventType.Repaint });
+                    Assert.That(localeGui.DrawCount, Is.GreaterThan(0), "the real Title GUI host has drawn");
+                    var button = Array.Find(localeCache.Startup.buttons, entry => entry.source_action == 0x2589e0);
+                    Assert.That(button, Is.Not.Null, "the original LanguageSettingDialog button is bound");
+                    var localeScale = Mathf.Min(localeScreen.x / 640f, localeScreen.y / 480f);
+                    var localeClick = new Vector2((localeScreen.x - 640 * localeScale) * .5f +
+                        (button.x + button.width * .5f) * localeScale,
+                        (localeScreen.y - 480 * localeScale) * .5f + (button.y + button.height * .5f) * localeScale);
+                    Assert.That(new Rect(Vector2.zero, localeGui.position.size).Contains(localeClick), Is.True,
+                        "the real source button is inside the GUI host viewport");
+                    var localeHit = new Rect((localeScreen.x - 640 * localeScale) * .5f + button.x * localeScale,
+                        (localeScreen.y - 480 * localeScale) * .5f + button.y * localeScale,
+                        button.width * localeScale, button.height * localeScale);
+                    Action openLanguage = () => {
+                        localeReceivedDown = localeReceivedUp = null;
+                        var sendPoint = localeClick + localeGuiOrigin;
+                        localeGui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = sendPoint });
+                        localeGui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = sendPoint });
+                        Assert.That(localeReceivedDown.HasValue && localeHit.Contains(localeReceivedDown.Value), Is.True,
+                            "the actual mouse-down reaches the source button after the Editor GUI transform");
+                        Assert.That(localeReceivedUp.HasValue && localeHit.Contains(localeReceivedUp.Value), Is.True,
+                            "the actual mouse-up reaches the source button after the Editor GUI transform");
+                        Assert.That(localePreferences.IsOpen, Is.True, "the actual source button opens its settings page");
+                        var localeDraft = (PlayerPreferences)typeof(PlayerPreferencesPresenter).GetField("draft",
+                            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(localePreferences);
+                        Assert.That(localeDraft.selected_locale, Is.Null,
+                            "opening the default locale page preserves null before drawing or input");
+                        localeGui.SendEvent(new Event { type = EventType.Repaint });
+                    };
+                    openLanguage();
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.RightArrow });
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    Assert.That(localePreferences.IsOpen, Is.False);
+                    Assert.That(localePreferences.Current.preferences.selected_locale, Is.EqualTo(originalSelection));
+                    Assert.That(localeCache.PrepareLocale(localePreferences.Current.locale_binding), Is.SameAs(localeBinding));
+                    openLanguage();
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                    var localeStatus = (string)typeof(PlayerPreferencesPresenter).GetField("status",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(localePreferences);
+                    Assert.That(localePreferences.IsOpen, Is.False, "source locale Return applies: " + localeStatus);
+                    Assert.That(localePreferences.Current.preferences.selected_locale, Is.EqualTo(localeSnapshot.id),
+                        "accepting the real displayed English pack retains its explicit content ID");
+                    Assert.That(File.Exists(Path.Combine(preferencesProfile, "player-preferences.json")), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.locale_binding.id,
+                        Is.EqualTo(localeSnapshot.id));
+                }
+                finally
+                {
+                    localeGui.DrawRuntime = null;
+                    localeGui.Close();
+                    if (localeGui != null) UnityEngine.Object.DestroyImmediate(localeGui);
+                }
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.clear_input, Is.False,
+                    "the normal source Title frame completes its 50ms input-release delay before NewGame");
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.completed_levels, Is.Empty);

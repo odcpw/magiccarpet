@@ -22,6 +22,7 @@ namespace MagicCarpet.Native
             0x8b, 0x8e, 0x96, 0x9c, 0x9e
         };
         private readonly string[] records;
+        private readonly Func<int, string> readRecord;
 
         internal Mc2ObjectiveText(OwnerAssetCache commonLanguageCache)
         {
@@ -33,6 +34,26 @@ namespace MagicCarpet.Native
             // Preserve each original byte, including punctuation and line
             // breaks, rather than replacing source text with client copy.
             records = Encoding.GetEncoding(28591).GetString(bytes).Split('\0');
+            readRecord = index => index >= 0 && index < records.Length ? records[index] : null;
+            ValidateRecords();
+        }
+
+        internal Mc2ObjectiveText(OwnerCampaignMenuCache campaignCache)
+        {
+            if (campaignCache == null) throw new ArgumentNullException(nameof(campaignCache));
+            readRecord = campaignCache.LanguageText;
+            ValidateRecords();
+        }
+
+        internal Mc2ObjectiveText(OwnerCampaignMenuCache.LocaleTextBinding binding)
+        {
+            if (binding == null) throw new ArgumentNullException(nameof(binding));
+            readRecord = binding.Record;
+            ValidateRecords();
+        }
+
+        private void ValidateRecords()
+        {
             for (var level = 0; level < FirstRecord.Length; level++)
                 for (var index = FirstRecord[level]; index <= EndRecord[level]; index++)
                     RequireRecord(index);
@@ -54,12 +75,12 @@ namespace MagicCarpet.Native
         {
             var index = SourceRecordIndex(internalLevel, objective.textSelector, objective.isLevelEnd != 0);
             RequireRecord(index);
-            return records[index];
+            return readRecord(index);
         }
 
         private void RequireRecord(int index)
         {
-            if (index < 0 || index >= records.Length || string.IsNullOrEmpty(records[index]))
+            if (string.IsNullOrEmpty(readRecord(index)))
                 throw new InvalidDataException($"Missing owner objective language record {index}");
         }
     }

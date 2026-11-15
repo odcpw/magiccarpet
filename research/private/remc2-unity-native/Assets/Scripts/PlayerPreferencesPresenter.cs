@@ -27,12 +27,30 @@ namespace MagicCarpet.Native
     }
 
     [Serializable]
+    internal sealed class InstalledLocaleSummary
+    {
+        public string id, label;
+        public string[] aliases;
+        public int non_ascii_record_count;
+    }
+
+    [Serializable]
+    internal sealed class PlayerLocaleBinding
+    {
+        public string cache_path, binding_sha256, id, pack_sha256, text_sha256;
+        public string[] font_ids;
+    }
+
+    [Serializable]
     internal sealed class PlayerPreferencesSnapshot
     {
         public PlayerPreferences preferences;
         public bool installed;
         public string load_status;
         public ulong assistance_sequence;
+        public InstalledLocaleSummary[] installed_locales;
+        public PlayerLocaleBinding locale_binding;
+        public string language_status;
     }
 
     /// Device and UI adapter only. Rust validates, publishes and retains every
@@ -43,6 +61,18 @@ namespace MagicCarpet.Native
         { public string operation = "install"; public string profile_dir; }
         [Serializable] private sealed class ApplyCommand
         { public string operation = "apply"; public PlayerPreferences preferences; }
+        [Serializable] private sealed class ApplyLocaleCommand
+        {
+            public string operation = "apply_checked";
+            public PlayerPreferences preferences;
+            public PlayerLocaleBinding expected_locale_binding;
+        }
+        [Serializable] private sealed class InstallLanguagesCommand
+        {
+            public string operation = "install_languages_checked";
+            public string cache_dir;
+            public PlayerLocaleBinding expected_locale_binding;
+        }
         internal struct InputFrame
         {
             internal bool Forward, Backward, Left, Right;
@@ -55,6 +85,8 @@ namespace MagicCarpet.Native
         private readonly Func<KeyCode, bool> keyPressed;
         private readonly Func<int, bool> mouseHeld;
         private readonly Func<int, bool> mousePressed;
+        private readonly Action<OwnerCampaignMenuCache.LocaleTextBinding> localeApplied;
+        private OwnerCampaignMenuCache languageCache;
         private readonly HashSet<KeyCode> releaseKeys = new();
         private readonly HashSet<int> releaseMouseButtons = new();
         private PlayerPreferences draft;
@@ -75,13 +107,15 @@ namespace MagicCarpet.Native
         internal PlayerPreferencesPresenter(Func<string, PlayerPreferencesSnapshot> command, string profileDir,
             PlayerPreferencesSnapshot installed = null, Func<KeyCode, bool> keyHeld = null,
             Func<KeyCode, bool> keyPressed = null, Func<int, bool> mouseHeld = null,
-            Func<int, bool> mousePressed = null)
+            Func<int, bool> mousePressed = null,
+            Action<OwnerCampaignMenuCache.LocaleTextBinding> localeApplied = null)
         {
             this.command = command ?? throw new ArgumentNullException(nameof(command));
             this.keyHeld = keyHeld ?? (key => Input.GetKey(key));
             this.keyPressed = keyPressed ?? (key => Input.GetKeyDown(key));
             this.mouseHeld = mouseHeld ?? (button => Input.GetMouseButton(button));
             this.mousePressed = mousePressed ?? (button => Input.GetMouseButtonDown(button));
+            this.localeApplied = localeApplied;
             if (installed != null && !installed.installed)
                 throw new InvalidOperationException("preferences hydration requires an installed Rust profile");
             // A restored owner may already have its operational profile. Observe
@@ -108,11 +142,81 @@ namespace MagicCarpet.Native
             }
         }
 
+        private OwnerCampaignMenuCache.LocaleTextBinding PrepareInstalledLocale(OwnerCampaignMenuCache cache)
+        {
+            if (cache == null) throw new ArgumentNullException(nameof(cache));
+            try { return cache.PrepareLocale(cache.LanguageCachePath, Current.preferences.selected_locale); }
+            catch (ArgumentOutOfRangeException)
+            {
+                // Match Rust's read-only recovery of a saved ID that is no
+                // longer installed. Apply uses the strict lookup below.
+                return cache.PrepareLocale(cache.LanguageCachePath, null);
+            }
+        }
+
+        private static bool SameLocale(PlayerLocaleBinding left, PlayerLocaleBinding right)
+        {
+            if (left == null || right == null) return left == right;
+            if (left.cache_path != right.cache_path || left.binding_sha256 != right.binding_sha256 ||
+                left.id != right.id || left.pack_sha256 != right.pack_sha256 || left.text_sha256 != right.text_sha256 ||
+                left.font_ids == null || right.font_ids == null || left.font_ids.Length != right.font_ids.Length)
+                return false;
+            for (var index = 0; index < left.font_ids.Length; index++)
+                if (left.font_ids[index] != right.font_ids[index]) return false;
+            return true;
+        }
+
+        internal bool RequiresLanguageInstall(OwnerCampaignMenuCache cache) =>
+            !SameLocale(Current.locale_binding, PrepareInstalledLocale(cache).Identity);
+
+        internal void BindLanguages(OwnerCampaignMenuCache cache)
+        {
+            var candidate = PrepareInstalledLocale(cache);
+            var accepted = SameLocale(Current.locale_binding, candidate.Identity) ? Current :
+                command(JsonUtility.ToJson(new InstallLanguagesCommand {
+                    cache_dir = cache.LanguageCachePath, expected_locale_binding = candidate.Identity }));
+            PublishLocale(cache, candidate, accepted);
+            Synchronize(accepted);
+        }
+
+        private void PublishLocale(OwnerCampaignMenuCache cache,
+            OwnerCampaignMenuCache.LocaleTextBinding candidate, PlayerPreferencesSnapshot accepted)
+        {
+            if (!ReferenceEquals(candidate, cache.PrepareLocale(accepted.locale_binding)))
+                throw new InvalidOperationException("native and prepared source locale owners differ");
+            var changed = languageCache != cache || !SameLocale(Current.locale_binding, accepted.locale_binding) ||
+                Current.preferences.selected_locale != accepted.preferences.selected_locale;
+            cache.PublishLocale(candidate);
+            languageCache = cache;
+            localeApplied?.Invoke(candidate);
+            if (changed)
+            {
+                var identity = accepted.locale_binding;
+                Debug.Log($"MC_SOURCE_LOCALE selection={accepted.preferences.selected_locale ?? "default"} " +
+                    $"id={identity.id} binding={identity.binding_sha256} pack={identity.pack_sha256} " +
+                    $"text={identity.text_sha256} fonts={string.Join(",", identity.font_ids)}");
+            }
+        }
+
+        private PlayerPreferencesSnapshot ApplyPreferences(PlayerPreferences preferences)
+        {
+            if (languageCache == null)
+                return command(JsonUtility.ToJson(new ApplyCommand { preferences = preferences }));
+            var candidate = languageCache.PrepareLocale(languageCache.LanguageCachePath, preferences.selected_locale);
+            var accepted = command(JsonUtility.ToJson(new ApplyLocaleCommand {
+                preferences = preferences, expected_locale_binding = candidate.Identity }));
+            PublishLocale(languageCache, candidate, accepted);
+            return accepted;
+        }
+
         internal void Open() => Open(SourceSettingsDialog.Page.Keys);
 
         internal void Open(SourceSettingsDialog.Page requestedPage)
         {
             draft = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));
+            // JsonUtility turns a null string into empty; null means the
+            // validated source default, whereas an explicit ID must stay exact.
+            draft.selected_locale = Current.preferences.selected_locale;
             page = requestedPage;
             sourceSettingsDialog.Open(requestedPage);
             selectedKeySlot = 0;
@@ -139,7 +243,7 @@ namespace MagicCarpet.Native
             try
             {
                 var previous = Current.preferences;
-                Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = draft })));
+                Synchronize(ApplyPreferences(draft));
                 ArmInputReleaseBarrier(previous, Current.preferences);
                 draft = null;
                 captureKey = -1;
@@ -161,8 +265,9 @@ namespace MagicCarpet.Native
             try
             {
                 var next = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));
+                next.selected_locale = Current.preferences.selected_locale;
                 change(next);
-                Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = next })));
+                Synchronize(ApplyPreferences(next));
                 return true;
             }
             catch (Exception error)
@@ -345,7 +450,8 @@ namespace MagicCarpet.Native
             try
             {
                 if (page == SourceSettingsDialog.Page.Keys) CaptureKey(Event.current);
-                var result = sourceSettingsDialog.Draw(cache, page, draft, captureKey, selectedKeySlot, status);
+                var result = sourceSettingsDialog.Draw(cache, page, draft, captureKey, selectedKeySlot, status,
+                    Current.installed_locales);
                 if (result.ClearStatus) status = null;
                 else if (result.Status != null) status = result.Status;
                 if (result.SelectedKeySlot >= 0) selectedKeySlot = result.SelectedKeySlot;

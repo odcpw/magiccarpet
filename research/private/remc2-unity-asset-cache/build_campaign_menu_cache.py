@@ -277,6 +277,45 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         startup["bitmaps"] = [bitmap(startup_sprites, startup_table, startup_palette, selector,
             f"startup-{selector:03d}.rgba8") for selector, (_, width, height) in enumerate(startup_table)
             if width and height]
+        # LanguageSettingDialog_779E0 loads HSCREEN recipe12, then draws
+        # selector1 from the selected owner's own 4,785-byte language prefix.
+        language_background = cache.decode_container_blob(decoder, source, 0x91C59,
+            640 * 480, work, "language-screen-background")
+        language_palette = source[0xB2947:0xB2947 + 768]
+        if len(language_palette) != 768 or max(language_palette) > 63:
+            raise cache.CacheError("source language screen palette is not RGB6")
+        write("language-screen-background.indices.u8", language_background)
+        write("language-screen-palette.rgb6", language_palette)
+        language_screen = dict(width=640, height=480,
+            background_path="language-screen-background.indices.u8",
+            palette_path="language-screen-palette.rgb6",
+            cursor=bitmap(startup_sprites, startup_table, language_palette, 37,
+                "language-cursor-037.rgba8"), flags=[])
+        language_outputs = {row["path"]: row for row in language_binding["outputs"]}
+        for locale in language_binding["locales"]:
+            locale_id = locale["id"]
+            if not re.fullmatch(r"mc2-locale-[0-9a-f]{64}", locale_id):
+                raise cache.CacheError("source language flag has an invalid locale identity")
+            prefix_path = locale["prefix_path"]
+            prefix = (output / "language" / prefix_path).read_bytes()
+            receipt = language_outputs[prefix_path]
+            if (len(prefix) != 4785 or receipt["bytes"] != len(prefix)
+                    or receipt["sha256"] != hashlib.sha256(prefix).hexdigest()):
+                raise cache.CacheError("source language flag prefix receipt mismatch")
+            flag_table = cache.bitmap_records(prefix[4773:])
+            if len(flag_table) != 2:
+                raise cache.CacheError("source language flag table extent changed")
+            offset, width, height = flag_table[1]
+            indices, mask, _ = cache.materialize_indexed_rle(prefix[:4773], offset, width, height)
+            if (not width or not height or len(indices) != width * height
+                    or any(value not in (0, 1) for value in mask)):
+                raise cache.CacheError("source language flag has invalid indexed planes")
+            flag_prefix = "language-flag-" + locale_id.removeprefix("mc2-locale-")
+            indices_path, mask_path = flag_prefix + ".indices.u8", flag_prefix + ".mask.u8"
+            write(indices_path, bytes(indices))
+            write(mask_path, bytes(mask))
+            language_screen["flags"].append(dict(locale_id=locale_id, selector=1,
+                width=width, height=height, indices_path=indices_path, mask_path=mask_path))
         # SetKeysDialog retains bank4 sprites but changes the screen/palette
         # through sub_7A110_load_hscreen case15.
         settings_indices = cache.decode_container_blob(decoder, source, 0x145210,
@@ -546,7 +585,8 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     source_calls=["sub_7A110_load_hscreen(8,6)", "DrawNetGameMapBackground_85C8B", "PresentLevelDescription_80C30"],
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
-                    startup=startup, settings=settings, pause=pause, objective=objective, portal_animation=portal_animation,
+                    startup=startup, language_screen=language_screen, settings=settings, pause=pause,
+                    objective=objective, portal_animation=portal_animation,
                     campaign=campaign_presentation, click_sound=click_sound,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
