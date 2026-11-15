@@ -77,11 +77,8 @@ namespace MagicCarpet.Native
             collectors = new ModernCollector(root);
             scrolls = new ModernExperienceScroll(root, Voxels.VoxelModernWorld.Requested);
             castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
-            if(Voxels.VoxelModernWorld.Requested)
-            {
-                voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
-                voxelProjectiles=new Voxels.VoxelNativeProjectiles(root);
-            }
+            voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight,Voxels.VoxelModernWorld.Requested);
+            voxelProjectiles=new Voxels.VoxelNativeProjectiles(root, Voxels.VoxelModernWorld.Requested);
             quad = new Mesh { name = "Modern actor billboard" };
             quad.vertices = new[] { new Vector3(-.5f, 0, 0), new Vector3(.5f, 0, 0), new Vector3(-.5f, 1, 0), new Vector3(.5f, 1, 0) };
             quad.uv = new[] { new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, 0), new Vector2(1, 0) };
@@ -96,9 +93,9 @@ namespace MagicCarpet.Native
             var presentations = session.EntityPresentations(yaw, worldView: sceneryReviewSlot.HasValue);
             entitySnapshots.Clear();
             foreach (var entity in session.Entities()) entitySnapshots.Add(entity.entityIndex, entity);
-            if(voxelProjectiles!=null)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
+            if(Voxels.VoxelModernWorld.Requested)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
             else voxelImpactChildren.Clear();
-            if(voxelProjectiles!=null){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
+            if(Voxels.VoxelModernWorld.Requested){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
             characters.Observe(session, presentations);
             dolmens.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
             stoneStatues.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
