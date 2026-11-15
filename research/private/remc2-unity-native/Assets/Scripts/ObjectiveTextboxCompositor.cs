@@ -39,6 +39,27 @@ namespace MagicCarpet.Native
         // boundary. All input text is retained source bytes, not Unicode copy.
         internal static Raster BuildSourceForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
             Sprite corner, Sprite side, Sprite horizontal, byte textColor)
+            => BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,
+                textColor, 320, 320, 300, false, 0, 0, 0, 0);
+
+        // DrawPopupTextBox_87610 type 2, using SetTextBoxMinMaxSizes_87090
+        // and ComputeTextboxSizes_89830 at the original 640x480 boundary.
+        internal static Raster BuildSourceHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
+            byte lineHighlight, int anchorX, int anchorY)
+        {
+            if ((anchorX != 540 && anchorX != 600) || anchorY != 48)
+                throw new ArgumentException("source hint 41 anchor is invalid");
+            var centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
+            var centerY = anchorY - 94 + 28 < 80 ? anchorY + 66 : anchorY - 94;
+            return BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,
+                textColor, 220, centerX, centerY, true, anchorX, anchorY, lineColor, lineHighlight);
+        }
+
+        private static Raster BuildSourceForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, int maxWidth,
+            int centerX, int centerY, bool pointer, int anchorX, int anchorY,
+            byte lineColor, byte lineHighlight)
         {
             if (text == null || glyphs == null || glyphMasks == null || corner == null || side == null || horizontal == null)
                 throw new ArgumentNullException("source objective resources");
@@ -47,7 +68,7 @@ namespace MagicCarpet.Native
             ValidateSprite(corner); ValidateSprite(side); ValidateSprite(horizontal);
             const int charWidth = 8, charHeight = 14;
             var textWidth = checked(charWidth * text.Length);
-            var boxWidth = 320;
+            var boxWidth = maxWidth;
             if (textWidth <= boxWidth) boxWidth = textWidth;
             else if (textWidth % boxWidth < boxWidth / 2)
             {
@@ -57,9 +78,13 @@ namespace MagicCarpet.Native
             }
             var lines = SplitSourceLines(text, boxWidth / charWidth);
             if (lines.Count == 0) throw new ArgumentException("source objective has no drawable text");
-            var boxHeight = checked(charHeight * (textWidth <= 320 ? 1 : lines.Count));
-            var textX = 320 - boxWidth / 2;
-            var textY = 300 - boxHeight / 2;
+            // ComputeTextboxSizesFromTextWords uses ceil(width/charWidth)
+            // while DrawTextboxText uses floor(width/charWidth).
+            var layoutLines = textWidth <= maxWidth ? 1 :
+                SplitSourceLines(text, (boxWidth + charWidth - 1) / charWidth).Count;
+            var boxHeight = checked(charHeight * layoutLines);
+            var textX = centerX - boxWidth / 2;
+            var textY = centerY - boxHeight / 2;
             if (textX < 40 + corner.Width) textX = 40 + corner.Width;
             if (textY < 80 + corner.Height) textY = 80 + corner.Height;
             if (textX + boxWidth >= 600) textX = 600 - boxWidth;
@@ -71,8 +96,27 @@ namespace MagicCarpet.Native
             var frameY = textY - (frameHeight - boxHeight) / 2;
             var x = frameX - side.Width;
             var y = frameY - horizontal.Height;
-            var width = checked(frameWidth + 2 * side.Width);
-            var height = checked(frameHeight + 2 * horizontal.Height);
+            var right = checked(frameX + frameWidth + side.Width);
+            var bottom = checked(frameY + frameHeight + horizontal.Height);
+            var lineX = 0; var lineY = 0;
+            if (pointer)
+            {
+                var constrainedCenterX = textX + boxWidth / 2;
+                var constrainedCenterY = textY + boxHeight / 2;
+                lineX = anchorX < frameX - 30 ? frameX - 2 :
+                    anchorX > frameX + frameWidth + 30 ? frameX + frameWidth : constrainedCenterX;
+                lineY = anchorY < frameY - 30 ? frameY - 2 :
+                    anchorY > frameY + frameHeight + 30 ? frameY + frameHeight : constrainedCenterY;
+                if (lineX != constrainedCenterX || lineY != constrainedCenterY)
+                {
+                    x = Math.Min(x, Math.Min(anchorX, lineX));
+                    y = Math.Min(y, Math.Min(anchorY, lineY));
+                    right = Math.Max(right, Math.Max(anchorX, lineX) + 2);
+                    bottom = Math.Max(bottom, Math.Max(anchorY, lineY) + 1);
+                }
+            }
+            var width = checked(right - x);
+            var height = checked(bottom - y);
             if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 640 || y + height > 480)
                 throw new ArgumentException("source objective frame outside reference viewport");
             var pixels = checked(width * height);
@@ -93,6 +137,11 @@ namespace MagicCarpet.Native
                         DrawGlyph(foreground, width, height, glyph, glyphMasks, cursorX, cursorY, textColor);
                     cursorX += glyph.Width;
                 }
+            }
+            if (pointer && (lineX != textX + boxWidth / 2 || lineY != textY + boxHeight / 2))
+            {
+                DrawSourceLine(foreground, width, height, anchorX - x, anchorY - y, lineX - x, lineY - y, lineColor);
+                DrawSourceLine(foreground, width, height, anchorX + 1 - x, anchorY - y, lineX + 1 - x, lineY - y, lineHighlight);
             }
             var localBlendX = frameX - x;
             var localBlendY = frameY - y;
@@ -116,6 +165,37 @@ namespace MagicCarpet.Native
                 DrawSprite(foreground, width, height, horizontal, tileX, frameBottomY);
             }
             return new Raster(x, y, width, height, frameX, frameY, frameWidth, frameHeight, foreground);
+        }
+
+        // DrawLine_BD542: source swaps endpoints to ascend Y and uses a
+        // doubled integer error, with both endpoints included.
+        private static void DrawSourceLine(byte[] output, int width, int height,
+            int x0, int y0, int x1, int y1, byte color)
+        {
+            if (y0 > y1) { (x0, x1) = (x1, x0); (y0, y1) = (y1, y0); }
+            var dx = Math.Abs(x1 - x0); var dy = y1 - y0;
+            var direction = x1 < x0 ? -1 : 1;
+            var major = Math.Max(dx, dy); var minor = Math.Min(dx, dy);
+            var error = 2 * minor - major;
+            void Plot()
+            {
+                if (x0 < 0 || x0 >= width || y0 < 0 || y0 >= height)
+                    throw new ArgumentException("source hint line outside raster");
+                var index = y0 * width + x0;
+                output[index] = color; output[width * height + index] = 1;
+            }
+            Plot();
+            for (var index = 0; index < major; index++)
+            {
+                if (dx >= dy) x0 += direction; else y0++;
+                if (error >= 0)
+                {
+                    if (dx >= dy) y0++; else x0 += direction;
+                    error += 2 * (minor - major);
+                }
+                else error += 2 * minor;
+                Plot();
+            }
         }
 
         private static List<byte[]> SplitSourceLines(byte[] text, int width)

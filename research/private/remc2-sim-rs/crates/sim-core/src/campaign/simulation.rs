@@ -9884,6 +9884,16 @@ impl Mc2Simulation {
     /// Build the generation-bound Day HUD projection from the live shared
     /// spell/session state. Unknown hand selectors and broken parent links are
     /// rejected so presentation cannot fall back to a neighboring asset row.
+    pub(crate) fn help_enabled(&self) -> bool {
+        self.session.state.live.core.context.spell_fire.as_ref().is_some_and(|fire| fire.help_enabled)
+    }
+
+    pub(crate) fn set_help_enabled(&mut self, enabled: bool) {
+        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
+            fire.help_enabled = enabled;
+        }
+    }
+
     pub fn day_hud(&self) -> Result<Level2DayHudSnapshot> {
         self.day_hud_for(CampaignSelection::LEVEL2)
     }
@@ -9988,6 +9998,24 @@ impl Mc2Simulation {
                         "Level 2 Day HUD holder {holder_index} icon selector overflow"
                     ))
                 })?;
+            let caster_mana = self.session.state.live.shared_spells.player_mana();
+            let help_unavailable = if holder.model == 2 {
+                caster_mana < holder.max_mana
+            } else {
+                let castle_mana = if holder.mana_regen != 0 {
+                    source_target::status_castle_mana(
+                        &self.session.state.live.economy,
+                        &self.session.state.live.shared_spells,
+                        local_entity,
+                    ).map_err(NativeWorldError::new)?
+                } else {
+                    None
+                };
+                crate::spell_activation::beyond_sight_admission(
+                    caster_mana, local_entity.life, holder.max_mana, holder.mana_regen,
+                    holder.active_value == holder.activation_value as i16, castle_mana,
+                ) != crate::spell_activation::BeyondSightAdmission::Allowed
+            };
             Ok(Level2DayHudSpellSlot {
                 holder_entity_index: holder.index,
                 parent_entity_index,
@@ -10002,10 +10030,11 @@ impl Mc2Simulation {
                 control_flags: holder.control_flags,
                 max_mana: holder.max_mana,
                 mana_regen: holder.mana_regen,
-                caster_mana: self.session.state.live.shared_spells.player_mana(),
+                caster_mana,
                 frame_selector: if holder.active_value == 0 { 1 } else { 2 },
                 icon_selector,
                 level_text_selector,
+                help_unavailable,
                 draw_admitted: level2_day_spell_draw_admitted(
                     holder.model,
                     holder.active_value,
@@ -30606,7 +30635,7 @@ impl Mc2Simulation {
             palette_mod: runtime.objective_presentation_palette_mod,
             objective_index: objective.text_selector,
             level_ended: objective.is_level_end != 0,
-            speech_enabled: speech_enabled && source_level < 4,
+            speech_enabled,
             show_foreign_text,
             source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
         };

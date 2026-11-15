@@ -620,6 +620,7 @@ pub enum FlightEvent {
         hint_index: u16,
         state: u8,
     },
+    CloseHelpPopup,
 }
 
 #[must_use]
@@ -2128,6 +2129,9 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                         player_index: i16::from(fire.caster.player_color_index),
                         sound_id: 14,
                     });
+                    if fire.help_enabled {
+                        context.events.push(FlightEvent::CloseHelpPopup);
+                    }
                 }
             }
         }
@@ -3319,6 +3323,7 @@ fn feed_flight_event(feed: &mut impl FnMut(&[u8]), event: FlightEvent) {
             feed(&hint_index.to_le_bytes());
             feed(&[state]);
         }
+        FlightEvent::CloseHelpPopup => feed(&[5]),
     }
 }
 

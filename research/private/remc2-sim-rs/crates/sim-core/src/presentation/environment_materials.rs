@@ -319,9 +319,22 @@ impl EnvironmentResources {
             }
             let bytes = fs::read(&full).map_err(|e| invalid(e.to_string()))?;
             let sha = field(row, "sha256")?;
-            if row["bytes"].as_u64() != Some(bytes.len() as u64) || sha != hash(&bytes) {
+            let observed_sha = hash(&bytes);
+            if row["bytes"].as_u64() != Some(bytes.len() as u64) || sha != observed_sha {
+                let capture = std::env::var_os("MC_ENVIRONMENT_FAILURE_CAPTURE").map(|path| {
+                    let result = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes));
+                    format!(
+                        "; diagnostic_capture={} capture_result={result:?} after_capture_sha256={}",
+                        std::path::Path::new(&path).display(), hash(&bytes)
+                    )
+                }).unwrap_or_default();
                 return Err(invalid(format!(
-                    "environment output identity mismatch: {relative}"
+                    "environment output identity mismatch: {relative}; cache={}; expected_bytes={}; actual_bytes={}; expected_sha256={sha}; actual_sha256={observed_sha}{capture}",
+                    root.display(), row["bytes"], bytes.len()
                 )));
             }
             let roots = row["source_asset_ids"]

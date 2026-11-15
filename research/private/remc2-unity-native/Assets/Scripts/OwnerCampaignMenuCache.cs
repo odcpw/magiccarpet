@@ -107,14 +107,16 @@ namespace MagicCarpet.Native
             internal readonly byte[] GlyphMasks, Tables, PaletteRgb8;
             internal readonly ObjectiveTextboxCompositor.Sprite Corner, Side, Horizontal;
             internal readonly int TableOffset;
-            internal readonly byte BlendSelector, TextColor;
+            internal readonly byte BlendSelector, TextColor, HelpTextColor;
             internal ObjectiveAssets(ObjectiveTextboxCompositor.Glyph[] glyphs, byte[] glyphMasks,
                 ObjectiveTextboxCompositor.Sprite[] sprites,
-                byte[] tables, int tableOffset, byte blendSelector, byte textColor, byte[] paletteRgb8)
+                byte[] tables, int tableOffset, byte blendSelector, byte textColor, byte[] paletteRgb8,
+                byte helpTextColor = 0)
             {
                 Glyphs = glyphs; GlyphMasks = glyphMasks; Corner = sprites[0]; Side = sprites[1];
                 Horizontal = sprites[2]; Tables = tables;
                 TableOffset = tableOffset; BlendSelector = blendSelector; TextColor = textColor;
+                HelpTextColor = helpTextColor;
                 PaletteRgb8 = paletteRgb8;
             }
         }
@@ -448,7 +450,7 @@ namespace MagicCarpet.Native
                         }
                         objectiveProfiles.Add(profile.id, new ObjectiveAssets(objectiveGlyphs, objectiveGlyphMasks,
                             sprites, tables, binding.table_offset, colours[0], colours[3840],
-                            objectivePalette.Select(channel => checked((byte)(channel * 4))).ToArray()));
+                            objectivePalette.Select(channel => checked((byte)(channel * 4))).ToArray(), colours[4095]));
                     }
                 }
                 if (manifest.campaign != null)

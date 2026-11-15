@@ -881,6 +881,7 @@ namespace MagicCarpet.Native
         private string gameRuntimeLoadingCachePath;
         private string gameRuntimeLoadingAssetsPath;
         private string gameRuntimeMenuCachePath;
+        private string gameRuntimeSpeechCachePath;
         private string gameRuntimeReplaySavePath;
         private bool gameRuntimeReplaySaveRequested;
         private bool level1Autoplay;
@@ -2828,6 +2829,7 @@ namespace MagicCarpet.Native
                 {
                     UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
                 }
+                AdvanceGameRuntimeHelpFrame();
                 return;
             }
             if (identity.mode != GameRuntimeTransport.PlayingMode)
@@ -2972,6 +2974,7 @@ namespace MagicCarpet.Native
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
                 UpdateGameRuntimeNightPresentation(afterStepIdentity, gameRuntimeCampaignSnapshot);
             }
+            AdvanceGameRuntimeHelpFrame();
         }
 
         private void DrainGameRuntimeSemanticEvents()
@@ -3027,16 +3030,25 @@ namespace MagicCarpet.Native
                 "semantic event drain reaches the authoritative retained head");
             gameRuntimeSemanticEventCursor = cursor;
             ConsumeGameRuntimeAudioEffects();
+        }
+
+        private void AdvanceGameRuntimeHelpFrame()
+        {
+            // Source help runs after the real objective/world presentation,
+            // once per outer frame. Event reads and IMGUI redraws are observers.
             gameRuntimeAbilityNotification?.Advance(nativePresentationTutorialOrBriefing ||
                 playerPreferences?.IsOpen == true);
             if (campaignSession != null && gameRuntimeManaHint != null)
             {
                 var identity = session.ObservedCampaignIdentity();
-                AdvanceGameRuntimeHelpHint(campaignSession.DayHudState(campaignSession.Tick),
+                var hud = campaignSession.DayHudState(campaignSession.Tick);
+                var observation = gameRuntimeCampaignSnapshot;
+                AdvanceGameRuntimeHelpHint(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0,
                     identity.player_preferences.preferences.show_help,
                     identity.mode == GameRuntimeTransport.PausedMode,
                     observation.value.objective_textbox_ticks != 0 || observation.value.exit_sequence_active ||
-                    nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen || playerPreferences?.IsOpen == true);
+                    nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen ||
+                    playerPreferences?.IsOpen == true || hud.localPlayerLife < 0);
             }
         }
 
@@ -3052,7 +3064,10 @@ namespace MagicCarpet.Native
             }
             EnsureGameRuntimeSpeech();
             if (gameRuntimeManaHint == null)
-                InitializeGameRuntimeHelpHint(GameRuntimeLanguageCache());
+            {
+                EnsureGameRuntimeMenu();
+                InitializeGameRuntimeHelpHint(gameRuntimeMenu.LocaleCache);
+            }
             var selection = campaignSession.Selection;
             var environmentAudio = gameRuntimeEnvironmentCache != null &&
                 gameRuntimeEnvironmentCache.HasOutput("audio/descriptor.json")
@@ -3118,8 +3133,10 @@ namespace MagicCarpet.Native
         private void EnsureGameRuntimeSpeech()
         {
             campaignSpeech ??= new CampaignSpeechPresenter(transform,
-                Path.Combine(Path.GetDirectoryName(Path.GetFullPath(gameRuntimeLoadingCachePath)),
-                    "mc2-campaign-speech-cache"));
+                string.IsNullOrWhiteSpace(gameRuntimeSpeechCachePath)
+                    ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(gameRuntimeLoadingCachePath)),
+                        "mc2-campaign-speech-current")
+                    : gameRuntimeSpeechCachePath);
         }
 
         private OwnerAssetCache GameRuntimeLanguageCache()
@@ -3157,6 +3174,10 @@ namespace MagicCarpet.Native
         {
             if (ReferenceEquals(gameRuntimeLocaleBinding, binding)) return;
             gameRuntimeLocaleBinding = binding;
+            var helpWasInitialized = gameRuntimeManaHint != null;
+            ResetGameRuntimeHelpHint();
+            if (helpWasInitialized && campaignSession != null)
+                InitializeGameRuntimeHelpHint(gameRuntimeMenu.LocaleCache);
             gameRuntimeObjectiveText = gameRuntimeMenu.CreateObjectiveText();
             gameRuntimeObjectiveTextbox?.Dispose();
             gameRuntimeObjectiveTextbox = null;
@@ -3298,6 +3319,11 @@ namespace MagicCarpet.Native
                 if (effect.kind == NativeSim.CampaignEffectFlight && effect.code == 5)
                 {
                     ConsumeGameRuntimeHelpHint(effect);
+                    continue;
+                }
+                if (effect.kind == NativeSim.CampaignEffectFlight && effect.code == 6)
+                {
+                    CloseGameRuntimeHelpHint(session.ObservedCampaignIdentity().player_preferences.preferences.show_help);
                     continue;
                 }
                 if (effect.kind == NativeSim.CampaignEffectFlight &&
@@ -11353,6 +11379,7 @@ namespace MagicCarpet.Native
             // The real primary frame publishes source visibility and animation
             // demands at this tick, after the reset snapshot was captured.
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
+            ResetGameRuntimeHelpHint();
             InitializeGameRuntimeAudioEffects(gameRuntimeCampaignSnapshot);
         }
 
@@ -14601,6 +14628,7 @@ namespace MagicCarpet.Native
                 DrawRuntimeGui(out var guiIdentity, out var drawObjective);
                 DrawGameRuntimeParticipantNotifications(guiIdentity);
                 if (drawObjective) DrawGameRuntimeObjectiveTextbox();
+                if (drawObjective) DrawGameRuntimeHelpHint();
             }
             finally { ModernCapture.EndMeasurement("runtime_gui", measuredStart); }
         }
@@ -14828,7 +14856,6 @@ namespace MagicCarpet.Native
                  gameRuntimeSecretSurface != null))
             {
                 DrawLevel2DayHud();
-                DrawGameRuntimeHelpHint();
                 DrawGameRuntimeAbilityNotification();
                 if (gameRuntimeEnvironmentCache == null &&
                     !string.IsNullOrEmpty(gameRuntimeObjectiveInstruction) &&
@@ -15139,6 +15166,7 @@ namespace MagicCarpet.Native
         {
             gameRuntimeMenuCachePath = ArgumentValue(arguments, "-mc-runtime-menu-cache");
             gameRuntimeMediaCachePath = ArgumentValue(arguments, "-mc-runtime-media-cache");
+            gameRuntimeSpeechCachePath = ArgumentValue(arguments, "-mc-runtime-speech-cache");
             level2Mode = HasArgument(arguments, "-mc-level2");
             autoplay = HasArgument(arguments, "-mc-autoplay");
             autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
@@ -15377,7 +15405,7 @@ namespace MagicCarpet.Native
             if (HasArgument(arguments, "-mc-runtime-menu") && HasArgument(arguments, "-mc-runtime-replay-load"))
                 throw new InvalidDataException("-mc-runtime-menu and -mc-runtime-replay-load are mutually exclusive");
             foreach (var option in new[] { "-mc-runtime-replay-load", "-mc-runtime-replay-save",
-                "-mc-runtime-loading-cache", "-mc-runtime-loading-assets", "-mc-runtime-menu-cache", "-mc-runtime-media-cache", "-mc-preferences-profile" })
+                "-mc-runtime-loading-cache", "-mc-runtime-loading-assets", "-mc-runtime-menu-cache", "-mc-runtime-media-cache", "-mc-runtime-speech-cache", "-mc-preferences-profile" })
             {
                 var index = Array.IndexOf(arguments, option);
                 if (index < 0) continue;
@@ -16305,6 +16333,7 @@ namespace MagicCarpet.Native
             gameRuntimeLoadingCachePath = null;
             gameRuntimeLoadingAssetsPath = null;
             gameRuntimeMenuCachePath = null;
+            gameRuntimeSpeechCachePath = null;
             gameRuntimeMovementFlags = 0;
             CenterSteering();
             level2StartupReady = false;

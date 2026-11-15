@@ -1020,7 +1020,8 @@ namespace MagicCarpet.Native
             NativeSim.CampaignDayHudSpellSlot slot,
             ushort localPlayerEntityIndex)
         {
-            if (slot.drawAdmitted > 1 || !AllZero(slot.reserved))
+            if (slot.drawAdmitted > 1 || slot.helpUnavailable > 1 ||
+                slot.reservedPadding != 0 || !AllZero(slot.reserved))
             {
                 throw new InvalidOperationException(
                     "native Level 2 Day HUD spell row has invalid admission or reserved state");
@@ -1033,7 +1034,8 @@ namespace MagicCarpet.Native
                     slot.frameSelector != 0 ||
                     slot.iconSelector != 0 ||
                     slot.levelTextSelector != 0 ||
-                    slot.drawAdmitted != 0)
+                    slot.drawAdmitted != 0 ||
+                    slot.helpUnavailable != 0)
                 {
                     throw new InvalidOperationException(
                         "native Level 2 Day HUD empty spell row is not empty");

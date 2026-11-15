@@ -235,6 +235,8 @@ pub(super) fn campaign_day_hud_spell_slot(
         icon_selector: slot.icon_selector,
         level_text_selector: slot.level_text_selector,
         draw_admitted: u8::from(slot.draw_admitted),
+        help_unavailable: u8::from(slot.help_unavailable),
+        reserved_padding: 0,
         reserved: [0; 2],
     }
 }

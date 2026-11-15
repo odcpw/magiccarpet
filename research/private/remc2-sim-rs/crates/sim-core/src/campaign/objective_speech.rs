@@ -1,4 +1,4 @@
-//! Opening ordinary-mission bindings for remc2 objective CD speech.
+//! Campaign bindings for remc2 objective CD speech.
 //!
 //! `PresentObjective_59820` owns the phase gate. The caller retains its existing
 //! phase/textbox carriers and services this once per outer frame, including
@@ -15,10 +15,9 @@ pub struct SpeechSegment {
     pub length_ms: u32,
 }
 
-/// `Type_DB080_CdTrack.h`, ordinary source levels 0 through 3. Segment zero is
-/// the briefing, 1..8 are objectives, and 9 is level completion. Zero-length
-/// rows deliberately produce no speech; they must not borrow another row.
-const OPENING_SEGMENTS: [[(u16, u16); 10]; 4] = [
+/// Pinned `Type_DB080_CdTrack.h`: 25 ordinary, two secret-announcement,
+/// and one further source row. Zero-length segments have no speech.
+const SOURCE_SEGMENTS: [[(u16, u16); 10]; 28] = [
     [
         (0x0000, 0x02ee),
         (0x0339, 0x012c),
@@ -26,9 +25,9 @@ const OPENING_SEGMENTS: [[(u16, u16); 10]; 4] = [
         (0x06bd, 0x01c2),
         (0x08ca, 0x0177),
         (0x0a8c, 0x0177),
-        (0, 0),
-        (0, 0),
-        (0, 0),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
         (0x0c4e, 0x020d),
     ],
     [
@@ -38,9 +37,9 @@ const OPENING_SEGMENTS: [[(u16, u16); 10]; 4] = [
         (0x09ab, 0x012c),
         (0x0b22, 0x020d),
         (0x0d7a, 0x01c2),
-        (0, 0),
-        (0, 0),
-        (0, 0),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
         (0x0f87, 0x0258),
     ],
     [
@@ -50,22 +49,310 @@ const OPENING_SEGMENTS: [[(u16, u16); 10]; 4] = [
         (0x087f, 0x01c2),
         (0x0a8c, 0x0177),
         (0x0c4e, 0x012c),
-        (0, 0),
-        (0, 0),
-        (0, 0),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
         (0x0dc5, 0x0177),
     ],
     [
         (0x0000, 0x020d),
         (0x0258, 0x012c),
         (0x03cf, 0x01c2),
-        (0, 0),
-        (0, 0),
-        (0, 0),
-        (0, 0),
-        (0, 0),
-        (0, 0),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
         (0x05dc, 0x0258),
+    ],
+    [
+        (0x0000, 0x02ee),
+        (0x0339, 0x0177),
+        (0x04fb, 0x012c),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0672, 0x02a3),
+    ],
+    [
+        (0x0000, 0x0384),
+        (0x03cf, 0x0177),
+        (0x0591, 0x0177),
+        (0x0753, 0x020d),
+        (0x09ab, 0x01c2),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0bb8, 0x0177),
+    ],
+    [
+        (0x0000, 0x0465),
+        (0x04b0, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0672, 0x020d),
+    ],
+    [
+        (0x0000, 0x0384),
+        (0x03cf, 0x01c2),
+        (0x05dc, 0x0177),
+        (0x079e, 0x012c),
+        (0x0915, 0x012c),
+        (0x0a8c, 0x0258),
+        (0x0d2f, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0f87, 0x012c),
+    ],
+    [
+        (0x0000, 0x03cf),
+        (0x041a, 0x0177),
+        (0x05dc, 0x0096),
+        (0x06bd, 0x00e1),
+        (0x07e9, 0x020d),
+        (0x0a41, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0c99, 0x020d),
+    ],
+    [
+        (0x0000, 0x02a3),
+        (0x02ee, 0x020d),
+        (0x0546, 0x0177),
+        (0x0708, 0x0258),
+        (0x09ab, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0c03, 0x012c),
+    ],
+    [
+        (0x0000, 0x0258),
+        (0x02a3, 0x0177),
+        (0x0465, 0x020d),
+        (0x06bd, 0x0177),
+        (0x087f, 0x01c2),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0a8c, 0x012c),
+    ],
+    [
+        (0x0000, 0x0546),
+        (0x0591, 0x0258),
+        (0x0834, 0x01c2),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0a41, 0x012c),
+    ],
+    [
+        (0x0000, 0x03cf),
+        (0x041a, 0x01c2),
+        (0x0627, 0x0177),
+        (0x07e9, 0x0177),
+        (0x09ab, 0x012c),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0b22, 0x01c2),
+    ],
+    [
+        (0x0000, 0x02ee),
+        (0x0339, 0x02a3),
+        (0x0627, 0x020d),
+        (0x087f, 0x01c2),
+        (0x0a8c, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0c4e, 0x020d),
+    ],
+    [
+        (0x0000, 0x0465),
+        (0x04b0, 0x00e1),
+        (0x05dc, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0834, 0x020d),
+    ],
+    [
+        (0x0000, 0x0339),
+        (0x0384, 0x020d),
+        (0x05dc, 0x00e1),
+        (0x0708, 0x00e1),
+        (0x0834, 0x0177),
+        (0x09f6, 0x012c),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0b6d, 0x0177),
+    ],
+    [
+        (0x0000, 0x0465),
+        (0x04b0, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0672, 0x012c),
+    ],
+    [
+        (0x0000, 0x05dc),
+        (0x0627, 0x01c2),
+        (0x0834, 0x012c),
+        (0x09ab, 0x01c2),
+        (0x0bb8, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0d7a, 0x012c),
+    ],
+    [
+        (0x0000, 0x020d),
+        (0x0258, 0x012c),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x03cf, 0x00e1),
+    ],
+    [
+        (0x0000, 0x0339),
+        (0x0384, 0x020d),
+        (0x05dc, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0834, 0x01c2),
+    ],
+    [
+        (0x0000, 0x0339),
+        (0x0384, 0x01c2),
+        (0x0591, 0x0177),
+        (0x0753, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x09ab, 0x0177),
+    ],
+    [
+        (0x0000, 0x0465),
+        (0x04b0, 0x00e1),
+        (0x05dc, 0x020d),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0834, 0x01c2),
+    ],
+    [
+        (0x0000, 0x03cf),
+        (0x041a, 0x012c),
+        (0x0591, 0x0177),
+        (0x0753, 0x020d),
+        (0x09ab, 0x012c),
+        (0x0b22, 0x012c),
+        (0x0c99, 0x01c2),
+        (0x0ea6, 0x0177),
+        (0x0000, 0x0000),
+        (0x1068, 0x012c),
+    ],
+    [
+        (0x0000, 0x0339),
+        (0x0384, 0x0177),
+        (0x0546, 0x020d),
+        (0x079e, 0x012c),
+        (0x0915, 0x012c),
+        (0x0a8c, 0x012c),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0c03, 0x0177),
+    ],
+    [
+        (0x0000, 0x04b0),
+        (0x0000, 0x0000),
+        (0x04fb, 0x02a3),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x07e9, 0x0627),
+    ],
+    [
+        (0x0000, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+    ],
+    [
+        (0x0000, 0x0177),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+        (0x0000, 0x0000),
+    ],
+    [
+        (0x5bd0, 0x0107),
+        (0x5be0, 0x0107),
+        (0x5bf0, 0x0107),
+        (0x5c00, 0x0107),
+        (0x5c10, 0x0107),
+        (0x5c24, 0x0107),
+        (0x5c34, 0x0107),
+        (0x5c44, 0x0107),
+        (0x5c60, 0x0107),
+        (0x5c70, 0x0107),
     ],
 ];
 
@@ -77,7 +364,14 @@ fn source_cd_milliseconds(frames: u16) -> u32 {
 
 #[must_use]
 pub fn ordinary_speech_segment(source_level: u8, segment: u8) -> Option<SpeechSegment> {
-    let &(start, length) = OPENING_SEGMENTS
+    if source_level >= 25 {
+        return None;
+    }
+    source_speech_segment(source_level, segment)
+}
+
+fn source_speech_segment(source_level: u8, segment: u8) -> Option<SpeechSegment> {
+    let &(start, length) = SOURCE_SEGMENTS
         .get(usize::from(source_level))?
         .get(usize::from(segment))?;
     (length != 0).then(|| SpeechSegment {
@@ -145,7 +439,15 @@ pub fn service_objective_presentation(
             } else {
                 input.objective_index.wrapping_add(1)
             };
-            actions.speech = ordinary_speech_segment(input.source_level, segment);
+            actions.speech = if (30..=34).contains(&input.source_level) {
+                if input.level_ended {
+                    source_speech_segment(10, 9)
+                } else {
+                    source_speech_segment(0, 4)
+                }
+            } else {
+                ordinary_speech_segment(input.source_level, segment)
+            };
             actions.duck_audio = true;
             if input.show_foreign_text {
                 actions.textbox_ticks = Some(200);
@@ -293,8 +595,52 @@ mod tests {
         assert_eq!(phase, 0);
         assert!(ordinary_speech_segment(2, 6).is_none());
         assert!(ordinary_speech_segment(2, 10).is_none());
-        assert!(ordinary_speech_segment(4, 1).is_none());
+        assert_eq!(ordinary_speech_segment(4, 1).unwrap().track, 5);
+        assert!(ordinary_speech_segment(25, 1).is_none());
         assert_eq!(ordinary_speech_segment(0, 1).unwrap().track, 1);
         assert_eq!(ordinary_speech_segment(1, 1).unwrap().track, 2);
+    }
+
+    #[test]
+    fn all_cd_table_rows_match_the_pinned_source_and_secret_levels_use_source_aliases() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../../upstream/magic-carpet-2-hd/remc2/engine/Type_DB080_CdTrack.h"
+        ));
+        let rows: Vec<Vec<u16>> = source
+            .lines()
+            .filter(|line| line.starts_with("{0x"))
+            .map(|line| {
+                line.split(|c: char| !c.is_ascii_hexdigit() && c != 'x')
+                    .filter_map(|word| word.strip_prefix("0x"))
+                    .map(|word| u16::from_str_radix(word, 16).unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), SOURCE_SEGMENTS.len());
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.len(), 21);
+            assert_eq!(usize::from(row[0]), index + 1);
+            for segment in 0..10 {
+                assert_eq!(
+                    SOURCE_SEGMENTS[index][segment],
+                    (row[1 + segment * 2], row[2 + segment * 2])
+                );
+            }
+        }
+        for source_level in 30..=34 {
+            let mut input = level_three_input();
+            input.source_level = source_level;
+            input.objective_index = 3;
+            assert_eq!(
+                service_objective_presentation(&mut 8, input).speech,
+                source_speech_segment(0, 4)
+            );
+            input.level_ended = true;
+            assert_eq!(
+                service_objective_presentation(&mut 8, input).speech,
+                source_speech_segment(10, 9)
+            );
+        }
     }
 }

@@ -120,6 +120,8 @@ struct CampaignPreferenceRollback {
     operation_count: usize,
     dynamic_lighting_enabled: bool,
     lighting_change_count: usize,
+    help_enabled: bool,
+    help_change_count: usize,
 }
 
 impl RuntimeRecord {
@@ -288,15 +290,20 @@ impl RuntimeRecord {
             operation_count: backend.replay_operation_count(),
             dynamic_lighting_enabled: backend.dynamic_lighting_enabled(),
             lighting_change_count: backend.dynamic_lighting_change_count(),
+            help_enabled: backend.help_enabled(),
+            help_change_count: backend.help_preference_change_count(),
         };
         backend
             .set_objective_presentation_preferences(preferences.speech_enabled, show_foreign_text);
         backend.set_dynamic_lighting_enabled(preferences.dynamic_lighting);
+        backend.set_help_enabled(preferences.show_help);
         Ok(previous)
     }
 
     fn rollback_campaign_preferences(&mut self, previous: CampaignPreferenceRollback) {
         if let Some(session) = self.runtime.session_mut() {
+            session.backend_mut().restore_help_after_rejection(
+                previous.help_enabled, previous.help_change_count);
             session
                 .backend_mut()
                 .restore_dynamic_lighting_after_rejection(
@@ -2154,12 +2161,13 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             ));
         }
         let json = utf8_input(request, request_len, "preferences command")?;
-        let command = serde_json::from_str(&json).map_err(|error| {
+        let command: sim_core::game_runtime::preferences::PreferencesCommand = serde_json::from_str(&json).map_err(|error| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 format!("invalid preferences command: {error}"),
             )
         })?;
+        let initial_profile = matches!(&command, sim_core::game_runtime::preferences::PreferencesCommand::Install { .. });
         with_runtime_mut(handle, |record| {
             let before = record.runtime.identity().player_preferences.preferences;
             record
@@ -2180,6 +2188,9 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                 })
                 .map_err(map_transition_error)?;
             let after = record.runtime.identity().player_preferences.preferences;
+            if initial_profile && record.runtime.identity().mode == RuntimeMode::Playing {
+                record.session_mut()?.backend_mut().hydrate_fresh_help_preference(after.show_help);
+            }
             if before.sound_enabled != after.sound_enabled {
                 record.reset_audio()?;
             }
@@ -2975,7 +2986,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v7",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v8",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "warm_load_transport": "mc_game_runtime_load_replay_from_runtime_json_v1",
@@ -3267,6 +3278,80 @@ mod tests {
         // entry opening. It does not expose completion acceptance, prove later
         // L2/L3 materialization, discover/install packages, migrate production
         // presentation, or implement paused frames, save/load, replay, or UI.
+    }
+
+    #[test]
+    fn help_preference_rejected_step_rolls_back_before_real_runtime_replay() {
+        let packages = [level_one_package(), level_two_package(), level_three_package()];
+        let package_set = installed_package_set_json(&packages);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(bootstrap_package_set(handle, 1, &packages), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let before = with_runtime(handle, |record| record.save_replay(handle, 3, 1, 0)).unwrap();
+        let invalid = br#"{"select_spell":"spell.volcano"}"#;
+        assert_ne!(mc_game_session_step_json_v1(handle, 1, 0, invalid.as_ptr(), invalid.len() as u32), MC_STATUS_OK);
+        with_runtime(handle, |record| {
+            let backend = record.session()?.backend();
+            assert!(backend.help_enabled());
+            assert_eq!(backend.help_preference_change_count(), 1);
+            assert_eq!(record.save_replay(handle, 3, 1, 0)?, before);
+            Ok(())
+        }).unwrap();
+        // A rejected step must not consume the fresh owner's one late
+        // initial profile installation. Use a real saved false profile.
+        let profile = std::env::temp_dir().join(format!("mc-help-profile-{}-{}", std::process::id(), handle));
+        fs::create_dir_all(&profile).unwrap();
+        let mut preferences = sim_core::game_runtime::preferences::PlayerPreferences::default();
+        preferences.show_help = false;
+        fs::write(profile.join("player-preferences.json"), serde_json::to_vec(&preferences).unwrap()).unwrap();
+        let install = serde_json::to_vec(&serde_json::json!({"operation":"install", "profile_dir":profile})).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 3, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        with_runtime(handle, |record| {
+            assert!(!record.session()?.backend().help_enabled());
+            assert_eq!(record.session()?.backend().help_preference_change_count(), 2);
+            Ok(())
+        }).unwrap();
+        let zero_save = with_runtime(handle, |record| record.save_replay(handle, 3, 1, 0)).unwrap();
+        let zero_packet: Value = serde_json::from_slice(&zero_save).unwrap();
+        assert_eq!(zero_packet["help_preference_changes"], serde_json::json!([
+            {"before_operation":0,"enabled":true}, {"before_operation":0,"enabled":false}]));
+        let mut zero_cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut zero_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(zero_cold, 1, package_set.as_ptr(), package_set.len() as u32,
+            zero_save.as_ptr(), zero_save.len() as u32), MC_STATUS_OK);
+        with_runtime_mut(zero_cold, |record| {
+            record.session_mut()?.backend_mut().hydrate_fresh_help_preference(true);
+            assert!(!record.session()?.backend().help_enabled(), "cold v8 never regains fresh marker");
+            assert_eq!(record.save_replay(zero_cold, 2, 1, 0)?, zero_save);
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(zero_cold), MC_STATUS_OK);
+        let step = br#"{}"#;
+        assert_eq!(mc_game_session_step_json_v1(handle, 1, 0, step.as_ptr(), step.len() as u32), MC_STATUS_OK);
+        with_runtime_mut(handle, |record| {
+            record.session_mut()?.backend_mut().hydrate_fresh_help_preference(true);
+            assert!(!record.session()?.backend().help_enabled(), "accepted step consumed fresh marker");
+            Ok(())
+        }).unwrap();
+        let after = with_runtime(handle, |record| {
+            assert!(!record.session()?.backend().help_enabled());
+            assert_eq!(record.session()?.backend().help_preference_change_count(), 2);
+            record.save_replay(handle, 3, 1, 1)
+        }).unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, package_set.as_ptr(), package_set.len() as u32,
+            after.as_ptr(), after.len() as u32), MC_STATUS_OK);
+        with_runtime(cold, |record| {
+            assert!(!record.session()?.backend().help_enabled());
+            assert_eq!(record.save_replay(cold, 2, 1, 1)?, after);
+            Ok(())
+        }).unwrap();
+        fs::remove_file(profile.join("player-preferences.json")).unwrap();
+        fs::remove_dir(profile).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -3899,7 +3984,7 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v7"
+            "carpet-flight-mc2-campaign-replay-save/v8"
         );
         assert_eq!(save_json["completed_levels"], serde_json::json!([]));
         let operations = save_json["operations"].as_array().unwrap();

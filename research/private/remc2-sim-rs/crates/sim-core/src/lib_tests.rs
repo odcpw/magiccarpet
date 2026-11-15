@@ -1610,6 +1610,36 @@ fn spell_menu_assignment_fixture() -> (FlightState, FlightContext) {
     (FlightState::default(), context)
 }
 
+#[test]
+fn source_hand_assignment_closes_help_only_after_accepted_assignment_sound() {
+    let (_, mut context) = spell_menu_assignment_fixture();
+    context.spell_fire.as_mut().unwrap().help_enabled = true;
+    // Left already holds family0: the source still closes on the same value.
+    for opcode in [31, 32] {
+        context.events.clear();
+        apply_spell_menu_command(PlayerCommand { opcode, argument_1: 0, argument_2: 2,
+            ..PlayerCommand::default() }, &mut context);
+        assert!(matches!(context.events.as_slice(), [FlightEvent::PrepareSound { sound_id: 14, .. },
+            FlightEvent::CloseHelpPopup]));
+    }
+    for command in [
+        PlayerCommand { opcode: 40, argument_1: 0, ..PlayerCommand::default() },
+        PlayerCommand { opcode: 41, argument_1: 1, ..PlayerCommand::default() },
+        PlayerCommand { opcode: 38, argument_1: 0, argument_2: 1, ..PlayerCommand::default() },
+        PlayerCommand { opcode: 31, argument_1: -1, ..PlayerCommand::default() },
+        PlayerCommand { opcode: 32, argument_1: 2, ..PlayerCommand::default() },
+    ] {
+        context.events.clear();
+        apply_spell_menu_command(command, &mut context);
+        assert!(!context.events.contains(&FlightEvent::CloseHelpPopup));
+    }
+    context.spell_fire.as_mut().unwrap().help_enabled = false;
+    context.events.clear();
+    apply_spell_menu_command(PlayerCommand { opcode: 31, argument_1: 0, argument_2: 2,
+        ..PlayerCommand::default() }, &mut context);
+    assert!(matches!(context.events.as_slice(), [FlightEvent::PrepareSound { sound_id: 14, .. }]));
+}
+
 fn assert_family_press_routes_selected_fire() {
     let (mut state, mut context) = spell_menu_assignment_fixture();
     latch_command_with_context(

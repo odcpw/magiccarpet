@@ -12,27 +12,35 @@ namespace MagicCarpet.Native
         // paused draws; multiple Unity IMGUI passes must not consume it twice.
         internal sealed class AbilityImprovedNotification
         {
-            private readonly string[] records;
+            private readonly Func<int, string> record;
             private int remaining;
             internal string Text { get; private set; }
             internal bool Visible { get; private set; }
 
             internal AbilityImprovedNotification(byte[] language)
             {
-                records = Encoding.GetEncoding(28591).GetString(language).Split('\0');
+                var records = Encoding.GetEncoding(28591).GetString(language).Split('\0');
                 if (records.Length <= 185 || string.IsNullOrEmpty(records[159]))
+                    throw new InvalidDataException("Missing source ability notification language");
+                record = index => index >= 0 && index < records.Length ? records[index] : null;
+            }
+
+            internal AbilityImprovedNotification(Func<int, string> selectedRecord)
+            {
+                record = selectedRecord ?? throw new ArgumentNullException(nameof(selectedRecord));
+                if (string.IsNullOrEmpty(record(159)))
                     throw new InvalidDataException("Missing source ability notification language");
             }
 
             internal void Improve(int family)
             {
-                if (family < 0 || family >= 26 || string.IsNullOrEmpty(records[160 + family]))
+                if (family < 0 || family >= 26 || string.IsNullOrEmpty(record(160 + family)))
                     throw new InvalidDataException("Unbound source spell notification family");
-                var format = records[159];
+                var format = record(159);
                 var placeholder = format.IndexOf("%s", StringComparison.Ordinal);
                 if (placeholder < 0 || format.IndexOf("%s", placeholder + 2, StringComparison.Ordinal) >= 0)
                     throw new InvalidDataException("Invalid source spell notification format");
-                var text = format.Substring(0, placeholder) + records[160 + family] + format.Substring(placeholder + 2);
+                var text = format.Substring(0, placeholder) + record(160 + family) + format.Substring(placeholder + 2);
                 // Source notification storage is 49 bytes, including NUL.
                 Text = text.Length > 48 ? text.Substring(0, 48) : text;
                 remaining = 200;
@@ -55,7 +63,9 @@ namespace MagicCarpet.Native
         {
             private const int Cooldown = 800;
             private int age = Cooldown;
-            private int pollDelay = 20;
+            // SetTextBoxMinMaxSizes_87090 clears dword_0x72; the 20-pass
+            // delay is installed only by suppression or sub_87C10.
+            private int pollDelay;
             private int remaining;
             internal int Priority { get; private set; } = 2;
             internal bool Visible { get; private set; }
@@ -111,37 +121,28 @@ namespace MagicCarpet.Native
                 Priority = 2;
                 pollDelay = 20;
             }
+
+            internal void CloseCurrent(bool enabled)
+            {
+                // sub_87C10 resets the currently selected row, not row 41
+                // when no help popup is selected, but always delays polling.
+                if (!enabled) return;
+                if (remaining != 0) Close();
+                else pollDelay = 20;
+                Visible = false;
+            }
         }
 
         private ManaHelpHint gameRuntimeManaHint;
-        private string gameRuntimeManaHintText;
-        private GUIStyle gameRuntimeManaHintStyle;
+        private SourceObjectiveTextboxPresenter gameRuntimeManaHintPresenter;
 
-        private void InitializeGameRuntimeHelpHint(OwnerAssetCache languageCache)
+        private void InitializeGameRuntimeHelpHint(OwnerCampaignMenuCache languageCache)
         {
             if (languageCache == null)
                 throw new ArgumentNullException(nameof(languageCache));
-            // This approved output is the source language record table shared
-            // by every opening mission, not an encoded LANGUAGE_L1.TXT file.
-            var records = languageCache.ReadOutput("font/language-l1.records-nul.bin");
-            gameRuntimeAbilityNotification = new AbilityImprovedNotification(records);
-            var record = 0;
-            var start = 0;
-            gameRuntimeManaHintText = null;
-            for (var index = 0; index < records.Length; index++)
-            {
-                if (records[index] != 0) continue;
-                if (record++ == 329)
-                {
-                    if (index == start)
-                        throw new InvalidDataException("Empty source mana help text");
-                    gameRuntimeManaHintText = Encoding.ASCII.GetString(records, start, index - start);
-                    break;
-                }
-                start = index + 1;
-            }
-            if (gameRuntimeManaHintText == null)
+            if (string.IsNullOrEmpty(languageCache.LanguageText(329)))
                 throw new InvalidDataException("Missing source language record 329");
+            gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
             gameRuntimeManaHint = new ManaHelpHint();
         }
 
@@ -153,38 +154,60 @@ namespace MagicCarpet.Native
             gameRuntimeManaHint.Promote(effect.value0, effect.value1);
         }
 
-        private void AdvanceGameRuntimeHelpHint(NativeSim.CampaignDayHudSnapshot hud,
-            bool showHelp, bool paused, bool suppressed)
+        private void CloseGameRuntimeHelpHint(bool showHelp)
         {
-            gameRuntimeManaHint?.Advance(ManaHelpUnavailable(hud.left),
-                ManaHelpUnavailable(hud.right), showHelp, paused,
-                suppressed || hud.localPlayerLife < 0);
+            gameRuntimeManaHint?.CloseCurrent(showHelp);
         }
 
-        private static bool ManaHelpUnavailable(NativeSim.CampaignDayHudSpellSlot slot)
+        private void AdvanceGameRuntimeHelpHint(bool leftUnavailable, bool rightUnavailable,
+            bool showHelp, bool paused, bool suppressed)
         {
-            return slot.holderEntityIndex != 0 && slot.maxMana > 0 &&
-                slot.casterMana < slot.maxMana;
+            gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed);
         }
 
         private void DrawGameRuntimeHelpHint()
         {
             if (gameRuntimeManaHint?.Visible != true) return;
-            gameRuntimeManaHintStyle ??= new GUIStyle(hudStyle) {
-                wordWrap = true,
-                alignment = TextAnchor.UpperLeft
+            if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
+            var identity = session?.ObservedCampaignIdentity();
+            var snapshot = gameRuntimeCampaignSnapshot?.value;
+            if (identity?.mode != GameRuntimeTransport.PlayingMode ||
+                identity.player_preferences?.preferences?.show_help != true || snapshot == null ||
+                snapshot.player_vitals.life < 0 || snapshot.objective_textbox_ticks != 0 || snapshot.exit_sequence_active ||
+                nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen || gameRuntimeAbandonConfirmationOpen ||
+                playerPreferences?.IsOpen == true) return;
+            var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                level2DayPresentationSurface ?? gameRuntimeNightSurface;
+            if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
+            Texture indices;
+            ulong generation, revision;
+            if (gameRuntimeSourceMenus.MapOpen)
+            {
+                indices = surface.WorldIndices; generation = surface.Generation; revision = surface.Tick;
+            }
+            else
+            {
+                if (surface.SceneHistoryGeneration != campaignSession.Generation ||
+                    surface.SceneHistoryRevision != campaignSession.SceneFrameRevision) return;
+                indices = surface.ComposedSceneIndices; generation = surface.SceneHistoryGeneration;
+                revision = surface.SceneHistoryRevision;
+            }
+            if (indices == null) return;
+            EnsureGameRuntimeMenu();
+            var profile = campaignSession.Selection.mapType switch {
+                0 => "day", 1 => "night", 2 => "cave",
+                _ => throw new InvalidDataException("source hint requires its source environment")
             };
-            var scale = Mathf.Max(1f, Screen.width / 640f);
-            var width = Mathf.Min(220f * scale, Screen.width - 40f);
-            var height = gameRuntimeManaHintStyle.CalcHeight(
-                new GUIContent(gameRuntimeManaHintText), width - 16f) + 16f;
-            var anchor = Screen.width - (640 - gameRuntimeManaHint.AnchorX) * scale;
-            var x = Mathf.Clamp(anchor - width, 20f, Screen.width - width - 20f);
-            var y = 48f * scale;
-            var rect = new Rect(x, y, width, height);
-            GUI.Box(rect, GUIContent.none);
-            GUI.Label(new Rect(rect.x + 8f, rect.y + 8f, width - 16f, height - 16f),
-                gameRuntimeManaHintText, gameRuntimeManaHintStyle);
+            gameRuntimeManaHintPresenter ??= new SourceObjectiveTextboxPresenter(gameRuntimeMenu.ObjectiveForProfile(profile));
+            gameRuntimeManaHintPresenter.PresentHint(gameRuntimeMenu.GameplayLanguageText(329),
+                campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+            var palette = surface.FramePaletteRgb8;
+            if (playerPreferences != null)
+                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            gameRuntimeManaHintPresenter.Draw(1, indices, generation, revision,
+                new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
+                    640f * scale, 480f * scale), palette, gameRuntimeSourceMenus.MapOpen);
         }
 
         private void DrawGameRuntimeAbilityNotification()
@@ -199,8 +222,8 @@ namespace MagicCarpet.Native
         {
             gameRuntimeAbilityNotification = null;
             gameRuntimeManaHint = null;
-            gameRuntimeManaHintText = null;
-            gameRuntimeManaHintStyle = null;
+            gameRuntimeManaHintPresenter?.Dispose();
+            gameRuntimeManaHintPresenter = null;
         }
 
         private sealed class CampaignHudPresenter

@@ -4140,6 +4140,7 @@ impl SessionRecord {
                 record.value_0 = i32::from(state);
                 record
             }
+            FlightEvent::CloseHelpPopup => self.next_event_base(MC_EVENT_CLOSE_HELP_POPUP, hash),
         }
     }
 

@@ -134,6 +134,7 @@ extern "C" {
 #define MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED 36u
 #define MC_EVENT_LEVEL1_WATER_SPLASHED 37u
 #define MC_EVENT_LEVEL1_ABILITY_IMPROVED 38u
+#define MC_EVENT_CLOSE_HELP_POPUP 39u
 
 #define MC_AUDIO_ACTION_PREPARED_PENDING 0u
 #define MC_AUDIO_ACTION_START 1u
@@ -1325,8 +1326,9 @@ uint8_t mc_sim_last_resolution(void);
  * releases the session and publishes a completion receipt. Observational
  * identity/receipt reads never accept completion or start another mission.
  * Replay saves are opaque UTF-8 JSON under
- * `carpet-flight-mc2-campaign-replay-save/v7`; older save contracts fail
- * closed during load.
+ * `carpet-flight-mc2-campaign-replay-save/v8`. Receipt-qualified v7 saves
+ * remain readable with their historical help behavior; older replay
+ * contracts fail closed during load.
  */
 int32_t mc_game_runtime_contract_json_v1(
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
