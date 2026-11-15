@@ -180,7 +180,7 @@ namespace MagicCarpet.Native
             Shader.SetGlobalFloat("_ModernShoreMaskReady",1);
             terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial,sourceShore,
                 voxel: Voxels.VoxelModernWorld.Requested) { ViewDistance = 650f };
-            vegetation = new ModernVegetation(terrain);
+            vegetation = new ModernVegetation(terrain, voxel: Voxels.VoxelModernWorld.Requested);
             entities = new ModernEntityPresenter(root.transform, cache, terrain);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
             nightLighting = new ModernNightLighting(root.transform);

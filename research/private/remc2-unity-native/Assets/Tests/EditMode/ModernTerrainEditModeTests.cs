@@ -1,10 +1,12 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.TestTools;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -361,8 +363,8 @@ namespace MagicCarpet.Native.Tests
             return false;
         }
 
-        [Test]
-        public void VoxelLevel1GalleryWhenRequested()
+        [UnityTest]
+        public IEnumerator Level1EnvironmentGalleryWhenRequested()
         {
             var directory = Environment.GetEnvironmentVariable("MC_TERRAIN_PREVIEW_DIR");
             var terrainPath = Environment.GetEnvironmentVariable("MC_TERRAIN_LEVEL1_BIN");
@@ -376,6 +378,8 @@ namespace MagicCarpet.Native.Tests
             Array.Copy(bytes, 0, sourceTypes, 0, 65536);
             Array.Copy(bytes, 65536, sourceHeights, 0, 65536);
             Array.Copy(bytes, 3 * 65536, sourceAngles, 0, 65536);
+            foreach (var voxel in new[] { false, true })
+            {
             var reviewRoot = new GameObject("Level 1 terrain gallery");
             var camera = new GameObject("Terrain review camera").AddComponent<Camera>();
             var keyObject = new GameObject("Terrain review key");
@@ -391,10 +395,21 @@ namespace MagicCarpet.Native.Tests
             var land = new Material(Resources.Load<Shader>("ModernTerrain"));
             var waterMaterial = new Material(Resources.Load<Shader>("ModernWater"));
             var sky = new Material(Resources.Load<Shader>("ModernSky"));
+            Texture3D cloudNoise = null;
+            VolumeProfile postProfile = null;
             try
             {
                 var pipeline = Resources.Load<UniversalRenderPipelineAsset>("ModernPipeline"); Assert.That(pipeline, Is.Not.Null);
                 GraphicsSettings.defaultRenderPipeline = pipeline; QualitySettings.renderPipeline = null;
+                cloudNoise = ModernCloudNoise.Create();
+                sky.SetTexture("_CloudNoise", cloudNoise); sky.SetFloat("_UseCloudNoise", 1);
+                postProfile = ScriptableObject.CreateInstance<VolumeProfile>();
+                postProfile.Add<Tonemapping>(true).mode.Override(TonemappingMode.ACES);
+                var grading = postProfile.Add<ColorAdjustments>(true);
+                grading.postExposure.Override(.15f); grading.contrast.Override(10); grading.saturation.Override(-8);
+                var bloom = postProfile.Add<Bloom>(true); bloom.threshold.Override(1.15f); bloom.intensity.Override(.18f); bloom.scatter.Override(.6f);
+                var volume = reviewRoot.AddComponent<Volume>(); volume.isGlobal = true; volume.sharedProfile = postProfile;
+                camera.GetUniversalAdditionalCameraData().renderPostProcessing = true;
                 foreach (var layer in new[] { "Rock", "Ground" })
                     foreach (var channel in new[] { "AlbedoRoughness", "Normal" })
                         land.SetTexture("_" + layer + channel, Resources.Load<Texture2D>("ModernTextures/" + layer + channel));
@@ -403,35 +418,67 @@ namespace MagicCarpet.Native.Tests
                 land.SetFloat("_UseMaterialEndpoints", 1);
                 using var shore = new ModernShoreMask(File.ReadAllBytes(shorePath));
                 Shader.SetGlobalTexture("_ModernShoreMask", shore.Texture); Shader.SetGlobalFloat("_ModernShoreMaskReady", 1);
-                using var world = new ModernTerrainMesh(reviewRoot.transform, land, waterMaterial, shore, voxel: true) { ViewDistance = 320 };
-                world.Update(sourceHeights, sourceTypes, sourceAngles, 1, 0);
+                using var world = new ModernTerrainMesh(reviewRoot.transform, land, waterMaterial, shore, voxel: voxel) { ViewDistance = 320 };
+                // This is an art workbench over verified owner data, not an
+                // injected gameplay state or evidence of a native playthrough.
+                var layout = ModernBuildingLayout.LoadRequested();
+                using var buildings = layout == null ? null : new ModernBuildings(reviewRoot.transform, world, layout, voxel);
+                var visualHeights = buildings?.PrepareTerrain(sourceHeights) ?? sourceHeights;
+                world.Update(visualHeights, sourceTypes, sourceAngles, 1, 0);
+                buildings?.Stage(new Vector3(800, 0, 860));
+                using var vegetation = new ModernVegetation(world, voxel);
+                if (buildings != null) vegetation.ExcludedFootprint = buildings.ExcludesVegetation;
                 using var night = new ModernNightLighting(reviewRoot.transform);
+                if (buildings != null) night.SetReviewWindows(buildings.WindowCenters, buildings.WindowNormals);
                 using var waterSystem = new ModernWaterSystem(reviewRoot.transform, world, night, land);
                 var key = keyObject.AddComponent<Light>(); key.type = LightType.Directional; RenderSettings.sun = key;
                 RenderSettings.skybox = sky; RenderSettings.ambientMode = AmbientMode.Trilight;
                 RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared;
-                camera.clearFlags = CameraClearFlags.Skybox; camera.fieldOfView = 67; camera.farClipPlane = 900;
+                camera.clearFlags = CameraClearFlags.Skybox; camera.fieldOfView = 67; camera.farClipPlane = world.ViewDistance;
                 camera.allowHDR = true; camera.targetTexture = target;
                 Directory.CreateDirectory(directory);
-                foreach (var place in new[] { new Vector2(220, 888), new Vector2(140, 68) })
+                var grove = new Vector2(180, 842); var groveScore = float.PositiveInfinity;
+                for (int z = 780; z < 910; z += 2) for (int x = 70; x < 230; x += 2)
                 {
-                    string label = place.x == 220 ? "hill" : "shore";
+                    if (world.IsWater(x,z) || (buildings?.ExcludesVegetation(x,z) ?? false)) continue;
+                    float h = world.SampleHeight(x,z);
+                    float slope = Mathf.Abs(world.SampleHeight(x+3,z)-h)+Mathf.Abs(world.SampleHeight(x,z+3)-h);
+                    float score = Vector2.Distance(new Vector2(x,z), new Vector2(124,842))+slope*15+Mathf.Abs(h-4)*2;
+                    if (score < groveScore) { groveScore = score; grove = new Vector2(x,z); }
+                }
+                var places = new List<(string label, Vector2 position)> {
+                    ("hill", new Vector2(220,888)), ("shore", new Vector2(140,68)), ("grove", grove) };
+                if (buildings != null) places.Add(("settlement",new Vector2(buildings.Hall.x,buildings.Hall.z)));
+                foreach (var view in places)
+                {
+                    var place = view.position; var label = view.label;
                     var center = new Vector3(place.x, world.SampleHeight(place.x, place.y), place.y);
-                    camera.transform.position = center + new Vector3(-42, 30, -56);
+                    camera.transform.position = center + (label == "grove" ? new Vector3(-10, 4, -12) : new Vector3(-42, 30, -56));
                     camera.transform.position = new Vector3(camera.transform.position.x,
-                        Mathf.Max(camera.transform.position.y, world.SampleHeight(camera.transform.position.x, camera.transform.position.z) + 10),
+                        Mathf.Max(camera.transform.position.y, world.SampleVisualHeight(camera.transform.position.x, camera.transform.position.z) + (label == "grove" ? 1 : 10)),
                         camera.transform.position.z);
                     camera.transform.LookAt(center + Vector3.up * 3);
-                    world.Present(camera.transform.position); waterSystem.Update(camera);
+                    world.Present(camera.transform.position); buildings?.Render(camera.transform.position); waterSystem.Update(camera);
                     foreach (var mode in new[] { 0, 2 })
                     {
                         ModernEnvironmentSandbox.ApplyLighting(mode, key, sky, .58f);
-                        camera.Render(); camera.Render(); RenderTexture.active = target;
+                        buildings?.SetLighting(mode); night.Render(camera);
+                        // Instanced draws last for one engine frame. Advance
+                        // between views so a previous camera's batches cannot
+                        // contaminate later captures in this same coroutine.
+                        yield return null;
+                        vegetation.Render(camera);
+                        // Give the renderer its normal frame boundary before
+                        // the readback, including submitted instanced scenery.
+                        camera.Render(); yield return null;
+                        RenderTexture.active = target;
                         pixels.ReadPixels(new Rect(0, 0, 960, 640), 0, 0); pixels.Apply();
-                        var path = Path.Combine(directory, label + (mode == 0 ? "-day.png" : "-night.png"));
+                        var path = Path.Combine(directory, (voxel ? "voxel-" : "modern-") + label + (mode == 0 ? "-day.png" : "-night.png"));
                         using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
                         var encoded = pixels.EncodeToPNG(); output.Write(encoded, 0, encoded.Length);
-                        TestContext.WriteLine($"{label} mode={mode} camera={camera.transform.position} detailCopies={world.VisibleDetailCopies} farCopies={world.VisibleFarCopies} triangles={world.VisibleTriangleCount}");
+                        Assert.That(Array.FindAll(pixels.GetPixels32(), p => p.r > 200 && p.b > 200 && p.g < 50).Length,
+                            Is.LessThan(10), "Source environment must not contain missing-shader magenta");
+                        TestContext.WriteLine($"voxel={voxel} {label} mode={mode} camera={camera.transform.position} buildings={buildings?.Count ?? 0} detailCopies={world.VisibleDetailCopies} farCopies={world.VisibleFarCopies} triangles={world.VisibleTriangleCount} vegetationDraws={vegetation.DrawCount} vegetationTriangles={vegetation.SubmittedTriangleCount}");
                     }
                 }
             }
@@ -447,6 +494,14 @@ namespace MagicCarpet.Native.Tests
                 UnityEngine.Object.DestroyImmediate(camera.gameObject); UnityEngine.Object.DestroyImmediate(keyObject);
                 UnityEngine.Object.DestroyImmediate(reviewRoot); UnityEngine.Object.DestroyImmediate(land);
                 UnityEngine.Object.DestroyImmediate(waterMaterial); UnityEngine.Object.DestroyImmediate(sky);
+                if (cloudNoise != null) UnityEngine.Object.DestroyImmediate(cloudNoise);
+                if (postProfile != null)
+                {
+                    foreach (var component in postProfile.components) UnityEngine.Object.DestroyImmediate(component);
+                    UnityEngine.Object.DestroyImmediate(postProfile);
+                }
+            }
+            yield return null;
             }
         }
 
