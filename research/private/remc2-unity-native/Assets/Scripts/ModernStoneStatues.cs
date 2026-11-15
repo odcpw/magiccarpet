@@ -10,6 +10,7 @@ namespace MagicCarpet.Native
     internal sealed class ModernStoneStatues : IDisposable
     {
         private readonly Transform root;
+        private readonly Func<float, float, float> surfaceHeight;
         private readonly GameObject model;
         private readonly Material material;
         private readonly bool enabled;
@@ -18,9 +19,10 @@ namespace MagicCarpet.Native
         private ulong generation = ulong.MaxValue;
         private ulong tick;
 
-        internal ModernStoneStatues(Transform parent, bool voxel, string textureBank)
+        internal ModernStoneStatues(Transform parent, bool voxel, string textureBank, Func<float, float, float> surfaceHeight = null)
         {
             enabled = SupportsBank(textureBank);
+            this.surfaceHeight = surfaceHeight;
             model = Resources.Load<GameObject>(voxel ? "ModernScenery/StoneStatueVoxel" : "ModernScenery/StoneStatue");
             if (model == null) throw new InvalidOperationException("Stone statue mesh missing");
             material = CreateMaterial();
@@ -101,7 +103,7 @@ namespace MagicCarpet.Native
                 var x = eye.x + Mathf.Repeat(row.x / 64f - eye.x + 512f, 1024f) - 512f;
                 var z = eye.z + Mathf.Repeat(row.y / 64f - eye.z + 512f, 1024f) - 512f;
                 var node = objects[pair.Key];
-                node.transform.SetPositionAndRotation(new Vector3(x, row.z / 64f, z), Quaternion.identity);
+                node.transform.SetPositionAndRotation(new Vector3(x, surfaceHeight?.Invoke(x, z) ?? row.z / 64f, z), Quaternion.identity);
                 node.transform.localScale = Vector3.one * (row.logicalHeight / 64f);
                 node.SetActive(visible);
             }

@@ -39,6 +39,7 @@ namespace MagicCarpet.Native
         }
 
         private readonly Transform parent;
+        private readonly Func<float, float, float> surfaceHeight;
         private readonly Dictionary<ushort, Tree> trees = new();
         private readonly HashSet<ushort> seen = new();
         private readonly HashSet<ushort> identities = new();
@@ -56,9 +57,10 @@ namespace MagicCarpet.Native
         private readonly Material voxelBurnedMaterial;
         private readonly float sourceHeight;
 
-        internal ModernAuthoredTrees(Transform parent)
+        internal ModernAuthoredTrees(Transform parent, Func<float, float, float> surfaceHeight = null)
         {
             this.parent = parent != null ? parent : throw new ArgumentNullException(nameof(parent));
+            this.surfaceHeight = surfaceHeight;
             string[] names = { "tree_trunk_mid", "tree_branches_mid", "tree_leaves_mid" };
             string[] textures = { "tree_small_02", "tree_small_02_branch", "tree_small_02_leaves" };
             var shader = Resources.Load<Shader>("ModernVegetation");
@@ -185,7 +187,7 @@ namespace MagicCarpet.Native
                 var row = tree.Observation;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
-                tree.Root.transform.position = new Vector3(x, row.z / 64f, z);
+                tree.Root.transform.position = new Vector3(x, surfaceHeight?.Invoke(x, z) ?? row.z / 64f, z);
                 tree.Root.SetActive(visible && row.drawing != 0);
             }
         }

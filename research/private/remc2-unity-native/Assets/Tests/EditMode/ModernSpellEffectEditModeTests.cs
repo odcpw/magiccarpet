@@ -34,17 +34,26 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernEntityPresenter.HotEffectKind(row), Is.EqualTo(1));
             row.renderParameterIndex = 244; row.baseTmap = 186;
             Assert.That(ModernEntityPresenter.HotEffectKind(row), Is.Zero, "cold splash must not turn into fire");
+            Assert.That(ModernEntityPresenter.UsesSmokeMaterial(row), Is.True, "cold ash/splash uses the existing soft particle asset");
             row.renderParameterIndex = 340; row.baseTmap = 463;
             Assert.That(ModernEntityPresenter.HotEffectKind(row), Is.Zero, "fireball retains the native projectile mesh");
+            Assert.That(ModernEntityPresenter.UsesSmokeMaterial(row), Is.False);
             row.renderParameterIndex = 7;
             Assert.That(ModernEntityPresenter.HotEffectKind(row), Is.Zero, "a parameter without its bound source image is insufficient");
+            row.renderParameterIndex = 177; row.baseTmap = 96;
+            Assert.That(ModernEntityPresenter.IsSourceHalo(row), Is.True);
+            Assert.That(ModernEntityPresenter.HotEffectKind(row), Is.Zero, "source ownership orb must not become a flame");
+            row.baseTmap = 97;
+            Assert.That(ModernEntityPresenter.IsSourceHalo(row), Is.False);
         }
 
-        [TestCase(false, false)]
-        [TestCase(false, true)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public void SourceQuadRendersTransparentFlameOrImpactWithoutOpaqueRectangle(bool voxel, bool impact)
+        [TestCase(false, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, false, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, false, true)]
+        [TestCase(true, false, true)]
+        public void SourceQuadRendersTransparentFlameOrImpactWithoutOpaqueRectangle(bool voxel, bool impact, bool halo)
         {
             var directory = Environment.GetEnvironmentVariable("MC_EFFECT_PREVIEW_DIR");
             var shader = Resources.Load<Shader>("ModernSpellEffect");
@@ -73,6 +82,8 @@ namespace MagicCarpet.Native.Tests
                 quad.AddComponent<MeshRenderer>().sharedMaterial = material;
                 material.SetFloat("_Voxel", voxel ? 1 : 0);
                 material.SetFloat("_Impact", impact ? 1 : 0);
+                material.SetFloat("_Halo", halo ? 1 : 0);
+                if (halo) material.SetColor("_Tint", new Color(.2f,.6f,1));
                 var camera = cameraNode.AddComponent<Camera>();
                 camera.transform.position = new Vector3(0,.5f,-3);
                 camera.orthographic = true; camera.orthographicSize = .65f;
@@ -98,7 +109,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(Mathf.Abs(pixel.r-image[0].r)+Mathf.Abs(pixel.g-image[0].g)+Mathf.Abs(pixel.b-image[0].b), Is.LessThan(8), "source card corners remain transparent");
                 }
                 Directory.CreateDirectory(directory);
-                using var output = new FileStream(Path.Combine(directory, $"{(voxel ? "voxel" : "modern")}-{(impact ? "impact" : "fire")}.png"), FileMode.CreateNew);
+                using var output = new FileStream(Path.Combine(directory, $"{(voxel ? "voxel" : "modern")}-{(halo ? "halo" : impact ? "impact" : "fire")}.png"), FileMode.CreateNew);
                 var bytes = pixels.EncodeToPNG(); output.Write(bytes,0,bytes.Length);
             }
             finally

@@ -178,7 +178,8 @@ namespace MagicCarpet.Native
             sourceShore=new ModernShoreMask(cache.ReadOutput(cache.EnvironmentMaterials.blocks.atlas_path));
             Shader.SetGlobalTexture("_ModernShoreMask",sourceShore.Texture);
             Shader.SetGlobalFloat("_ModernShoreMaskReady",1);
-            terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial,sourceShore) { ViewDistance = 650f };
+            terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial,sourceShore,
+                voxel: Voxels.VoxelModernWorld.Requested) { ViewDistance = 650f };
             vegetation = new ModernVegetation(terrain);
             entities = new ModernEntityPresenter(root.transform, cache, terrain);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
@@ -193,7 +194,7 @@ namespace MagicCarpet.Native
             }
             if (ModernEnvironmentSandbox.Requested)
             {
-                buildings=new ModernBuildings(root.transform,terrain);
+                buildings=new ModernBuildings(root.transform,terrain,voxel: Voxels.VoxelModernWorld.Requested);
                 vegetation.ExcludedFootprint=buildings.ExcludesVegetation;
                 sandbox = new ModernEnvironmentSandbox(camera, terrain, waterSystem, nightLighting, moon, skyMaterial,buildings);
             }
@@ -201,7 +202,7 @@ namespace MagicCarpet.Native
             {
                 var layout = ModernBuildingLayout.LoadRequested();
                 if (layout == null) throw new InvalidOperationException("The installed Level 1 building layout is missing");
-                buildings = new ModernBuildings(root.transform, terrain, layout);
+                buildings = new ModernBuildings(root.transform, terrain, layout, voxel: Voxels.VoxelModernWorld.Requested);
                 vegetation.ExcludedFootprint = (x, z) => buildings.ExcludesVegetation(x, z) ||
                     (voxelWorld?.ExcludesVegetation(x, z) ?? false);
             }
