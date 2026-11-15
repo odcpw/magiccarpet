@@ -929,6 +929,53 @@ heuristic was a triaged false positive, with no critical changed-hunk defect
 identified. DCG rejected removal of the two superseded generated Original player
 folders (about203MiB total); both remain intact, without an override or retry.
 
+Selected-source language delivery is now installed (2026-11-15): canonical
+`05dfae71` plus viewport fix `80e1c63f`, pushed/remote-verified Original
+`2f2accb1` on `codex/original-ending`. Player `build-js92rf9x` uses native
+`aeb2c940ebb912e7507a331093c667c9911918f44940f6cfc36f6f2fad59a689`;
+all606 qualified Rust/upstream inputs match Rig. This is the qualified Original
+snapshot and owned deltas, not every unrelated canonical Modern source byte.
+The actual GOG D2/L1 files are identical: one genuine English content identity,
+no available non-ASCII records or second-language proof. Do not ask for another
+pack, fabricate one or block other work on it.
+
+The original recipe12 background, selected-pack flag and recipe12 cursor37 now
+reach the real Language button/page. Settings share the title's fitted640x480
+source viewport and the language page replaces its background opaquely. Native
+checked install/apply compares the complete managed-preflight binding before
+any resource/profile publication. Both managed preference clones preserve the
+nullable default locale; Unity's null-to-empty clone had made the page ignore
+Return. Unknown IDs remain rejected. Current map/objective/dialog consumers
+share one retained source record/font binding.
+
+Actual-owner native locale/cold-profile/valid-replacement/missing-font checks
+pass; managed bad-font/default-null/cold-owner pass; final fullNight language
+button/cancel/confirm/NewGame/cast/save/cold-load/invalid-load/resume/retry/
+objective-clock/speech/Title check passes35.52s and key capture passes. The GUI
+fixture now uses its actual viewport/coordinate transform and normal source
+50ms media input-release frame; original assertions and timers were retained.
+Root viewed installed source language/cursor/flag, cold key-dialog text, map and
+live objective after full process restarts, with retained binding and matching
+mapped native. Normal portal load used one click/zero retries; all owned smokes
+stopped without escalation. Final fitted page has opaque sidebars; actual owner
+art, source font metrics and pixel rendering remain in use. No replacement art
+or automated mission playthrough was used; FPS/hardware audio remain unverified.
+Evidence: `research/private/generated/locale-20261115/`. `mc-5r5.5` is closed
+on its original available-content acceptance. Full frontend/help/subtitle
+switching remains open in `mc-5r5.2`/`mc-oi6.6`; continuity and presentation/
+performance remain unfinished. UBS is partial for C# callable/conditional/
+dataflow analysis, with no critical changed-hunk defect identified. Failed
+fixture/resource-path runs and the delayed attract-mode capture are retained;
+no test, file/hash guard, source timer or reference raster was weakened.
+
+Continue Oliver's points1–3 with the same one team, one connected capability
+at a time. Next concrete continuity link is actual Results/map F5/save input
+and cold restore through the canonical save owner (`mc-zdo.6`/`.4`), then the
+remaining original help/settings and Day/Night/Cave presentation checks. Reuse
+the delivered language and prior controlled mission/ending evidence; do not
+restart the all30 mission passes or run adaptive playthroughs. Existing full
+acceptance/dependencies stay intact and unfinished beads remain open.
+
 Previous committed Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
 native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
 was the preceding installation. Learned spell ownership now survives physical-holder release
