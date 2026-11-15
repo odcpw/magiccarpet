@@ -209,7 +209,7 @@ namespace MagicCarpet.Native.Tests
                 new ObjectiveTextboxCompositor.Sprite(width, height, Enumerable.Repeat((byte)7, width * height).ToArray(),
                     Enumerable.Repeat((byte)1, width * height).ToArray());
             var sprites = new[] { Sprite(16, 12), Sprite(16, 14), Sprite(32, 10) };
-            var tables = new byte[0x4000 + 256];
+            var tables = new byte[0x4000 + 256 * 256];
             for (var i = 0; i < 256; i++) tables[0x4000 + i] = (byte)(255 - i);
             var palette = new byte[768];
             for (var i = 0; i < 256; i++) palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] = (byte)i;
@@ -277,6 +277,77 @@ namespace MagicCarpet.Native.Tests
                 UnityEngine.Object.DestroyImmediate(callerTarget);
                 UnityEngine.Object.DestroyImmediate(history); UnityEngine.Object.DestroyImmediate(map);
                 UnityEngine.Object.DestroyImmediate(scene); UnityEngine.Object.DestroyImmediate(readback);
+            }
+        }
+
+        [Test]
+        public void SpellHelpUsesSourceThreeLineGlyphsAndLayeredIndexedPrior()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var cachePath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE") ??
+                Path.Combine(PrivateRoot, "generated/spell-help-20261115/menu-candidate-1");
+            using var cache = new OwnerCampaignMenuCache(cachePath);
+            var assets = cache.ObjectiveForProfile("cave");
+            var records = new[] { cache.LanguageText(186), cache.LanguageText(187), cache.LanguageText(188) };
+            var bytes = records.Select(text => Encoding.GetEncoding(28591).GetBytes(text)).ToArray();
+            var raster = ObjectiveTextboxCompositor.BuildSourceSpellHintForeground(bytes, 1, assets.Glyphs,
+                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor,
+                assets.TextColor, assets.BlendSelector, assets.TextColor, 131, 374);
+            // Source 89920 uses eight pixels times the longest whole record,
+            // 14 pixels per line, then 89520 constrains the text to y<=260.
+            var textX = 156 - bytes.Max(row => row.Length) * 8 / 2;
+            var textY = 260 - 3 * 14;
+            for (var line = 0; line < 3; line++)
+            {
+                var glyph = assets.Glyphs[bytes[line][0] + 1];
+                var found = false;
+                for (var y = 0; y < glyph.Height && !found; y++)
+                for (var x = 0; x < glyph.Width && !found; x++)
+                {
+                    if (assets.GlyphMasks[glyph.Offset + y * glyph.Width + x] == 0) continue;
+                    var pixel = (textY + line * 14 + y - raster.Y) * raster.Width + textX + x - raster.X;
+                    Assert.That(raster.IndicesThenMask[raster.Width * raster.Height + pixel], Is.EqualTo(1));
+                    Assert.That(raster.IndicesThenMask[pixel], Is.EqualTo(line == 1 ? assets.TextColor : assets.HelpTextColor));
+                    found = true;
+                }
+                Assert.That(found, Is.True, "each selected owner record has a real first glyph");
+            }
+
+            var scene = new Texture2D(1, 1, TextureFormat.R8, false, true)
+                { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var readback = new Texture2D(3, 1, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                scene.LoadRawTextureData(new byte[] { 37 }); scene.Apply(false, false);
+                using var presenter = new SourceObjectiveTextboxPresenter(assets);
+                // First pixel: three real source TABLES operations over the
+                // current scene. Second: opaque source base then one blend.
+                presenter.SetSpellPrior(new RectInt(0, 400, 3, 1), new[] {
+                    new Color32(11, 23, 47, 3), new Color32(51, 72, 0, 6), new Color32(0, 0, 0, 0)
+                }, 9);
+                var output = presenter.RenderPausePrior(scene, 9, assets.PaletteRgb8, true);
+                Assert.That(output, Is.Not.Null);
+                RenderTexture.active = output;
+                readback.ReadPixels(new Rect(0, 0, 3, 1), 0, 0); readback.Apply();
+                var pixels = readback.GetPixels32();
+                byte Blend(byte under, byte source) => assets.Tables[assets.TableOffset + (under << 8) + source];
+                Color32 Colour(byte index) => new Color32(assets.PaletteRgb8[index * 3],
+                    assets.PaletteRgb8[index * 3 + 1], assets.PaletteRgb8[index * 3 + 2], 255);
+                Assert.That(Blend(Blend(Blend(37, 11), 23), 47), Is.EqualTo(220),
+                    "the owner table makes this distinguishable from bare world or a single blend");
+                Assert.That(Blend(51, 72), Is.EqualTo(103));
+                Assert.That(pixels[0], Is.EqualTo(Colour(Blend(Blend(Blend(37, 11), 23), 47))));
+                Assert.That(pixels[1], Is.EqualTo(Colour(Blend(51, 72))));
+                Assert.That(pixels[2].a, Is.Zero, "uncovered pixels retain the actual current scene");
+                Assert.That(presenter.RenderPausePrior(scene, 10, assets.PaletteRgb8, true), Is.Null,
+                    "a prior indexed layer cannot cross a native generation");
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                UnityEngine.Object.DestroyImmediate(scene);
+                UnityEngine.Object.DestroyImmediate(readback);
             }
         }
 

@@ -275,21 +275,24 @@ namespace MagicCarpet.Native
                     if (manifest.gameplay_help_path != "gameplay-help.json")
                         throw new InvalidDataException("source gameplay help path is unbound");
                     var helpReceipt = manifest.outputs.SingleOrDefault(row => row.path == manifest.gameplay_help_path);
-                    if (helpReceipt == null || helpReceipt.bytes != 1989)
+                    if (helpReceipt == null || helpReceipt.bytes != 2638)
                         throw new InvalidDataException("source gameplay help receipt is incomplete");
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
-                    if (Digest(helpBytes) != "4e8be98eefe66b1cd493868a27185d277cc4b3cf4f60485135a98f9fe1e1acb0")
+                    if (Digest(helpBytes) != "50cbdaec44a5ca55ef9451301c76f304bc6e18e32cdfb2c3c869b1ce52cabc33")
                         throw new InvalidDataException("source gameplay help table identity differs");
                     var help = JsonUtility.FromJson<GameplayHelpDocument>(Encoding.ASCII.GetString(helpBytes));
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
-                        help.rows?.Length != 17)
+                        help.rows?.Length != 23)
                         throw new InvalidDataException("source gameplay help table is incomplete");
+                    var sourceRows = new[] { 1, 3, 40, 41, 42, 69, 70, 71,
+                        72, 73, 74, 75, 76, 77, 78, 79, 80, 85, 86, 87, 88, 89, 90 };
                     for (var index = 0; index < help.rows.Length; index++)
                     {
                         var row = help.rows[index];
-                        var expectedRow = index == 0 ? 1 : index == 1 ? 3 : index == 2 ? 41 : index < 12 ? 69 + index : 74 + index;
-                        var expectedKind = index < 2 ? 1 : index == 2 ? 5 : index < 12 ? 7 : 11;
+                        var expectedRow = sourceRows[index];
+                        var expectedKind = index < 2 ? 1 : index < 5 ? 5 : index < 8 ? 6 :
+                            index < 17 ? 7 : index == 17 ? 10 : 11;
                         if (row == null || row.row != expectedRow || row.kind != expectedKind ||
                             row.text_record < 0 || row.text_record >= 471 ||
                             (expectedKind == 11 ? row.duration != 0 : row.duration <= 0) ||

@@ -9,6 +9,7 @@ namespace MagicCarpet.Native
         private readonly OwnerCampaignMenuCache.ObjectiveAssets assets;
         private readonly Material material;
         private readonly Texture2D blendRow;
+        private readonly Texture2D fullBlend;
         private readonly Texture2D palette;
         private Texture2D foreground;
         private RenderTexture output;
@@ -25,7 +26,8 @@ namespace MagicCarpet.Native
         {
             this.assets = assets ?? throw new ArgumentNullException(nameof(assets));
             var row = checked(assets.TableOffset + (assets.BlendSelector << 8));
-            if (assets.Tables == null || row < 0 || row + 256 > assets.Tables.Length)
+            if (assets.Tables == null || assets.TableOffset < 0 ||
+                assets.TableOffset > assets.Tables.Length - 256 * 256 || row < 0 || row + 256 > assets.Tables.Length)
                 throw new ArgumentException("objective blend table extent");
             var shader = Resources.Load<Shader>("SourceObjectiveTextbox");
             if (shader == null) throw new InvalidOperationException("missing source objective textbox shader");
@@ -36,11 +38,19 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(assets.Tables, row, bytes, 0, bytes.Length);
             blendRow.LoadRawTextureData(bytes);
             blendRow.Apply(false, false);
+            fullBlend = new Texture2D(256, 256, TextureFormat.R8, false, true)
+                { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var table = new byte[256 * 256];
+            Buffer.BlockCopy(assets.Tables, assets.TableOffset, table, 0, table.Length);
+            fullBlend.LoadRawTextureData(table);
+            fullBlend.Apply(false, false);
             palette = new Texture2D(256, 1, TextureFormat.RGB24, false, false)
                 { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
             material.SetTexture("_BlendRow", blendRow);
+            material.SetTexture("_FullBlend", fullBlend);
             material.SetTexture("_Palette", palette);
             material.SetFloat("_PriorEnabled", 0);
+            material.SetFloat("_PriorMode", 0);
             material.SetFloat("_RenderPrior", 0);
         }
 
@@ -83,9 +93,31 @@ namespace MagicCarpet.Native
             PresentRaster(next, sourceText, sessionGeneration, -key - 2);
         }
 
-        // Red is the source sprite index, alpha its opacity, and green marks
-        // the source's twice-shaded rectangle independently of sprite opacity.
+        internal void PresentSpellHint(string[] records, int highlightedLine, ulong sessionGeneration,
+            int anchorX, int anchorY)
+        {
+            if (records == null || (records.Length != 1 && records.Length != 3))
+                throw new ArgumentException("source spell hint records are invalid");
+            var text = string.Join("\0", records);
+            var key = checked(int.MinValue + (anchorY * 640 + anchorX) * 4 + highlightedLine + 1);
+            if (raster != null && generation == sessionGeneration && currentText == text && currentAnchor == key) return;
+            var bytes = new byte[records.Length][];
+            for (var index = 0; index < records.Length; index++) bytes[index] = SourceBytes(records[index]);
+            var next = ObjectiveTextboxCompositor.BuildSourceSpellHintForeground(bytes, highlightedLine,
+                assets.Glyphs, assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal,
+                assets.HelpTextColor, assets.TextColor, assets.BlendSelector, assets.TextColor, anchorX, anchorY);
+            PresentRaster(next, text, sessionGeneration, key);
+        }
+
+        // Red/alpha carry an opaque index. Green 255 marks the source pause
+        // double shade; green 1 and blue carry a world-dependent spell blend.
         internal void SetPausePrior(RectInt rect, Color32[] pixels, ulong sessionGeneration)
+            => SetPrior(rect, pixels, sessionGeneration, false);
+
+        internal void SetSpellPrior(RectInt rect, Color32[] pixels, ulong sessionGeneration)
+            => SetPrior(rect, pixels, sessionGeneration, true);
+
+        private void SetPrior(RectInt rect, Color32[] pixels, ulong sessionGeneration, bool spell)
         {
             if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0 ||
                 rect.xMax > 640 || rect.yMax > 480 || pixels == null || pixels.Length != rect.width * rect.height)
@@ -100,7 +132,17 @@ namespace MagicCarpet.Native
             ReleaseTexture(priorOverlay); ReleaseTexture(priorOutput);
             priorOutput = null; priorOverlay = next; priorRect = rect; priorGeneration = sessionGeneration;
             material.SetTexture("_PriorOverlay", priorOverlay);
+            material.SetFloat("_PriorMode", spell ? 1 : 0);
             material.SetVector("_PriorRect", new Vector4(rect.x, rect.y, rect.width, rect.height));
+        }
+
+        internal void ClearPrior()
+        {
+            if (priorOverlay == null) return;
+            ReleaseTexture(priorOutput); ReleaseTexture(priorOverlay);
+            priorOutput = null; priorOverlay = null; priorGeneration = 0;
+            material.SetTexture("_PriorOverlay", null);
+            material.SetFloat("_PriorEnabled", 0);
         }
 
         internal RenderTexture RenderPausePrior(Texture sceneIndices, ulong sceneGeneration,
@@ -223,7 +265,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
-            ReleaseTexture(output); ReleaseTexture(foreground); ReleaseTexture(blendRow);
+            ReleaseTexture(output); ReleaseTexture(foreground); ReleaseTexture(blendRow); ReleaseTexture(fullBlend);
             ReleaseTexture(priorOutput); ReleaseTexture(priorOverlay);
             ReleaseTexture(palette); ReleaseTexture(material);
             output = null; foreground = null; raster = null; currentText = null; currentAnchor = -1;

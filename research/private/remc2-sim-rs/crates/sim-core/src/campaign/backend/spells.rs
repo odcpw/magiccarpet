@@ -228,6 +228,7 @@ pub(super) fn observe(
     shared: &Level2SharedSpellResetSession,
     holder_actor: impl Fn(&EntitySnapshot) -> Option<RuntimeActorId>,
     emission_availability: impl Fn(&EntitySnapshot) -> SpellAvailability,
+    menu_help: impl Fn(u8) -> Option<sim_session::SpellMenuHelp>,
 ) -> Vec<SpellObservation> {
     let player = shared.local_player();
     let entity = shared.player_entity();
@@ -329,6 +330,7 @@ pub(super) fn observe(
                         179 + 3 * u16::from(binding.family) + tier as u16
                     }),
                 }),
+                menu_help: menu_help(binding.family),
                 mana_cost: holder.map_or(0, |holder| holder.mana_cost),
                 hand,
                 availability,
@@ -508,6 +510,22 @@ mod tests {
         };
         let acquired = spell(&session);
         assert!(acquired.acquired);
+        let help = acquired.menu_help.as_ref().expect("source menu help binding");
+        assert!(help.is_standard);
+        assert_eq!(help.title_records, [223, 224, 225]);
+        assert_eq!(help.castle_blocked, [false, true, true]);
+        let before = session.snapshot();
+        assert_eq!(before, session.snapshot(), "help observations cannot advance source state");
+        let rendered = session.backend().render_observation();
+        assert_eq!(rendered.player_spells, before.value.player_spells);
+        assert!(before.value.spell_menu_has_any_spell);
+        assert_eq!(rendered.spell_menu_has_any_spell, before.value.spell_menu_has_any_spell);
+        assert_eq!(rendered.spell_menu_wizard_colors, before.value.spell_menu_wizard_colors);
+        assert!(!rendered.spell_menu_panels_opaque, "actual Day source panels blend");
+        assert_eq!(rendered.spell_menu_panels_opaque, before.value.spell_menu_panels_opaque);
+        for row in &before.value.player_spells {
+            assert!(row.menu_help.is_some(), "every physical menu category has native metadata");
+        }
         assert_eq!(
             (acquired.tier, acquired.unlocked_tier, acquired.mana_cost),
             (0, 0, 1_800)
@@ -576,8 +594,14 @@ mod tests {
             spell(&session).availability,
             SpellAvailability::InsufficientMana
         );
+        assert!(!spell(&session).menu_help.unwrap().mana_unavailable,
+            "idle source68D50 omits the fresh-pulse cost check; activation readiness does not");
+        set_mana(session.backend_mut().campaign.simulation_mut(), -1);
+        assert!(spell(&session).menu_help.unwrap().mana_unavailable,
+            "source68D50 always rejects negative caster mana");
         set_mana(session.backend_mut().campaign.simulation_mut(), 5_000);
         assert_eq!(spell(&session).availability, SpellAvailability::Ready);
+        assert!(!spell(&session).menu_help.unwrap().mana_unavailable);
         session
             .step(
                 guard(&session),

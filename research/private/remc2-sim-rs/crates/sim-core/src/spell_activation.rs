@@ -382,6 +382,33 @@ pub struct Level2SetSpellProfile {
     pub mana: i32,
 }
 
+/// Loaded owner SPELLS.DAT tier labels, followed by LevelInit's two
+/// environment-dependent substitutions. These are source language record
+/// selectors, not localized text or a second client spell-name table.
+#[must_use]
+pub const fn spell_menu_title_records(family: u8, map_type: u8) -> Option<[u16; 3]> {
+    const RECORDS: [[u16; 3]; 26] = [
+        [186, 187, 188], [189, 190, 191], [192, 193, 194],
+        [195, 196, 197], [199, 200, 201], [202, 203, 204],
+        [205, 206, 207], [208, 209, 210], [211, 212, 213],
+        [214, 215, 216], [217, 218, 219], [220, 221, 222],
+        [223, 224, 225], [226, 227, 228], [229, 230, 231],
+        [232, 233, 234], [235, 236, 237], [238, 239, 240],
+        [241, 242, 243], [245, 246, 247], [248, 249, 250],
+        [251, 252, 253], [254, 255, 256], [257, 258, 259],
+        [260, 261, 262], [263, 264, 265],
+    ];
+    if family >= 26 || map_type > 2 {
+        return None;
+    }
+    let mut records = RECORDS[family as usize];
+    if map_type == 0 {
+        if family == 4 { records[0] = 198; }
+        if family == 19 { records[0] = 244; }
+    }
+    Some(records)
+}
+
 /// Return the pinned owner `SPELLS.DAT` profile after applicable
 /// `SetDefaultSpells_5C0A0` overrides for a physical family/tier.
 /// This is the table cost before GetSpellManaCost_6D710 follows the owner's
@@ -553,7 +580,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 80,
                 word_0x30: 15,
                 byte_0x3b: 1,
-                mana_regen: 2_500,
+                mana_regen: 160_000,
                 max_mana: 1_500,
                 mana: 100,
             },
@@ -571,7 +598,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 15,
                 word_0x30: 41,
                 byte_0x3b: 1,
-                mana_regen: 0,
+                mana_regen: 1_000,
                 max_mana: 250,
                 mana: 6,
             },
@@ -579,7 +606,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 20,
                 word_0x30: 51,
                 byte_0x3b: 1,
-                mana_regen: 1_000,
+                mana_regen: 20_000,
                 max_mana: 1_000,
                 mana: 19,
             },
@@ -631,7 +658,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 4,
                 word_0x30: 501,
                 byte_0x3b: 1,
-                mana_regen: 0,
+                mana_regen: 20_000,
                 max_mana: 5_000,
                 mana: 9,
             },
@@ -641,7 +668,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 100,
                 word_0x30: 201,
                 byte_0x3b: 1,
-                mana_regen: 20_000,
+                mana_regen: 40_000,
                 max_mana: 5_000,
                 mana: 24,
             },
@@ -649,7 +676,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 100,
                 word_0x30: 301,
                 byte_0x3b: 1,
-                mana_regen: 20_000,
+                mana_regen: 120_000,
                 max_mana: 7_500,
                 mana: 24,
             },
@@ -657,7 +684,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 100,
                 word_0x30: 455,
                 byte_0x3b: 1,
-                mana_regen: 25_000,
+                mana_regen: 360_000,
                 max_mana: 15_000,
                 mana: 32,
             },
@@ -675,7 +702,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 100,
                 word_0x30: 201,
                 byte_0x3b: 1,
-                mana_regen: 0,
+                mana_regen: 25_000,
                 max_mana: 1_500,
                 mana: 7,
             },
@@ -683,7 +710,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 100,
                 word_0x30: 301,
                 byte_0x3b: 1,
-                mana_regen: 0,
+                mana_regen: 60_000,
                 max_mana: 10_000,
                 mana: 33,
             },
@@ -693,7 +720,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 0,
                 word_0x30: 181,
                 byte_0x3b: 1,
-                mana_regen: 2_000,
+                mana_regen: 20_000,
                 max_mana: 2_000,
                 mana: 11,
             },
@@ -701,7 +728,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 0,
                 word_0x30: 183,
                 byte_0x3b: 1,
-                mana_regen: 3_000,
+                mana_regen: 30_000,
                 max_mana: 2_500,
                 mana: 13,
             },
@@ -709,7 +736,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 0,
                 word_0x30: 183,
                 byte_0x3b: 1,
-                mana_regen: 4_000,
+                mana_regen: 40_000,
                 max_mana: 3_000,
                 mana: 16,
             },
@@ -727,7 +754,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 0,
                 word_0x30: 261,
                 byte_0x3b: 1,
-                mana_regen: 10_000,
+                mana_regen: 20_000,
                 max_mana: 2_400,
                 mana: 9,
             },
@@ -735,7 +762,7 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 subspell_index: 0,
                 word_0x30: 361,
                 byte_0x3b: 1,
-                mana_regen: 10_000,
+                mana_regen: 40_000,
                 max_mana: 5_000,
                 mana: 13,
             },
@@ -1296,9 +1323,9 @@ pub struct ShieldDamage {
     pub status_after: u32,
 }
 
-/// Source family-11 (Invisible) tier data from the pinned `Spells.cpp` table.
+/// Source family-11 (Invisible) tier data from loaded owner `SPELLS.DAT`.
 ///
-/// The three records are the family-11 rows at `Spells.cpp:15`: the holder
+/// The three records retain the loaded family-11 rows: the holder
 /// consumes 2,000/2,500/3,000 mana, its source countdown is 181/183/183
 /// ticks, and `life_0x1A` writes 1/2/3 to the owner's visibility byte.  The
 /// `mana_regen_requirement` is the source `maxManaLimit_A` value checked by
@@ -1315,21 +1342,21 @@ pub struct InvisibleTierProfile {
 const INVISIBLE_TIERS: [InvisibleTierProfile; 3] = [
     InvisibleTierProfile {
         mana_cost: 2_000,
-        mana_regen_requirement: 2_000,
+        mana_regen_requirement: 20_000,
         activation_ticks: 181,
         owner_visibility_mode: 1,
         experience_award: 1,
     },
     InvisibleTierProfile {
         mana_cost: 2_500,
-        mana_regen_requirement: 3_000,
+        mana_regen_requirement: 30_000,
         activation_ticks: 183,
         owner_visibility_mode: 2,
         experience_award: 1,
     },
     InvisibleTierProfile {
         mana_cost: 3_000,
-        mana_regen_requirement: 4_000,
+        mana_regen_requirement: 40_000,
         activation_ticks: 183,
         owner_visibility_mode: 3,
         experience_award: 1,
@@ -1617,13 +1644,13 @@ const BEYOND_SIGHT_TIERS: [BeyondSightTierProfile; 3] = [
     },
     BeyondSightTierProfile {
         mana_cost: 2_400,
-        mana_regen_requirement: 10_000,
+        mana_regen_requirement: 20_000,
         activation_ticks: 261,
         experience_award: 1,
     },
     BeyondSightTierProfile {
         mana_cost: 5_000,
-        mana_regen_requirement: 10_000,
+        mana_regen_requirement: 40_000,
         activation_ticks: 361,
         experience_award: 1,
     },
@@ -1895,6 +1922,82 @@ fn journal_mana_sound(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spell_menu_titles_match_owner_table_and_level_init_substitutions() {
+        let path = std::env::var_os("MC_SPELLS_DAT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../remc2-native-runtime/CD_Files/DATA/SPELLS.DAT"),
+            std::path::PathBuf::from,
+        );
+        let bytes = std::fs::read(path).expect("actual loaded owner SPELLS.DAT");
+        assert_eq!(bytes.len(), 26 * 80);
+        let mut gate_mismatches = Vec::new();
+        for family in 0..26_u8 {
+            assert_eq!(bytes[usize::from(family) * 80], 3,
+                "every loaded source definition has nonzero byte_0");
+            let owner = std::array::from_fn(|tier| {
+                let offset = usize::from(family) * 80 + 2 + tier * 26 + 20;
+                u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+            });
+            for map in [1, 2] {
+                assert_eq!(spell_menu_title_records(family, map), Some(owner));
+            }
+            let mut day = owner;
+            if family == 4 { day[0] = 198; }
+            if family == 19 { day[0] = 244; }
+            assert_eq!(spell_menu_title_records(family, 0), Some(day));
+            for tier in 0..3_u8 {
+                let offset = usize::from(family) * 80 + 2 + usize::from(tier) * 26 + 8;
+                let mut required = i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                if family == 23 { required = [50_000, 70_000, 90_000][usize::from(tier)]; }
+                let actual = level2_set_spell_profile(family, tier).unwrap().mana_regen;
+                if actual != required {
+                    gate_mismatches.push((family, tier, actual, required));
+                }
+            }
+        }
+        assert!(gate_mismatches.is_empty(),
+            "all78 source gates (family,tier,canonical,owner): {gate_mismatches:?}");
+        assert_eq!(spell_menu_title_records(26, 0), None);
+        assert_eq!(spell_menu_title_records(0, 3), None);
+    }
+
+    #[test]
+    fn corrected_owner_castle_gates_reach_holders_and_exact_source_admission() {
+        // Independent loaded SPELLS.DAT scalars. Exercise the real shared
+        // acquisition/SetSpell field copy and sub_68D50, not menu booleans.
+        for (family, tier, required) in [
+            (0, 2, 160_000), (1, 1, 1_000), (1, 2, 20_000),
+            (3, 2, 20_000), (4, 0, 40_000), (4, 1, 120_000),
+            (4, 2, 360_000), (6, 1, 25_000), (6, 2, 60_000),
+            (11, 0, 20_000), (11, 1, 30_000), (11, 2, 40_000),
+            (12, 1, 20_000), (12, 2, 40_000),
+        ] {
+            let action = physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup).unwrap();
+            let mut state = SpellHolderAcquisitionState::new(family, 200, 111, action, tier);
+            assert!(matches!(acquire_level2_spell_holder(
+                &mut state, PhysicalSpellActionRole::OrdinaryPickup, true,
+            ), SpellHolderAcquisitionResult::Acquired(_)));
+            assert_eq!(state.mana_regen, required, "family {family} tier {tier}");
+            let admission = |castle| beyond_sight_admission(
+                state.max_mana, 100, state.max_mana, state.mana_regen, true, castle,
+            );
+            assert_eq!(admission(None), BeyondSightAdmission::InsufficientCastleMana);
+            assert_eq!(admission(Some(required - 1)), BeyondSightAdmission::InsufficientCastleMana);
+            assert_eq!(admission(Some(required)), BeyondSightAdmission::Allowed);
+            assert_eq!(beyond_sight_admission(
+                state.max_mana - 1, 100, state.max_mana, state.mana_regen, true, Some(required),
+            ), BeyondSightAdmission::InsufficientCasterMana);
+            let mut caster = SpellCasterState { entity_index: 111, mana: state.max_mana,
+                ..SpellCasterState::default() };
+            let mut holder = SpellActivationHolder { entity_index: 200, model: family,
+                level_gate: tier, activation_value: state.word_0x30,
+                mana_cost: state.max_mana, ..SpellActivationHolder::default() };
+            assert!(activate_spell(&mut caster, Some(&mut holder), 256, false, &mut Vec::new()));
+            assert_eq!(holder.active_value, state.word_0x30 as i16);
+        }
+    }
 
     fn caster() -> SpellCasterState {
         SpellCasterState {
@@ -2523,25 +2626,25 @@ mod tests {
         let expected = [
             (0, 0, 250, 5, 1, 0, 100, 20),
             (0, 1, 160, 11, 0, 0, 250, 22),
-            (0, 2, 80, 15, 1, 2_500, 1_500, 100),
+            (0, 2, 80, 15, 1, 160_000, 1_500, 100),
             (1, 0, 10, 3, 1, 0, 100, 33),
-            (1, 1, 15, 41, 1, 0, 250, 6),
-            (1, 2, 20, 51, 1, 1_000, 1_000, 19),
+            (1, 1, 15, 41, 1, 1_000, 250, 6),
+            (1, 2, 20, 51, 1, 20_000, 1_000, 19),
             (2, 0, 0, 101, 1, 0, 1_000, 9),
             (2, 1, 0, 101, 1, 0, 1_250, 12),
             (2, 2, 1, 101, 1, 0, 5_000, 49),
             (3, 0, 2, 301, 1, 0, 1_000, 3),
             (3, 1, 3, 451, 1, 0, 2_500, 5),
-            (3, 2, 4, 501, 1, 0, 5_000, 9),
-            (4, 0, 100, 201, 1, 20_000, 5_000, 24),
-            (4, 1, 100, 301, 1, 20_000, 7_500, 24),
-            (4, 2, 100, 455, 1, 25_000, 15_000, 32),
+            (3, 2, 4, 501, 1, 20_000, 5_000, 9),
+            (4, 0, 100, 201, 1, 40_000, 5_000, 24),
+            (4, 1, 100, 301, 1, 120_000, 7_500, 24),
+            (4, 2, 100, 455, 1, 360_000, 15_000, 32),
             (5, 0, 1, 11, 1, 0, 500, 45),
             (5, 1, 1, 21, 1, 40_000, 10_000, 476),
             (5, 2, 10, 41, 1, 160_000, 50_000, 1_219),
             (6, 0, 100, 101, 1, 0, 1_000, 9),
-            (6, 1, 100, 201, 1, 0, 1_500, 7),
-            (6, 2, 100, 301, 1, 0, 10_000, 33),
+            (6, 1, 100, 201, 1, 25_000, 1_500, 7),
+            (6, 2, 100, 301, 1, 60_000, 10_000, 33),
             (8, 0, 0, 125, 1, 40_000, 5_000, 40),
             (8, 1, 0, 251, 1, 80_000, 15_000, 59),
             (8, 2, 0, 125, 1, 160_000, 25_000, 200),
@@ -2593,12 +2696,12 @@ mod tests {
             (10, 0, 0, 11, 1, 5_000, 5_000, 454),
             (10, 1, 0, 11, 1, 40_000, 20_000, 1_818),
             (10, 2, 0, 11, 1, 60_000, 40_000, 3_636),
-            (11, 0, 0, 181, 1, 2_000, 2_000, 11),
-            (11, 1, 0, 183, 1, 3_000, 2_500, 13),
-            (11, 2, 0, 183, 1, 4_000, 3_000, 16),
+            (11, 0, 0, 181, 1, 20_000, 2_000, 11),
+            (11, 1, 0, 183, 1, 30_000, 2_500, 13),
+            (11, 2, 0, 183, 1, 40_000, 3_000, 16),
             (12, 0, 0, 151, 1, 0, 1_800, 11),
-            (12, 1, 0, 261, 1, 10_000, 2_400, 9),
-            (12, 2, 0, 361, 1, 10_000, 5_000, 13),
+            (12, 1, 0, 261, 1, 20_000, 2_400, 9),
+            (12, 2, 0, 361, 1, 40_000, 5_000, 13),
         ];
         for (family, tier, subspell_index, word_0x30, byte_0x3b, mana_regen, max_mana, mana) in
             expected
@@ -2751,21 +2854,21 @@ mod tests {
             [
                 InvisibleTierProfile {
                     mana_cost: 2_000,
-                    mana_regen_requirement: 2_000,
+                    mana_regen_requirement: 20_000,
                     activation_ticks: 181,
                     owner_visibility_mode: 1,
                     experience_award: 1,
                 },
                 InvisibleTierProfile {
                     mana_cost: 2_500,
-                    mana_regen_requirement: 3_000,
+                    mana_regen_requirement: 30_000,
                     activation_ticks: 183,
                     owner_visibility_mode: 2,
                     experience_award: 1,
                 },
                 InvisibleTierProfile {
                     mana_cost: 3_000,
-                    mana_regen_requirement: 4_000,
+                    mana_regen_requirement: 40_000,
                     activation_ticks: 183,
                     owner_visibility_mode: 3,
                     experience_award: 1,
@@ -2779,18 +2882,18 @@ mod tests {
     fn invisible_authoritative_predicate_matches_source_mana_life_castle_branches() {
         let mut invisible = InvisibleState::new(0, 513, 7, 2_000, 100).expect("tier");
         invisible.active_value = invisible.activation_value;
-        assert!(invisible.authoritative_predicate(Some(2_000)));
-        assert!(!invisible.authoritative_predicate(Some(1_999)));
+        assert!(invisible.authoritative_predicate(Some(20_000)));
+        assert!(!invisible.authoritative_predicate(Some(19_999)));
         assert!(!invisible.authoritative_predicate(None));
 
         // The source only checks the parent's mana against maxMana on the
         // first pulse; subsequent pulses remain authoritative with less mana.
         invisible.active_value -= 1;
         invisible.parent_mana = 0;
-        assert!(invisible.authoritative_predicate(Some(2_000)));
+        assert!(invisible.authoritative_predicate(Some(20_000)));
 
         invisible.parent_life = -1;
-        assert!(!invisible.authoritative_predicate(Some(2_000)));
+        assert!(!invisible.authoritative_predicate(Some(20_000)));
     }
 
     #[test]
@@ -2849,7 +2952,7 @@ mod tests {
         invisible.parent_mana_regen = 777;
         invisible.parent_status_flags = INVISIBLE_STATUS_BIT | 0x400;
 
-        let first = invisible.step(Some(4_000));
+        let first = invisible.step(Some(40_000));
         assert!(first.sustained);
         assert_eq!(first.active_after, 182);
         assert_eq!(first.experience_awarded, 1);
@@ -2866,7 +2969,7 @@ mod tests {
         // spell-entity bit remains set until source `sub_6D880` removes it.
         invisible.active_value = 1;
         invisible.countdown = -1;
-        let end = invisible.step(Some(4_000));
+        let end = invisible.step(Some(40_000));
         assert_eq!(end.active_after, 0);
         assert_eq!(end.countdown_after, -2);
         assert_eq!(end.owner_flags_after & INVISIBLE_STATUS_BIT, 0);
@@ -2884,10 +2987,10 @@ mod tests {
         beyond_sight.active_value = beyond_sight.activation_value;
         beyond_sight.parent_mana_regen = 777;
         assert!(!beyond_sight.authoritative_predicate(None));
-        assert!(!beyond_sight.authoritative_predicate(Some(9_999)));
-        assert!(beyond_sight.authoritative_predicate(Some(10_000)));
+        assert!(!beyond_sight.authoritative_predicate(Some(19_999)));
+        assert!(beyond_sight.authoritative_predicate(Some(20_000)));
 
-        let first = beyond_sight.step(Some(10_000));
+        let first = beyond_sight.step(Some(20_000));
         assert!(first.sustained);
         assert_eq!(first.active_after, 260);
         assert_eq!(first.experience_awarded, 1);
@@ -2897,7 +3000,7 @@ mod tests {
 
         beyond_sight.active_value = 1;
         beyond_sight.countdown = -1;
-        let end = beyond_sight.step(Some(10_000));
+        let end = beyond_sight.step(Some(20_000));
         assert_eq!(end.active_after, 0);
         assert_eq!(end.countdown_after, -2);
         assert!(end.cleanup_requested);
@@ -2908,7 +3011,7 @@ mod tests {
         let mut beyond_sight = BeyondSightState::new(1, 513, 7, 2_400, 100).expect("tier");
         beyond_sight.active_value = beyond_sight.activation_value;
 
-        let first = beyond_sight.step(Some(9_999));
+        let first = beyond_sight.step(Some(19_999));
 
         assert!(!first.sustained);
         assert_eq!(first.experience_awarded, 1);
@@ -2935,7 +3038,8 @@ mod tests {
     fn invisible_reset_restores_cold_holder_without_touching_identity_or_tier() {
         let mut invisible = InvisibleState::new(0, 513, 7, 2_000, 100).expect("tier");
         invisible.active_value = invisible.activation_value;
-        let _ = invisible.step(Some(2_000));
+        let active = invisible.step(Some(20_000));
+        assert!(active.sustained);
         invisible.parent_status_flags |= 0x400;
         invisible.reset();
 

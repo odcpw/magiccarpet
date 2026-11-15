@@ -312,7 +312,7 @@ impl Level2SharedSpellResetSession {
 
 /// Level.cpp GetSpellManaCost_6D710. A missing Castle uses the table cost;
 /// a linked stage-zero Castle follows the stage table and Q8 scaling instead.
-fn castle_mana_cost(base: i32, tier: u8, stage: Option<i32>, destroyed: bool) -> i32 {
+pub(super) fn castle_mana_cost(base: i32, tier: u8, stage: Option<i32>, destroyed: bool) -> i32 {
     let Some(stage) = stage else {
         return base.wrapping_add(if destroyed { 3_000 } else { 0 });
     };

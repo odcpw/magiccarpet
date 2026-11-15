@@ -2470,7 +2470,10 @@ fn player_hit_bridge_installs_only_next_turn_directional_recoil() {
 }
 
 fn fixture_paths() -> (PathBuf, PathBuf) {
-    let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let private = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+        PathBuf::from,
+    );
     (
         private.join("generated/level1-export-m"),
         private.join("generated/level1-asset-closure.json"),

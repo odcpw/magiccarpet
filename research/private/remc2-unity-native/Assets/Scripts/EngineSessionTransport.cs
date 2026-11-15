@@ -139,6 +139,7 @@ namespace MagicCarpet.Native
             public byte unlocked_tier;
             public byte menu_slot;
             public SpellMenuArtwork menu_artwork;
+            public SpellMenuHelp menu_help;
             public int mana_cost;
             public string hand;
             public string availability;
@@ -150,6 +151,22 @@ namespace MagicCarpet.Native
         {
             public ushort grid_icon;
             public ushort[] tier_icons;
+        }
+
+        [Serializable]
+        internal sealed class SpellMenuHelp
+        {
+            public bool is_standard;
+            public sbyte selected_tier;
+            public ushort[] title_records;
+            public bool[] castle_blocked;
+            public bool mana_unavailable;
+            public bool definition_enabled;
+            public bool blink_hidden;
+            public bool discovered;
+            public int[] tier_mana_costs;
+            public int experience;
+            public int[] experience_thresholds;
         }
 
         [Serializable]
@@ -190,6 +207,9 @@ namespace MagicCarpet.Native
             public sbyte player_wall_contact_counter;
             public CameraPose source_camera_pose;
             public short source_camera_fov;
+            public bool spell_menu_has_any_spell;
+            public byte[] spell_menu_wizard_colors;
+            public bool spell_menu_panels_opaque;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
             // Zero represents the native optional record's null value. The
@@ -1130,6 +1150,8 @@ namespace MagicCarpet.Native
                 value.objective_secret_announcement_record != 284 &&
                 value.objective_secret_announcement_record != 285)
                 throw new InvalidOperationException("invalid secret announcement language record");
+            if (value.spell_menu_wizard_colors != null && value.spell_menu_wizard_colors.Length != 2)
+                throw new InvalidOperationException("spell menu requires two bound wizard colors");
             if (value.player_vitals.max_life <= 0 || value.player_vitals.max_mana <= 0 ||
                 value.player_vitals.life > value.player_vitals.max_life ||
                 value.player_vitals.mana > value.player_vitals.max_mana)
@@ -1169,6 +1191,14 @@ namespace MagicCarpet.Native
                 }
                 if (spell.selected && ++selectedSpells > 1)
                     throw new InvalidOperationException("neutral spell selection is ambiguous");
+                if (spell.menu_help != null &&
+                    (spell.menu_help.title_records?.Length != 3 ||
+                     spell.menu_help.castle_blocked?.Length != 3 ||
+                     spell.menu_help.tier_mana_costs?.Length != 3 ||
+                     spell.menu_help.experience_thresholds?.Length != 3 ||
+                     spell.menu_help.selected_tier < 0 || spell.menu_help.selected_tier > 2 ||
+                     spell.menu_help.title_records.Any(record => record > 470)))
+                    throw new InvalidOperationException("spell menu help has unbound tiers or language records");
             }
             foreach (var entity in value.presentation_entities)
             {

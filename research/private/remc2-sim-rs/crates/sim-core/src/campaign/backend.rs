@@ -4036,6 +4036,9 @@ pub struct CampaignRenderObservation {
     pub source_camera_pose: sim_session::CameraPose,
     pub source_camera_fov: i16,
     pub player_spells: Vec<sim_session::SpellObservation>,
+    pub spell_menu_has_any_spell: bool,
+    pub spell_menu_wizard_colors: [u8; 2],
+    pub spell_menu_panels_opaque: bool,
     pub objective_progress: ObjectiveProgress,
     pub objective_textbox_ticks: u8,
     pub objective_secret_announcement_record: Option<u16>,
@@ -4228,7 +4231,21 @@ impl Mc2CampaignBackend {
                             .map(|castle| castle.mana),
                     )
                 },
+                |family| self.campaign.simulation().spell_menu_help(family),
             ),
+            spell_menu_has_any_spell: shared_spells.local_player().enabled_spell_holders
+                .iter().any(|&slot| slot != 0),
+            spell_menu_wizard_colors: {
+                let colors = crate::native_world::campaign_hud_palette_indices(
+                    shared_spells.local_player().player_color_index(),
+                    self.campaign.simulation().canonical_terrain().map_type(),
+                ).expect("validated local source wizard palette");
+                [colors[0], colors[1]]
+            },
+            // Current supported LevelInit setting. The separate source
+            // Shift+F7 transparency toggle is not implemented by this view.
+            spell_menu_panels_opaque: self.campaign.simulation().canonical_terrain().map_type()
+                == crate::native_world::MapType::Cave,
             player_immobilized_ticks: u16::from(flight.immobilize_counter.cast_unsigned()),
             source_camera_fov: {
                 let exit = self.campaign.simulation().level_exit_sequence();
@@ -4315,6 +4332,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
             source_camera_pose,
             source_camera_fov,
             player_spells,
+            spell_menu_has_any_spell,
+            spell_menu_wizard_colors,
+            spell_menu_panels_opaque,
             objective_progress,
             objective_textbox_ticks,
             objective_secret_announcement_record,
@@ -4337,6 +4357,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
             source_camera_pose,
             source_camera_fov,
             player_spells,
+            spell_menu_has_any_spell,
+            spell_menu_wizard_colors,
+            spell_menu_panels_opaque,
             objective_progress,
             objective_textbox_ticks,
             objective_secret_announcement_record,

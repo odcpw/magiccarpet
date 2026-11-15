@@ -801,11 +801,66 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-15): the same team is completing the real special
-secret-entry announcement through cold restore, source speech and original text.
-QuietIsland owns managed consumers; BoldForge owns native state/lifetime joins.
-Root serializes verification, publication and installation. Default Keys below
-is delivered; do not restart it.
+Current capability (2026-11-15): the same team is completing original spell-menu
+help through actual Ctrl/hover, source hint cycling, selected original glyphs,
+indexed menu bars/transparency and cleanup. The missing SourceSpellMenu help
+consumer and source bars are implemented and being qualified. QuietIsland owns managed/assets; BoldForge owns
+authoritative tier text, affordability, experience and raw menu admission joins.
+Root implements shared DTO/transport joins and serializes checks/push/installation.
+Default Keys and special secret announcements below are delivered; do not restart
+them. Keep the complete original acceptance and remaining help/audio/presentation
+work open.
+
+The spell-menu trace exposed14 genuine Castle-mana threshold errors across
+Fireball, Possession, Speed, Morph, Shield, Invisibility and Beyond Sight. Loaded
+SPELLS.DAT maxManaLimit_A is copied directly by LevelInit; it is not divided by64.
+Canonical properties/holder profiles now use those raw values, retaining the
+source family23 override. All78 loaded tier gates and the14 exact lower/equal
+admission boundaries pass, along with all38 activation-module checks. A real
+public Invisibility selection/cast check compares matched no-cast/cast frames at
+Castle19,999/20,000 and verifies source payment/XP/first-pulse behavior (0.48s).
+Its original zero-regeneration expectation was defective: both ordinary frames
+receive source regeneration. Only that test was corrected; production is byte-
+identical outside it, and the original exact debit predicates remain intact.
+
+Native help metadata carries retained tier, actual selected title records,
+Castle/caster gates, discovery/blink, costs and XP through JSON and strict MCPOv3.
+Actual fresh-Pav JSON/compact parity passes29.34s; existing HUD-tier/publication
+lifecycle/menu purity and Beyond Sight public acquisition/readiness checks pass.
+The final workspace all-target check passes44.8s; strict Rig native build passes
+171.4s and all626 captured inputs/native bytes match. These626 are input hashes,
+not tests. Candidate nativee51b38785177e6de53b8f27214c1a7a1b764a7dab963942c94d27ab946630274
+is not yet installed. Original source glyphs/three-line highlight and chained
+indexed TABLES recursion pass0.50s; actual controlled Results->Uluth tier drag
+passes54.96s. The isolated Ctrl-hover/shared-clock check remains pending after an
+Editor pointer-delivery failure; no gameplay expectation was weakened. Menu
+transparency currently projects the supported map default; Shift+F6 remains an
+explicit unfinished control. Full help/language/audio acceptance stays open.
+Independent source review caught two new renderer defects before delivery: tier
+panel shading depends on Castle admission plus caster mana, but icon transparency
+depends only on the Castle gate; XP bar arithmetic narrows its quotient to signed
+16 bits before sign/54 clamp. Both now match source. Their detached indexed
+component controls preserve the real owner/replay and do not claim organic
+Castle eligibility or extreme XP production. The actual source20 owner has no
+Castle and must retain that real blocked predicate. Transparency is source
+Shift+F6 (case14), not Shift+F7, which selects flat shading (case15); the older
+native comment calling transparency F7 is stale and will be corrected with that
+next native capability, without rebuilding an otherwise unchanged artifact.
+The connected managed Ctrl-hover check now passes62.11s, including actual
+source20 entry/selection, source85 titles and six-poll cycling, indexed XP/icons,
+repaint/native replay purity, unavailable-category cleanup and map+spell mode.
+Diagnostics proved HUD GUI.matrix changes replaced the delivered event pointer
+with OS coordinates; the canonical HUD now preserves it through its temporary
+transform. Root initially placed that small fix in a similar legacy HUD method
+in the older qualified project; that own candidate placement was reverted and
+corrected by named method. The subsequent detached pixel control had supplied
+stored33x17 sprite dimensions while sampling real66x34 runtime geometry; it now
+uses the actual descriptor scaling, retaining the same54px/color expectations.
+Temporary diagnostic draws/logs are removed. Final changed-source UBS is partial
+for C# compilation/taint limits with no critical/warning in the changed regions.
+All previous passing native/codec/tier-drag/GPU checks were reused; no native
+rebuild was needed for these managed/test corrections. Installed physical input
+remains the next delivery gate, not a claim made by this Editor-window test.
 Source SetKeysDialog's immediate default action keeps the dialog open and resets
 ten keys, sound/music volumes127, showHelp and brightness11/13. It preserves
 brightness12, selected language/font, minimap/topbar and other settings: langIndex_4

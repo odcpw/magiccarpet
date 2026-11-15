@@ -83,22 +83,29 @@ namespace MagicCarpet.Native
             private int remaining;
             private RowState currentRow;
             private int pendingRow;
+            private bool spellMode;
+            private int spellSlot = -1, spellTier = -1, spellCycle;
+            private ushort[] spellRecords;
+            private int spellHighlight = -1;
             internal int Priority => mana.Priority;
             internal bool Visible { get; private set; }
             internal int VisibleRow { get; private set; }
             internal int AnchorX { get; private set; } = 540;
+            internal int AnchorY { get; private set; }
+            internal bool SpellVisible { get; private set; }
+            internal ushort[] VisibleSpellRecords { get; private set; }
+            internal int VisibleSpellHighlight { get; private set; } = -1;
 
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
-                rows = new RowState[12];
-                rows[0] = new RowState(rowFor(1));
-                rows[1] = new RowState(rowFor(3));
-                rows[2] = mana = new RowState(rowFor(41));
-                for (var index = 3; index < rows.Length; index++)
-                    rows[index] = new RowState(rowFor(72 + index - 3));
+                var ids = new[] { 1, 3, 40, 41, 42, 69, 70, 71,
+                    72, 73, 74, 75, 76, 77, 78, 79, 80, 85 };
+                rows = new RowState[ids.Length];
+                for (var index = 0; index < ids.Length; index++) rows[index] = new RowState(rowFor(ids[index]));
+                mana = rows[3];
             }
 
             internal void Promote(int hint, int priority)
@@ -114,6 +121,14 @@ namespace MagicCarpet.Native
             {
                 Visible = false;
                 VisibleRow = 0;
+                SpellVisible = false;
+                if (spellMode)
+                {
+                    spellMode = false;
+                    spellSlot = spellTier = -1;
+                    spellCycle = 0;
+                    if (remaining != 0) Close();
+                }
                 // DrawHelpPopUps_871F0 enters its pause branch instead of
                 // advancing sub_87B30/sub_87B70. Keep the current popup carrier.
                 if (!enabled || paused) return;
@@ -173,6 +188,11 @@ namespace MagicCarpet.Native
                 }
                 // sub_87B70 services every source row after selection/draw,
                 // including rows that are not currently eligible.
+                AgeRows();
+            }
+
+            private void AgeRows()
+            {
                 foreach (var row in rows)
                 {
                     row.Age = unchecked(row.Age + 1);
@@ -182,6 +202,106 @@ namespace MagicCarpet.Native
                         row.Priority = Math.Max(0, Math.Min(5, row.Priority + 1));
                     }
                 }
+            }
+
+            // The same Index_0x86 / dword_0x72 carrier services spell help.
+            // This is called once for a real source presentation frame, never
+            // from IMGUI repaint or a state query.
+            internal void AdvanceSpell(EngineSessionTransport.SpellObservation spell, int slot, int tier,
+                bool hasAny, bool enabled, bool suppressed, int panelWidth, int panelHeight,
+                int tierWidth, int tierHeight)
+            {
+                Visible = false; VisibleRow = 0; SpellVisible = false;
+                if (!enabled) return;
+                spellMode = true;
+                if (slot < 0 || slot >= 26 || tier < 0 || tier >= 3 || panelWidth <= 0 ||
+                    panelHeight <= 0 || tierWidth <= 0 || tierHeight <= 0)
+                    throw new InvalidDataException("invalid source spell help selection or geometry");
+                var help = spell?.menu_help;
+                var standard = help?.is_standard == true;
+                if (slot != spellSlot || tier != spellTier)
+                {
+                    if (spellCycle > 1 || !standard) Close();
+                    spellCycle = 0;
+                    SelectSpell(spell, slot, tier, hasAny, panelWidth, panelHeight, tierWidth, tierHeight);
+                    spellSlot = slot; spellTier = tier;
+                }
+                if (suppressed)
+                {
+                    if (remaining != 0) Close();
+                    pollDelay = 6;
+                    return;
+                }
+                if (remaining != 0)
+                {
+                    Visible = SpellVisible = true;
+                    VisibleRow = currentRow.Binding.Row;
+                    VisibleSpellRecords = spellRecords;
+                    VisibleSpellHighlight = spellHighlight;
+                    if (--remaining == 0) Close();
+                }
+                else if (--pollDelay <= 0)
+                {
+                    SelectSpell(spell, slot, tier, hasAny, panelWidth, panelHeight, tierWidth, tierHeight);
+                }
+                AgeRows();
+            }
+
+            private void SelectSpell(EngineSessionTransport.SpellObservation spell, int slot, int tier,
+                bool hasAny, int panelWidth, int panelHeight, int tierWidth, int tierHeight)
+            {
+                if (!hasAny) return;
+                var help = spell?.menu_help;
+                var standard = help?.is_standard == true;
+                if (standard && (help.title_records == null || help.title_records.Length != 3 ||
+                    help.castle_blocked == null || help.castle_blocked.Length != 3))
+                    throw new InvalidDataException("incomplete source spell help observation");
+                var top = 480 - 2 * panelHeight;
+                var gridX = 8 + panelWidth * (slot % 13) + panelWidth / 2;
+                var gridY = top + panelHeight * (slot / 13) + panelHeight / 2;
+                var left = Math.Max(0, Math.Min(640 - 3 * tierWidth, gridX - 3 * tierWidth / 2));
+                var tierTop = top - tierHeight;
+                var tierY = tierTop + tierHeight / 2;
+                var row = 0; var x = 0; var y = 0; var stop = false;
+                for (var scan = 0; scan < 8 && !stop; scan++)
+                {
+                    switch (spellCycle)
+                    {
+                        case 0:
+                            if (standard) { row = 85; x = left + 3 * tierWidth / 2; y = tierTop; stop = true; }
+                            break;
+                        case 1:
+                            if (standard) { row = 69; x = left + 33 + (spell.unlocked_tier > 0 ? tierWidth : 0); y = tierTop + 29; stop = true; }
+                            break;
+                        case 2:
+                            if (standard)
+                                for (var j = 0; j < 3 && !stop; j++)
+                                    if (help.castle_blocked[j]) { row = 70; x = left + j * tierWidth + tierWidth / 2; y = tierY; stop = true; }
+                            break;
+                        case 3:
+                            if (standard && spell.unlocked_tier > 0) { row = 71; x = left + tierWidth / 2 + spell.unlocked_tier * tierWidth; y = tierY; stop = true; }
+                            break;
+                        case 4:
+                            // Source leaves endLoop false here: a later
+                            // qualifying case may replace this candidate.
+                            if (standard && !help.castle_blocked[tier]) { row = 40; x = gridX; y = (gridY + panelHeight - 8) >> 2; }
+                            break;
+                        case 5:
+                            if (standard) { row = 42; x = left + tierWidth / 2 + tier * tierWidth; y = tierY; stop = true; }
+                            break;
+                        case 6:
+                            if (standard && help.mana_unavailable) { row = 41; x = gridX; y = (gridY + panelHeight - 8) >> 2; stop = true; }
+                            break;
+                    }
+                    spellCycle = (spellCycle + 1) & 7;
+                }
+                if (row == 0) return;
+                currentRow = FindRow(row);
+                remaining = currentRow.Binding.Duration;
+                AnchorX = x; AnchorY = y;
+                spellRecords = row == 85 ? (ushort[])help.title_records.Clone() :
+                    new[] { checked((ushort)currentRow.Binding.TextRecord) };
+                spellHighlight = row == 85 ? tier : -1;
             }
 
             private RowState FindRow(int row)
@@ -200,7 +320,7 @@ namespace MagicCarpet.Native
                     currentRow.Priority = currentRow.Binding.Priority;
                 }
                 currentRow = null;
-                pollDelay = 20;
+                pollDelay = spellMode ? 6 : 20;
             }
 
             internal void RequestObjectiveContext(int row, bool enabled)
@@ -233,6 +353,8 @@ namespace MagicCarpet.Native
         }
 
         private ManaHelpHint gameRuntimeManaHint;
+        private Color32[] gameRuntimeSpellPriorPixels;
+        private ulong gameRuntimeSpellPriorGeneration;
         private SourceObjectiveTextboxPresenter gameRuntimeManaHintPresenter;
 
         private void InitializeGameRuntimeHelpHint(OwnerCampaignMenuCache languageCache)
@@ -277,10 +399,13 @@ namespace MagicCarpet.Native
             if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
             var identity = session?.ObservedCampaignIdentity();
             var snapshot = gameRuntimeCampaignSnapshot?.value;
-            if (identity?.mode != GameRuntimeTransport.PlayingMode ||
+            var spellHelp = gameRuntimeSpellMenuOpen && gameRuntimeManaHint.SpellVisible;
+            if (spellHelp && gameRuntimeSourceSpellMenu.HoveredSlot < 0) return;
+            if ((identity?.mode != GameRuntimeTransport.PlayingMode &&
+                 !(spellHelp && identity?.mode == GameRuntimeTransport.PausedMode)) ||
                 identity.player_preferences?.preferences?.show_help != true || snapshot == null ||
                 snapshot.player_vitals.life < 0 || snapshot.objective_textbox_ticks != 0 || snapshot.exit_sequence_active ||
-                nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen || gameRuntimeAbandonConfirmationOpen ||
+                nativePresentationTutorialOrBriefing || (gameRuntimeSpellMenuOpen && !spellHelp) || gameRuntimeAbandonConfirmationOpen ||
                 playerPreferences?.IsOpen == true) return;
             var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
                 level2DayPresentationSurface ?? gameRuntimeNightSurface;
@@ -306,11 +431,31 @@ namespace MagicCarpet.Native
             };
             gameRuntimeManaHintPresenter ??= new SourceObjectiveTextboxPresenter(gameRuntimeMenu.ObjectiveForProfile(profile));
             var helpRow = gameRuntimeMenu.GameplayHelpForRow(gameRuntimeManaHint.VisibleRow);
-            var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
-            if (helpRow.Row == 41)
-                gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+            if (spellHelp)
+            {
+                var ids = gameRuntimeManaHint.VisibleSpellRecords;
+                if (ids == null || (ids.Length != 1 && ids.Length != 3))
+                    throw new InvalidDataException("source spell help has no selected records");
+                var text = new string[ids.Length];
+                for (var index = 0; index < ids.Length; index++)
+                {
+                    text[index] = gameRuntimeMenu.GameplayLanguageText(ids[index]);
+                    if (string.IsNullOrEmpty(text[index])) throw new InvalidDataException("source spell help record is empty");
+                }
+                gameRuntimeManaHintPresenter.PresentSpellHint(text, gameRuntimeManaHint.VisibleSpellHighlight,
+                    campaignSession.Generation, gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
+            }
             else
-                gameRuntimeManaHintPresenter.PresentContextHint(helpText, campaignSession.Generation, helpRow.X, helpRow.Y);
+            {
+                gameRuntimeManaHintPresenter.ClearPrior();
+                gameRuntimeSpellPriorPixels = null;
+                gameRuntimeSpellPriorGeneration = 0;
+                var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
+                if (helpRow.Row == 41)
+                    gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+                else
+                    gameRuntimeManaHintPresenter.PresentContextHint(helpText, campaignSession.Generation, helpRow.X, helpRow.Y);
+            }
             var palette = surface.FramePaletteRgb8;
             if (playerPreferences != null)
                 palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
@@ -318,6 +463,51 @@ namespace MagicCarpet.Native
             gameRuntimeManaHintPresenter.Draw(1, indices, generation, revision,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
                     640f * scale, 480f * scale), palette, gameRuntimeSourceMenus.MapOpen);
+        }
+
+        private void DrawGameRuntimeSpellMenuPrior(OwnerCampaignMenuCache.ObjectiveAssets assets)
+        {
+            if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
+            var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                level2DayPresentationSurface ?? gameRuntimeNightSurface;
+            if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
+            Texture scene;
+            ulong generation;
+            var map = gameRuntimeSourceMenus.MapOpen;
+            if (map) { scene = surface.WorldIndices; generation = surface.Generation; }
+            else
+            {
+                if (surface.SceneHistoryGeneration != campaignSession.Generation ||
+                    surface.SceneHistoryRevision != campaignSession.SceneFrameRevision) return;
+                scene = surface.ComposedSceneIndices; generation = surface.SceneHistoryGeneration;
+            }
+            if (scene == null) return;
+            var cache = gameRuntimeEnvironmentCache ?? ownerAssetCache;
+            ObjectiveTextboxCompositor.Sprite Indexed(int selector)
+            {
+                if (!hudBitmapDescriptors.TryGetValue(selector, out var row) || row == null ||
+                    !hudBitmapIndices.TryGetValue(selector, out var indices) || indices == null ||
+                    !hudBitmapMasks.TryGetValue(selector, out var mask) || mask == null) return null;
+                return new ObjectiveTextboxCompositor.Sprite(row.stored_width, row.stored_height, indices, mask);
+            }
+            if (!gameRuntimeSourceSpellMenu.TryIndexedPrior(cache, Indexed, assets.Tables, assets.TableOffset,
+                out var rect, out var pixels)) return;
+            gameRuntimeManaHintPresenter ??= new SourceObjectiveTextboxPresenter(assets);
+            if (!ReferenceEquals(pixels, gameRuntimeSpellPriorPixels) ||
+                gameRuntimeSpellPriorGeneration != campaignSession.Generation)
+            {
+                gameRuntimeManaHintPresenter.SetSpellPrior(rect, pixels, campaignSession.Generation);
+                gameRuntimeSpellPriorPixels = pixels;
+                gameRuntimeSpellPriorGeneration = campaignSession.Generation;
+            }
+            var palette = surface.FramePaletteRgb8;
+            if (playerPreferences != null)
+                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            gameRuntimeManaHintPresenter.DrawPausePrior(scene, generation,
+                new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
+                    640f * scale, 480f * scale), palette, map);
+            gameRuntimeSourceSpellMenu.DrawCursor();
         }
 
         private void DrawGameRuntimeAbilityNotification()
@@ -330,6 +520,8 @@ namespace MagicCarpet.Native
 
         private void ResetGameRuntimeHelpHint()
         {
+            gameRuntimeSpellPriorPixels = null;
+            gameRuntimeSpellPriorGeneration = 0;
             gameRuntimeAbilityNotification = null;
             gameRuntimeManaHint = null;
             gameRuntimeManaHintPresenter?.Dispose();

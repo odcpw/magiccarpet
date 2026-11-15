@@ -9903,6 +9903,96 @@ impl Mc2Simulation {
         }
     }
 
+    /// The same source sub_68D50/Castle exception used by HUD hint41 and
+    /// the spell-menu cycle. This read never activates or reprices a holder.
+    fn spell_help_unavailable(&self, holder: &EntitySnapshot, family: u8) -> Result<bool> {
+        let live = &self.session.state.live;
+        let caster = live.shared_spells.player_entity();
+        let caster_mana = live.shared_spells.player_mana();
+        if family == 2 {
+            return Ok(caster_mana < holder.max_mana);
+        }
+        let castle_mana = if holder.mana_regen != 0 {
+            source_target::status_castle_mana(&live.economy, &live.shared_spells, caster)
+                .map_err(NativeWorldError::new)?
+        } else {
+            None
+        };
+        Ok(crate::spell_activation::beyond_sight_admission(
+            caster_mana, caster.life, holder.max_mana, holder.mana_regen,
+            holder.active_value == holder.activation_value as i16, castle_mana,
+        ) != crate::spell_activation::BeyondSightAdmission::Allowed)
+    }
+
+    /// Source88D40 reads the raw enabled relation independently of the
+    /// semantic actor's acquisition validity. Broken Castle ownership refuses
+    /// this optional binding rather than inventing affordable menu tiers.
+    pub(crate) fn spell_menu_help(&self, family: u8) -> Option<sim_session::SpellMenuHelp> {
+        let live = &self.session.state.live;
+        let map_type = self.canonical_terrain().map_type().id();
+        let title_records = crate::spell_activation::spell_menu_title_records(family, map_type)?;
+        let player = live.shared_spells.local_player();
+        let index = usize::from(family);
+        let holder_slot = *player.enabled_spell_holders.get(index)?;
+        let holder = if holder_slot != 0 {
+            Some(source_target::status_parent(
+                &live.economy,
+                source_target::Context {
+                    spells: Some(&live.shared_spells),
+                    ..Default::default()
+                },
+                holder_slot,
+            ).ok()??)
+        } else {
+            None
+        };
+        let castle = source_target::status_castle(
+            &live.economy, &live.shared_spells, live.shared_spells.player_entity(),
+        ).ok()?;
+        let castle = castle.filter(|row| row.index != 0);
+        let castle_mana = castle.as_ref().map(|row| row.mana);
+        Some(sim_session::SpellMenuHelp {
+            is_standard: holder_slot != 0 && (family != 25 || map_type == 2),
+            title_records,
+            castle_blocked: std::array::from_fn(|tier| {
+                let required = crate::spell_activation::level2_set_spell_profile(family, tier as u8)
+                    .expect("validated physical family and tier").mana_regen;
+                required != 0 && castle_mana.is_none_or(|mana| mana < required)
+            }),
+            mana_unavailable: match holder.as_ref() {
+                Some(holder) => self.spell_help_unavailable(holder, family).ok()?,
+                None => false,
+            },
+            // Every retained source definition has byte_0 != 0; only the
+            // explicit Cave-family rule changes DrawSpellMenu's admission.
+            definition_enabled: family != 25 || map_type == 2,
+            blink_hidden: holder.as_ref().is_some_and(|row| {
+                !level2_day_spell_draw_admitted(
+                    row.model, row.active_value,
+                    self.session.state.scratch.level2_day_hud_color_phase_1,
+                )
+            }),
+            discovered: player.spell_enabled_flags[index] != 0
+                || player.acquired_spell_flags[index] != 0,
+            tier_mana_costs: std::array::from_fn(|tier| {
+                let cost = crate::spell_activation::level2_set_spell_profile(family, tier as u8)
+                    .expect("validated physical family and tier").max_mana;
+                if family == 2 {
+                    super::player_spell_state::castle_mana_cost(
+                        cost, tier as u8, castle.as_ref().map(EntitySnapshot::source_dword_10),
+                        player.castle_destroyed != 0,
+                    )
+                } else {
+                    cost
+                }
+            }),
+            experience: player.persistent_spell_experience[index]
+                .wrapping_add(player.runtime_spell_experience[index]),
+            experience_thresholds: LEVEL2_SPELL_TIER_THRESHOLDS[index],
+            selected_tier: player.family_selected_tiers[index],
+        })
+    }
+
     pub fn day_hud(&self) -> Result<Level2DayHudSnapshot> {
         self.day_hud_for(CampaignSelection::LEVEL2)
     }
@@ -10008,23 +10098,7 @@ impl Mc2Simulation {
                     ))
                 })?;
             let caster_mana = self.session.state.live.shared_spells.player_mana();
-            let help_unavailable = if holder.model == 2 {
-                caster_mana < holder.max_mana
-            } else {
-                let castle_mana = if holder.mana_regen != 0 {
-                    source_target::status_castle_mana(
-                        &self.session.state.live.economy,
-                        &self.session.state.live.shared_spells,
-                        local_entity,
-                    ).map_err(NativeWorldError::new)?
-                } else {
-                    None
-                };
-                crate::spell_activation::beyond_sight_admission(
-                    caster_mana, local_entity.life, holder.max_mana, holder.mana_regen,
-                    holder.active_value == holder.activation_value as i16, castle_mana,
-                ) != crate::spell_activation::BeyondSightAdmission::Allowed
-            };
+            let help_unavailable = self.spell_help_unavailable(holder, holder.model)?;
             Ok(Level2DayHudSpellSlot {
                 holder_entity_index: holder.index,
                 parent_entity_index,
@@ -31088,6 +31162,158 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spell_menu_help_reads_source_holders_costs_and_progress_without_advancing() {
+        let spells_path = std::env::var_os("MC_SPELLS_DAT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../remc2-native-runtime/CD_Files/DATA/SPELLS.DAT"),
+            PathBuf::from,
+        );
+        let source = std::fs::read(spells_path).expect("actual owner source thresholds");
+        assert_eq!(source.len(), 26 * 80);
+        for (family, thresholds) in LEVEL2_SPELL_TIER_THRESHOLDS.iter().enumerate() {
+            for (tier, threshold) in thresholds.iter().enumerate() {
+                let offset = family * 80 + 2 + tier * 26 + 12;
+                assert_eq!(*threshold, i32::from_le_bytes(source[offset..offset + 4].try_into().unwrap()));
+            }
+        }
+        let mut campaign = CampaignSession::open(
+            level_one_descriptor_fixture_path(), CampaignSelection::LEVEL1,
+        ).expect("real ordinary source owner");
+        let simulation = campaign.simulation_mut();
+        // Declared retained-carry setup uses the existing actual holder
+        // constructors. It is not an earned acquisition or UI input claim.
+        simulation.apply_carried_spell_families(&[2, 4, 12, 25], Some(4)).unwrap();
+        let before = simulation.campaign_state_hash();
+        let tick = simulation.state.tick;
+        let morph = simulation.spell_menu_help(4).unwrap();
+        assert!(morph.is_standard && morph.definition_enabled);
+        assert_eq!(morph.title_records, [199, 200, 201]);
+        assert_eq!(morph.castle_blocked, [true, true, true]);
+        assert_eq!(morph.tier_mana_costs, [5_000, 7_500, 15_000]);
+        assert_eq!(morph.experience_thresholds, [0, 350, 1_050]);
+        assert_eq!(morph.selected_tier, 0);
+        let cave = simulation.spell_menu_help(25).unwrap();
+        assert!(!cave.is_standard && !cave.definition_enabled,
+            "retained Cave holder is excluded outside its source environment");
+        let castle = simulation.spell_menu_help(2).unwrap();
+        assert_eq!(castle.tier_mana_costs, [1_000, 1_250, 5_000]);
+        assert_eq!(castle.castle_blocked, [false; 3]);
+        for family in 0..26 {
+            assert_eq!(simulation.spell_menu_help(family), simulation.spell_menu_help(family));
+        }
+        assert_eq!(simulation.campaign_state_hash(), before);
+        assert_eq!(simulation.state.tick, tick);
+
+        // Exact current scalar boundary controls, separate from acquisition:
+        // wrap the two signed source experience words and exercise blink's
+        // active counter/color phase without performing a source frame.
+        let player = &mut simulation.session.state.live.shared_spells.local_player;
+        player.persistent_spell_experience[4] = i32::MAX;
+        player.runtime_spell_experience[4] = 1;
+        player.family_selected_tiers[4] = 1;
+        let slot = player.enabled_spell_holders[4];
+        let holder = simulation.session.state.live.shared_spells.pickup_mut(slot).unwrap();
+        holder.active_value = 1;
+        holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        // Carried holders also own their current arena row. Keep both
+        // authoritative projections coherent for this scalar boundary.
+        let current_holder = holder.clone();
+        simulation.session.state.live.economy.entities[usize::from(slot)] = current_holder;
+        simulation.session.state.scratch.level2_day_hud_color_phase_1 = 1;
+        let active = simulation.spell_menu_help(4).unwrap();
+        assert_eq!(active.experience, i32::MIN);
+        assert_eq!(active.selected_tier, 1, "retained selector is independent of physical tier");
+        assert!(active.blink_hidden);
+        simulation.session.state.scratch.level2_day_hud_color_phase_1 = 0;
+        assert!(!simulation.spell_menu_help(4).unwrap().blink_hidden);
+        simulation.session.state.live.shared_spells.local_player.castle_destroyed = 1;
+        assert_eq!(simulation.spell_menu_help(2).unwrap().tier_mana_costs, [4_000, 4_250, 8_000]);
+        simulation.session.state.live.shared_spells.local_player.enabled_spell_holders[4] = 0;
+        let discovered = simulation.spell_menu_help(4).unwrap();
+        assert!(!discovered.is_standard && discovered.discovered,
+            "source discovery survives without a current holder");
+        simulation.session.state.live.shared_spells.local_player.enabled_spell_holders[4] = u16::MAX;
+        assert_eq!(simulation.spell_menu_help(4), None,
+            "an invalid source relation is unavailable metadata, not an affordable spell");
+    }
+
+    #[test]
+    fn owner_invisible_gate_reaches_public_cast_and_paid_first_pulse() {
+        use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+        use crate::game_session::{GameCommand, GameSession, SessionGuard};
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2"),
+            PathBuf::from,
+        );
+        let definition = Arc::new(load_mc2_campaign(
+            &package, &crate::game_definition::default_catalog().unwrap(),
+        ).unwrap());
+        for (castle_mana, allowed) in [(19_999, false), (20_000, true)] {
+            let mut frames = Vec::new();
+            let mut initial_hash = None;
+            for cast_selected in [false, true] {
+            let mut game = GameSession::open(&Mc2CampaignAdapter, definition.clone(), 912,
+                Mc2CampaignInputs::new(&package)).unwrap();
+            let simulation = game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
+            // Declared prior carry and Castle/resource boundary controls;
+            // actual constructors, public cast and scheduled paid pulse run.
+            simulation.apply_carried_spell_families(&[2, 11], Some(11)).unwrap();
+            let owner = simulation.state.entity_index;
+            let castle = simulation.economy_mut().build_castle(Position::default(), owner).unwrap();
+            assert!(simulation.economy_mut().set_castle_mana_prerequisite_for_test(castle, castle_mana));
+            let live = &mut simulation.session.state.live;
+            live.shared_spells.local_player.record[42..44].copy_from_slice(&castle.to_le_bytes());
+            for player in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut()) {
+                if player.entity_index == owner {
+                    player.record[42..44].copy_from_slice(&castle.to_le_bytes());
+                }
+            }
+            live.shared_spells.player_mana = 5_000;
+            live.shared_spells.caster.mana = 5_000;
+            live.shared_spells.player_entity.set_mana(5_000);
+            live.shared_spells.player_entity.set_mana_regen(0);
+            for row in &mut live.shared_spells.player_entities {
+                if row.index == owner { row.set_mana(5_000); row.set_mana_regen(0); }
+            }
+            live.economy.entities[usize::from(owner)].set_mana(5_000);
+            live.economy.entities[usize::from(owner)].set_mana_regen(0);
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 5_000; }
+            assert_eq!(simulation.spell_menu_help(11).unwrap().castle_blocked[0], !allowed);
+            let hash = simulation.campaign_state_hash();
+            assert_eq!(*initial_hash.get_or_insert(hash), hash,
+                "cast and no-cast controls begin at the same authoritative state");
+            let identity = game.identity();
+            game.step(SessionGuard { session_id: identity.session_id, generation: identity.generation,
+                expected_tick: identity.tick }, GameCommand {
+                select_spell: Some(crate::game_definition::SemanticId::parse("spell.invisibility").unwrap()),
+                cast_selected, ..GameCommand::default()
+            }).unwrap();
+            let simulation = game.backend().compatibility_campaign().simulation();
+            let pulse = simulation.shared_spells().invisible_state().expect("actual Invisible owner");
+            assert_eq!(pulse.mana_regen_requirement, 20_000);
+            assert_eq!(pulse.active_value > 0, cast_selected && allowed,
+                "actual Castle mana {castle_mana}, cast {cast_selected}");
+            assert_eq!(pulse.mana_cost, 2_000);
+            assert_eq!(pulse.experience_awarded, i32::from(cast_selected && allowed));
+            assert_eq!(game.identity().tick, identity.tick + 1);
+            frames.push(pulse);
+            }
+            let ordinary = frames[0];
+            let cast = frames[1];
+            // Ordinary player upkeep can publish positive regeneration in
+            // this same outer frame. Source68DE0 replaces a nonnegative
+            // flow with the first-pulse debit; an existing debt accumulates.
+            let expected_regen = if allowed {
+                if ordinary.parent_mana_regen >= 0 { -2_000 }
+                else { ordinary.parent_mana_regen.wrapping_sub(2_000) }
+            } else { ordinary.parent_mana_regen };
+            assert_eq!(cast.parent_mana_regen, expected_regen,
+                "only an admitted paid pulse changes the matched ordinary flow");
+        }
+    }
 
     #[test]
     fn real_objective_expiry_requests_source_context_help_once_per_outer_frame() {

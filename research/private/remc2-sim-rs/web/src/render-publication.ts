@@ -1,5 +1,5 @@
 /**
- * MCPO v2 is one copied, coherent native publication. Decode before retaining
+ * MCPO v3 is one copied, coherent native publication. Decode before retaining
  * the result: a WebAssembly memory view can be overwritten or detached on growth.
  * No references to the supplied bytes survive this call.
  */
@@ -87,7 +87,7 @@ const availability = ['ready', 'not_acquired', 'invalid_holder', 'invalid_caster
 export function decodeRenderPublication(bytes: Uint8Array) {
   const r = new Reader(bytes);
   if (r.u8() !== 0x4d || r.u8() !== 0x43 || r.u8() !== 0x50 || r.u8() !== 0x4f) throw new Error('invalid render publication magic');
-  if (r.u32() !== 2) throw new Error('unsupported render publication version');
+  if (r.u32() !== 3) throw new Error('unsupported render publication version');
   if (r.u32() !== bytes.byteLength) throw new Error('render publication length mismatch');
   const runtime_id = r.u64();
   const runtime_generation = r.u64();
@@ -120,15 +120,28 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   const player_immobilized_ticks = r.u16();
   const source_camera_pose = { x: r.u16(), y: r.u16(), z: r.i16(), yaw: r.i16(), pitch: r.i16(), roll: r.i16() };
   const source_camera_fov = r.i16();
-  const player_spells = r.array(22, () => {
+  const spell_menu_has_any_spell = r.bool();
+  const spell_menu_wizard_colors = [r.u8(), r.u8()];
+  const spell_menu_panels_opaque = r.bool();
+  const player_spells = r.array(23, () => {
     const id = r.string(); const display_name = r.string(); const acquired = r.bool();
     const holder_actor = r.option(() => r.u64()); const selected = r.bool();
     const tier = r.i8(); const unlocked_tier = r.u8(); const menu_slot = r.u8();
     const menu_artwork = r.option(() => ({ grid_icon: r.u16(), tier_icons: Array.from({ length: 3 }, () => r.u16()) }));
+    const menu_help = r.option(() => ({ is_standard: r.bool(), selected_tier: r.i8(),
+      title_records: Array.from({ length: 3 }, () => r.u16()),
+      castle_blocked: Array.from({ length: 3 }, () => r.bool()), mana_unavailable: r.bool(),
+      definition_enabled: r.bool(), blink_hidden: r.bool(), discovered: r.bool(),
+      tier_mana_costs: Array.from({ length: 3 }, () => r.i32()), experience: r.i32(),
+      experience_thresholds: Array.from({ length: 3 }, () => r.i32()) }));
+    if (menu_help !== null && (menu_help.selected_tier < 0 || menu_help.selected_tier > 2 ||
+        menu_help.title_records.some(record => record > 470)))
+      throw new Error('unbound spell menu help tier or language record');
     const mana_cost = r.i32(); const hand = r.enumeration(hands); const marked_hand = r.enumeration(markedHands);
     const spellAvailability = r.enumeration(availability);
     return { id, display_name, acquired, ...(holder_actor === null ? {} : { holder_actor }), selected,
-      tier, unlocked_tier, menu_slot, ...(menu_artwork === null ? {} : { menu_artwork }), mana_cost,
+      tier, unlocked_tier, menu_slot, ...(menu_artwork === null ? {} : { menu_artwork }),
+      ...(menu_help === null ? {} : { menu_help }), mana_cost,
       hand, marked_hand, availability: spellAvailability };
   });
   const objective_progress = { current_objective: r.option(() => r.string()), completed_count: r.u32(),
@@ -148,7 +161,8 @@ export function decodeRenderPublication(bytes: Uint8Array) {
       ...(source_menu_admission === null ? {} : { source_menu_admission }), return_to_title_requested,
       source_scoreboard, participant_notifications, player_wall_contact_counter,
       player_immobilized_ticks, source_camera_pose,
-      source_camera_fov, player_spells, objective_progress, objective_textbox_ticks,
+      source_camera_fov, spell_menu_has_any_spell, spell_menu_wizard_colors, spell_menu_panels_opaque,
+      player_spells, objective_progress, objective_textbox_ticks,
       objective_secret_announcement_record, exit_sequence_active,
       presentation_entities } });
 }
