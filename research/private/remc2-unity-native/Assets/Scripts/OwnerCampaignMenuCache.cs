@@ -84,6 +84,36 @@ namespace MagicCarpet.Native
         }
         [Serializable] private sealed class LanguageBinding { public string path, binding_sha256, default_locale_id; }
         [Serializable] private sealed class LanguageRecord { public string id, sha256; public int selector, offset, bytes; }
+        [Serializable] private sealed class ObjectiveGlyph
+        {
+            public int index, offset, length, width, height;
+            public string sha256;
+        }
+        [Serializable] private sealed class LanguageFont
+        { public string id, masks_path; public ObjectiveGlyph[] glyphs; }
+        [Serializable] private sealed class ObjectiveSpriteBinding
+        { public int selector, width, height; public string indices_path, mask_path; }
+        [Serializable] private sealed class ObjectiveProfileBinding
+        { public string id, palette_path, colours_path, tables_path; public ObjectiveSpriteBinding[] sprites; }
+        [Serializable] private sealed class ObjectiveBinding
+        { public string font_id; public int table_offset; public ObjectiveProfileBinding[] profiles; }
+        internal sealed class ObjectiveAssets
+        {
+            internal readonly ObjectiveTextboxCompositor.Glyph[] Glyphs;
+            internal readonly byte[] GlyphMasks, Tables, PaletteRgb8;
+            internal readonly ObjectiveTextboxCompositor.Sprite Corner, Side, Horizontal;
+            internal readonly int TableOffset;
+            internal readonly byte BlendSelector, TextColor;
+            internal ObjectiveAssets(ObjectiveTextboxCompositor.Glyph[] glyphs, byte[] glyphMasks,
+                ObjectiveTextboxCompositor.Sprite[] sprites,
+                byte[] tables, int tableOffset, byte blendSelector, byte textColor, byte[] paletteRgb8)
+            {
+                Glyphs = glyphs; GlyphMasks = glyphMasks; Corner = sprites[0]; Side = sprites[1];
+                Horizontal = sprites[2]; Tables = tables;
+                TableOffset = tableOffset; BlendSelector = blendSelector; TextColor = textColor;
+                PaletteRgb8 = paletteRgb8;
+            }
+        }
         [Serializable] private sealed class LanguageLocale
         {
             public string id, pack_sha256, records_path, text_sha256;
@@ -94,6 +124,7 @@ namespace MagicCarpet.Native
             public string schema, source_commit, binding_sha256, default_locale_id, glyph_mapping;
             public int language_prefix_bytes, language_record_count;
             public LanguageLocale[] locales;
+            public LanguageFont[] fonts;
             public Output[] outputs;
         }
         [Serializable] private sealed class Manifest
@@ -108,6 +139,7 @@ namespace MagicCarpet.Native
             public SettingsBinding settings;
             public PortalAnimationBinding portal_animation;
             public SourcePauseMenu.Binding pause;
+            public ObjectiveBinding objective;
             public SourceCampaignMap.Binding campaign;
             public PortalSound click_sound;
         }
@@ -120,6 +152,9 @@ namespace MagicCarpet.Native
         private byte[] clickSound;
         private string[] languageRecords;
         private byte[] startupPalette;
+        private ObjectiveTextboxCompositor.Glyph[] objectiveGlyphs;
+        private byte[] objectiveGlyphMasks;
+        private readonly Dictionary<string, ObjectiveAssets> objectiveProfiles = new(StringComparer.Ordinal);
         internal Texture2D World { get; private set; }
         internal Texture2D StartupBackground { get; private set; }
         internal StartupBinding Startup { get; private set; }
@@ -303,6 +338,46 @@ namespace MagicCarpet.Native
                     portalSound = Read(sound.path, manifest.outputs.Single(row => row.path == sound.path).bytes);
                 }
                 if (manifest.pause != null) PauseMenu = new SourcePauseMenu(manifest.pause, Read, LanguageText);
+                if (manifest.objective != null)
+                {
+                    var binding = manifest.objective;
+                    if (binding.font_id != "hfont3" || binding.table_offset != 0x4000 ||
+                        binding.profiles?.Length != 3 || objectiveGlyphs == null || objectiveGlyphMasks == null)
+                        throw new InvalidDataException("source objective artwork binding is incomplete");
+                    foreach (var profile in binding.profiles)
+                    {
+                        if (profile == null || (profile.id != "day" && profile.id != "night" && profile.id != "cave") ||
+                            profile.palette_path != "pause-" + profile.id + "-palette.rgb6" ||
+                            profile.colours_path != "objective-" + profile.id + "-colours.u8" ||
+                            profile.tables_path != "objective-" + profile.id + "-tables.u8" ||
+                            profile.sprites?.Length != 3 || objectiveProfiles.ContainsKey(profile.id))
+                            throw new InvalidDataException("source objective profile is invalid");
+                        var objectivePalette = Read(profile.palette_path, 768);
+                        if (objectivePalette.Any(channel => channel > 63))
+                            throw new InvalidDataException("source objective palette is not RGB6");
+                        var colours = Read(profile.colours_path, 4096);
+                        var tables = Read(profile.tables_path, 83456);
+                        var sprites = new ObjectiveTextboxCompositor.Sprite[3];
+                        for (var i = 0; i < sprites.Length; i++)
+                        {
+                            var row = profile.sprites[i];
+                            var selector = 171 + i;
+                            var prefix = "objective-" + profile.id + "-" + selector.ToString("D3");
+                            if (row == null || row.selector != selector || row.width <= 0 || row.height <= 0 ||
+                                row.width > 256 || row.height > 256 || row.indices_path != prefix + ".indices.u8" ||
+                                row.mask_path != prefix + ".mask.u8")
+                                throw new InvalidDataException("source objective frame sprite is invalid");
+                            var objectiveIndices = Read(row.indices_path, checked(row.width * row.height));
+                            var mask = Read(row.mask_path, checked(row.width * row.height));
+                            if (mask.Any(value => value > 1))
+                                throw new InvalidDataException("source objective frame mask is not binary");
+                            sprites[i] = new ObjectiveTextboxCompositor.Sprite(row.width, row.height, objectiveIndices, mask);
+                        }
+                        objectiveProfiles.Add(profile.id, new ObjectiveAssets(objectiveGlyphs, objectiveGlyphMasks,
+                            sprites, tables, binding.table_offset, colours[0], colours[3840],
+                            objectivePalette.Select(channel => checked((byte)(channel * 4))).ToArray()));
+                    }
+                }
                 if (manifest.campaign != null)
                 {
                     Campaign = new SourceCampaignMap(manifest.campaign, Read, indices, palette);
@@ -326,6 +401,10 @@ namespace MagicCarpet.Native
 
         internal Mission ForMission(string level) => missions.TryGetValue(level, out var mission) ? mission :
             throw new InvalidDataException("campaign menu has no owner presentation for " + level);
+
+        internal ObjectiveAssets ObjectiveForProfile(string profile) =>
+            objectiveProfiles.TryGetValue(profile, out var assets) ? assets :
+                throw new InvalidDataException("source objective assets are not bound for " + profile);
 
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
             .OrderBy(row => row.source_ordinary_index).ToArray();
@@ -451,6 +530,33 @@ namespace MagicCarpet.Native
                 if (bytes.Length != output.bytes || Digest(bytes) != output.sha256 || !payloads.TryAdd(output.path, bytes))
                     throw new InvalidDataException("campaign language output identity mismatch");
             }
+            if (menu.objective != null)
+            {
+                var font = language.fonts?.SingleOrDefault(row => row.id == "hfont3");
+                if (font?.glyphs?.Length != 273 || font.masks_path != "fonts/hfont3.masks.u8" ||
+                    !payloads.TryGetValue(font.masks_path, out var masks))
+                    throw new InvalidDataException("source objective HFONT3 is unbound");
+                var glyphs = new ObjectiveTextboxCompositor.Glyph[font.glyphs.Length];
+                var maskCursor = 0;
+                for (var i = 0; i < font.glyphs.Length; i++)
+                {
+                    var glyph = font.glyphs[i];
+                    if (glyph == null || glyph.index != i || glyph.offset != maskCursor ||
+                        glyph.width < 0 || glyph.width > 10 || glyph.height < 0 || glyph.height > 14 ||
+                        glyph.length != glyph.width * glyph.height || (long)maskCursor + glyph.length > masks.Length)
+                        throw new InvalidDataException("source objective HFONT3 glyph extent is invalid");
+                    var glyphMask = new byte[glyph.length];
+                    Buffer.BlockCopy(masks, maskCursor, glyphMask, 0, glyphMask.Length);
+                    if (glyphMask.Any(value => value > 1) || Digest(glyphMask) != glyph.sha256)
+                        throw new InvalidDataException("source objective HFONT3 glyph mask identity mismatch");
+                    glyphs[i] = new ObjectiveTextboxCompositor.Glyph(glyph.offset, glyph.length, glyph.width, glyph.height);
+                    maskCursor += glyph.length;
+                }
+                if (maskCursor != masks.Length)
+                    throw new InvalidDataException("source objective HFONT3 has unbound mask bytes");
+                objectiveGlyphs = glyphs;
+                objectiveGlyphMasks = masks;
+            }
             var locale = language.locales.SingleOrDefault(row => row.id == binding.default_locale_id);
             if (locale?.records?.Length != 471 || locale.pack_sha256 != menu.source_language_sha256 ||
                 !payloads.TryGetValue(locale.records_path, out var text) || Digest(text) != locale.text_sha256)
@@ -555,6 +661,9 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            objectiveProfiles.Clear();
+            objectiveGlyphs = null;
+            objectiveGlyphMasks = null;
             Settings?.Dispose();
             Settings = null;
             StartupText?.Dispose();

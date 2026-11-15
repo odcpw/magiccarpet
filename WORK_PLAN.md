@@ -827,6 +827,13 @@ Cargo/RCH/Unity build dispatch, acceptance, push and installation. Former
 LavenderBeacon/GoldMoose registrations are confirmed retired; do not revive.
 Full dependency/acceptance remains open; these are bounded connected slices.
 
+2026-11-15 operator update: use ONE team and finish one connected capability
+through integrated verification, commit/push and installation before starting
+the next. Keep the current two Terra/xhigh workers and Sol/xhigh integrator;
+root clears the existing integration queue and serializes all builds/delivery.
+First finish the preserved `mc-oi6.6` objective glyph/textbox slice below. Other
+points remain queued; no second team, broad audit or new planning round.
+
 First coherent candidate joins semantic carry validation BEFORE campaign-save
 publication; original accepted punctuation bindings and held-input release
 barriers across settings close/resume; and actual source play-type4 audio
@@ -870,7 +877,7 @@ recursion or speech lifetime. Those full criteria, Results-phase save input and
 Day/Night/Cave performance remain open. No all30 rerun or automated playthrough.
 Preserve unrelated Modern/Voxel dirty work and its installed player.
 
-The next connected `mc-oi6.6` slice is actual source glyph/textbox composition
+The current connected `mc-oi6.6` slice is actual source glyph/textbox composition
 over the current Day/Night/Cave indexed world. SilentBrook owns the canonical
 compositor and its focused instance/shader consumer through integration;
 VioletAnchor owns the existing menu-cache producer/typed loader for original
@@ -878,6 +885,39 @@ glyph/frame/profile data; BoldForge owns the runtime and menu forwarding joins.
 Their narrow reservations and actual interfaces, not new planning, govern edits.
 Root retains serialized builds, verification, candidate-cache promotion and
 installation. Default-language selection passing alone does not close this.
+
+2026-11-15 integrated qualification now passes with native
+`9cca38e043d011b02114606425a26a4153c473f4e49193e180bf9ff76f8970e4`.
+Actual source4 Day and secret30 Cave objectives reach original font/frame pixels
+over the real composed indexed scene. The six retained source raster oracles,
+GPU current-scene/map orientation/generation/lifetime/caller-target controls,
+and full Night cast/save/cold-load/invalid-load/resume/retry/map/objective-clock/
+speech/Title-disposal path pass (Night47.64s). The native material-root direct
+open/frame/wrong-cache regression passes5.10s. Both source catalog guards and
+the original strict hash/pixel assertions remain intact.
+
+The native open route had omitted explicit material-only caches from canonical
+owner binding, while loading those same assets into its renderer. It now binds
+the explicit root; gameplay-component precedence and no-cache behavior remain
+unchanged. A leaked active render target and missing declared shader properties
+are fixed. The qualified Original runtime retains its existing full PausedFrame
+observation API; no unrelated Modern optimization API was ported. Strict Rig
+build passes56s; actual606/606 source hashes match the qualified snapshot with
+only the owned CABI file changed from150637. The new stable generated menu-cache
+alias selects the validated candidate without replacing prior cache data.
+Player `build-m1qu78zm` is installed and check-installed passes. First normal
+startup rejected the stable menu-cache symlink root under the unchanged strict
+file guard. The launcher now resolves its default pointer before passing the
+real directory; explicit overrides and file/hash guards remain unchanged. That
+failed smoke is retained and was stopped without escalation. The corrected
+normal all30-resource map/loading/NightSpire smoke passes with matching mapped
+native, one portal click and zero load retries. Root viewed actual original
+glyph/frame objective display while O was held and its removal after release;
+no movement/cast input, combat, playthrough or FPS claim. Owned processes stopped
+without escalation. Previous cache data and unrelated Modern work are untouched.
+Evidence: `research/private/generated/objective-glyph-20261115/`. This proves
+the default-language objective capability, not selected locale, recursive help,
+full campaign play, FPS or hardware audio. Keep full `mc-oi6.6` acceptance open.
 All full campaign/frontend/audio/performance acceptance stays open. Static UBS
 is partial for C# conditional/callable effects; the temporary-directory Guid
 heuristic was a triaged false positive, with no critical changed-hunk defect

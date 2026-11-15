@@ -764,13 +764,17 @@ pub(super) fn open_campaign_session(
             internal_level: selection.internal_level,
             map_type_id: selection.map_type,
         };
-        let gameplay_cache = asset_cache_path.as_deref().and_then(|cache_root| {
+        let owner_cache = asset_cache_path.as_deref().and_then(|cache_root| {
             let root = Path::new(cache_root);
-            root.join("components/gameplay/manifest.json")
-                .is_file()
-                .then(|| root.join("components/gameplay"))
+            if root.join("components/gameplay/manifest.json").is_file() {
+                Some(root.join("components/gameplay"))
+            } else {
+                root.join("materials/descriptor.json")
+                    .is_file()
+                    .then(|| root.to_path_buf())
+            }
         });
-        let mut campaign = match gameplay_cache {
+        let mut campaign = match owner_cache {
             Some(cache_root) => DescriptorCampaignSession::open_with_owner_cache(
                 package_root,
                 cache_root,

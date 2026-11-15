@@ -351,6 +351,9 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         pause = dict(font=dict(path=pause_font_path, width=pause_font_width, height=pause_font_height,
             advance_x=10, advance_y=14, glyph_mapping="mc2-byte-plus-one-controls/v1", glyphs=pause_glyphs),
             profiles=[])
+        # Live gameplay objectives consume source indexed planes, not the
+        # palette-baked pause sprites or the six pre-rendered Night strings.
+        objective = dict(font_id="hfont3", table_offset=0x4000, profiles=[])
         for profile, letter, building in (("night", "N", [51, 17, 59]),
                 ("day", "D", [170, 99, 13]), ("cave", "C", [51, 136, 59])):
             pause_data = decoded_owner(f"DATA/HSPR{letter}0-0.DAT")
@@ -360,6 +363,27 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
             pause_tables = decoded_owner(f"DATA/TABLES{letter}.DAT")
             palette_path = f"pause-{profile}-palette.rgb6"
             write(palette_path, pause_palette)
+            if (len(pause_palette) != 768 or max(pause_palette) > 63
+                    or len(pause_colours) != 4096 or len(pause_tables) != 83456):
+                raise cache.CacheError(f"source {profile} objective palette/table extent changed")
+            colours_path = f"objective-{profile}-colours.u8"
+            tables_path = f"objective-{profile}-tables.u8"
+            write(colours_path, pause_colours)
+            write(tables_path, pause_tables)
+            objective_sprites = []
+            for selector in (171, 172, 173):
+                offset, width, height = pause_table[selector]
+                indices, mask, _ = cache.materialize_indexed_rle(pause_data, offset, width, height)
+                if not width or not height or len(indices) != width * height or any(value not in (0, 1) for value in mask):
+                    raise cache.CacheError(f"source {profile} objective sprite {selector} is invalid")
+                indices_path = f"objective-{profile}-{selector:03d}.indices.u8"
+                mask_path = f"objective-{profile}-{selector:03d}.mask.u8"
+                write(indices_path, bytes(indices))
+                write(mask_path, bytes(mask))
+                objective_sprites.append(dict(selector=selector, width=width, height=height,
+                    indices_path=indices_path, mask_path=mask_path))
+            objective["profiles"].append(dict(id=profile, palette_path=palette_path,
+                colours_path=colours_path, tables_path=tables_path, sprites=objective_sprites))
             entries = []
             for selector in (85, 86, *range(168, 171), *range(174, 179), 257, 258):
                 entry = bitmap(pause_data, pause_table, pause_palette, selector,
@@ -522,7 +546,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     source_calls=["sub_7A110_load_hscreen(8,6)", "DrawNetGameMapBackground_85C8B", "PresentLevelDescription_80C30"],
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
-                    startup=startup, settings=settings, pause=pause, portal_animation=portal_animation,
+                    startup=startup, settings=settings, pause=pause, objective=objective, portal_animation=portal_animation,
                     campaign=campaign_presentation, click_sound=click_sound,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

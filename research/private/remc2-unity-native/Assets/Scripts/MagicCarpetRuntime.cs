@@ -569,6 +569,7 @@ namespace MagicCarpet.Native
         private bool gameRuntimeSecretEntryRecovery;
         private GameRuntimeTransport.Identity gameRuntimeSecretEntryIdentity;
         private string gameRuntimeObjectiveInstruction;
+        private SourceObjectiveTextboxPresenter gameRuntimeObjectiveTextbox;
         private Transform gameRuntimeCameraRig;
         private Camera gameRuntimeCamera;
         private Material gameRuntimeFireballMaterial;
@@ -3152,6 +3153,59 @@ namespace MagicCarpet.Native
             gameRuntimeObjectiveText ??= new Mc2ObjectiveText(GameRuntimeLanguageCache());
             return gameRuntimeObjectiveText.Resolve(campaignSession.Selection.internalLevel,
                 campaignSession.ObjectiveStageState(0, 0));
+        }
+
+        private void UpdateGameRuntimeObjectiveTextbox(CampaignPresentationSurface surface)
+        {
+            gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();
+            if (surface == null || gameRuntimeEnvironmentCache == null) return;
+            EnsureGameRuntimeMenu();
+            var profile = campaignSession.Selection.mapType switch
+            {
+                0 => "day",
+                1 => "night",
+                2 => "cave",
+                _ => throw new InvalidDataException("objective textbox requires its source environment"),
+            };
+            gameRuntimeObjectiveTextbox ??= new SourceObjectiveTextboxPresenter(
+                gameRuntimeMenu.ObjectiveForProfile(profile));
+            gameRuntimeObjectiveTextbox.Present(gameRuntimeObjectiveInstruction, campaignSession.Generation);
+        }
+
+        private void DrawGameRuntimeObjectiveTextbox()
+        {
+            if (gameRuntimeObjectiveTextbox == null || campaignSession == null ||
+                gameRuntimeCampaignSnapshot?.value == null ||
+                gameRuntimeCampaignSnapshot.value.objective_textbox_ticks <= 0) return;
+            var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                level2DayPresentationSurface ?? gameRuntimeNightSurface;
+            if (surface == null || surface.Generation != campaignSession.Generation ||
+                surface.Tick != campaignSession.Tick) return;
+            Texture indices;
+            ulong generation, revision;
+            if (gameRuntimeSourceMenus.MapOpen)
+            {
+                indices = surface.WorldIndices;
+                generation = surface.Generation;
+                revision = surface.Tick;
+            }
+            else
+            {
+                if (surface.SceneHistoryGeneration != campaignSession.Generation ||
+                    surface.SceneHistoryRevision != campaignSession.SceneFrameRevision) return;
+                indices = surface.ComposedSceneIndices;
+                generation = surface.SceneHistoryGeneration;
+                revision = surface.SceneHistoryRevision;
+            }
+            var palette = surface.FramePaletteRgb8;
+            if (playerPreferences != null)
+                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            gameRuntimeObjectiveTextbox.Draw(gameRuntimeCampaignSnapshot.value.objective_textbox_ticks,
+                indices, generation, revision,
+                new Rect((Screen.width - 640f * scale) * .5f,
+                    (Screen.height - 480f * scale) * .5f, 640f * scale, 480f * scale), palette,
+                gameRuntimeSourceMenus.MapOpen);
         }
 
         private void UpdateGameRuntimeBriefing()
@@ -10756,6 +10810,7 @@ namespace MagicCarpet.Native
             }
             if (gameRuntimeNightSurface == null) return;
             campaignSession.SynchronizeGameRuntimeIdentity(identity);
+            UpdateGameRuntimeObjectiveTextbox(gameRuntimeNightSurface);
             gameRuntimeNightSurface.PresentNight(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             gameRuntimeNightSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
@@ -10763,7 +10818,6 @@ namespace MagicCarpet.Native
                 observation.value.player_vitals.life >= 0);
             var hud = campaignSession.DayHudState(campaignSession.Tick);
             PresentLevel2DayHud(hud);
-            gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();
         }
 
         private void ComposeGameRuntimeLevel3Presentation(
@@ -10907,13 +10961,13 @@ namespace MagicCarpet.Native
                 observation.identity.generation == campaignSession.Generation.ToString() &&
                 observation.identity.tick == campaignSession.Tick.ToString(),
                 "Level 3 presentation is bound to the current game runtime frame");
+            UpdateGameRuntimeObjectiveTextbox(level3PresentationSurface);
             level3PresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             level3PresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             level3PresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
             PresentLevel2DayHud(campaignSession.DayHudState(campaignSession.Tick));
-            gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();
         }
 
         private void UpdateGameRuntimeSecretPresentation(
@@ -10927,6 +10981,7 @@ namespace MagicCarpet.Native
             Require(observation.identity.generation == campaignSession.Generation.ToString() &&
                 observation.identity.tick == campaignSession.Tick.ToString(),
                 "secret environment presentation is bound to the current Rust frame");
+            UpdateGameRuntimeObjectiveTextbox(gameRuntimeSecretSurface);
             gameRuntimeSecretSurface.Present(campaignSession, gameRuntimeEnvironmentCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             gameRuntimeSecretSurface.PresentView(observation.value.source_camera_pose,
@@ -10935,7 +10990,6 @@ namespace MagicCarpet.Native
                 observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
             PresentLevel2DayHud(campaignSession.DayHudState(campaignSession.Tick));
-            gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();
         }
 
         private void DisposeGameRuntimeLevel2Presentation()
@@ -10987,6 +11041,8 @@ namespace MagicCarpet.Native
             deferredAudioEvents.Clear();
             gameRuntimeEnvironmentCache = null;
             gameRuntimeObjectiveInstruction = null;
+            gameRuntimeObjectiveTextbox?.Dispose();
+            gameRuntimeObjectiveTextbox = null;
             if (modernEnvironment != null)
             {
                 modernEnvironment.Dispose();
@@ -11049,7 +11105,7 @@ namespace MagicCarpet.Native
             level2TerrainState = campaignSession.TerrainState();
             level2DayHud = campaignSession.DayHudState(tick);
             PresentLevel2DayHud(level2DayHud);
-            gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();
+            UpdateGameRuntimeObjectiveTextbox(level2DayPresentationSurface);
             if (level2DayPresentationSurface != null)
             {
                 level2DayPresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
@@ -14427,8 +14483,9 @@ namespace MagicCarpet.Native
             var measuredStart = modernEnvironment?.Ready == true ? ModernCapture.BeginMeasurement() : 0;
             try
             {
-                DrawRuntimeGui(out var guiIdentity);
+                DrawRuntimeGui(out var guiIdentity, out var drawObjective);
                 DrawGameRuntimeParticipantNotifications(guiIdentity);
+                if (drawObjective) DrawGameRuntimeObjectiveTextbox();
             }
             finally { ModernCapture.EndMeasurement("runtime_gui", measuredStart); }
         }
@@ -14501,9 +14558,10 @@ namespace MagicCarpet.Native
                 gameRuntimeMenu.GameplayNoticeColor(level), gameRuntimeMenu.GameplayPausedColor(level));
         }
 
-        private void DrawRuntimeGui(out GameRuntimeTransport.Identity guiIdentity)
+        private void DrawRuntimeGui(out GameRuntimeTransport.Identity guiIdentity, out bool drawObjective)
         {
             guiIdentity = null;
+            drawObjective = false;
             if (modernEnvironment?.SandboxActive == true)
             {
                 modernEnvironment.DrawHud(null);
@@ -14528,6 +14586,7 @@ namespace MagicCarpet.Native
             }
             if (fatalError == null && gameRuntimeAbandonConfirmationOpen && session != null)
             {
+                drawObjective = true;
                 DrawLevel2DayHud();
                 EnsureGameRuntimeMenu();
                 var result = gameRuntimeMenu.DrawAbandonConfirmation(session.GameRuntimeIdentity(),
@@ -14547,6 +14606,7 @@ namespace MagicCarpet.Native
             }
             if (gameRuntimeMode && fatalError == null && gameRuntimeSourceMenus.PlayerInformationOpen && session != null)
             {
+                drawObjective = true;
                 DrawLevel2DayHud();
                 EnsureGameRuntimeMenu();
                 var level = session.GameRuntimeIdentity().active_runtime_flow.bound_level_id;
@@ -14563,6 +14623,7 @@ namespace MagicCarpet.Native
             }
             if (fatalError == null && gameRuntimeSpellMenuOpen)
             {
+                drawObjective = true;
                 DrawLevel2DayHud();
                 var assignment = gameRuntimeSourceSpellMenu.Draw(gameRuntimeCampaignSnapshot?.value,
                     selector => hudBitmapTextures[selector],
@@ -14606,6 +14667,7 @@ namespace MagicCarpet.Native
                             gameRuntimeMenuStatus);
                         if (action != CampaignMenuPresenter.Action.None && gameRuntimeMenuAction == CampaignMenuPresenter.Action.None)
                             gameRuntimeMenuAction = action;
+                        drawObjective = mode == GameRuntimeTransport.PausedMode;
                         return;
                     }
                 }
@@ -14653,10 +14715,12 @@ namespace MagicCarpet.Native
                 DrawLevel2DayHud();
                 DrawGameRuntimeHelpHint();
                 DrawGameRuntimeAbilityNotification();
-                if (!string.IsNullOrEmpty(gameRuntimeObjectiveInstruction) &&
+                if (gameRuntimeEnvironmentCache == null &&
+                    !string.IsNullOrEmpty(gameRuntimeObjectiveInstruction) &&
                     gameRuntimeCampaignSnapshot?.value.objective_textbox_ticks > 0)
                     GUI.Label(new Rect(Screen.width * .2f, Screen.height - 75,
                         Screen.width * .6f, 60), gameRuntimeObjectiveInstruction, hudStyle);
+                drawObjective = true;
                 if (gameRuntimeMode)
                 {
                     DrawGameRuntimePauseOverlay();
