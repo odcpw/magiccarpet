@@ -867,17 +867,43 @@ Modern MCPO binary publication is not extended or claimed qualified here.
 Rust UBS reports whole-file legacy totals; no added critical, and added warnings
 are assert/unwrap/create-only output in the focused test. C# UBS remains partial
 on flow/conditional budgets; no added critical/warning. Fresh bounded source review
-supports the fixed joins, not complete help certification. Wall source is canonical `53e77024`, pushed/remote-verified Original `5059d5b7`.
-Final native `c87093c3b42f0fffe6dc5ef9ae6d73b6ee081a86971dba250378e4b3ec4a3fc2`
-matches606/606 isolated Original/Rig inputs and the consumed Editor plugin;
-the final test-only correction leaves that native byte-identical. This is NOT a
-whole published-branch source match: a direct check finds38 existing Rust path
-differences between the isolated Original cohort and the publication baseline
-(37 paths unchanged by this batch, plus preexisting backend differences). They
-include extra class14 publication and test visibility/coverage in the branch;
-do not overwrite either side or claim all are defects. Preserve the explicit
-profile boundary and qualify its source composition before full remote/install
-match. Evidence: wall-original-publication-closure-limit.json. Normal player installation, sound/read-integrity,
+supports the fixed joins, not complete help certification.
+Wall source is canonical `53e77024`, pushed/remote-verified Original `5059d5b7`.
+The final source-composition check resolved the initial38 raw differences as one
+materialized Git symlink plus37 effective differences:33 test-only paths, backend
+tests/diagnostic wording, two missing live-class14 publication paths, and one file
+omitting Modern-only observation modules. No new checkout or profile fork was
+needed: the canonical Rust already matched the published Original tree. The
+isolated Original project's generated Rust link now selects that canonical
+workspace; both source trees remain preserved.
+
+The build helper now accepts an explicit --native-source-root and uses that same
+workspace for Cargo, header contracts and source capture. The receipt stores its
+resolved root; subsequent native-only refresh and launch/check keep it rather
+than silently returning to the old sibling. Legacy receipts/default builds retain
+their documented behavior. The owned change is verified independently of the
+uncommitted Modern player-retention work:20 clean-HEAD fixture tests pass3.61s,
+22 tests with that separate work pass, and the exact older Original helper's two
+source-root fixtures pass. Fixtures are mocked command/installation checks, not
+live player proof. Stale menu-resource setup and duplicate-resource diagnostic
+expectations were corrected against the existing production guard; rejection
+checks stay intact. Source-root Cargo, mutation/header failure and payload
+preservation checks remain strict.
+
+The shared native `3bd7f66c38e9c42b638ece5775be67d3a45d0dc37efd0f0b8cc99b265018d7f9`
+is built from canonical Rust. All626 captured source/header/data inputs match Rig;
+this expands the older606-file subset to include the added ABI modules, headers,
+TSV tables and fixture/data files actually captured by the helper. The existing
+real class14 constructor -> live ABI observation -> hidden -> reset check passes
+0.07s; it does not prove organic scroll acquisition. Its owner-package override
+lets an offloaded test binary run against local owner data despite the embedded
+worker manifest path, preserving the default and all original assertions. Both
+pause-hover and actual wall-carrier managed checks pass7.17s with this exact
+shared native in the isolated Editor. Build-helper source selection and --help
+are exercised; no normal player rebuild/install or WAV retry is claimed. Evidence:
+source-root-*, public-original-* under generated/help-20261115.
+
+Normal player installation, sound/read-integrity,
 full tutorial/help/speech, selected non-ASCII installed proof and presentation/
 performance acceptance remain open. The off_DB558 sentinel stream is credits;
 do not invent a tutorial producer from it. Continue remaining source guidance and

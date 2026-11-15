@@ -59,14 +59,14 @@ def player_inputs(inputs):
             if not (editor_only and Path(name).parent == test_root and Path(name).suffix == '.cs')}
 
 
-def native_contract():
-    return files_digest([SIM / 'crates/sim-capi/include'], SIM)
+def native_contract(sim=SIM):
+    return files_digest([sim / 'crates/sim-capi/include'], sim)
 
 
-def rust_inputs():
-    inputs = files_digest([SIM / 'crates'], SIM)
+def rust_inputs(sim=SIM):
+    inputs = files_digest([sim / 'crates'], sim)
     for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'):
-        inputs[name] = digest(SIM / name)
+        inputs[name] = digest(sim / name)
     return inputs
 
 
@@ -74,7 +74,7 @@ def payload(root):
     return files_digest([root], root, (root / PLUGIN, root / RECEIPT))
 
 
-def check_install(check_inputs=True):
+def check_install(check_inputs=True, native_source_root=None):
     try:
         receipt = json.loads((INSTALLED / RECEIPT).read_text())
         if receipt['schema'] != 'mc-player-install/v1':
@@ -85,8 +85,11 @@ def check_install(check_inputs=True):
             raise ValueError('installed Unity player files changed')
         if receipt['native_sha256'] != digest(INSTALLED / PLUGIN):
             raise ValueError('installed native plugin changed')
+        sim = native_source_root or Path(receipt.get('native_source_root', str(SIM)))
+        if not sim.is_absolute():
+            raise ValueError('native source root is not absolute')
         if check_inputs and (player_inputs(receipt['unity_inputs']) != player_inputs(unity_inputs()) or
-                             receipt['native_contract'] != native_contract()):
+                             receipt['native_contract'] != native_contract(sim)):
             raise ValueError('Unity source, settings, packaged assets or native contract changed')
         return receipt
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -143,6 +146,8 @@ def main():
         'Use --native-only for Rust-only changes; quit the player before installing. '
         'Logs and previous full builds remain under Builds/.')
     parser.add_argument('--native-only', action='store_true', help='reuse a compatible Unity player')
+    parser.add_argument('--native-source-root', type=Path,
+                        help='Rust workspace to build and capture (default: sibling remc2-sim-rs)')
     native_profile = parser.add_mutually_exclusive_group()
     native_profile.add_argument('--release', action='store_true', help='use optimized Cargo artifacts (the default)')
     native_profile.add_argument('--dev', action='store_true', help='use unoptimized native artifacts for debugging')
@@ -159,6 +164,15 @@ def main():
         options, player_args = parser.parse_known_args(sys.argv[2:])
     if player_args and not options.launch:
         parser.error('unrecognized arguments: ' + ' '.join(player_args))
+    sim = SIM
+    if options.native_source_root:
+        if options.launch or options.check_installed:
+            parser.error('--native-source-root is only for a build/install')
+        sim = options.native_source_root.resolve(strict=True)
+        if (not (sim / 'crates/sim-capi/include').is_dir() or
+                not all((sim / name).is_file() for name in
+                        ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'))):
+            raise RuntimeError(f'Invalid native source workspace: {sim}')
     if bool(options.native_artifact) != bool(options.expected_native_sha256):
         parser.error('--native-artifact and --expected-native-sha256 must be supplied together')
     if options.native_artifact:
@@ -190,10 +204,16 @@ def main():
         except BlockingIOError as error:
             raise RuntimeError('Player or another build is active; quit it before installing.') from error
         reject_running()
-        receipt = check_install() if options.native_only else None
+        receipt = None
+        if options.native_only:
+            if options.native_source_root:
+                receipt = check_install(native_source_root=sim)
+            else:
+                receipt = check_install()
+                sim = Path(receipt.get('native_source_root', str(SIM)))
         before = unity_inputs()
-        contract = native_contract()
-        rust_before = rust_inputs()
+        contract = native_contract(sim)
+        rust_before = rust_inputs(sim)
         version = (PROJECT / 'ProjectSettings/ProjectVersion.txt').read_text().splitlines()[0].split(': ', 1)[1]
         editor = Path(os.environ.get('MC_UNITY_EDITOR', str(Path.home() / f'Unity/Hub/Editor/{version}/Editor/Unity')))
         if not options.native_only and not os.access(editor, os.X_OK):
@@ -208,7 +228,7 @@ def main():
             artifact = options.native_artifact
             print(f'Reusing verified native artifact: {artifact}; no Cargo invocation.', flush=True)
         else:
-            command(cargo, SIM, cargo_log)
+            command(cargo, sim, cargo_log)
             artifacts = []
             for line in cargo_log.read_text().splitlines():
                 try:
@@ -227,18 +247,19 @@ def main():
         native_hash = digest(artifact)
         if options.native_artifact and native_hash != options.expected_native_sha256:
             raise RuntimeError('Reused native artifact changed during capture')
-        if before != unity_inputs() or contract != native_contract() or rust_before != rust_inputs():
+        if before != unity_inputs() or contract != native_contract(sim) or rust_before != rust_inputs(sim):
             raise RuntimeError(f'Build inputs changed during Cargo; retry at a stable source point. Logs: {logs}')
         reject_running()
         atomic_copy(artifact, ASSET_PLUGIN)
         print(f'Native build captured: {native_hash}; Rust source edits may resume.', flush=True)
         if options.native_only:
             # Validate again after Cargo in case something outside the launcher touched the player.
-            check_install()
+            check_install(native_source_root=sim)
             atomic_copy(artifact, INSTALLED / PLUGIN)
             receipt['native_sha256'] = native_hash
             receipt['cargo_artifact'] = str(artifact)
             receipt['rust_inputs'] = rust_before
+            receipt['native_source_root'] = str(sim.resolve())
             receipt['logs'] = str(logs)
             write_receipt(INSTALLED, receipt)
         else:
@@ -250,14 +271,14 @@ def main():
                     diagnostic_log=logs / 'unity.log')
             # Rust source may advance after the checked native artifact was captured.
             # This install records rust_before and still verifies the bundled bytes.
-            if before != unity_inputs() or contract != native_contract():
+            if before != unity_inputs() or contract != native_contract(sim):
                 raise RuntimeError(f'Unity build changed authored inputs or source moved; installed player preserved. Read {logs}')
             if (not os.access(stage / PLAYER, os.X_OK) or not (stage / PLUGIN).is_file()
                     or digest(stage / PLUGIN) != native_hash):
                 raise RuntimeError(f'Unity output is missing or bundled a different plugin. Read {logs / "unity.log"}')
             receipt = {'schema': 'mc-player-install/v1', 'unity_inputs': before,
                        'native_contract': contract, 'native_sha256': native_hash,
-                       'rust_inputs': rust_before,
+                       'rust_inputs': rust_before, 'native_source_root': str(sim.resolve()),
                        'cargo_artifact': str(artifact), 'player_files': payload(stage), 'logs': str(logs)}
             write_receipt(stage, receipt)
             reject_running()

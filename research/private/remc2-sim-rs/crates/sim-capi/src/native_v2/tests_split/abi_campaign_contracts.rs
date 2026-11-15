@@ -1,7 +1,14 @@
 #[test]
 fn level1_scroll_entity_projection_uses_live_class14_carrier() {
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level1");
+    // Remote compilation embeds the worker's manifest path. Owner-data checks
+    // run locally, so accept the same explicit Level 1 package as the client.
+    let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level1")
+        },
+        PathBuf::from,
+    );
     let package = package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,

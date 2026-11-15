@@ -220,8 +220,8 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertIn("concrete failure", log.read_text())
         self.assertEqual(before, self.api["payload"](self.binary.parent))
 
-    def build_with_rust_edit(self, phase):
-        sim = self.header.parents[3]
+    def build_with_rust_edit(self, phase, source_root=None, native_only=False):
+        sim = source_root or self.header.parents[3]
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
             (sim / name).write_text("fixture build input\n")
         artifact = self.root / "captured-native.so"
@@ -232,9 +232,11 @@ class PlayerLauncherTests(unittest.TestCase):
         player_bytes = self.binary.read_bytes()
         changed = sim / "crates/after_capture.rs"
         self.build_commands = []
+        self.build_directories = []
 
         def command(arguments, cwd, log, environment=None, diagnostic_log=None):
             self.build_commands.append(arguments[0])
+            self.build_directories.append(cwd)
             if arguments[0] == "cargo":
                 log.write_text(json.dumps({"reason": "compiler-artifact",
                     "target": {"name": "sim_capi"},
@@ -253,9 +255,14 @@ class PlayerLauncherTests(unittest.TestCase):
                 changed.write_text("Rust changed after native capture\n")
                 log.write_text("fixture Unity build\n")
 
+        arguments = ["-", str(self.root)]
+        if source_root is not None:
+            arguments += ["--native-source-root", str(source_root)]
+        if native_only:
+            arguments += ["--native-only"]
         with patch.dict(self.api["main"].__globals__, {"command": command}), \
              patch.object(self.api["ctypes"], "CDLL") as library, \
-             patch.object(sys, "argv", ["-", str(self.root)]), \
+             patch.object(sys, "argv", arguments), \
              patch.dict(os.environ, {"MC_UNITY_EDITOR": str(editor)}), \
              contextlib.redirect_stdout(io.StringIO()):
             library.return_value.mc_native_abi_version.return_value = 2
@@ -269,6 +276,68 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertIn("crates/after_capture.rs", self.api["rust_inputs"]())
         self.assertEqual(self.plugin.read_bytes(), b"captured fixture native bytes")
         self.assertEqual(receipt["native_sha256"], self.api["digest"](self.plugin))
+
+    def test_explicit_native_source_build_capture_refresh_and_launch_share_one_root(self):
+        selected = Path(self.temporary.name) / "published Rust workspace"
+        header = selected / "crates/sim-capi/include/mc_sim.h"
+        header.parent.mkdir(parents=True)
+        header.write_text(self.header.read_text())
+        source = selected / "crates/selected.rs"
+        source.write_text("published source fixture\n")
+        sibling = self.header.parents[3] / "crates/sibling-only.rs"
+        sibling.write_text("separate Modern source fixture\n")
+        receipt = self.build_with_rust_edit("unity", source_root=selected)
+        self.assertEqual(self.build_directories[0], selected.resolve())
+        self.assertEqual(self.build_directories[1], self.root)
+        self.assertEqual(receipt["native_source_root"], str(selected.resolve()))
+        self.assertEqual(receipt["native_contract"], self.api["native_contract"](selected))
+        self.assertEqual(receipt["rust_inputs"]["crates/selected.rs"], self.api["digest"](source))
+        self.assertNotIn("crates/sibling-only.rs", receipt["rust_inputs"])
+        self.assertNotIn("crates/after_capture.rs", receipt["rust_inputs"])
+        # An ordinary launch validates the recorded source's header contract;
+        # the unused sibling must no longer control this Original install.
+        self.header.write_text("different Modern header\n")
+        self.assertEqual(self.launch().returncode, 0)
+        refreshed = self.build_with_rust_edit("none", source_root=selected, native_only=True)
+        self.assertEqual(self.build_commands, ["cargo"])
+        self.assertEqual(self.build_directories, [selected.resolve()])
+        self.assertEqual(refreshed["native_source_root"], str(selected.resolve()))
+        self.assertEqual(refreshed["rust_inputs"], self.api["rust_inputs"](selected))
+        # Subsequent ordinary native-only refreshes retain the recorded root,
+        # even without the flag and despite the incompatible unused sibling.
+        repeated = self.build_with_rust_edit("none", native_only=True)
+        self.assertEqual(self.build_commands, ["cargo"])
+        self.assertEqual(self.build_directories, [selected.resolve()])
+        self.assertEqual(repeated["native_source_root"], str(selected.resolve()))
+        self.assertEqual(repeated["rust_inputs"], self.api["rust_inputs"](selected))
+        header.write_text("changed selected native contract\n")
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native contract changed", result.stderr)
+
+    def test_explicit_native_source_failures_preserve_installed_payload(self):
+        before = self.api["payload"](self.binary.parent)
+        receipt_before = (self.binary.parent / "build-install.json").read_bytes()
+        selected = Path(self.temporary.name) / "selected Rust workspace"
+        header = selected / "crates/sim-capi/include/mc_sim.h"
+        header.parent.mkdir(parents=True)
+        header.write_text(self.header.read_text())
+        with self.assertRaisesRegex(RuntimeError, "Build inputs changed during Cargo"):
+            self.build_with_rust_edit("cargo", source_root=selected, native_only=True)
+        self.assertEqual(self.build_directories, [selected.resolve()])
+        self.assertEqual(before, self.api["payload"](self.binary.parent))
+        self.assertEqual(receipt_before, (self.binary.parent / "build-install.json").read_bytes())
+        # A new source selection cannot bypass native-only compatibility.
+        header.write_text("incompatible selected header\n")
+        with self.assertRaisesRegex(RuntimeError, "native contract changed"):
+            self.build_with_rust_edit("none", source_root=selected, native_only=True)
+        self.assertEqual(self.build_commands, [])
+        result = subprocess.run([str(self.root / "build-player.sh"), "--native-source-root", str(self.root)],
+                                text=True, capture_output=True, check=False, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid native source workspace", result.stderr)
+        self.assertEqual(before, self.api["payload"](self.binary.parent))
+        self.assertEqual(receipt_before, (self.binary.parent / "build-install.json").read_bytes())
 
     def test_rust_edits_during_cargo_are_still_rejected(self):
         before = self.api["payload"](self.binary.parent)
@@ -296,7 +365,7 @@ class PlayerLauncherTests(unittest.TestCase):
         for row in resources:
             for kind in ("owner", "presentation"):
                 row[kind].mkdir(parents=True, exist_ok=True)
-        for name in ("mc2-level1-night-cache-v2",
+        for name in ("mc2-level1-night-cache-v2", "mc2-campaign-menu-cache-current",
                      "mc-b9s2-cursor-level1-20261029", "mc-b9s2-cursor-level2-vault-20261029",
                      "mc-b9s2-cursor-level3-20261029", "mc-b9s2-cursor-level4-20261029",
                      "level2-vault-successor-owner-cache-20261025",
@@ -432,7 +501,7 @@ class PlayerLauncherTests(unittest.TestCase):
             (["--owner-cache", cache], "must follow a --package"),
             (["--package", package, "--owner-cache", "/missing/cache"], "Missing owner cache"),
             (["--package", package, "--owner-cache", cache, "--owner-cache", cache],
-             "Duplicate owner cache"),
+             "Duplicate owner resource"),
             (["--package", package, "--package", package + "/."], "Duplicate campaign package"),
             (["--load-save", "/missing/save.json"], "Missing runtime save"),
             (["--new-game", "--load-save", "/missing/save.json"], "Choose only one"),
