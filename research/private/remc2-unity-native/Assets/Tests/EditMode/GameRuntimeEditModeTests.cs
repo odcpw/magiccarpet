@@ -681,6 +681,7 @@ namespace MagicCarpet.Native.Tests
         {
             using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
             var fresh = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            fresh.Promote(41, 6);
             fresh.Advance(true, false, true, false, false);
             Assert.That(fresh.Visible, Is.False, "the zero initial poll still requires age above 800");
             fresh.Advance(true, false, true, false, false);
@@ -688,6 +689,7 @@ namespace MagicCarpet.Native.Tests
             fresh.Advance(true, false, true, false, false);
             Assert.That(fresh.Visible, Is.True, "fresh construction does not invent a 20-frame delay");
             var suppressed = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            suppressed.Promote(41, 6);
             suppressed.Advance(false, false, true, false, true);
             for (var pass = 0; pass < 19; pass++)
             {
@@ -701,8 +703,9 @@ namespace MagicCarpet.Native.Tests
             var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             hint.Promote(41, 6);
             for (var i = 0; i < 20; i++) hint.Advance(false, false, true, false, false);
-            Assert.That(hint.Visible, Is.False, "priority cannot bypass actual mana affordability");
-            hint.Advance(true, false, true, false, false);
+            Assert.That(hint.VisibleRow, Is.EqualTo(1), "unavailable mana cannot displace the ordinary objective-key hint");
+            hint.CloseCurrent(true);
+            for (var i = 0; i < 20; i++) hint.Advance(true, false, true, false, false);
             Assert.That(hint.Visible, Is.False, "selection precedes the first source draw");
             hint.Advance(true, false, true, true, false);
             Assert.That(hint.Visible, Is.False, "pause freezes and hides the selected popup");
@@ -738,7 +741,47 @@ namespace MagicCarpet.Native.Tests
             Assert.That(context.Visible, Is.False);
             context.RequestObjectiveContext(0, true);
             for (var pass = 0; pass < 21; pass++) context.Advance(false, false, true, false, false);
-            Assert.That(context.Visible, Is.False, "consumed word88 is zero, not the previously displayed row");
+            Assert.That(context.VisibleRow, Is.EqualTo(1), "consumed word88 allows the ordinary objective-key row, not the previous context");
+        }
+
+        [Test]
+        public void ObjectiveKeyHelpUsesTheSourcePollAgePrecedenceAndLifetime()
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            hint.Advance(false, false, true, false, false);
+            Assert.That(hint.Visible, Is.False, "age must exceed the source threshold before selection");
+            hint.Advance(false, false, true, false, false);
+            Assert.That(hint.Visible, Is.False, "selection precedes its first draw");
+            hint.Advance(false, false, true, false, false);
+            Assert.That(hint.VisibleRow, Is.EqualTo(1));
+            hint.Advance(false, false, true, true, false);
+            Assert.That(hint.Visible, Is.False, "pause hides the retained row without consuming it");
+            for (var i = 1; i < 50; i++)
+            {
+                hint.Advance(false, false, true, false, false);
+                Assert.That(hint.VisibleRow, Is.EqualTo(1));
+            }
+            hint.Advance(false, false, true, false, false);
+            Assert.That(hint.Visible, Is.False, "the following pass clears the expired overlay");
+            var ended = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 25; i++) ended.Advance(false, false, true, false, false, 0, true);
+            Assert.That(ended.Visible, Is.False, "IsLevelEnd masks ordinary row1");
+            var context = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            context.RequestObjectiveContext(76, true);
+            for (var i = 0; i < 9; i++) context.Advance(false, false, true, false, false);
+            Assert.That(context.VisibleRow, Is.EqualTo(76), "the source pending objective row precedes ordinary row1");
+            context.Advance(false, false, true, false, true);
+            Assert.That(context.Visible, Is.False, "an objective or menu suppresses the active popup");
+            var equalPriority = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 3; i++) equalPriority.Advance(true, false, true, false, false);
+            Assert.That(equalPriority.VisibleRow, Is.EqualTo(1), "equal overdue priority keeps the earlier source row");
+            var wallPriority = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            for (var i = 0; i < 3; i++) wallPriority.Advance(false, false, true, false, false, 1);
+            Assert.That(wallPriority.VisibleRow, Is.EqualTo(3), "eligible source row3 has higher priority than row1");
+            var reset = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            reset.Advance(false, false, true, false, false);
+            Assert.That(reset.Visible, Is.False, "a fresh owner has no retained popup");
         }
 
         [Test]
@@ -967,6 +1010,26 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(off.Visible, Is.False);
                 off.Advance(false, false, true, false, false, receipt.reset.render.player_wall_contact_counter);
                 Assert.That(off.Visible, Is.False, "fresh/reset state plus a cleared native counter cannot select wall help");
+
+                var objectiveKey = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+                objectiveKey.Advance(false, false, true, false, false);
+                objectiveKey.Advance(false, false, true, false, false);
+                objectiveKey.Advance(false, false, true, false, false);
+                Assert.That(objectiveKey.VisibleRow, Is.EqualTo(1));
+                var objectiveKeyBinding = cache.GameplayHelpForRow(objectiveKey.VisibleRow);
+                var objectiveKeyText = cache.LanguageText(objectiveKeyBinding.TextRecord);
+                Assert.That(objectiveKeyText, Is.EqualTo("Press 'O' to show current objective"));
+                presenter.PresentContextHint(objectiveKeyText, generation, objectiveKeyBinding.X, objectiveKeyBinding.Y);
+                var keyOutput = presenter.Render(1, scene, generation, 0, palette, true);
+                var keyPixels = ReadObjectivePixels(keyOutput);
+                var keyRaster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", flags).GetValue(presenter);
+                Assert.That((keyRaster.X, keyRaster.Y, keyRaster.Width, keyRaster.Height), Is.EqualTo((160, 80, 320, 38)),
+                    "source 35-byte width and actual frame sprites");
+                Assert.That(keyPixels[(keyRaster.Height - 1 - (94 - keyRaster.Y)) * keyRaster.Width + 180 - keyRaster.X],
+                    Is.EqualTo(Colour(176)), "source HFONT3 P glyph mask(0,2) at text origin180/92");
+                CollectionAssert.AreEqual(keyPixels, ReadObjectivePixels(presenter.Render(1, scene, generation, 0, palette, true)));
+                Assert.That(objectiveKey.VisibleRow, Is.EqualTo(1), "rendering does not advance the source help clock");
                 Unchanged();
             }
             finally
@@ -982,6 +1045,11 @@ namespace MagicCarpet.Native.Tests
         {
             using (var cache = new OwnerCampaignMenuCache(CampaignMenuCache))
             {
+                var objectiveKey = cache.GameplayHelpForRow(1);
+                Assert.That((objectiveKey.Row, objectiveKey.TextRecord, objectiveKey.Duration, objectiveKey.Flags,
+                    objectiveKey.X, objectiveKey.Y, objectiveKey.AgeThreshold, objectiveKey.Priority),
+                    Is.EqualTo((1, 286, 50, 4, 320, 80, 600, 2)));
+                Assert.That(cache.LanguageText(objectiveKey.TextRecord), Is.EqualTo("Press 'O' to show current objective"));
                 var wall = cache.GameplayHelpForRow(3);
                 Assert.That((wall.Row, wall.TextRecord, wall.Duration, wall.Flags, wall.X, wall.Y,
                     wall.AgeThreshold, wall.Priority), Is.EqualTo((3, 288, 50, 4, 320, 80, 600, 6)));
@@ -1003,6 +1071,7 @@ namespace MagicCarpet.Native.Tests
             {
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(72));
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(3));
+                Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(1));
                 Assert.Throws<InvalidDataException>(() => { var ignored = legacy.ObjectiveForProfile("night").PauseSprites; });
             }
 
