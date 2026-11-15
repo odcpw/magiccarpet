@@ -963,9 +963,19 @@ Real Pav Cave track3/wrong2 rejection passes0.93s; the failed connected cold spe
 selected original glyph/O/repeated-read/cleanup check now passes39.54s. The earlier
 ordinary-record check passes1.09s and was not repeated. The inactive Editor host
 proves request/metadata/glyph/DSP-deadline/fade behavior, not active playback or
-audible hardware output. Matching player installation and physical O-panel/speech
-request remain next. Evidence: generated/secret-announcement-20261115. Full
-mc-oi6.10/.6/.9 acceptance/dependencies stay open.
+audible hardware output. Matching Original build-ibl36i6h/native dc5009d619f5 is
+installed and --check-installed passes. Root viewed the actual cold Pav Cave scene,
+original284 glyph panel on physical O hold, and its disappearance on release.
+The active standalone logged exactly one TRACK26/4999ms request, Cave music track3,
+and selected source32/record284; all30 resource roles and mapped native hash match,
+zero retries, no disabled-source/integrity/load errors. Owned player/display stopped
+without escalation. This is controlled cold-entry/UI/live-request proof, not earned
+navigation, audible hardware, human combat/FPS, full missions or old saves.
+Source is canonical ae63060c, pushed Original14283731; unrelated Modern ancestry
+was excluded. Evidence: generated/secret-announcement-20261115. Full
+mc-oi6.10/.6/.9 acceptance/dependencies stay open. Do not restart delivered secret
+announcement or Cave-music admission diagnostics; continue the remaining original
+help/text consumers, then installed Day/Night/Cave audio/presentation/performance.
 
 Newest operator direction (2026-11-15): complete the source Shift+F5 display
 control through HUD, original notice, help cleanup and ordinary F5 preservation.
