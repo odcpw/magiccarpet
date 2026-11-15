@@ -1,6 +1,12 @@
+using System;
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
+using Object = UnityEngine.Object;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -99,11 +105,11 @@ namespace MagicCarpet.Native.Tests
                 var voxelNear = first.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
                 var voxelFar = first.GetChild(5).GetComponent<MeshFilter>().sharedMesh;
                 if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
-                    Assert.That(voxelNear.colors32[0], Is.EqualTo(new Color32(32, 100, 76, 255)));
+                    Assert.That(voxelNear.colors32[0], Is.EqualTo(new Color32(32, 84, 103, 255)));
                 Assert.That(voxelNear.GetIndexCount(0) / 3, Is.LessThanOrEqualTo(80_000),
                     "the shared near voxel canopy remains bounded");
                 TestContext.WriteLine($"Tree canopy triangles: Modern near={nearLeaves.GetIndexCount(0) / 3}, far={farLeaves.GetIndexCount(0) / 3}; " +
-                    $"Voxel near={voxelNear.GetIndexCount(0) / 3}, far={voxelFar.GetIndexCount(0) / 3} (null graphics device)");
+                    $"Voxel near={voxelNear.GetIndexCount(0) / 3}, far={voxelFar.GetIndexCount(0) / 3} (graphics device: {SystemInfo.graphicsDeviceType})");
                 Assert.That(root.transform.GetChild(1).gameObject.activeSelf, Is.False);
                 Assert.That(trees.Replaces(2, 2), Is.False);
                 trees.BeginFrame();
@@ -114,6 +120,110 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(first.GetChild(0).GetComponent<MeshFilter>().sharedMesh.name, Does.Not.Contain("voxel"));
             }
             finally { trees?.Dispose(); Object.DestroyImmediate(root); Object.DestroyImmediate(cameraObject); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void TreeGeometryAndPreview(bool voxel)
+        {
+            var parent = new GameObject("Tree geometry test");
+            var cameraObject = new GameObject("Tree geometry camera");
+            var camera = cameraObject.AddComponent<Camera>();
+            try
+            {
+                using var trees = new ModernAuthoredTrees(parent.transform);
+                var row = Row(1);
+                trees.BeginFrame(); Assert.That(trees.Observe(row, voxel), Is.True); trees.EndFrame();
+                trees.Render(camera, true);
+                var node = parent.transform.GetChild(0);
+                var near = Enumerable.Range(0, 3).Select(i => node.GetChild(i).GetComponent<MeshRenderer>()).ToArray();
+                var far = Enumerable.Range(3, 3).Select(i => node.GetChild(i).GetComponent<MeshRenderer>()).ToArray();
+                var bounds = near[0].bounds;
+                foreach (var part in near.Skip(1)) bounds.Encapsulate(part.bounds);
+                int Triangles(MeshRenderer[] parts) => parts.Where(p => p.enabled)
+                    .Sum(p => (int)p.GetComponent<MeshFilter>().sharedMesh.GetIndexCount(0) / 3);
+                TestContext.WriteLine($"voxel={voxel} bounds={bounds} nearTriangles={Triangles(near)} farTriangles={Triangles(far)} nearDraws={near.Count(p => p.enabled)} farDraws={far.Count(p => p.enabled)} rotation={node.rotation.eulerAngles} nearWoodCellWorld={ModernAuthoredTrees.VoxelNearWoodCellSize * node.localScale.x} nearFoliageCellWorld={ModernAuthoredTrees.VoxelNearFoliageCellSize * node.localScale.x} farCellWorld={ModernAuthoredTrees.VoxelFarCellSize * node.localScale.x}");
+                var height = row.renderHeight / 64f;
+                Assert.That(bounds.max.y, Is.EqualTo(row.z / 64f + height).Within(height * .05f));
+                Assert.That(near[0].bounds.min.y, Is.EqualTo(row.z / 64f).Within(height * .05f));
+                Assert.That(Quaternion.Angle(node.rotation, Quaternion.Euler(0f, row.entityIndex * 137.50776f, 0f)), Is.LessThan(.01f));
+                Assert.That(Triangles(far), Is.LessThan(Triangles(near) * .75f));
+                Assert.That(near.Length + far.Length, Is.EqualTo(6), "tree uses shared meshes, not per-cell objects");
+                CapturePreviewIfRequested(trees, camera, node, row, voxel);
+                row.action = 1; trees.BeginFrame(); trees.Observe(row, voxel); trees.EndFrame();
+                Assert.That(near[2].enabled, Is.True, "burning keeps the live canopy");
+                row.action = 2; row.renderParameter = 226;
+                trees.BeginFrame(); trees.Observe(row, voxel); trees.EndFrame();
+                Assert.That(near[2].enabled, Is.False, "the burned tree is leafless");
+                Assert.That(near[0].enabled && near[1].enabled, Is.True);
+            }
+            finally { Object.DestroyImmediate(parent); Object.DestroyImmediate(cameraObject); }
+        }
+
+        private static void CapturePreviewIfRequested(ModernAuthoredTrees trees, Camera camera,
+            Transform node, ModernAuthoredTrees.TreeObservation row, bool voxel)
+        {
+            var directory = Environment.GetEnvironmentVariable("MC_TREE_PREVIEW_DIR");
+            if (string.IsNullOrEmpty(directory)) return;
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(GraphicsDeviceType.Null));
+            var previousPipeline = GraphicsSettings.defaultRenderPipeline;
+            var previousQuality = QualitySettings.renderPipeline;
+            var previousAmbient = RenderSettings.ambientLight;
+            var previousMode = RenderSettings.ambientMode;
+            var previousSun = RenderSettings.sun;
+            var previousFog = RenderSettings.fog;
+            var previousTarget = RenderTexture.active;
+            var target = new RenderTexture(640, 640, 24, RenderTextureFormat.ARGB32);
+            var pixels = new Texture2D(640, 640, TextureFormat.RGB24, false);
+            var lightObject = new GameObject("Tree preview light");
+            try
+            {
+                var pipeline = Resources.Load<UniversalRenderPipelineAsset>("ModernPipeline");
+                Assert.That(pipeline, Is.Not.Null);
+                GraphicsSettings.defaultRenderPipeline = pipeline; QualitySettings.renderPipeline = null;
+                foreach (var part in node.GetComponentsInChildren<Transform>(true)) part.gameObject.layer = 31;
+                var light = lightObject.AddComponent<Light>();
+                light.type = LightType.Directional; light.cullingMask = 1 << 31;
+                light.transform.rotation = Quaternion.Euler(35, 155, 0); RenderSettings.sun = light;
+                RenderSettings.ambientMode = AmbientMode.Flat; RenderSettings.fog = false;
+                camera.cullingMask = 1 << 31; camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(.12f, .12f, .12f);
+                camera.orthographic = true; camera.orthographicSize = row.renderHeight / 64f * .76f;
+                camera.targetTexture = target;
+                var center = new Vector3(row.x / 64f, row.z / 64f + row.renderHeight / 128f, row.y / 64f);
+                camera.transform.position = center + new Vector3(9, 4, -16);
+                camera.transform.LookAt(center);
+                var lod = node.GetComponent<LODGroup>();
+                Directory.CreateDirectory(directory);
+                foreach (var view in new[] { "day", "night", "bare", "far" })
+                {
+                    bool night = view != "day";
+                    RenderSettings.ambientLight = night ? new Color(.16f, .20f, .25f) : new Color(.36f, .36f, .36f);
+                    light.color = night ? new Color(.76f, .86f, 1f) : Color.white;
+                    light.intensity = night ? .8f : 1.2f;
+                    var current = row;
+                    if (view == "bare") { current.action = 2; current.renderParameter = 226; }
+                    trees.BeginFrame(); trees.Observe(current, voxel); trees.EndFrame(); trees.Render(camera, true);
+                    lod.ForceLOD(view == "far" ? 1 : 0);
+                    camera.Render(); camera.Render();
+                    RenderTexture.active = target;
+                    pixels.ReadPixels(new Rect(0, 0, 640, 640), 0, 0); pixels.Apply();
+                    var path = Path.Combine(directory, (voxel ? "voxel-" : "modern-") + view + ".png");
+                    using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+                    var bytes = pixels.EncodeToPNG(); output.Write(bytes, 0, bytes.Length);
+                    var image = pixels.GetPixels32();
+                    Assert.That(image.Count(p => p.r > 200 && p.b > 200 && p.g < 50), Is.LessThan(10), "tree shader must render");
+                }
+                lod.ForceLOD(-1);
+            }
+            finally
+            {
+                camera.targetTexture = null; RenderTexture.active = previousTarget;
+                RenderSettings.ambientLight = previousAmbient; RenderSettings.ambientMode = previousMode;
+                RenderSettings.sun = previousSun; RenderSettings.fog = previousFog;
+                GraphicsSettings.defaultRenderPipeline = previousPipeline; QualitySettings.renderPipeline = previousQuality;
+                target.Release(); Object.DestroyImmediate(target); Object.DestroyImmediate(pixels); Object.DestroyImmediate(lightObject);
+            }
         }
     }
 }

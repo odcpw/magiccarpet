@@ -46,7 +46,10 @@ namespace MagicCarpet.Native
         private readonly Mesh[] modern = new Mesh[3];
         private readonly Mesh[] modernFar = new Mesh[3];
         private readonly Mesh[] voxel = new Mesh[3];
-        private Mesh voxelFarLeaves;
+        private readonly Mesh[] voxelFar = new Mesh[3];
+        internal const float VoxelNearWoodCellSize = .08f;
+        internal const float VoxelNearFoliageCellSize = .125f;
+        internal const float VoxelFarCellSize = .29f;
         private readonly Material[] modernMaterials = new Material[3];
         private readonly Material[] burnedMaterials = new Material[2];
         private readonly Material voxelMaterial;
@@ -90,13 +93,13 @@ namespace MagicCarpet.Native
             if (sourceHeight <= 0) throw new InvalidOperationException("Empty tree geometry");
             voxelMaterial = new Material(voxelShader) { name = "Authored tree voxel" };
             voxelBurnedMaterial = new Material(voxelShader) { name = "Authored tree charred voxel" };
-            voxelBurnedMaterial.SetColor("_BaseColor", new Color(.24f, .22f, .20f, 1f));
+            voxelBurnedMaterial.SetColor("_BaseColor", new Color(1.5f, 1.3f, 1.1f, 1f));
             var lit = Shader.Find("Universal Render Pipeline/Lit");
             if (lit == null) throw new InvalidOperationException("Missing tree char shader");
             for (int i = 0; i < 2; i++)
             {
                 burnedMaterials[i] = new Material(lit) { name = "Authored tree charred wood" };
-                burnedMaterials[i].SetColor("_BaseColor", new Color(.075f, .061f, .052f, 1f));
+                burnedMaterials[i].SetColor("_BaseColor", new Color(.24f, .20f, .17f, 1f));
                 burnedMaterials[i].SetFloat("_Smoothness", .08f);
             }
         }
@@ -157,7 +160,7 @@ namespace MagicCarpet.Native
             {
                 int source = i;
                 tree.FarParts[i].GetComponent<MeshFilter>().sharedMesh = voxelStyle
-                    ? (source == 2 ? voxelFarLeaves : voxel[source]) : modernFar[source];
+                    ? voxelFar[source] : modernFar[source];
                 tree.FarParts[i].sharedMaterial = voxelStyle
                     ? (dead ? voxelBurnedMaterial : voxelMaterial)
                     : (dead && source < 2 ? burnedMaterials[source] : modernMaterials[source]);
@@ -296,6 +299,10 @@ namespace MagicCarpet.Native
             material.SetFloat("_WindStrength", foliage ? .12f : 0f);
             if (foliage)
             {
+                // Leaf roughness textures contain small glossy spikes that
+                // produce white glitter across the dense source canopy.
+                material.SetFloat("_UseRoughnessMap", 0f);
+                material.SetFloat("_Smoothness", 0f);
                 material.SetTexture("_AlphaMap", Texture(name + "_alpha_1k"));
                 material.SetFloat("_UseAlphaMap", 1f);
                 material.SetFloat("_Cutoff", .15f);
@@ -321,8 +328,8 @@ namespace MagicCarpet.Native
 
         private static Color32 TintLeaf(Color32 color) => new Color32(
             (byte)Mathf.Clamp(Mathf.RoundToInt(color.r * .5f), 0, 255),
-            (byte)Mathf.Clamp(Mathf.RoundToInt(color.g * .95f), 0, 255),
-            (byte)Mathf.Clamp(Mathf.RoundToInt(color.b * 1.4f), 0, 255), color.a);
+            (byte)Mathf.Clamp(Mathf.RoundToInt(color.g * .8f), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(color.b * 1.9f), 0, 255), color.a);
 
         private static Texture2D Texture(string name) => Resources.Load<Texture2D>("ModernNature/" + name)
             ?? throw new InvalidOperationException("Missing tree texture " + name);
@@ -354,15 +361,17 @@ namespace MagicCarpet.Native
             // Bake once per presenter, preserving the master mesh's albedo and
             // foliage cutout in the shared cell surfaces. The null-device path
             // permits geometry-only EditMode checks; players sample textures.
-            var built = new Mesh[4];
+            var built = new Mesh[6];
             try
             {
-                built[0] = MakeVoxelSurface(modern[0], .19f, new Color32(102, 73, 47, 255), bark, null, false);
-                built[1] = MakeVoxelSurface(modern[1], .19f, new Color32(99, 76, 46, 255), branches, null, false);
-                built[2] = MakeVoxelSurface(modern[2], .19f, new Color32(65, 105, 54, 255), leaves, alpha, true);
-                built[3] = MakeVoxelSurface(modernFar[2], .29f, new Color32(65, 105, 54, 255), leaves, alpha, true);
+                built[0] = MakeVoxelSurface(modern[0], VoxelNearWoodCellSize, new Color32(102, 73, 47, 255), bark, null, false);
+                built[1] = MakeVoxelSurface(modern[1], VoxelNearWoodCellSize, new Color32(99, 76, 46, 255), branches, null, false);
+                built[2] = MakeVoxelSurface(modern[2], VoxelNearFoliageCellSize, new Color32(65, 105, 54, 255), leaves, alpha, true);
+                built[3] = MakeVoxelSurface(modernFar[0], VoxelFarCellSize, new Color32(102, 73, 47, 255), bark, null, false);
+                built[4] = MakeVoxelSurface(modernFar[1], VoxelFarCellSize, new Color32(99, 76, 46, 255), branches, null, false);
+                built[5] = MakeVoxelSurface(modernFar[2], VoxelFarCellSize, new Color32(65, 105, 54, 255), leaves, alpha, true);
                 Array.Copy(built, voxel, voxel.Length);
-                voxelFarLeaves = built[3];
+                Array.Copy(built, 3, voxelFar, 0, voxelFar.Length);
             }
             catch
             {
@@ -459,7 +468,7 @@ namespace MagicCarpet.Native
             foreach (var mesh in modern) Destroy(mesh);
             Destroy(modernFar[2]);
             foreach (var mesh in voxel) Destroy(mesh);
-            Destroy(voxelFarLeaves);
+            foreach (var mesh in voxelFar) Destroy(mesh);
             foreach (var material in modernMaterials) Destroy(material);
             foreach (var material in burnedMaterials) Destroy(material);
             Destroy(voxelMaterial); Destroy(voxelBurnedMaterial);
