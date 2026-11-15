@@ -801,14 +801,13 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Newest operator direction (2026-11-15): park the WAV/read-integrity investigation
-and continue ALL remaining non-sound port work first. This overrides earlier
-instructions to hold other capability work until that issue or installation is
-resolved. Keep strict resource guards and honest installed-proof limits; no more
-memory/read probes, audio fixes, or repeated blocked launches in this work block.
-Use the existing small native team and complete connected capabilities, committing
-and pushing coherent source batches. Preserve original full acceptance and open
-installation/dependency gaps.
+Newest operator direction (2026-11-15): continue the remaining port work and give
+the WAV/read-integrity blocker one Astra/high owner. VioletCastle owns that
+diagnosis through real player qualification; root serializes builds/installation.
+Keep strict resource hashes and honest proof limits. No silent repair/retry loop
+or speculative loader replacement. Complete connected capabilities with the
+existing small team, committing/pushing coherent batches and preserving full
+acceptance and open installation/dependency gaps.
 
 Pause-menu hover source is canonical `fc6d503a`, pushed/remote-verified Original
 `1e0d98f1` on `codex/original-ending`; unrelated Modern ancestry was excluded.
@@ -903,12 +902,32 @@ shared native in the isolated Editor. Build-helper source selection and --help
 are exercised; no normal player rebuild/install or WAV retry is claimed. Evidence:
 source-root-*, public-original-* under generated/help-20261115.
 
+The build helper's actual Cargo branch now defaults to the selected source
+repository's disk-backed target, bypassing the retired workspace target symlink.
+An explicit CARGO_TARGET_DIR remains authoritative; non-Git sources use the
+project's Builds/native-target. Artifact reuse is unchanged. The clean-HEAD
+20-case fixtures and exact older Original helper's two affected fixtures pass;
+UBS has no critical finding and only existing unittest JSON warnings. These are
+command/environment fixtures, not a real Cargo or player run.
+
+The current shared native passed one full-boundary instrumented check112.71s:
+160 WAV allocations matched their same-file bytes at read return, while protected
+and before free, with no trapped write/mismatch. One subsequent normal
+uninstrumented loader check passes103.01s with strict hashes retained. This
+establishes operation of the current route, not a source-backed WAV correction:
+the failing loader/audio code and lockfile are unchanged from the failing cohort.
+Evidence: wav-integrity-boundary-1 and wav-integrity-normal-1 under
+generated/help-20261115. Astra remains responsible for the unresolved cause and
+next actual player qualification; installed build-af5fng7c is unchanged.
+
 Normal player installation, sound/read-integrity,
 full tutorial/help/speech, selected non-ASCII installed proof and presentation/
 performance acceptance remain open. The off_DB558 sentinel stream is credits;
-do not invent a tutorial producer from it. Continue remaining source guidance and
-Results-phase save/input through existing acceptance, without replaying delivered
-mission or spell/creature paths.
+do not invent a tutorial producer from it. Results-phase F5/cold restore is already
+delivered below; do not restart that investigation. An earned intermediate Results
+save -> cold restart -> next mission remains an evidence limit, distinct from the
+installed controlled Results proof. Continue remaining real source guidance
+without replaying delivered mission or spell/creature paths.
 
 Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original

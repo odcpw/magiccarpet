@@ -220,7 +220,8 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertIn("concrete failure", log.read_text())
         self.assertEqual(before, self.api["payload"](self.binary.parent))
 
-    def build_with_rust_edit(self, phase, source_root=None, native_only=False):
+    def build_with_rust_edit(self, phase, source_root=None, native_only=False,
+                             cargo_target=None, git_root=None):
         sim = source_root or self.header.parents[3]
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
             (sim / name).write_text("fixture build input\n")
@@ -233,10 +234,13 @@ class PlayerLauncherTests(unittest.TestCase):
         changed = sim / "crates/after_capture.rs"
         self.build_commands = []
         self.build_directories = []
+        self.build_environments = []
+        self.git_target_queries = []
 
         def command(arguments, cwd, log, environment=None, diagnostic_log=None):
             self.build_commands.append(arguments[0])
             self.build_directories.append(cwd)
+            self.build_environments.append(environment)
             if arguments[0] == "cargo":
                 log.write_text(json.dumps({"reason": "compiler-artifact",
                     "target": {"name": "sim_capi"},
@@ -260,10 +264,28 @@ class PlayerLauncherTests(unittest.TestCase):
             arguments += ["--native-source-root", str(source_root)]
         if native_only:
             arguments += ["--native-only"]
+        build_environment = dict(os.environ, MC_UNITY_EDITOR=str(editor))
+        if cargo_target is None:
+            build_environment.pop("CARGO_TARGET_DIR", None)
+        else:
+            build_environment["CARGO_TARGET_DIR"] = cargo_target
+        real_run = subprocess.run
+
+        def run(arguments, **kwargs):
+            if arguments[:1] == ["git"]:
+                self.git_target_queries.append(arguments)
+                self.assertTrue(kwargs["capture_output"], "git stderr is captured with its result")
+                if git_root is not None:
+                    self.assertEqual(arguments[:2], ["git", "-C"])
+                    self.assertEqual(arguments[3:], ["rev-parse", "--show-toplevel"])
+                    return subprocess.CompletedProcess(arguments, 0, str(git_root) + "\n", "")
+            return real_run(arguments, **kwargs)
+
         with patch.dict(self.api["main"].__globals__, {"command": command}), \
              patch.object(self.api["ctypes"], "CDLL") as library, \
+             patch.object(self.api["subprocess"], "run", side_effect=run), \
              patch.object(sys, "argv", arguments), \
-             patch.dict(os.environ, {"MC_UNITY_EDITOR": str(editor)}), \
+             patch.dict(os.environ, build_environment, clear=True), \
              contextlib.redirect_stdout(io.StringIO()):
             library.return_value.mc_native_abi_version.return_value = 2
             self.api["main"]()
@@ -276,6 +298,8 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertIn("crates/after_capture.rs", self.api["rust_inputs"]())
         self.assertEqual(self.plugin.read_bytes(), b"captured fixture native bytes")
         self.assertEqual(receipt["native_sha256"], self.api["digest"](self.plugin))
+        self.assertEqual(self.build_environments[0]["CARGO_TARGET_DIR"],
+                         str(self.root / "Builds/native-target"), "non-Git sources have a disk project target")
 
     def test_explicit_native_source_build_capture_refresh_and_launch_share_one_root(self):
         selected = Path(self.temporary.name) / "published Rust workspace"
@@ -286,9 +310,17 @@ class PlayerLauncherTests(unittest.TestCase):
         source.write_text("published source fixture\n")
         sibling = self.header.parents[3] / "crates/sibling-only.rs"
         sibling.write_text("separate Modern source fixture\n")
-        receipt = self.build_with_rust_edit("unity", source_root=selected)
+        retired = Path(self.temporary.name) / "retired workspace target"
+        retired.mkdir()
+        (selected / "target").symlink_to(retired, target_is_directory=True)
+        repository = Path(self.temporary.name) / "fixture repository"
+        repository.mkdir()
+        receipt = self.build_with_rust_edit("unity", source_root=selected, git_root=repository)
         self.assertEqual(self.build_directories[0], selected.resolve())
         self.assertEqual(self.build_directories[1], self.root)
+        self.assertEqual(self.build_environments[0]["CARGO_TARGET_DIR"], str(repository / "target"))
+        self.assertEqual(self.git_target_queries[0][2], str(selected.resolve()))
+        self.assertNotEqual(Path(self.build_environments[0]["CARGO_TARGET_DIR"]), (selected / "target").resolve())
         self.assertEqual(receipt["native_source_root"], str(selected.resolve()))
         self.assertEqual(receipt["native_contract"], self.api["native_contract"](selected))
         self.assertEqual(receipt["rust_inputs"]["crates/selected.rs"], self.api["digest"](source))
@@ -298,18 +330,24 @@ class PlayerLauncherTests(unittest.TestCase):
         # the unused sibling must no longer control this Original install.
         self.header.write_text("different Modern header\n")
         self.assertEqual(self.launch().returncode, 0)
-        refreshed = self.build_with_rust_edit("none", source_root=selected, native_only=True)
+        explicit_target = str(Path(self.temporary.name) / "explicit Cargo target")
+        refreshed = self.build_with_rust_edit("none", source_root=selected, native_only=True,
+                                              cargo_target=explicit_target)
         self.assertEqual(self.build_commands, ["cargo"])
         self.assertEqual(self.build_directories, [selected.resolve()])
+        self.assertEqual(self.build_environments[0]["CARGO_TARGET_DIR"], explicit_target)
+        self.assertEqual(self.git_target_queries, [], "an explicit target never invokes the default Git lookup")
         self.assertEqual(refreshed["native_source_root"], str(selected.resolve()))
         self.assertEqual(refreshed["rust_inputs"], self.api["rust_inputs"](selected))
         # Subsequent ordinary native-only refreshes retain the recorded root,
         # even without the flag and despite the incompatible unused sibling.
-        repeated = self.build_with_rust_edit("none", native_only=True)
+        repeated = self.build_with_rust_edit("none", native_only=True, git_root=repository)
         self.assertEqual(self.build_commands, ["cargo"])
         self.assertEqual(self.build_directories, [selected.resolve()])
         self.assertEqual(repeated["native_source_root"], str(selected.resolve()))
         self.assertEqual(repeated["rust_inputs"], self.api["rust_inputs"](selected))
+        self.assertEqual(self.build_environments[0]["CARGO_TARGET_DIR"], str(repository / "target"))
+        self.assertEqual(self.git_target_queries[0][2], str(selected.resolve()))
         header.write_text("changed selected native contract\n")
         result = self.launch()
         self.assertNotEqual(result.returncode, 0)

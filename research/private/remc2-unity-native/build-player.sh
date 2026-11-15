@@ -228,7 +228,14 @@ def main():
             artifact = options.native_artifact
             print(f'Reusing verified native artifact: {artifact}; no Cargo invocation.', flush=True)
         else:
-            command(cargo, sim, cargo_log)
+            environment = dict(os.environ)
+            if 'CARGO_TARGET_DIR' not in environment:
+                repository = subprocess.run(['git', '-C', str(sim), 'rev-parse', '--show-toplevel'],
+                                            text=True, capture_output=True, check=False)
+                target = (Path(repository.stdout.strip()) / 'target' if repository.returncode == 0
+                          else PROJECT / 'Builds/native-target')
+                environment['CARGO_TARGET_DIR'] = str(target)
+            command(cargo, sim, cargo_log, environment)
             artifacts = []
             for line in cargo_log.read_text().splitlines():
                 try:
