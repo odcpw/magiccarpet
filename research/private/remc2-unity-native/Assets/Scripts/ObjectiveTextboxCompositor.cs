@@ -66,10 +66,25 @@ namespace MagicCarpet.Native
                 textColor, 220, centerX, centerY, true, anchorX, anchorY, lineColor, lineHighlight);
         }
 
+        // Pause help uses the second source textbox's wider 30..610 / 30..370
+        // placement limits and the menu's dynamic anchor, not hint 41's bounds.
+        internal static Raster BuildSourcePauseHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
+            byte lineHighlight, int anchorX, int anchorY)
+        {
+            if (anchorX < 0 || anchorX >= 639 || anchorY < 0 || anchorY >= 480)
+                throw new ArgumentException("source pause hint anchor is invalid");
+            var centerX = 610 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
+            var centerY = anchorY - 94 + 28 < 30 ? anchorY + 66 : anchorY - 94;
+            return BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,
+                textColor, 220, centerX, centerY, true, anchorX, anchorY, lineColor, lineHighlight,
+                30, 610, 30, 370);
+        }
+
         private static Raster BuildSourceForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
             Sprite corner, Sprite side, Sprite horizontal, byte textColor, int maxWidth,
             int centerX, int centerY, bool pointer, int anchorX, int anchorY,
-            byte lineColor, byte lineHighlight)
+            byte lineColor, byte lineHighlight, int minX = 40, int maxX = 600, int minY = 80, int maxY = 260)
         {
             if (text == null || glyphs == null || glyphMasks == null || corner == null || side == null || horizontal == null)
                 throw new ArgumentNullException("source objective resources");
@@ -95,10 +110,10 @@ namespace MagicCarpet.Native
             var boxHeight = checked(charHeight * layoutLines);
             var textX = centerX - boxWidth / 2;
             var textY = centerY - boxHeight / 2;
-            if (textX < 40 + corner.Width) textX = 40 + corner.Width;
-            if (textY < 80 + corner.Height) textY = 80 + corner.Height;
-            if (textX + boxWidth >= 600) textX = 600 - boxWidth;
-            if (textY + boxHeight >= 260) textY = 260 - boxHeight;
+            if (textX < minX + corner.Width) textX = minX + corner.Width;
+            if (textY < minY + corner.Height) textY = minY + corner.Height;
+            if (textX + boxWidth >= maxX) textX = maxX - boxWidth;
+            if (textY + boxHeight >= maxY) textY = maxY - boxHeight;
             var frameWidth = horizontal.Width * ((horizontal.Width - 1 + boxWidth + 8) / horizontal.Width);
             var frameX = textX - (frameWidth - boxWidth) / 2;
             var frameHeight = (side.Height - 1 + boxHeight) / side.Height * side.Height +

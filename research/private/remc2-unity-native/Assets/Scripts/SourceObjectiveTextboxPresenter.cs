@@ -12,6 +12,10 @@ namespace MagicCarpet.Native
         private readonly Texture2D palette;
         private Texture2D foreground;
         private RenderTexture output;
+        private Texture2D priorOverlay;
+        private RenderTexture priorOutput;
+        private RectInt priorRect;
+        private ulong priorGeneration;
         private ObjectiveTextboxCompositor.Raster raster;
         private ulong generation;
         private string currentText;
@@ -36,6 +40,8 @@ namespace MagicCarpet.Native
                 { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
             material.SetTexture("_BlendRow", blendRow);
             material.SetTexture("_Palette", palette);
+            material.SetFloat("_PriorEnabled", 0);
+            material.SetFloat("_RenderPrior", 0);
         }
 
         internal void Present(string sourceText, ulong sessionGeneration)
@@ -64,6 +70,76 @@ namespace MagicCarpet.Native
             var next = ObjectiveTextboxCompositor.BuildSourceContextHintForeground(bytes, assets.Glyphs,
                 assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor, centerX, centerY);
             PresentRaster(next, sourceText, sessionGeneration, -2);
+        }
+
+        internal void PresentPauseHint(string sourceText, ulong sessionGeneration, int anchorX, int anchorY)
+        {
+            // The Y coordinate also participates in the cache key.
+            var key = checked(anchorY * 640 + anchorX + 1);
+            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == -key - 2) return;
+            var next = ObjectiveTextboxCompositor.BuildSourcePauseHintForeground(SourceBytes(sourceText), assets.Glyphs,
+                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor,
+                assets.BlendSelector, assets.TextColor, anchorX, anchorY);
+            PresentRaster(next, sourceText, sessionGeneration, -key - 2);
+        }
+
+        // Red is the source sprite index, alpha its opacity, and green marks
+        // the source's twice-shaded rectangle independently of sprite opacity.
+        internal void SetPausePrior(RectInt rect, Color32[] pixels, ulong sessionGeneration)
+        {
+            if (rect.x < 0 || rect.y < 0 || rect.width <= 0 || rect.height <= 0 ||
+                rect.xMax > 640 || rect.yMax > 480 || pixels == null || pixels.Length != rect.width * rect.height)
+                throw new ArgumentException("source pause prior extent");
+            var next = new Texture2D(rect.width, rect.height, TextureFormat.RGBA32, false, true)
+                { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var bottomUp = new Color32[pixels.Length];
+            for (var y = 0; y < rect.height; y++)
+                Array.Copy(pixels, y * rect.width, bottomUp, (rect.height - 1 - y) * rect.width, rect.width);
+            next.SetPixels32(bottomUp);
+            next.Apply(false, false);
+            ReleaseTexture(priorOverlay); ReleaseTexture(priorOutput);
+            priorOutput = null; priorOverlay = next; priorRect = rect; priorGeneration = sessionGeneration;
+            material.SetTexture("_PriorOverlay", priorOverlay);
+            material.SetVector("_PriorRect", new Vector4(rect.x, rect.y, rect.width, rect.height));
+        }
+
+        internal RenderTexture RenderPausePrior(Texture sceneIndices, ulong sceneGeneration,
+            byte[] currentPaletteRgb8, bool sceneTopDown = false)
+        {
+            if (priorOverlay == null || sceneIndices == null || priorGeneration != sceneGeneration) return null;
+            if (currentPaletteRgb8 == null || currentPaletteRgb8.Length != 256 * 3)
+                throw new ArgumentException("source pause palette extent");
+            palette.LoadRawTextureData(currentPaletteRgb8); palette.Apply(false, false);
+            if (priorOutput == null)
+            {
+                priorOutput = new RenderTexture(priorRect.width, priorRect.height, 0, RenderTextureFormat.ARGB32,
+                    RenderTextureReadWrite.Linear) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+                priorOutput.Create();
+            }
+            material.SetTexture("_SceneIndices", sceneIndices);
+            material.SetFloat("_SceneTopDown", sceneTopDown ? 1f : 0f);
+            material.SetVector("_Raster", new Vector4(priorRect.x, priorRect.y, priorRect.width, priorRect.height));
+            material.SetFloat("_PriorEnabled", 1); material.SetFloat("_RenderPrior", 1);
+            var callerTarget = RenderTexture.active;
+            try { Graphics.Blit(null, priorOutput, material); }
+            finally
+            {
+                RenderTexture.active = callerTarget;
+                material.SetFloat("_RenderPrior", 0);
+                if (raster != null) material.SetVector("_Raster", new Vector4(raster.X, raster.Y, raster.Width, raster.Height));
+            }
+            return priorOutput;
+        }
+
+        internal void DrawPausePrior(Texture sceneIndices, ulong sceneGeneration, Rect view,
+            byte[] currentPaletteRgb8, bool sceneTopDown = false)
+        {
+            if (Event.current == null || Event.current.type != EventType.Repaint) return;
+            var rendered = RenderPausePrior(sceneIndices, sceneGeneration, currentPaletteRgb8, sceneTopDown);
+            if (rendered == null) return;
+            GUI.DrawTexture(new Rect(view.x + view.width * priorRect.x / 640f,
+                view.y + view.height * priorRect.y / 480f, view.width * priorRect.width / 640f,
+                view.height * priorRect.height / 480f), rendered, ScaleMode.StretchToFill, true);
         }
 
         private static byte[] SourceBytes(string sourceText)
@@ -125,6 +201,8 @@ namespace MagicCarpet.Native
             }
             material.SetTexture("_SceneIndices", sceneIndices);
             material.SetFloat("_SceneTopDown", sceneTopDown ? 1f : 0f);
+            material.SetFloat("_PriorEnabled", priorOverlay != null && priorGeneration == sceneGeneration ? 1f : 0f);
+            material.SetFloat("_RenderPrior", 0);
             // Render from the current source even for a valid map revision of zero.
             var callerTarget = RenderTexture.active;
             try { Graphics.Blit(null, output, material); }
@@ -146,6 +224,7 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             ReleaseTexture(output); ReleaseTexture(foreground); ReleaseTexture(blendRow);
+            ReleaseTexture(priorOutput); ReleaseTexture(priorOverlay);
             ReleaseTexture(palette); ReleaseTexture(material);
             output = null; foreground = null; raster = null; currentText = null; currentAnchor = -1;
         }

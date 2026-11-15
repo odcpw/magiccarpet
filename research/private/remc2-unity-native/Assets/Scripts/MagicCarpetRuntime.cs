@@ -3174,6 +3174,7 @@ namespace MagicCarpet.Native
         {
             if (ReferenceEquals(gameRuntimeLocaleBinding, binding)) return;
             gameRuntimeLocaleBinding = binding;
+            gameRuntimeMenu?.ResetPauseHoverHelp();
             var helpWasInitialized = gameRuntimeManaHint != null;
             ResetGameRuntimeHelpHint();
             if (helpWasInitialized && campaignSession != null)
@@ -11148,6 +11149,7 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            gameRuntimeMenu?.ResetPauseHoverHelp();
             ResetGameRuntimeHelpHint();
             campaignSpeech?.Stop();
             ownerAudio?.Dispose();
@@ -11385,6 +11387,7 @@ namespace MagicCarpet.Native
             // The real primary frame publishes source visibility and animation
             // demands at this tick, after the reset snapshot was captured.
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
+            gameRuntimeMenu?.ResetPauseHoverHelp();
             ResetGameRuntimeHelpHint();
             InitializeGameRuntimeAudioEffects(gameRuntimeCampaignSnapshot);
         }
@@ -14635,8 +14638,49 @@ namespace MagicCarpet.Native
                 DrawGameRuntimeParticipantNotifications(guiIdentity);
                 if (drawObjective) DrawGameRuntimeObjectiveTextbox();
                 if (drawObjective) DrawGameRuntimeHelpHint();
+                DrawGameRuntimePauseHoverHelp(guiIdentity);
             }
             finally { ModernCapture.EndMeasurement("runtime_gui", measuredStart); }
+        }
+
+        private void DrawGameRuntimePauseHoverHelp(GameRuntimeTransport.Identity identity)
+        {
+            if (identity?.mode != GameRuntimeTransport.PausedMode)
+            {
+                gameRuntimeMenu?.ResetPauseHoverHelp();
+                return;
+            }
+            if (campaignSession == null ||
+                fatalError != null || playerPreferences == null || gameRuntimeMenu == null || playerPreferences.IsOpen)
+            {
+                gameRuntimeMenu?.ClearPauseHoverHelp();
+                return;
+            }
+            if (Event.current.type != EventType.Repaint) return;
+            var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                level2DayPresentationSurface ?? gameRuntimeNightSurface;
+            if (surface == null || surface.Generation != campaignSession.Generation ||
+                surface.Tick != campaignSession.Tick)
+            {
+                gameRuntimeMenu?.ClearPauseHoverHelp();
+                return;
+            }
+            var map = gameRuntimeSourceMenus.MapOpen;
+            Texture indices = map ? surface.WorldIndices : surface.ComposedSceneIndices;
+            var generation = map ? surface.Generation : surface.SceneHistoryGeneration;
+            var revision = map ? surface.Tick : surface.SceneHistoryRevision;
+            if (indices == null || generation != campaignSession.Generation ||
+                !map && revision != campaignSession.SceneFrameRevision)
+            {
+                gameRuntimeMenu?.ClearPauseHoverHelp();
+                return;
+            }
+            var palette = playerPreferences.ApplyBrightnessToPalette(surface.FramePaletteRgb8,
+                campaignSession.Selection.mapType);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            gameRuntimeMenu.DrawPauseHoverHelp(identity, indices, generation, revision,
+                new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
+                    640f * scale, 480f * scale), palette, map);
         }
 
         private void DrawGameRuntimeParticipantNotifications(GameRuntimeTransport.Identity guiIdentity)

@@ -801,6 +801,46 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+Newest operator direction (2026-11-15): park the WAV/read-integrity investigation
+and continue ALL remaining non-sound port work first. This overrides earlier
+instructions to hold other capability work until that issue or installation is
+resolved. Keep strict resource guards and honest installed-proof limits; no more
+memory/read probes, audio fixes, or repeated blocked launches in this work block.
+Use the existing small native team and complete connected capabilities, committing
+and pushing coherent source batches. Preserve original full acceptance and open
+installation/dependency gaps.
+
+Pause-menu hover help is implemented in the existing Original owners: actual
+ReadPauseMenuEvents cursor/byte_aa -> rows86–90 -> selected source records/glyphs,
+geometry/pointer -> leave/dialog/resume/reset cleanup. HSPR174–178 now retain
+indexed planes and writer masks; disabled Load/Sound/Music rectangles apply the
+source LUT twice before popup blending, including underlying-frame coverage.
+Save/Options art stays unshaded. The real-menu component check passes7.031s with
+all five owner texts/anchors, glyph pixels, the real Music150 -> LUT³57 pixel,
+world-only negative, paused native identity/replay stability and lifecycle gates.
+It declares a retained hash-qualified Night frame and a controlled GUI cursor;
+it is not fresh-world or physical-mouse proof. EditorWindow Repaint substituted
+the desktop cursor in the original test host; only that host input was corrected,
+with production hit tests and pixel/lifecycle assertions unchanged. Owner-row/
+receipt-tamper and Mana41 checks pass unchanged; all three existing shared GPU/
+compositor regressions pass. Evidence: generated/help-20261115/pause-hover-unity-1,
+-2,-3 and pause-hover-textbox-regression-1 XML/logs, pause-hover-menu-candidate-2
+(all677 outputs independently rehashed). No Cargo/native change; ce48b7c0 native
+retains606/606 matching inputs. The new C# player is not installed: the parked
+read-integrity gate still limits normal launch proof. Full mc-oi6.6 acceptance
+and its speech dependency remain open; do not claim sound is the only remaining
+gameplay/presentation work. UBS is partial on C# flow/conditional budgets;
+added profile-null warnings are ruled out by the non-null constructor-owned
+dictionary, and changed-hunk review found no critical defect.
+
+Next connected non-sound guidance capability: real impassable-terrain movement
+already writes FlightState.water_counter, but the current client lacks its
+eligibility projection and source E2A74 row3/record288 (Walls cannot be passed).
+Join the ordinary collision -> counter -> source help poll -> original text ->
+expiry/cleanup; keep actual source priority/age/order. The off_DB558 sentinel
+stream is credits, not a fabricated tutorial producer. Do not restart delivered
+gameplay, all30mission, context72–80 or mana41 slices.
+
 Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original
 gameplay remains separate from the Modern/Voxel asset work above.

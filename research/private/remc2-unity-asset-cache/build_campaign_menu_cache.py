@@ -137,21 +137,22 @@ def source_startup() -> dict:
 
 
 def source_gameplay_help() -> bytes:
-    """Bind the source spell hint and objective-expiry context rows."""
+    """Bind source spell, objective-expiry and pause-menu help rows."""
     source = cache.pinned_remc2_blob("remc2/engine/engine_support.cpp")
     body = source.decode().split("type_array_str_E2A74 str_E2A74 {{", 1)[1].split("}};", 1)[0]
     rows = re.findall(r"^\{(0x[0-9A-Fa-f]+),\{([^{}]+)\},([^{}]+)\}", body, re.MULTILINE)
     if len(rows) != 105:
         raise cache.CacheError("pinned gameplay help table extent changed")
     bindings = []
-    for index in (41, *range(72, 81)):
+    for index in (41, *range(72, 81), *range(86, 91)):
         kind, axes, tail = rows[index]
         values = [int(value.strip(), 0) for value in axes.split(",")]
         extra = [int(value.strip(), 0) for value in tail.split(",")]
         if len(values) != 5 or len(extra) != 6:
             raise cache.CacheError("pinned gameplay help row shape changed")
         kind = int(kind, 0)
-        if kind != (5 if index == 41 else 7) or values[2] <= 0:
+        expected_kind = 5 if index == 41 else 7 if index <= 80 else 11
+        if kind != expected_kind or (values[2] == 0) != (expected_kind == 11):
             raise cache.CacheError("pinned gameplay help row type or duration changed")
         bindings.append(dict(row=index, kind=kind, flags=values[0], text_record=values[1],
             duration=values[2], x=values[3], y=values[4], age_threshold=extra[3],
@@ -445,8 +446,10 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                 write(mask_path, bytes(mask))
                 objective_sprites.append(dict(selector=selector, width=width, height=height,
                     indices_path=indices_path, mask_path=mask_path))
-            objective["profiles"].append(dict(id=profile, palette_path=palette_path,
-                colours_path=colours_path, tables_path=tables_path, sprites=objective_sprites))
+            objective_profile = dict(id=profile, palette_path=palette_path,
+                colours_path=colours_path, tables_path=tables_path, sprites=objective_sprites,
+                pause_sprites=[])
+            objective["profiles"].append(objective_profile)
             entries = []
             for selector in (85, 86, *range(168, 171), *range(174, 179), 257, 258):
                 entry = bitmap(pause_data, pause_table, pause_palette, selector,
@@ -454,6 +457,15 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                 offset, width, height = pause_table[selector]
                 if 174 <= selector <= 178:
                     indices, mask, _ = cache.materialize_indexed_rle(pause_data, offset, width, height)
+                    if (not width or not height or len(indices) != width * height or len(mask) != width * height
+                            or any(value not in (0, 1) for value in mask)):
+                        raise cache.CacheError(f"source {profile} pause sprite {selector} is invalid")
+                    indices_path = f"pause-{profile}-{selector:03d}.indices.u8"
+                    mask_path = f"pause-{profile}-{selector:03d}.mask.u8"
+                    write(indices_path, bytes(indices))
+                    write(mask_path, bytes(mask))
+                    objective_profile["pause_sprites"].append(dict(selector=selector, width=width,
+                        height=height, indices_path=indices_path, mask_path=mask_path))
                     shade = 0x4000 + 256 * pause_colours[0]
                     rgba = bytearray(width * height * 4)
                     for pixel, (index, visible) in enumerate(zip(indices, mask, strict=True)):
