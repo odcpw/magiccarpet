@@ -973,8 +973,8 @@ namespace MagicCarpet.Native
 
             ValidateDayHudSpellSlot(state.left, state.localPlayerEntityIndex);
             ValidateDayHudSpellSlot(state.right, state.localPlayerEntityIndex);
-            if (externalLevel < 1 || externalLevel > 3)
-                throw new InvalidOperationException("campaign Day HUD profile is unknown");
+            // The successful native HUD call has already validated the full
+            // registered selection against this bound live campaign owner.
             var nyphur = state.nyphur;
             if (
                 nyphur.abiVersion != NativeSim.AbiVersion ||

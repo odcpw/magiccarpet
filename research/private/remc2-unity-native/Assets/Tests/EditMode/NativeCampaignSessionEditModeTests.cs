@@ -325,6 +325,67 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/level3-day-owner-cache");
 
         [Test]
+        public void RegisteredLevel20HudUsesNativeOwnerAndRejectsInvalidSelections()
+        {
+            var package = Path.GetFullPath(Environment.GetEnvironmentVariable("MC_LEVEL20_PACKAGE") ??
+                Path.Combine(PrivateRoot, "generated/ammyridia-source-closure-20261114/level20"));
+            var registered = new[] {
+                (package: Level2Package, external: (ushort)2, source: (ushort)1),
+                (package: Level3Package, external: (ushort)3, source: (ushort)2),
+                (package, external: (ushort)20, source: (ushort)19)
+            };
+            foreach (var item in registered)
+            {
+                var selection = NativeSim.CampaignSelection.Create(item.external, item.source, 0);
+                using var session = NativeCampaignSession.Open(item.package, selection);
+                Assert.That((session.Selection.externalLevel, session.Selection.internalLevel, session.Selection.mapType),
+                    Is.EqualTo((item.external, item.source, (byte)0)));
+                var initial = session.DayHudState(session.Tick);
+                Assert.That(initial.generation, Is.EqualTo(session.Generation));
+                Assert.That(initial.tick, Is.EqualTo(session.Tick));
+                Assert.That(initial.localPlayerActive, Is.EqualTo(1));
+                Assert.That(OwnerAssetCache.IsQualifiedDayHudSpriteSelector(initial.playerPanelSelector), Is.True);
+                var player = session.Entities().Single(entity => entity.entityIndex == initial.localPlayerEntityIndex);
+                var stepped = session.Step(player.x, player.y, player.z);
+                var next = session.DayHudState(stepped.snapshot.revision);
+                Assert.That(next.tick, Is.EqualTo(stepped.snapshot.revision));
+                Assert.That(next.generation, Is.EqualTo(session.Generation));
+                Assert.Throws<InvalidOperationException>(() => session.DayHudState(next.tick + 1));
+                var stale = default(NativeSim.CampaignDayHudSnapshot);
+                var status = NativeSim.mc_native_campaign_day_hud_state(session.Handle, session.Generation + 1,
+                    next.tick, ref stale, 272);
+                Assert.That(status, Is.EqualTo(NativeSim.GenerationMismatch));
+            }
+
+            // Go through the native producer, whose campaign profile registry
+            // owns admission; a plausible numeric range is not sufficient.
+            var path = System.Text.Encoding.UTF8.GetBytes(package);
+            var invalid = new[] {
+                NativeSim.CampaignSelection.Create(0, 0, 0),
+                NativeSim.CampaignSelection.Create(26, 25, 0),
+                NativeSim.CampaignSelection.Create(27, 26, 0),
+                NativeSim.CampaignSelection.Create(28, 27, 0),
+                NativeSim.CampaignSelection.Create(29, 28, 0),
+                NativeSim.CampaignSelection.Create(30, 29, 0),
+                NativeSim.CampaignSelection.Create(36, 35, 0),
+                NativeSim.CampaignSelection.Create(20, 18, 0),
+                NativeSim.CampaignSelection.Create(20, 19, 1),
+                NativeSim.CampaignSelection.Create(35, 34, 1)
+            };
+            foreach (var bad in invalid)
+            {
+                var request = bad;
+                var status = NativeSim.mc_native_campaign_session_open(path, (uint)path.Length,
+                    Array.Empty<byte>(), 0, ref request, out var handle);
+                if (handle != 0) NativeSim.mc_native_campaign_session_destroy(handle);
+                Assert.That(status, Is.Not.EqualTo(NativeSim.Ok),
+                    $"unexpected admission of {bad.externalLevel}/{bad.internalLevel}/{bad.mapType}");
+                Assert.That(handle, Is.Zero);
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
         public void Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile()
         {
             var root = new GameObject("Level 2 production startup");
