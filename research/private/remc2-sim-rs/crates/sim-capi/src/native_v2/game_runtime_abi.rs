@@ -1949,7 +1949,12 @@ pub extern "C" fn mc_game_runtime_active_entry_presentation_json_v1(
 ) -> i32 {
     boundary(|| {
         with_runtime(handle, |record| {
-            record.validate_transition(handle, generation, RuntimeMode::Playing)?;
+            let mode = record.runtime.identity().mode;
+            record.validate_transition(handle, generation, if mode == RuntimeMode::Paused {
+                RuntimeMode::Paused
+            } else {
+                RuntimeMode::Playing
+            })?;
             let resolver = record.resolver.as_ref().ok_or_else(|| {
                 AbiError::new(MC_STATUS_INVALID_ARGUMENT,
                     "MISSING_RUNTIME_RESOLVER: active entry presentation requires installed packages")
@@ -3268,6 +3273,10 @@ mod tests {
     fn loading_presentation_and_cancel_use_the_exact_guarded_destination() {
         let mut handle = 0;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let mut untouched_length = 123;
+        assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(
+            handle, 1, std::ptr::null_mut(), 0, &raw mut untouched_length), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(untouched_length, 123);
         assert_eq!(
             bootstrap_package_set(
                 handle,
@@ -3281,6 +3290,9 @@ mod tests {
             MC_STATUS_OK
         );
         let loading = identity(handle);
+        assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(
+            handle, 2, std::ptr::null_mut(), 0, &raw mut untouched_length), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(untouched_length, 123);
         let first = read_json(|buffer, capacity, length| {
             mc_game_runtime_loading_presentation_json_v1(handle, 2, buffer, capacity, length)
         });
@@ -3363,7 +3375,29 @@ mod tests {
         });
         assert_eq!(retry["value"], first["value"]);
         assert_eq!(mc_game_runtime_open_level_v1(handle, 4), MC_STATUS_OK);
-        assert_eq!(identity(handle)["mode"], "playing");
+        let playing = identity(handle);
+        assert_eq!(playing["mode"], "playing");
+        let active = read_json(|buffer, capacity, length| {
+            mc_game_runtime_active_entry_presentation_json_v1(handle, 5, buffer, capacity, length)
+        });
+        assert_eq!(active["identity"], playing);
+        assert_eq!(active["value"]["definition_hash"], playing["session"]["definition_hash"]);
+        assert_eq!(mc_game_runtime_pause_v1(handle, 5), MC_STATUS_OK);
+        let paused = identity(handle);
+        assert_eq!(paused["mode"], "paused");
+        let session_generation = paused["session"]["generation"].as_str().unwrap().parse().unwrap();
+        let session_tick = paused["session"]["tick"].as_str().unwrap().parse().unwrap();
+        let before = with_runtime(handle, |record| record.save_replay(handle, 6, session_generation, session_tick)).unwrap();
+        let paused_binding = read_json(|buffer, capacity, length| {
+            mc_game_runtime_active_entry_presentation_json_v1(handle, 6, buffer, capacity, length)
+        });
+        assert_eq!(paused_binding["identity"], paused);
+        assert_eq!(paused_binding["value"], active["value"]);
+        assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(
+            handle, 5, std::ptr::null_mut(), 0, &raw mut untouched_length), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(untouched_length, 123);
+        assert_eq!(identity(handle), paused);
+        assert_eq!(with_runtime(handle, |record| record.save_replay(handle, 6, session_generation, session_tick)).unwrap(), before);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
@@ -3397,6 +3431,10 @@ mod tests {
         );
         assert_eq!(map["campaign_menu"]["briefing_speech"]["track"], 1);
         assert_eq!(map["campaign_menu"]["briefing_speech"]["segment"], 0);
+        let mut untouched_length = 123;
+        assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(
+            handle, 3, std::ptr::null_mut(), 0, &raw mut untouched_length), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(untouched_length, 123);
         let saved = with_runtime(handle, |record| record.save_replay(handle, 3, 0, 0)).unwrap();
         assert!(with_runtime(handle, |record| record.save_replay(handle, 3, 1, 0)).is_err());
         assert!(with_runtime(handle, |record| record.save_replay(handle, 3, 0, 1)).is_err());

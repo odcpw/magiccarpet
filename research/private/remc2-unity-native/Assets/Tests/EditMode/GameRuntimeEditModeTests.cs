@@ -1427,6 +1427,7 @@ namespace MagicCarpet.Native.Tests
                         if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
                     }
                 }
+
             }
             finally
             {
@@ -1435,6 +1436,125 @@ namespace MagicCarpet.Native.Tests
                 Directory.Delete(temporary, true);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
+        public void ColdReturnedParentUsesRegisteredPresentationAndKeepsCarry()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var campaignBefore = NativeCampaignSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-parent-live-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("returned parent cold scene owner");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var fixedUpdate = typeof(MagicCarpetRuntime).GetMethod("FixedUpdateGameRuntimeCampaign", flags);
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var proofRoot = Path.Combine(generated, "continuity-20261115");
+                var resourcePath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                    Path.Combine(proofRoot, "installed-full-resources.json");
+                GameRuntimeTransport.InstalledPackageResource[] installed;
+                using (var resources = File.OpenRead(resourcePath))
+                    installed = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                        typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(resources);
+                var badDeclaration = new System.Collections.Generic.List<string> { "-mc-game-runtime" };
+                foreach (var resource in installed)
+                {
+                    badDeclaration.Add("-mc-runtime-package"); badDeclaration.Add(resource.package_dir);
+                    badDeclaration.Add("-mc-runtime-owner-cache"); badDeclaration.Add(resource.owner_cache_path);
+                    if (resource.package_dir == LevelTwoPackage)
+                    { badDeclaration.Add("-mc-runtime-presentation-cache"); badDeclaration.Add(resource.owner_cache_path); }
+                }
+                Assert.That(badDeclaration, Does.Contain("-mc-runtime-presentation-cache"));
+                var rejectedDeclaration = Assert.Throws<InvalidOperationException>(() =>
+                    runtime.QualificationInitializeGameRuntimeProductionFromArguments(badDeclaration.ToArray()));
+                Assert.That(rejectedDeclaration.Message, Does.Contain("selection-bound owner presentation cache"),
+                    "a declared presentation for another source cannot become a missing-cache Night fallback");
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+
+                var liveInput = Environment.GetEnvironmentVariable("MC_LIVE_PARENT_REPLAY_SAVE") ??
+                    Path.Combine(proofRoot, "installed-parent-hud-5/parent-entry-save.mcs");
+                var liveBytes = File.ReadAllBytes(liveInput);
+                var liveOutput = Path.Combine(temporary, "parent-live-quicksave.mcs");
+                var liveArguments = new System.Collections.Generic.List<string> {
+                    "-mc-game-runtime", "-mc-runtime-replay-load", liveInput,
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "live-profile"),
+                    "-mc-runtime-replay-save", liveOutput
+                };
+                foreach (var resource in installed)
+                {
+                    liveArguments.Add("-mc-runtime-package"); liveArguments.Add(resource.package_dir);
+                    liveArguments.Add("-mc-runtime-owner-cache"); liveArguments.Add(resource.owner_cache_path);
+                    liveArguments.Add("-mc-runtime-presentation-cache");
+                    liveArguments.Add(resource.presentation_cache_path ?? resource.owner_cache_path);
+                }
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(liveArguments.ToArray());
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime,
+                    new object[] { liveArguments.ToArray() });
+                var liveIdentity = runtime.GameRuntimeProductionIdentity;
+                Assert.That(liveIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(liveIdentity.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.ammyridia"));
+                var liveBinding = GameRuntimeTransport.ReadActiveEntryPresentation(liveIdentity);
+                Assert.That(liveBinding.source_selection.external_level, Is.EqualTo(20));
+                Assert.That(liveBinding.source_selection.internal_level, Is.EqualTo(19));
+                Assert.That(liveBinding.environment, Is.EqualTo("day"));
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                var surface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime).GetField("gameRuntimeSecretSurface", flags).GetValue(runtime);
+                Assert.That(surface, Is.Not.Null, "the actual ordinary source20 restores through the registered environment composer");
+                Assert.That(surface.NativeSceneComplete, Is.True);
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                Assert.That(surface.Generation.ToString(), Is.EqualTo(liveIdentity.session.generation));
+                Assert.That(surface.Tick.ToString(), Is.EqualTo(liveIdentity.session.tick));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                Assert.That(runtime.QualificationHasMaterializedLevel2DayHudSprite(40), Is.True);
+                Assert.That(runtime.Level2ProductionDayHud.localPlayerMana,
+                    Is.EqualTo(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana));
+                CollectionAssert.AreEqual(liveBytes, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "cold scene/HUD attachment preserves the exact live tick, seven-family progression, retained map/secret and suppressed rewards");
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                fixedUpdate.Invoke(runtime, null);
+                CollectionAssert.AreEqual(liveBytes, File.ReadAllBytes(liveOutput),
+                    "Paused F5 saves before the next source paused outer frame");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(liveIdentity.session.tick));
+                var previousLiveOwner = runtime.GameRuntimeProductionIdentity.runtime_id;
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True,
+                    "the normal source Load replaces the paused owner and composes its actual environment again");
+                var restoredLive = runtime.GameRuntimeProductionIdentity;
+                Assert.That(restoredLive.runtime_id, Is.Not.EqualTo(previousLiveOwner));
+                Assert.That(restoredLive.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(restoredLive.session.tick, Is.EqualTo(liveIdentity.session.tick));
+                Assert.That(restoredLive.session.definition_hash, Is.EqualTo(liveIdentity.session.definition_hash));
+                CollectionAssert.AreEqual(liveBytes, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "a second live owner cannot award or reconsume the restored carry");
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore + 1));
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore),
+                    "the scene borrows the Rust owner instead of opening a parallel campaign handle");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Resume), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var resumed = runtime.GameRuntimeProductionIdentity;
+                Assert.That(resumed.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(ulong.Parse(resumed.session.tick), Is.EqualTo(ulong.Parse(liveIdentity.session.tick) + 1));
+                var resumedSurface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime).GetField("gameRuntimeSecretSurface", flags).GetValue(runtime);
+                Assert.That(resumedSurface.NativeSceneComplete, Is.True);
+                Assert.That(resumedSurface.Generation.ToString(), Is.EqualTo(resumed.session.generation));
+                Assert.That(resumedSurface.Tick.ToString(), Is.EqualTo(resumed.session.tick));
+                Assert.That(runtime.Level2ProductionDayHud.localPlayerMana,
+                    Is.EqualTo(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana));
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore));
         }
 
         [UnityEngine.TestTools.UnityTest]

@@ -228,11 +228,11 @@ namespace MagicCarpet.Native
         internal static LoadingPresentationBinding ReadActiveEntryPresentation(Identity playing)
         {
             ValidateIdentityPresentation(playing);
-            if (playing.mode != PlayingMode || playing.active_runtime_flow == null ||
+            if (playing.mode is not (PlayingMode or PausedMode) || playing.active_runtime_flow == null ||
                 !HasSessionIdentity(playing) || HasDefinitionIdentityData(playing.pending_definition))
             {
                 throw new InvalidOperationException(
-                    "active-entry assets require the exact Playing runtime identity");
+                    "active-entry assets require the exact Playing or Paused runtime identity");
             }
             var handle = ParseCounter(playing.runtime_id, "runtime_id");
             var generation = ParseCounter(playing.generation, "generation");
@@ -257,7 +257,7 @@ namespace MagicCarpet.Native
             ValidateIdentityPresentation(playing);
             var flow = playing?.active_runtime_flow;
             var session = playing?.session;
-            if (playing?.mode != PlayingMode || flow == null || session == null ||
+            if (playing?.mode is not (PlayingMode or PausedMode) || flow == null || session == null ||
                 binding?.schema != "mc2-loading-presentation/v1" ||
                 binding.level_id != flow.bound_level_id ||
                 binding.cue_id != playing.presentation.cue_id ||
@@ -272,7 +272,7 @@ namespace MagicCarpet.Native
                 !IsLoadingPresentationSourceBinding(binding))
             {
                 throw new InvalidDataException(
-                    "active-entry assets do not bind the exact Playing session definition");
+                    "active-entry assets do not bind the exact Playing or Paused session definition");
             }
         }
 
