@@ -13,6 +13,7 @@ namespace MagicCarpet.Native.Voxels
         private readonly GameObject root;
         private readonly Mesh mesh;
         private readonly Material material;
+        private readonly Material possessionMaterial;
         private readonly bool voxel;
         private readonly Dictionary<ushort, Visual> active = new();
         private readonly Stack<Visual> pool = new();
@@ -22,7 +23,7 @@ namespace MagicCarpet.Native.Voxels
         private ulong generation = ulong.MaxValue;
         private bool disposed;
 
-        internal VoxelNativeProjectiles(Transform parent, bool voxel = true)
+        internal VoxelNativeProjectiles(Transform parent, bool voxel = true, Color? possessionTint = null)
         {
             this.voxel = voxel;
             var shader = Resources.Load<Shader>(voxel ? "VoxelSurface" : "ModernFireball");
@@ -32,11 +33,22 @@ namespace MagicCarpet.Native.Voxels
             material = new Material(shader) { name = voxel ? "Native voxel fireball" : "Native modern fireball" };
             material.SetColor("_BaseColor", new Color(1f, .32f, .035f));
             material.SetFloat("_Emission", 1.4f);
+            possessionMaterial = new Material(shader) { name = voxel ? "Native voxel possession" : "Native modern possession" };
+            var blue = possessionTint ?? new Color(.35f, .66f, .86f);
+            possessionMaterial.SetColor("_BaseColor", blue);
+            possessionMaterial.SetFloat("_Emission", 1.4f);
+            if (!voxel)
+            {
+                possessionMaterial.SetColor("_CoreColor", Color.Lerp(blue, Color.white, .6f));
+                possessionMaterial.SetFloat("_Trail", 0);
+            }
         }
 
         // The ordinary Fireball initializer uses class 9/model 0, or model 28
         // for source life >= 2. Other class 9 entities include arrows.
         internal static bool IsFireball(byte classId, byte model) => classId == 9 && (model == 0 || model == 28);
+        internal static bool IsPossession(byte classId, byte model, NativeSim.CampaignEntityPresentation view) =>
+            classId == 9 && (model == 1 || model == 17) && view.renderParameterIndex == 209 && view.baseTmap == 144;
         internal void Present(NativeSim.CampaignCharacterState[] entities, NativeSim.CampaignEntityPresentation[] presentations, ulong worldGeneration, ulong worldEpoch = 0)
         {
             if (disposed) throw new ObjectDisposedException(nameof(VoxelNativeProjectiles));
@@ -46,8 +58,10 @@ namespace MagicCarpet.Native.Voxels
             seen.Clear();
             foreach (var row in entities)
             {
-                if (row.active == 0 || !IsFireball(row.classId, row.model) || !visible.Contains(row.entityIndex)) continue;
+                if (row.active == 0 || !visible.Contains(row.entityIndex)) continue;
                 var view = views[row.entityIndex];
+                var possession = IsPossession(row.classId, row.model, view);
+                if (!IsFireball(row.classId, row.model) && !possession) continue;
                 if (view.logicalHeight == 0 || !seen.Add(row.entityIndex)) continue;
                 if(active.TryGetValue(row.entityIndex,out var previous) && previous.Row.slotGeneration!=row.slotGeneration)
                 {Return(previous);active.Remove(row.entityIndex);}
@@ -68,6 +82,8 @@ namespace MagicCarpet.Native.Voxels
                         visual.Node.transform.rotation = Quaternion.LookRotation(travel);
                 }
                 visual.Node.transform.localScale = Vector3.one * diameter;
+                var sourceMaterial = possession ? possessionMaterial : material;
+                if (visual.Renderer.sharedMaterial != sourceMaterial) visual.Renderer.sharedMaterial = sourceMaterial;
                 visual.Row=row;visual.WorldEpoch=worldEpoch;
                 visual.Target = target;
             }
@@ -104,7 +120,7 @@ namespace MagicCarpet.Native.Voxels
         public void Dispose()
         {
             if (disposed) return; disposed = true;
-            Destroy(root); Destroy(mesh); Destroy(material); active.Clear(); pool.Clear();
+            Destroy(root); Destroy(mesh); Destroy(material); Destroy(possessionMaterial); active.Clear(); pool.Clear();
         }
         private static void Destroy(UnityEngine.Object value) { if (Application.isPlaying) UnityEngine.Object.Destroy(value); else UnityEngine.Object.DestroyImmediate(value); }
     }

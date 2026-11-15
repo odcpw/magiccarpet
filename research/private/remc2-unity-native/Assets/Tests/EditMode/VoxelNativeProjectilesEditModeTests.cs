@@ -71,7 +71,49 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
-        private static void CaptureIfRequested(Camera camera, Transform root, bool voxel)
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PossessionUsesItsBoundBlueAssetAndDoesNotClaimHiddenImpactModels(bool voxel)
+        {
+            var parent = new GameObject("Possession art check");
+            var cameraNode = new GameObject("Possession art camera");
+            try
+            {
+                var camera = cameraNode.AddComponent<Camera>();
+                var blue = new Color(.35f,.66f,.86f);
+                using var presenter = new VoxelNativeProjectiles(parent.transform, voxel, blue);
+                var row = new NativeSim.CampaignCharacterState { entityIndex=7, active=1, classId=9, model=1, slotGeneration=1 };
+                var view = new NativeSim.CampaignEntityPresentation {
+                    entityIndex=7, x=640, y=1280, z=192, logicalHeight=150, renderParameterIndex=209, baseTmap=144
+                };
+                presenter.Present(new[] { row }, new[] { view }, 1);
+                presenter.Render(camera);
+                Assert.That(presenter.Replaces(7), Is.True);
+                var visual = parent.transform.GetChild(0).GetChild(0);
+                Assert.That(visual.localScale.y, Is.EqualTo(150f/64));
+                Assert.That(visual.GetComponent<MeshRenderer>().sharedMaterial.GetColor("_BaseColor"), Is.EqualTo(blue));
+                Assert.That(visual.GetComponent<Rigidbody>(), Is.Null);
+                CaptureIfRequested(camera, parent.transform, voxel, "possession");
+                view.baseTmap = 54;
+                presenter.Present(new[] { row }, new[] { view }, 1);
+                Assert.That(presenter.Replaces(7), Is.False, "a different source family cannot inherit a possession orb");
+                view.baseTmap = 144; row.classId=10; row.model=12;
+                presenter.Present(new[] { row }, new[] { view }, 1);
+                Assert.That(presenter.Replaces(7), Is.False, "native-hidden impact/controller models remain hidden");
+                row.classId=9; row.model=17; row.slotGeneration++;
+                presenter.Present(new[] { row }, new[] { view }, 2);
+                Assert.That(presenter.Replaces(7), Is.True);
+                presenter.Present(new[] { row }, Array.Empty<NativeSim.CampaignEntityPresentation>(), 2);
+                Assert.That(presenter.Replaces(7), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cameraNode);
+                UnityEngine.Object.DestroyImmediate(parent);
+            }
+        }
+
+        private static void CaptureIfRequested(Camera camera, Transform root, bool voxel, string name = "fireball")
         {
             var directory = Environment.GetEnvironmentVariable("MC_FIREBALL_PREVIEW_DIR");
             if (string.IsNullOrEmpty(directory)) return;
@@ -100,13 +142,13 @@ namespace MagicCarpet.Native.Tests
                 int bright = 0, errors = 0;
                 foreach (var p in pixels.GetPixels32())
                 {
-                    if (p.r > 180 && p.g > 70) bright++;
+                    if (Mathf.Max(p.r, p.b) > 180 && p.g > 70) bright++;
                     if (p.r > 200 && p.b > 200 && p.g < 50) errors++;
                 }
                 Assert.That(bright, Is.GreaterThan(1000), "fireball must remain luminous in the night view");
                 Assert.That(errors, Is.Zero, "no shader-error pixels");
                 Directory.CreateDirectory(directory);
-                using var output = new FileStream(Path.Combine(directory, voxel ? "voxel-fireball.png" : "modern-fireball.png"), FileMode.CreateNew);
+                using var output = new FileStream(Path.Combine(directory, $"{(voxel ? "voxel" : "modern")}-{name}.png"), FileMode.CreateNew);
                 var data = pixels.EncodeToPNG();
                 output.Write(data, 0, data.Length);
             }

@@ -80,7 +80,9 @@ namespace MagicCarpet.Native
             scrolls = new ModernExperienceScroll(root, Voxels.VoxelModernWorld.Requested);
             castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
             voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight,Voxels.VoxelModernWorld.Requested);
-            voxelProjectiles=new Voxels.VoxelNativeProjectiles(root, Voxels.VoxelModernWorld.Requested);
+            var possessionSource = assets[144];
+            var possessionTint = Voxels.VoxelManaSpheres.ColorFromIndexedSprite(cache.ReadOutput(possessionSource.indices_path), palette);
+            voxelProjectiles=new Voxels.VoxelNativeProjectiles(root, Voxels.VoxelModernWorld.Requested, possessionTint);
             quad = new Mesh { name = "Modern actor billboard" };
             quad.vertices = new[] { new Vector3(-.5f, 0, 0), new Vector3(.5f, 0, 0), new Vector3(-.5f, 1, 0), new Vector3(.5f, 1, 0) };
             quad.uv = new[] { new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, 0), new Vector2(1, 0) };
