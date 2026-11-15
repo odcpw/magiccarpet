@@ -827,8 +827,9 @@ receipt-tamper and Mana41 checks pass unchanged; all three existing shared GPU/
 compositor regressions pass. Evidence: generated/help-20261115/pause-hover-unity-1,
 -2,-3 and pause-hover-textbox-regression-1 XML/logs, pause-hover-menu-candidate-2
 (all677 outputs independently rehashed). No Cargo/native change; ce48b7c0 native
-retains606/606 matching inputs. The new C# player is not installed: the parked
-read-integrity gate still limits normal launch proof. Full mc-oi6.6 acceptance
+retains606/606 matching inputs. This initial pause checkpoint did not install
+the new C# player; the matching installation below supersedes that limit.
+Full mc-oi6.6 acceptance
 and its speech dependency remain open; do not claim sound is the only remaining
 gameplay/presentation work. UBS is partial on C# flow/conditional budgets;
 added profile-null warnings are ruled out by the non-null constructor-owned
@@ -899,7 +900,7 @@ lets an offloaded test binary run against local owner data despite the embedded
 worker manifest path, preserving the default and all original assertions. Both
 pause-hover and actual wall-carrier managed checks pass7.17s with this exact
 shared native in the isolated Editor. Build-helper source selection and --help
-are exercised; no normal player rebuild/install or WAV retry is claimed. Evidence:
+were exercised before the matching player installation below. Evidence:
 source-root-*, public-original-* under generated/help-20261115.
 
 The build helper's actual Cargo branch now defaults to the selected source
@@ -920,14 +921,50 @@ Evidence: wav-integrity-boundary-1 and wav-integrity-normal-1 under
 generated/help-20261115. Astra remains responsible for the unresolved cause and
 next actual player qualification; installed build-af5fng7c is unchanged.
 
-Normal player installation, sound/read-integrity,
-full tutorial/help/speech, selected non-ASCII installed proof and presentation/
+The matching normal player installation is recorded below. Unresolved integrity
+cause, full tutorial/help/speech, selected non-ASCII installed proof and presentation/
 performance acceptance remain open. The off_DB558 sentinel stream is credits;
 do not invent a tutorial producer from it. Results-phase F5/cold restore is already
 delivered below; do not restart that investigation. An earned intermediate Results
 save -> cold restart -> next mission remains an evidence limit, distinct from the
 installed controlled Results proof. Continue remaining real source guidance
 without replaying delivered mission or spell/creature paths.
+
+Source row1 now reaches the existing default-on help scanner and indexed
+consumer: record286, "Press 'O' to show current objective", source age600,
+priority2, anchor320/80 and50 draw lifetime. The new cache has677 verified
+outputs;676 match the wall-help cache exactly. All six focused row1/mana/wall/
+context/pause checks pass8.87s with shared native3bd7 and a clean Unity exit.
+Literal owner P glyph, source geometry, precedence, expiry and native/render
+read stability are checked; retained-frame component evidence is not installed
+physical-input proof. A fresh independent source/gate review found no introduced
+defect. UBS is partial for C# flow/taint budgets, with no added critical/warning.
+The first Editor attempt compiled successfully then aborted in Mono domain
+unload before loading libsim or running tests; the unchanged cold run passed.
+No WAV or Mono root-cause correction is claimed. Shift+F5 display state remains
+the next concrete settings join: source initializes minimap/topbar on, toggles
+both, closes the popup on disable and masks affected ordinary help rows. It is
+not persisted by the source CONFIG.DAT writer. Full help acceptance stays open.
+
+Matching Original build-_qjz8bib is now installed with native3bd7f66c38e9,
+canonical Rust source root,474 captured Rust/header/data inputs plus152 pinned
+upstream inputs and210 qualified Unity inputs. Both installed plugin copies
+match; --check-installed passes. Normal canonical startup with all30 resources
+reached title -> source NewGame -> map -> one portal -> NightSpire terrain/HUD
+on its first attempt, zero retries. Root viewed the actual original-font row1
+popup in the scene, without forcing its selection or clock. Pause/wall code is
+in this matching player; their controlled component proofs remain distinct.
+Strict WAV guards remain; no failure capture was produced. Frontend audio,
+speech and music Play-request logs are present, not hardware-output proof.
+The prior intermittent WAV/Mono cause is unresolved, not fixed by this run.
+Owned smoke processes are stopped. Evidence: generated/help-20261115/
+wav-integrity-player-1 and objective-key-player-install-proof.json.
+
+Operator-authorized cleanup retired ten unused Linux-before-build player
+payloads, retaining compact receipts/current installation/active candidate.
+About1GiB was removed and measured root headroom is28GiB. Cargo clean refused
+the retired native target's missing cache marker; DCG separately blocked its
+recursive deletion. That1.8GiB cache remains intact; no guard was bypassed.
 
 Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original

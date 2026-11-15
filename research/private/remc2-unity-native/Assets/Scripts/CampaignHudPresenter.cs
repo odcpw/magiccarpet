@@ -93,11 +93,12 @@ namespace MagicCarpet.Native
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
-                rows = new RowState[11];
-                rows[0] = new RowState(rowFor(3));
-                rows[1] = mana = new RowState(rowFor(41));
-                for (var index = 2; index < rows.Length; index++)
-                    rows[index] = new RowState(rowFor(72 + index - 2));
+                rows = new RowState[12];
+                rows[0] = new RowState(rowFor(1));
+                rows[1] = new RowState(rowFor(3));
+                rows[2] = mana = new RowState(rowFor(41));
+                for (var index = 3; index < rows.Length; index++)
+                    rows[index] = new RowState(rowFor(72 + index - 3));
             }
 
             internal void Promote(int hint, int priority)
@@ -146,8 +147,8 @@ namespace MagicCarpet.Native
                         {
                             foreach (var row in rows)
                             {
-                                var eligible = row.Binding.Row == 3 ? wallContactCounter != 0 :
-                                    row.Binding.Row == 41 && (leftUnavailable || rightUnavailable);
+                                var eligible = row.Binding.Row == 1 || (row.Binding.Row == 3 ? wallContactCounter != 0 :
+                                    row.Binding.Row == 41 && (leftUnavailable || rightUnavailable));
                                 // GetHelpPopupTextAndCoords_87CF0 applies this
                                 // mask after normal eligibility when IsLevelEnd
                                 // is set. Forced word88 selection bypasses it.
