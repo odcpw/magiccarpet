@@ -87,8 +87,9 @@ namespace MagicCarpet.Native
             Texture2D flag;
             try { flag = cache.LanguageFlag(locales[selected].id); }
             catch (InvalidDataException) { return CancelOnly(input); }
-            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture);
-            GUI.DrawTexture(view, cache.LanguageBackground);
+            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture,
+                ScaleMode.StretchToFill, false);
+            GUI.DrawTexture(view, cache.LanguageBackground, ScaleMode.StretchToFill, false);
             DrawBitmap(flag, 263, 134, view, scale);
             if (!string.IsNullOrEmpty(status))
                 DrawStatus(DialogText(cache), status, 10, 460, view, Color.white);
@@ -574,7 +575,7 @@ namespace MagicCarpet.Native
 
         private static Rect SourceView(out float scale)
         {
-            scale = Mathf.Min(1, Screen.width / 640f, Screen.height / 480f);
+            scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             return new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
                 640 * scale, 480 * scale);
         }
