@@ -1213,6 +1213,391 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator CampaignQuicksaveRetainsItsEdgeAndFailedWriteKeepsTheOwner()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-map-quicksave-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var save = Path.Combine(temporary, "campaign.json");
+            var root = new GameObject("campaign F5 save owner");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var update = typeof(MagicCarpetRuntime).GetMethod("Update", flags);
+            var fixedUpdate = typeof(MagicCarpetRuntime).GetMethod("FixedUpdateGameRuntimeCampaign", flags);
+            var savePath = typeof(MagicCarpetRuntime).GetField("gameRuntimeReplaySavePath", flags);
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-menu",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-runtime-replay-save", save,
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-package", LevelThreePackage });
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False,
+                    "the source campaign map has no live gameplay owner");
+                var before = JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity);
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                runtime.QualificationRequestGameRuntimeProductionReplaySave(false);
+                update.Invoke(runtime, null);
+                update.Invoke(runtime, null);
+                Assert.That(File.Exists(save), Is.False, "render frames retain the edge until command dispatch");
+                fixedUpdate.Invoke(runtime, null);
+                Assert.That(File.Exists(save), Is.True);
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(before),
+                    "saving the map adds no gameplay step or campaign mutation");
+                var saved = File.ReadAllBytes(save);
+                File.SetLastWriteTimeUtc(save, DateTime.UtcNow.AddDays(-1));
+                var publicationTime = File.GetLastWriteTimeUtc(save);
+                fixedUpdate.Invoke(runtime, null);
+                CollectionAssert.AreEqual(saved, File.ReadAllBytes(save), "the consumed edge is not repeated");
+                Assert.That(File.GetLastWriteTimeUtc(save), Is.EqualTo(publicationTime),
+                    "a later dispatcher pass must not silently republish identical bytes");
+                var native = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                using (var cold = NativeSession.OpenGameRuntimeReplayFrom(native, saved, ResolverPackages()))
+                {
+                    var restored = cold.GameRuntimeIdentity();
+                    Assert.That(restored.runtime_id, Is.Not.EqualTo(runtime.GameRuntimeProductionIdentity.runtime_id));
+                    Assert.That(restored.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                    Assert.That(restored.session, Is.Null);
+                    Assert.That(JsonUtility.ToJson(restored.campaign_menu),
+                        Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.campaign_menu)));
+                }
+                var blocked = Path.Combine(temporary, "blocked");
+                File.WriteAllText(blocked, "an owned file blocks a save directory");
+                savePath.SetValue(runtime, Path.Combine(blocked, "campaign.json"));
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                Assert.DoesNotThrow(() => fixedUpdate.Invoke(runtime, null),
+                    "a publication error must not reach the fatal fixed-update handler");
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(before));
+                CollectionAssert.AreEqual(saved, File.ReadAllBytes(save), "the previous usable save survives");
+                Assert.That((string)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuStatus", flags).GetValue(runtime),
+                    Does.Contain("Could not save"));
+                Assert.That((bool)typeof(MagicCarpetRuntime).GetField("runtimeExitRequested", flags).GetValue(runtime), Is.False);
+                savePath.SetValue(runtime, save);
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                fixedUpdate.Invoke(runtime, null);
+                Assert.That((string)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuStatus", flags).GetValue(runtime),
+                    Is.EqualTo("Game saved."), "a fresh edge remains usable after the failed write");
+
+                var proofRoot = Path.Combine(generated, "continuity-20261115");
+                var resourcePath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                    Path.Combine(proofRoot, "installed-package-resources.json");
+                GameRuntimeTransport.InstalledPackageResource[] installed;
+                using (var resources = File.OpenRead(resourcePath))
+                    installed = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                        typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(resources);
+                var completedSaves = new[] {
+                    Environment.GetEnvironmentVariable("MC_COMPLETED_RESULTS_SAVE_OUTPUT") ??
+                        Path.Combine(proofRoot, "controlled-results.mcs"),
+                    Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                        Path.Combine(proofRoot, "controlled-secret-map.mcs")
+                };
+                foreach (var inputSave in completedSaves)
+                {
+                    runtime.QualificationDisposeGameRuntimeProduction();
+                    var outputSave = Path.Combine(temporary, Path.GetFileName(inputSave) + ".quicksave");
+                    var arguments = new System.Collections.Generic.List<string> {
+                        "-mc-game-runtime", "-mc-runtime-replay-load", inputSave,
+                        "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                        "-mc-runtime-menu-cache", CampaignMenuCache,
+                        "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                        "-mc-runtime-replay-save", outputSave
+                    };
+                    foreach (var resource in installed)
+                    {
+                        arguments.Add("-mc-runtime-package"); arguments.Add(resource.package_dir);
+                        if (!string.IsNullOrWhiteSpace(resource.owner_cache_path))
+                        { arguments.Add("-mc-runtime-owner-cache"); arguments.Add(resource.owner_cache_path); }
+                    }
+                    runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                    typeof(MagicCarpetRuntime).GetMethod("EnsureGameRuntimeMenu", flags).Invoke(runtime, null);
+                    var completedIdentity = runtime.GameRuntimeProductionIdentity;
+                    Assert.That(completedIdentity.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                    Assert.That(completedIdentity.session, Is.Null);
+                    var isResults = inputSave == completedSaves[0];
+                    Assert.That(completedIdentity.campaign_menu.phase, Is.EqualTo(isResults ? "results" : "mission_select"));
+                    Assert.That(completedIdentity.campaign_menu.completed_levels, Is.Not.Empty,
+                        "these are retained real source-completion packets, not manufactured menu phases");
+                    void Reject(Action<GameRuntimeTransport.Identity> mutate, string reason)
+                    {
+                        var invalid = DataContractJsonRoundTrip(completedIdentity);
+                        mutate(invalid);
+                        Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(
+                            invalid, ulong.Parse(completedIdentity.runtime_id)), reason);
+                    }
+                    if (isResults)
+                        Reject(invalid => invalid.campaign_menu.completed_level_id = null,
+                            "Results must retain its real completed-level identity");
+                    else
+                    {
+                        Assert.That(completedIdentity.campaign_menu.completed_level_id, Is.Null,
+                            "the real completed-secret return retains a progressed map without an ordinary Results owner");
+                        var future = Array.Find(completedIdentity.active_runtime_flow.entries,
+                            entry => Array.IndexOf(completedIdentity.campaign_menu.available_levels, entry.level_id) < 0).level_id;
+                        var discovered = completedIdentity.secret_campaign.discovered_levels[0];
+                        var undiscovered = Array.Find(completedIdentity.active_runtime_flow.secret_entries,
+                            entry => Array.IndexOf(completedIdentity.secret_campaign.discovered_levels, entry.secret_level_id) < 0).secret_level_id;
+                        Assert.That(completedIdentity.campaign_menu.available_levels, Does.Contain(discovered));
+                        Reject(invalid => invalid.campaign_menu.phase = "results",
+                            "a progressed null-completed return cannot become Results");
+                        Reject(invalid => {
+                            var levels = new System.Collections.Generic.List<string>(invalid.campaign_menu.available_levels) { future };
+                            invalid.campaign_menu.available_levels = levels.ToArray();
+                        }, "a real return cannot open a premature ordinary portal");
+                        Reject(invalid => invalid.campaign_menu.available_levels = Array.FindAll(
+                            invalid.campaign_menu.available_levels, level => level != discovered),
+                            "the exact discovered-secret portal cannot be omitted");
+                        Reject(invalid => {
+                            var levels = new System.Collections.Generic.List<string>(invalid.campaign_menu.available_levels) { undiscovered };
+                            invalid.campaign_menu.available_levels = levels.ToArray();
+                        }, "an undiscovered secret portal cannot be appended");
+                        Reject(invalid => invalid.campaign_menu.briefing_level_id = completedIdentity.active_runtime_flow.entries[0].level_id,
+                            "the return briefing must remain bound to its real frontier");
+                        Reject(invalid => invalid.campaign_menu.selected_level_id = future,
+                            "the return cannot select an unavailable mission");
+                    }
+                    var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                    gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                    try
+                    {
+                        gui.minSize = new Vector2(640, 480);
+                        gui.position = new Rect(0, 0, 640, 480);
+                        gui.Show();
+                        gui.position = new Rect(0, 0, 640, 480);
+                        gui.SendEvent(new Event { type = EventType.Layout });
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        Assert.That(gui.DrawCount, Is.GreaterThan(0), "the actual restored map/results presenter has drawn");
+                        var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                        if (!isResults)
+                        {
+                            var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                            while (!menu.CanQuickSave)
+                            {
+                                Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline),
+                                    "the actual secret-return map must finish its normal source entry");
+                                UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                                yield return null;
+                                gui.SendEvent(new Event { type = EventType.Repaint });
+                            }
+                        }
+                        Assert.That(menu.CanQuickSave, Is.True,
+                            "drawn campaign save admission: phase=" + completedIdentity.campaign_menu.phase +
+                            " ready=" + menu.LocaleCache.Campaign.Motion.Ready +
+                            " travelling=" + menu.LocaleCache.Campaign.Motion.Travelling +
+                            " dialog=" + menu.IsSourceDialogOpen);
+                        var nativeBefore = runtime.QualificationSaveGameRuntimeProductionReplay();
+                        CollectionAssert.AreEqual(File.ReadAllBytes(inputSave), nativeBefore,
+                            "native replay admission preserves the original complete controlled source packet");
+                        var identityBefore = JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity);
+                        var f5Consumed = gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F5 });
+                        if (isResults) Assert.That(f5Consumed, Is.True, "Results consumes F5 without dismissing itself");
+                        runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                        runtime.QualificationRequestGameRuntimeProductionReplaySave(false);
+                        update.Invoke(runtime, null);
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        Assert.That(File.Exists(outputSave), Is.False, "the real completed phase retains one queued edge");
+                        fixedUpdate.Invoke(runtime, null);
+                        Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(identityBefore),
+                            "F5 cannot dismiss Results, alter the frontier/secret state, or add a gameplay tick");
+                        var completedBytes = File.ReadAllBytes(outputSave);
+                        CollectionAssert.AreEqual(nativeBefore, completedBytes,
+                            "the exact native packet retains all map, media, source-context and semantic-carry bytes");
+                        var live = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                        using var cold = NativeSession.OpenGameRuntimeReplayFrom(live, completedBytes, installed);
+                        var coldIdentity = cold.GameRuntimeIdentity();
+                        Assert.That(coldIdentity.runtime_id, Is.Not.EqualTo(runtime.GameRuntimeProductionIdentity.runtime_id));
+                        Assert.That(JsonUtility.ToJson(coldIdentity.campaign_menu),
+                            Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.campaign_menu)));
+                        Assert.That(JsonUtility.ToJson(coldIdentity.secret_campaign),
+                            Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.secret_campaign)));
+                        CollectionAssert.AreEqual(nativeBefore, cold.GameRuntimeSaveReplay(),
+                            "a fresh native owner reserializes the same media and full pending carry without consuming or awarding it");
+                    }
+                    finally
+                    {
+                        gui.DrawRuntime = null;
+                        gui.Close();
+                        if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
+                    }
+                }
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceNamedSlotsRecoverThroughTheirRealModalAnimation()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-slot-gui-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var save = Path.Combine(temporary, "campaign.json");
+            var root = new GameObject("source named slot modal owner");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var update = typeof(MagicCarpetRuntime).GetMethod("Update", flags);
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-menu",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-runtime-replay-save", save,
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-package", LevelThreePackage });
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                var before = JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity);
+                var payload = runtime.QualificationSaveGameRuntimeProductionReplay();
+                SourceCampaignSaveSlots.Write(save, 1, "ORIGINAL", payload);
+                var slotOne = SourceCampaignSaveSlots.PathFor(save, 1);
+                var original = File.ReadAllBytes(slotOne);
+                Directory.CreateDirectory(SourceCampaignSaveSlots.PathFor(save, 2));
+                var badHeader = SourceCampaignSaveSlots.PathFor(save, 3);
+                File.WriteAllBytes(badHeader, new byte[] { 1, 2, 3, 4 });
+                SourceCampaignSaveSlots.Write(save, 4, "BROKEN", Encoding.UTF8.GetBytes("{}"));
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var cache = menu.LocaleCache;
+                SourceScrollDialog Dialog() => (SourceScrollDialog)typeof(CampaignMenuPresenter).GetField("scrollDialog", flags).GetValue(menu);
+                string Status() => (string)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuStatus", flags).GetValue(runtime);
+                int Height(SourceScrollDialog dialog) => (int)typeof(SourceScrollDialog).GetField("height", flags).GetValue(dialog);
+                int Closing(SourceScrollDialog dialog) => (int)typeof(SourceScrollDialog).GetField("closeResult", flags).GetValue(dialog);
+                int Selected(SourceScrollDialog dialog) => (int)typeof(SourceScrollDialog).GetField("selected", flags).GetValue(dialog);
+                string Draft(SourceScrollDialog dialog) => (string)typeof(SourceScrollDialog).GetField("draft", flags).GetValue(dialog);
+                var view = new Rect();
+                var origin = Vector2.zero;
+                gui.DrawRuntime = () => {
+                    view = cache.SourceView(runtime.GameRuntimeProductionIdentity.campaign_menu);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                };
+                gui.minSize = new Vector2(640, 480);
+                gui.position = new Rect(0, 0, 640, 480);
+                gui.Show();
+                gui.position = new Rect(0, 0, 640, 480);
+                void Click(float x, float y)
+                {
+                    var pointer = view.position + new Vector2(x, y) * (view.width / 640f) + origin;
+                    gui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = pointer });
+                    gui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = pointer });
+                }
+                void Key(KeyCode key, char character = '\0') =>
+                    gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = key, character = character });
+                void Name(string name)
+                {
+                    foreach (var letter in name)
+                        Key((KeyCode)((int)KeyCode.A + letter - 'A'), letter);
+                }
+                System.Collections.IEnumerator WaitFor(Func<bool> ready, string reason)
+                {
+                    var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                    do
+                    {
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        update.Invoke(runtime, null);
+                        if (ready()) yield break;
+                        Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), reason);
+                        // Repaint alone can leave the EditMode engine idle.
+                        // Request its ordinary player loop, without changing source clocks.
+                        UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                        yield return null;
+                    } while (true);
+                }
+                System.Collections.IEnumerator Open(int action)
+                {
+                    var control = Array.Find(cache.Campaign.Controls, entry => entry.source_action == action);
+                    Click(control.x + 20, control.y + 20);
+                    yield return WaitFor(() => Dialog() != null && Height(Dialog()) >= 200,
+                        "the normal source scroll must open through real presentation frames");
+                }
+                yield return WaitFor(() => cache.Campaign.Motion.Ready && !cache.Campaign.Motion.Travelling,
+                    "the normal campaign map must finish its source entry before input");
+                yield return Open(0x25f800);
+                Click(69, 100);
+                Name("CANCELLED");
+                Key(KeyCode.F5);
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeReplaySaveInput", flags).Invoke(runtime, new object[] { true });
+                typeof(MagicCarpetRuntime).GetMethod("FixedUpdateGameRuntimeCampaign", flags).Invoke(runtime, null);
+                Assert.That(File.Exists(save), Is.False, "the real named-slot modal owns F5");
+                Key(KeyCode.Escape);
+                yield return WaitFor(() => Dialog() == null, "source cancel must finish its closing animation");
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(slotOne), "draft cancellation leaves the occupied slot intact");
+
+                yield return Open(0x25f800);
+                Click(69, 116);
+                Name("FAILED");
+                var failedSaveDialog = Dialog();
+                Key(KeyCode.Return);
+                yield return WaitFor(() => Status()?.Contains("Could not save") == true &&
+                    ReferenceEquals(Dialog(), failedSaveDialog) && Closing(Dialog()) == 0 && Height(Dialog()) >= 200,
+                    "failed publication must reopen the same source dialog normally");
+                Assert.That(Selected(Dialog()), Is.EqualTo(2));
+                Assert.That(Draft(Dialog()), Is.EqualTo("FAILED"));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(slotOne));
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(before));
+                Key(KeyCode.Escape);
+                yield return WaitFor(() => Dialog() == null, "failed save remains cancellable");
+
+                foreach (var slot in new[] { 3, 4 })
+                {
+                    yield return Open(0x25f820);
+                    Click(550, 60 + 16 + 16 * slot + 8);
+                    var failedLoadDialog = Dialog();
+                    var label = Draft(failedLoadDialog);
+                    Key(KeyCode.Return);
+                    yield return WaitFor(() => Status()?.Contains("Could not load") == true &&
+                        ReferenceEquals(Dialog(), failedLoadDialog) && Closing(Dialog()) == 0 && Height(Dialog()) >= 200,
+                        "invalid header or native payload must reopen the source Load dialog");
+                    Assert.That(Selected(Dialog()), Is.EqualTo(slot));
+                    Assert.That(Draft(Dialog()), Is.EqualTo(label));
+                    Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(before));
+                    Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore + 1));
+                    CollectionAssert.AreEqual(original, File.ReadAllBytes(slotOne));
+                    Key(KeyCode.Escape);
+                    yield return WaitFor(() => Dialog() == null, "failed load remains cancellable");
+                }
+                CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(badHeader));
+                yield return Open(0x25f800);
+                Click(69, 100);
+                Name("REPLACED");
+                Key(KeyCode.Return);
+                yield return WaitFor(() => Status() == "Game saved." && Dialog() == null && menu.CanQuickSave,
+                    "the source final confirmation must publish and release the completed dialog");
+                Assert.That(SourceCampaignSaveSlots.Scan(save)[0].Label, Is.EqualTo("REPLACED"));
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(before));
+                var native = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                using var cold = NativeSession.OpenGameRuntimeReplayFrom(native, SourceCampaignSaveSlots.Read(save, 1), ResolverPackages());
+                Assert.That(JsonUtility.ToJson(cold.GameRuntimeIdentity().campaign_menu),
+                    Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.campaign_menu)));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                gui.Close();
+                if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [Test]
         public void ProductionCampaignMapSaveRestoresWithoutGameplayOwner()
         {

@@ -44,6 +44,14 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void ReopenAfterFailure()
+        {
+            // The source scroll opens over successive presentation passes.
+            // Retain the selected slot and edited name while it reopens.
+            closeResult = 0;
+            height = 0;
+        }
+
         internal Completion Draw(OwnerCampaignMenuCache cache, Rect view, bool advance, uint now, Action click)
         {
             if (advance)

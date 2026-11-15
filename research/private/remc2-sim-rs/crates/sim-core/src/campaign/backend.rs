@@ -5443,11 +5443,31 @@ pub(crate) mod tests {
         use crate::game_runtime::media::MediaCommand;
 
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
-        let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES")
-            .map(PathBuf::from).unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj"));
-        let mut inputs = (1..25).map(|level| Mc2CampaignInputs::new(ordinary.join(format!("level{level}"))))
-            .collect::<Vec<_>>();
-        inputs.push(Mc2CampaignInputs::with_owner_cache(final_package, final_cache));
+        let inputs = if std::env::var_os("MC_COMPLETED_RESULTS_SAVE_OUTPUT").is_some() {
+            // The retained artifact is for the normal client, whose complete
+            // installed graph includes five secret destinations.
+            let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES")
+                .map(PathBuf::from).unwrap_or_else(|| generated.join(
+                    "campaign-original-environments/installed-campaign-resources.json"));
+            let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+                &std::fs::read(resources).expect("normal installed campaign resources"),
+            ).unwrap();
+            assert_eq!(resources.len(), 30);
+            assert_eq!(std::fs::canonicalize(&resources[24]["package"]).unwrap(),
+                std::fs::canonicalize(final_package).unwrap());
+            assert_eq!(std::fs::canonicalize(&resources[24]["owner"]).unwrap(),
+                std::fs::canonicalize(final_cache).unwrap());
+            resources.iter().map(|row|
+                Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+            ).collect::<Vec<_>>()
+        } else {
+            let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES")
+                .map(PathBuf::from).unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj"));
+            let mut inputs = (1..25).map(|level| Mc2CampaignInputs::new(ordinary.join(format!("level{level}"))))
+                .collect::<Vec<_>>();
+            inputs.push(Mc2CampaignInputs::with_owner_cache(final_package, final_cache));
+            inputs
+        };
         let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
         let entries = resolver.flow().entries();
         assert_eq!(entries.len(), 25);
@@ -5547,6 +5567,17 @@ pub(crate) mod tests {
         resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
         let destination = restored.session().unwrap().backend().semantic_spell_carry().unwrap();
         assert_eq!(destination, entry_carry, "replay entry carry reaches the chosen destination");
+        write_controlled_campaign_save("MC_COMPLETED_RESULTS_SAVE_OUTPUT", &saved);
+    }
+
+    fn write_controlled_campaign_save(variable: &str, bytes: &[u8]) {
+        use std::io::Write;
+        if let Some(path) = std::env::var_os(variable) {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+                .open(path).expect("new controlled campaign save output");
+            file.write_all(bytes).expect("write controlled campaign save");
+            file.sync_all().expect("sync controlled campaign save");
+        }
     }
 
     pub(crate) fn install_owner_return_media(runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>) {
@@ -6268,6 +6299,7 @@ pub(crate) mod tests {
         assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
         assert_eq!(cold.session().unwrap().backend().campaign.simulation()
             .level_exit_sequence().ordinary_exit_route, OrdinaryExitRoute::CampaignMap);
+        write_controlled_campaign_save("MC_COMPLETED_SECRET_SAVE_OUTPUT", &bytes);
     }
 
     #[test]

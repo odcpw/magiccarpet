@@ -2779,7 +2779,7 @@ namespace MagicCarpet.Native
 
         private void FixedUpdateGameRuntimeCampaign()
         {
-            if (!gameRuntimeStartupReady || session == null ||
+            if (session == null ||
                 !session.UsesGameRuntimeContract || gameRuntimeTransitionPresenter?.HasFailure == true)
             {
                 return;
@@ -2792,27 +2792,18 @@ namespace MagicCarpet.Native
             var identity = session.ObservedCampaignIdentity();
             if (identity.mode == GameRuntimeTransport.CampaignMode)
             {
+                ServiceGameRuntimeReplaySave();
                 FreezeGameRuntimeInput();
                 return;
             }
+            if (!gameRuntimeStartupReady) return;
             if (identity.mode == GameRuntimeTransport.LoadingMode)
             {
                 FreezeGameRuntimeInput();
                 AdvanceGameRuntimeLoadingPresentation(identity);
                 return;
             }
-            if (gameRuntimeReplaySaveRequested)
-            {
-                gameRuntimeReplaySaveRequested = false;
-                if (string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath))
-                {
-                    throw new InvalidOperationException(
-                        "F5 replay save requires -mc-runtime-replay-save <path>");
-                }
-                QualificationSaveGameRuntimeProductionReplayToPath(
-                    gameRuntimeReplaySavePath);
-                Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
-            }
+            ServiceGameRuntimeReplaySave();
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedRenderFrame(
@@ -3757,8 +3748,13 @@ namespace MagicCarpet.Native
                         }
                         return;
                     }
-                    if (runtimeIdentity.mode == GameRuntimeTransport.LoadingMode ||
-                        runtimeIdentity.mode == GameRuntimeTransport.CampaignMode)
+                    if (runtimeIdentity.mode == GameRuntimeTransport.CampaignMode)
+                    {
+                        ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
+                        FreezeGameRuntimeInput(preserveReplaySave: true);
+                        return;
+                    }
+                    if (runtimeIdentity.mode == GameRuntimeTransport.LoadingMode)
                     {
                         FreezeGameRuntimeInput();
                         return;
@@ -10560,17 +10556,31 @@ namespace MagicCarpet.Native
 
         internal bool ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action action)
         {
-            if (session == null || !gameRuntimeMode) return false;
-            if (GameRuntimeTransport.CampaignReturnMediaBlocksInput(session.GameRuntimeIdentity()))
-                return false;
-            var mode = session.GameRuntimeIdentity().mode;
-            var canSave = !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath);
             var saveSlot = action is CampaignMenuPresenter.Action.Save or CampaignMenuPresenter.Action.Load
                 ? gameRuntimeMenu?.TakeSaveSlot() : null;
+            if (session == null || !gameRuntimeMode)
+            {
+                if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(false);
+                return false;
+            }
+            if (GameRuntimeTransport.CampaignReturnMediaBlocksInput(session.GameRuntimeIdentity()))
+            {
+                if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(false);
+                return false;
+            }
+            // A retained F5 edge precedes a later menu action even when no
+            // fixed pass ran between their render frames. Save its phase
+            // before dismissal/selection can move to the next screen.
+            ServiceGameRuntimeReplaySave();
+            var mode = session.GameRuntimeIdentity().mode;
+            var canSave = !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath);
             if (!CampaignMenuPresenter.Allows(mode, action, canSave,
                     canSave && (saveSlot != null || File.Exists(gameRuntimeReplaySavePath)),
                     gameRuntimeCampaignSnapshot?.value?.objective_progress?.all_objectives_satisfied == true))
+            {
+                if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(false);
                 return false;
+            }
             gameRuntimeMenuStatus = null;
             try
             {
@@ -10692,12 +10702,18 @@ namespace MagicCarpet.Native
                         Application.Quit();
                         break;
                 }
+                if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(true);
                 return true;
             }
             catch (Exception exception)
             {
+                if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(false);
                 gameRuntimeMenuStatus = action == CampaignMenuPresenter.Action.Continue
                     ? "The exit has not completed yet. Resume and enter the level exit."
+                    : action is CampaignMenuPresenter.Action.Save or CampaignMenuPresenter.Action.Load
+                    ? action == CampaignMenuPresenter.Action.Save
+                        ? "Could not save. Check the save folder and try again."
+                        : "Could not load. The save may be missing, damaged or incompatible."
                     : "That action failed. See the player log for details.";
                 Debug.LogWarning($"MC_MENU_ACTION_FAILED action={action}: {exception}");
                 return false;
@@ -10722,13 +10738,13 @@ namespace MagicCarpet.Native
                     gameRuntimeTransitionPresenter?.IsVisible == true && !Application.isBatchMode;
         }
 
-        private void FreezeGameRuntimeInput()
+        private void FreezeGameRuntimeInput(bool preserveReplaySave = false)
         {
             gameRuntimeSpellAssignmentRequested = null;
             gameRuntimeSpellMarkRequested = null;
             gameRuntimeSpellCycleRequested = null;
             gameRuntimeSourceSpellMenu.Close();
-            FreezeGameRuntimeFlightInput();
+            FreezeGameRuntimeFlightInput(preserveReplaySave);
         }
 
         private PlayerPreferencesSnapshot ApplyGameRuntimePreferences(string json)
@@ -10756,7 +10772,7 @@ namespace MagicCarpet.Native
             return applied;
         }
 
-        private void FreezeGameRuntimeFlightInput()
+        private void FreezeGameRuntimeFlightInput(bool preserveReplaySave = false)
         {
             playerPreferences?.Center();
             gameRuntimeRecoverPlayerRequested = false;
@@ -10765,7 +10781,7 @@ namespace MagicCarpet.Native
             gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
             preferenceRecenterRequested = preferenceFullStopRequested = false;
             gameRuntimeMovementFlags = 0;
-            gameRuntimeReplaySaveRequested = false;
+            if (!preserveReplaySave) gameRuntimeReplaySaveRequested = false;
             fireRequested = false;
             rightSpellRequested = false;
             selectedSpellRequested = false;
@@ -11383,14 +11399,45 @@ namespace MagicCarpet.Native
 
         private void ApplyGameRuntimeReplaySaveInput(bool savePressed)
         {
-            if (!savePressed || !GameRuntimeProductionStartupReady) return;
-            var mode = session.GameRuntimeIdentity().mode;
-            if (mode == GameRuntimeTransport.PlayingMode ||
-                mode == GameRuntimeTransport.PausedMode)
+            if (!savePressed || !CanSaveGameRuntimeReplay()) return;
+            // GetKeyDown is a render-frame edge. Retain it through frames
+            // without a fixed step, then consume it once before stepping.
+            gameRuntimeReplaySaveRequested = true;
+        }
+
+        private bool CanSaveGameRuntimeReplay()
+        {
+            if (!gameRuntimeMode || session == null || !session.UsesGameRuntimeContract ||
+                !string.IsNullOrEmpty(fatalError) || gameRuntimeSecretEntryPending ||
+                gameRuntimeTransitionPresenter?.HasFailure == true || frontendMedia?.Visible == true ||
+                playerPreferences?.IsOpen == true || gameRuntimeMenu?.CanQuickSave == false ||
+                gameRuntimeSpellMenuOpen || gameRuntimeAbandonConfirmationOpen ||
+                gameRuntimeSourceMenus.HasPendingAction) return false;
+            var identity = session.ObservedCampaignIdentity();
+            if (GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity)) return false;
+            if (identity.mode == GameRuntimeTransport.CampaignMode)
+                return identity.campaign_menu?.phase is "mission_select" or "results";
+            return GameRuntimeProductionStartupReady &&
+                identity.mode is GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode;
+        }
+
+        private void ServiceGameRuntimeReplaySave()
+        {
+            if (!gameRuntimeReplaySaveRequested) return;
+            gameRuntimeReplaySaveRequested = false;
+            if (!CanSaveGameRuntimeReplay()) return;
+            try
             {
-                // GetKeyDown is a render-frame edge. Retain it through frames
-                // without a fixed step, then consume it once before stepping.
-                gameRuntimeReplaySaveRequested = true;
+                if (string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath))
+                    throw new InvalidOperationException("F5 save requires -mc-runtime-replay-save <path>");
+                QualificationSaveGameRuntimeProductionReplayToPath(gameRuntimeReplaySavePath);
+                gameRuntimeMenuStatus = "Game saved.";
+                Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
+            }
+            catch (Exception error)
+            {
+                gameRuntimeMenuStatus = "Could not save. Check the save folder and try again.";
+                Debug.LogWarning("MC_GAME_RUNTIME_SAVE_FAILED " + error);
             }
         }
 
@@ -11398,7 +11445,7 @@ namespace MagicCarpet.Native
             bool savePressed = true)
         {
             Require(
-                GameRuntimeProductionStartupReady &&
+                CanSaveGameRuntimeReplay() &&
                 !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath),
                 "game runtime replay save request requires a validated owner and configured path");
             ApplyGameRuntimeReplaySaveInput(savePressed);

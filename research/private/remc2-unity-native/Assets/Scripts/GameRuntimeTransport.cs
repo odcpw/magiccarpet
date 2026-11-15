@@ -1380,7 +1380,28 @@ namespace MagicCarpet.Native
                          menu.briefing_speech.length_ms == 0))
                         throw new InvalidOperationException("campaign briefing speech is not a source-bound map segment");
                     var firstMap = string.IsNullOrEmpty(menu.completed_level_id);
-                    if ((firstMap && (menu.phase != "mission_select" || menu.completed_levels.Length != 0 ||
+                    var pristineMap = firstMap && menu.completed_levels.Length == 0;
+                    var progressedMap = firstMap && !pristineMap;
+                    if (progressedMap)
+                    {
+                        // A restored secret return can retain an earned frontier
+                        // without an ordinary Results owner. Match the source
+                        // map projection rather than treating it as New Game.
+                        var unfinished = campaignLevels.FirstOrDefault(level => !menu.completed_levels.Contains(level));
+                        var frontier = unfinished == null ? campaignLevels.Length : Array.IndexOf(campaignLevels, unfinished) + 1;
+                        var expectedAvailable = campaignLevels.Take(frontier).ToList();
+                        var discovered = identity.secret_campaign?.discovered_levels ?? Array.Empty<string>();
+                        foreach (var secret in identity.active_runtime_flow.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>())
+                            if (expectedAvailable.Contains(secret.origin_level_id) && discovered.Contains(secret.secret_level_id))
+                                expectedAvailable.Add(secret.secret_level_id);
+                        var selectedSecret = (identity.active_runtime_flow.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>())
+                            .Any(secret => secret.secret_level_id == menu.selected_level_id && expectedAvailable.Contains(secret.secret_level_id));
+                        var expectedBriefing = selectedSecret ? menu.selected_level_id : unfinished;
+                        if (menu.phase != "mission_select" || !menu.available_levels.SequenceEqual(expectedAvailable) ||
+                            menu.briefing_level_id != expectedBriefing)
+                            throw new InvalidOperationException("Campaign map does not match its retained frontier");
+                    }
+                    if ((pristineMap && (menu.phase != "mission_select" ||
                          identity.active_runtime_flow.bound_level_id != identity.active_runtime_flow.entry_level_id ||
                          menu.available_levels.Length != 1 ||
                          menu.available_levels[0] != identity.active_runtime_flow.entry_level_id ||
