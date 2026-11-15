@@ -15,6 +15,45 @@ pub struct SpeechSegment {
     pub length_ms: u32,
 }
 
+/// `sub_88BA0` writes the pending popup selector, then closes the current
+/// popup with the eight-frame poll delay. Unmapped stage kinds deliberately
+/// retain the presentation owner's pending selector; they do not repeat the
+/// most recently displayed row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObjectiveContextHelp {
+    KeepPending,
+    Select(u16),
+}
+
+impl ObjectiveContextHelp {
+    pub(crate) fn for_stage(level_ended: bool, stage: Option<i8>) -> Self {
+        let row = match (level_ended, stage) {
+            (true, _) | (_, Some(-1)) => 80,
+            (_, Some(0)) => 72,
+            (_, Some(1)) => 75,
+            (_, Some(2)) => 73,
+            (_, Some(3)) => 77,
+            (_, Some(5)) => 79,
+            (_, Some(7)) => 76,
+            (_, Some(8)) => 78,
+            (_, Some(9)) => 74,
+            _ => return Self::KeepPending,
+        };
+        Self::Select(row)
+    }
+
+    pub(crate) fn event(self) -> crate::FlightEvent {
+        crate::FlightEvent::ShowHelpHint {
+            hint_index: match self {
+                Self::KeepPending => 0,
+                Self::Select(row) => row,
+            },
+            // State 8 is a context request, distinct from row promotion (6).
+            state: 8,
+        }
+    }
+}
+
 /// Pinned `Type_DB080_CdTrack.h`: 25 ordinary, two secret-announcement,
 /// and one further source row. Zero-length segments have no speech.
 const SOURCE_SEGMENTS: [[(u16, u16); 10]; 28] = [
@@ -464,6 +503,18 @@ pub fn service_objective_presentation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objective_expiry_context_uses_source_stage_mapping_and_keeps_pending_default() {
+        for (stage, row) in [(0, 72), (1, 75), (2, 73), (3, 77), (5, 79), (7, 76), (8, 78), (9, 74), (-1, 80)] {
+            assert_eq!(ObjectiveContextHelp::for_stage(false, Some(stage)), ObjectiveContextHelp::Select(row));
+            assert_eq!(ObjectiveContextHelp::for_stage(true, Some(stage)), ObjectiveContextHelp::Select(80));
+        }
+        for stage in [None, Some(4), Some(6), Some(10)] {
+            assert_eq!(ObjectiveContextHelp::for_stage(false, stage), ObjectiveContextHelp::KeepPending);
+        }
+        assert!(matches!(ObjectiveContextHelp::KeepPending.event(), crate::FlightEvent::ShowHelpHint { hint_index: 0, state: 8 }));
+    }
 
     fn level_three_input() -> ObjectivePresentationInput {
         ObjectivePresentationInput {

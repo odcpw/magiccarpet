@@ -143,6 +143,8 @@ namespace MagicCarpet.Native
         internal Color GameplayPausedColor(string level) =>
             campaignCache.PauseMenu.GameplayPausedColor(campaignCache.ForMission(level).pause_profile);
         internal string GameplayLanguageText(int selector) => SourceText(selector);
+        internal OwnerCampaignMenuCache.GameplayHelpBinding GameplayHelpForRow(int row) =>
+            LocaleCache.GameplayHelpForRow(row);
         internal bool DismissPauseSubmenu() => campaignCache?.PauseMenu?.DismissSubmenu() == true;
 
         internal SourcePauseMenu.ConfirmationResult DrawAbandonConfirmation(
