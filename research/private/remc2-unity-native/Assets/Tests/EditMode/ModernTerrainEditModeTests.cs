@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -166,6 +169,306 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(terrain.SampleHeight(-1.25f, 129.5f),
                 Is.EqualTo(terrain.SampleHeight(1022.75f, -894.5f)).Within(0.0001f));
+        }
+
+        [Test]
+        public void VoxelSectionsCoverMapAndRetainSourceSamplingWaterAndLodEdges()
+        {
+            var other = new GameObject("Voxel terrain test");
+            try
+            {
+                using var voxel = new ModernTerrainMesh(other.transform, material, material, voxel: true) { ViewDistance = 0f };
+                voxel.Update(heights, types, water, 1, 0);
+                foreach (var p in new[] { new Vector2(.2f, .3f), new Vector2(127.2f, 128.8f), new Vector2(-.5f, 1024.5f) })
+                {
+                    Assert.That(voxel.SampleHeight(p.x, p.y), Is.EqualTo(terrain.SampleHeight(p.x, p.y)).Within(.00001f));
+                    Assert.That(voxel.GroundType(p.x, p.y), Is.EqualTo(terrain.GroundType(p.x, p.y)));
+                    Assert.That(voxel.IsWater(p.x, p.y), Is.EqualTo(terrain.IsWater(p.x, p.y)));
+                }
+                // Visit all 64 canonical sections in far LOD, including the
+                // periodic edges. No section is replaced by a smooth fallback.
+                for (int z = 0; z < 8; z++) for (int x = 0; x < 8; x++)
+                {
+                    voxel.Present(new Vector3(x * 128 + 64, 500, z * 128 + 64));
+                    var filter = other.transform.Find($"Modern Terrain/Terrain {x},{z} copy 4").GetComponent<MeshFilter>();
+                    Assert.That(filter.sharedMesh.name, Does.StartWith("Voxel terrain section"));
+                    Assert.That(filter.sharedMesh.name, Does.EndWith("far"));
+                    Assert.That(filter.sharedMesh.GetIndexCount(0) + filter.sharedMesh.GetIndexCount(1), Is.GreaterThan(0));
+                    Assert.That(filter.sharedMesh.vertexCount,
+                        Is.LessThanOrEqualTo(VoxelVertexBound(Voxels.VoxelTerrainSurface.FarCell)));
+                }
+                voxel.Present(new Vector3(64, 0, 64));
+                var near = other.transform.Find("Modern Terrain/Terrain 0,0 copy 4").GetComponent<MeshFilter>().sharedMesh;
+                Assert.That(near.name, Does.EndWith("near"));
+                Assert.That(near.vertexCount,
+                    Is.LessThanOrEqualTo(VoxelVertexBound(Voxels.VoxelTerrainSurface.NearCell)));
+                Assert.That(near.GetIndexCount(0) / 3, Is.GreaterThan(8000));
+                var hasVertical = false;
+                foreach (var n in near.normals) if (Mathf.Abs(n.y) < .001f) { hasVertical = true; break; }
+                Assert.That(hasVertical, Is.True, "voxel terrain contains exposed vertical block faces");
+                var baseline = Section(terrain, parent, 0, 0);
+                CollectionAssert.AreEqual(baseline.GetTriangles(1), near.GetTriangles(1), "water retains the original geometry");
+                voxel.Present(new Vector3(64, 500, 64));
+                var far = other.transform.Find("Modern Terrain/Terrain 0,0 copy 4").GetComponent<MeshFilter>().sharedMesh;
+                Assert.That(far.GetIndexCount(0), Is.LessThan(near.GetIndexCount(0) / 2),
+                    "2m distant columns must still substantially reduce geometry");
+                CollectionAssert.AreEqual(TopEdge(near, 128), TopEdge(far, 128), "near/far meet at section edges");
+                CollectionAssert.AreEqual(TopEdge(near, 0), TopEdge(far, 0), "near/far meet at the wrapped map edge");
+                TestContext.WriteLine($"voxel section near={near.GetIndexCount(0)/3} land triangles far={far.GetIndexCount(0)/3} nearVertices={near.vertexCount} farVertices={far.vertexCount}");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(other); }
+        }
+
+        // n² top quads and at most one wall per interior/boundary interface:
+        // 2n(n-1)+4n = 2n²+2n walls. Each quad contributes at most four new
+        // vertices, plus the retained 65²-vertex smooth water/collar prefix.
+        private static int VoxelVertexBound(float cell)
+        {
+            int n = Mathf.RoundToInt(128f / cell);
+            return Side * Side + 12 * n * n + 8 * n;
+        }
+
+        [Test]
+        public void VoxelSurfaceKeepsTheExistingNativePatchOpen()
+        {
+            var other = new GameObject("Voxel patch terrain test");
+            try
+            {
+                using var voxel = new ModernTerrainMesh(other.transform, material, material, voxel: true)
+                    { ViewDistance = 0f, VoxelPatch = new Bounds(new Vector3(64, 0, 64), new Vector3(32, 200, 40)) };
+                voxel.Update(heights, types, water, 1, 0);
+                voxel.Present(new Vector3(64, 500, 64));
+                var mesh = other.transform.Find("Modern Terrain/Terrain 0,0 copy 4").GetComponent<MeshFilter>().sharedMesh;
+                Assert.That(mesh.name, Does.EndWith("near"), "patch collar uses the fine surface at every distance");
+                var v = mesh.vertices; var triangles = mesh.GetTriangles(0);
+                for (int i = 0; i < triangles.Length; i += 3)
+                {
+                    var p = (v[triangles[i]] + v[triangles[i+1]] + v[triangles[i+2]]) / 3f;
+                    Assert.That(p.x > 48 && p.x < 80 && p.z > 44 && p.z < 84, Is.False, "no terrain caps the native patch");
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(other); }
+        }
+
+        [Test]
+        public void VoxelMixedLodWallsSealSectionAndPeriodicBoundaries()
+        {
+            var smooth = new Mesh { subMeshCount = 2 };
+            var near = new Mesh(); var far = new Mesh(); var wrapNear = new Mesh(); var wrapFar = new Mesh();
+            var zNear = new Mesh(); var zFar = new Mesh(); var zWrapNear = new Mesh(); var zWrapFar = new Mesh();
+            try
+            {
+                float Height(float x, float z) => Mathf.Repeat(x, 1024f) * .4f + Mathf.Repeat(z, 1024f) * .02f;
+                bool Water(float x, float z) => false;
+                Color Tint(float x, float z) => Color.white;
+                Voxels.VoxelTerrainSurface.Build(near, smooth, Vector2.zero, 1, Height, Water, Tint, null);
+                Voxels.VoxelTerrainSurface.Build(far, smooth, new Vector2(128, 0), Voxels.VoxelTerrainSurface.FarCell, Height, Water, Tint, null);
+                AssertSealed(near, 128, far, 0);
+                Voxels.VoxelTerrainSurface.Build(wrapNear, smooth, new Vector2(896, 0), 1, Height, Water, Tint, null);
+                Voxels.VoxelTerrainSurface.Build(wrapFar, smooth, Vector2.zero, Voxels.VoxelTerrainSurface.FarCell, Height, Water, Tint, null);
+                AssertSealed(wrapNear, 128, wrapFar, 0);
+                Voxels.VoxelTerrainSurface.Build(zNear, smooth, Vector2.zero, 1, Height, Water, Tint, null);
+                Voxels.VoxelTerrainSurface.Build(zFar, smooth, new Vector2(0,128), Voxels.VoxelTerrainSurface.FarCell, Height, Water, Tint, null);
+                AssertSealed(zNear, 128, zFar, 0, true);
+                Voxels.VoxelTerrainSurface.Build(zWrapNear, smooth, new Vector2(0,896), 1, Height, Water, Tint, null);
+                Voxels.VoxelTerrainSurface.Build(zWrapFar, smooth, Vector2.zero, Voxels.VoxelTerrainSurface.FarCell, Height, Water, Tint, null);
+                AssertSealed(zWrapNear, 128, zWrapFar, 0, true);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(smooth); UnityEngine.Object.DestroyImmediate(near);
+                UnityEngine.Object.DestroyImmediate(far); UnityEngine.Object.DestroyImmediate(wrapNear);
+                UnityEngine.Object.DestroyImmediate(wrapFar);
+                UnityEngine.Object.DestroyImmediate(zNear); UnityEngine.Object.DestroyImmediate(zFar);
+                UnityEngine.Object.DestroyImmediate(zWrapNear); UnityEngine.Object.DestroyImmediate(zWrapFar);
+            }
+        }
+
+        [Test]
+        public void VoxelVisualHeightSamplesTheActuallyPresentedLodAndWrap()
+        {
+            var other = new GameObject("Voxel visual height test");
+            try
+            {
+                using var voxel = new ModernTerrainMesh(other.transform, material, material, voxel: true) { ViewDistance = 0f };
+                voxel.Update(heights, types, water, 1, 0);
+                float x = 60.25f, z = 60.35f;
+                float source = voxel.SampleHeight(x, z);
+                Assert.That(voxel.SampleVisualHeight(x, z), Is.EqualTo(source), "before presentation preserve the source sampler");
+                void Check(float cameraX, float cameraY, float pointX, string lod)
+                {
+                    voxel.Present(new Vector3(cameraX, cameraY, 64));
+                    var mesh = other.transform.Find("Modern Terrain/Terrain 0,0 copy 4").GetComponent<MeshFilter>().sharedMesh;
+                    Assert.That(mesh.name, Does.EndWith(lod));
+                    var actual = TopHeightAt(mesh, 60.25f, z);
+                    Assert.That(voxel.SampleVisualHeight(pointX, z), Is.EqualTo(actual).Within(.0001f));
+                }
+                Check(64, 0, x, "near");
+                Check(64, 500, x, "far");
+                Check(1088, 0, x + 1024, "near");
+                Assert.That(voxel.SampleHeight(x, z), Is.EqualTo(source).Within(.00001f), "source sampling remains unchanged");
+                heights[Index(15, 15)] += 20;
+                voxel.Update(heights, types, water, 1, 1);
+                var updatedHeight = voxel.SampleVisualHeight(x + 1024, z);
+                var updatedMesh = other.transform.Find("Modern Terrain/Terrain 0,0 copy 4").GetComponent<MeshFilter>().sharedMesh;
+                Assert.That(updatedHeight, Is.EqualTo(TopHeightAt(updatedMesh, x, z)).Within(.0001f),
+                    "sampling after an update refreshes the selected mesh before Present");
+                Check(64, 0, x, "near");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(other); }
+        }
+
+        private static float TopHeightAt(Mesh mesh, float x, float z)
+        {
+            var v = mesh.vertices; var n = mesh.normals; var triangles = mesh.GetTriangles(0);
+            for (int i = 0; i < triangles.Length; i += 3)
+            {
+                int a = triangles[i], b = triangles[i+1], c = triangles[i+2];
+                if (n[a].y < .999f || n[b].y < .999f || n[c].y < .999f) continue;
+                if (x >= Mathf.Min(v[a].x,v[b].x,v[c].x) && x <= Mathf.Max(v[a].x,v[b].x,v[c].x) &&
+                    z >= Mathf.Min(v[a].z,v[b].z,v[c].z) && z <= Mathf.Max(v[a].z,v[b].z,v[c].z)) return v[a].y;
+            }
+            Assert.Fail($"No block top at {x},{z}"); return 0;
+        }
+
+        private static void AssertSealed(Mesh left, float leftEdge, Mesh right, float rightEdge, bool zAxis = false)
+        {
+            var a = TopEdge(left, leftEdge, zAxis); var b = TopEdge(right, rightEdge, zAxis);
+            for (int z = 0; z < 128; z++)
+            {
+                Assert.That(float.IsNaN(a[z]) || float.IsNaN(b[z]), Is.False, $"missing top at edge {z}");
+                if (Mathf.Abs(a[z] - b[z]) < .00001f) continue;
+                var high = a[z] > b[z] ? left : right; var edge = a[z] > b[z] ? leftEdge : rightEdge;
+                Assert.That(HasWall(high, edge, z + .5f, Mathf.Min(a[z], b[z]), Mathf.Max(a[z], b[z]), zAxis), Is.True,
+                    $"unsealed edge at z={z} between heights {a[z]} and {b[z]}");
+            }
+        }
+
+        private static bool HasWall(Mesh mesh, float edgeX, float z, float low, float high, bool zAxis)
+        {
+            var v = mesh.vertices; var n = mesh.normals; var triangles = mesh.GetTriangles(0);
+            for (int i = 0; i < triangles.Length; i += 3)
+            {
+                int a = triangles[i], b = triangles[i+1], c = triangles[i+2];
+                float Axis(Vector3 p) => zAxis ? p.z : p.x;
+                float Along(Vector3 p) => zAxis ? p.x : p.z;
+                if (Mathf.Abs(Axis(n[a])) < .99f || Mathf.Abs(Axis(v[a])-edgeX) > .001f ||
+                    Mathf.Abs(Axis(v[b])-edgeX) > .001f || Mathf.Abs(Axis(v[c])-edgeX) > .001f) continue;
+                var minZ = Mathf.Min(Along(v[a]), Along(v[b]), Along(v[c])); var maxZ = Mathf.Max(Along(v[a]), Along(v[b]), Along(v[c]));
+                var minY = Mathf.Min(v[a].y, v[b].y, v[c].y); var maxY = Mathf.Max(v[a].y, v[b].y, v[c].y);
+                if (z >= minZ && z <= maxZ && minY <= low + .001f && maxY >= high - .001f) return true;
+            }
+            return false;
+        }
+
+        [Test]
+        public void VoxelLevel1GalleryWhenRequested()
+        {
+            var directory = Environment.GetEnvironmentVariable("MC_TERRAIN_PREVIEW_DIR");
+            var terrainPath = Environment.GetEnvironmentVariable("MC_TERRAIN_LEVEL1_BIN");
+            var shorePath = Environment.GetEnvironmentVariable("MC_TERRAIN_LEVEL1_SHORE");
+            if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(terrainPath) || string.IsNullOrEmpty(shorePath))
+                Assert.Ignore("Owner-local Level 1 gallery is opt-in");
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(GraphicsDeviceType.Null));
+            var bytes = File.ReadAllBytes(terrainPath);
+            Assert.That(bytes.Length, Is.EqualTo(7 * MapCells * MapCells));
+            var sourceTypes = new byte[65536]; var sourceHeights = new byte[65536]; var sourceAngles = new byte[65536];
+            Array.Copy(bytes, 0, sourceTypes, 0, 65536);
+            Array.Copy(bytes, 65536, sourceHeights, 0, 65536);
+            Array.Copy(bytes, 3 * 65536, sourceAngles, 0, 65536);
+            var reviewRoot = new GameObject("Level 1 terrain gallery");
+            var camera = new GameObject("Terrain review camera").AddComponent<Camera>();
+            var keyObject = new GameObject("Terrain review key");
+            var target = new RenderTexture(960, 640, 24, RenderTextureFormat.ARGB32);
+            var pixels = new Texture2D(960, 640, TextureFormat.RGB24, false);
+            var previousPipeline = GraphicsSettings.defaultRenderPipeline; var previousQuality = QualitySettings.renderPipeline;
+            var previousTarget = RenderTexture.active; var previousSkybox = RenderSettings.skybox;
+            var previousSun = RenderSettings.sun; var previousMode = RenderSettings.ambientMode;
+            var previousSky = RenderSettings.ambientSkyColor; var previousEquator = RenderSettings.ambientEquatorColor;
+            var previousGround = RenderSettings.ambientGroundColor; var previousFog = RenderSettings.fog;
+            var previousFogColor = RenderSettings.fogColor; var previousFogDensity = RenderSettings.fogDensity;
+            var previousFogMode = RenderSettings.fogMode;
+            var land = new Material(Resources.Load<Shader>("ModernTerrain"));
+            var waterMaterial = new Material(Resources.Load<Shader>("ModernWater"));
+            var sky = new Material(Resources.Load<Shader>("ModernSky"));
+            try
+            {
+                var pipeline = Resources.Load<UniversalRenderPipelineAsset>("ModernPipeline"); Assert.That(pipeline, Is.Not.Null);
+                GraphicsSettings.defaultRenderPipeline = pipeline; QualitySettings.renderPipeline = null;
+                foreach (var layer in new[] { "Rock", "Ground" })
+                    foreach (var channel in new[] { "AlbedoRoughness", "Normal" })
+                        land.SetTexture("_" + layer + channel, Resources.Load<Texture2D>("ModernTextures/" + layer + channel));
+                land.SetFloat("_UseTextures", 1); land.SetFloat("_UsePackedRoughness", 1);
+                land.SetFloat("_UseSparseProjection", 1); land.SetFloat("_TextureScale", .20f);
+                land.SetFloat("_UseMaterialEndpoints", 1);
+                using var shore = new ModernShoreMask(File.ReadAllBytes(shorePath));
+                Shader.SetGlobalTexture("_ModernShoreMask", shore.Texture); Shader.SetGlobalFloat("_ModernShoreMaskReady", 1);
+                using var world = new ModernTerrainMesh(reviewRoot.transform, land, waterMaterial, shore, voxel: true) { ViewDistance = 320 };
+                world.Update(sourceHeights, sourceTypes, sourceAngles, 1, 0);
+                using var night = new ModernNightLighting(reviewRoot.transform);
+                using var waterSystem = new ModernWaterSystem(reviewRoot.transform, world, night, land);
+                var key = keyObject.AddComponent<Light>(); key.type = LightType.Directional; RenderSettings.sun = key;
+                RenderSettings.skybox = sky; RenderSettings.ambientMode = AmbientMode.Trilight;
+                RenderSettings.fog = true; RenderSettings.fogMode = FogMode.ExponentialSquared;
+                camera.clearFlags = CameraClearFlags.Skybox; camera.fieldOfView = 67; camera.farClipPlane = 900;
+                camera.allowHDR = true; camera.targetTexture = target;
+                Directory.CreateDirectory(directory);
+                foreach (var place in new[] { new Vector2(220, 888), new Vector2(140, 68) })
+                {
+                    string label = place.x == 220 ? "hill" : "shore";
+                    var center = new Vector3(place.x, world.SampleHeight(place.x, place.y), place.y);
+                    camera.transform.position = center + new Vector3(-42, 30, -56);
+                    camera.transform.position = new Vector3(camera.transform.position.x,
+                        Mathf.Max(camera.transform.position.y, world.SampleHeight(camera.transform.position.x, camera.transform.position.z) + 10),
+                        camera.transform.position.z);
+                    camera.transform.LookAt(center + Vector3.up * 3);
+                    world.Present(camera.transform.position); waterSystem.Update(camera);
+                    foreach (var mode in new[] { 0, 2 })
+                    {
+                        ModernEnvironmentSandbox.ApplyLighting(mode, key, sky, .58f);
+                        camera.Render(); camera.Render(); RenderTexture.active = target;
+                        pixels.ReadPixels(new Rect(0, 0, 960, 640), 0, 0); pixels.Apply();
+                        var path = Path.Combine(directory, label + (mode == 0 ? "-day.png" : "-night.png"));
+                        using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+                        var encoded = pixels.EncodeToPNG(); output.Write(encoded, 0, encoded.Length);
+                        TestContext.WriteLine($"{label} mode={mode} camera={camera.transform.position} detailCopies={world.VisibleDetailCopies} farCopies={world.VisibleFarCopies} triangles={world.VisibleTriangleCount}");
+                    }
+                }
+            }
+            finally
+            {
+                camera.targetTexture = null; RenderTexture.active = previousTarget;
+                RenderSettings.skybox = previousSkybox; RenderSettings.sun = previousSun; RenderSettings.ambientMode = previousMode;
+                RenderSettings.ambientSkyColor = previousSky; RenderSettings.ambientEquatorColor = previousEquator;
+                RenderSettings.ambientGroundColor = previousGround; RenderSettings.fog = previousFog;
+                RenderSettings.fogColor = previousFogColor; RenderSettings.fogDensity = previousFogDensity; RenderSettings.fogMode = previousFogMode;
+                GraphicsSettings.defaultRenderPipeline = previousPipeline; QualitySettings.renderPipeline = previousQuality;
+                target.Release(); UnityEngine.Object.DestroyImmediate(target); UnityEngine.Object.DestroyImmediate(pixels);
+                UnityEngine.Object.DestroyImmediate(camera.gameObject); UnityEngine.Object.DestroyImmediate(keyObject);
+                UnityEngine.Object.DestroyImmediate(reviewRoot); UnityEngine.Object.DestroyImmediate(land);
+                UnityEngine.Object.DestroyImmediate(waterMaterial); UnityEngine.Object.DestroyImmediate(sky);
+            }
+        }
+
+        private static float[] TopEdge(Mesh mesh, float edgeX, bool zAxis = false)
+        {
+            var result = new float[128]; Array.Fill(result, float.NaN);
+            var vertices = mesh.vertices; var normals = mesh.normals; var triangles = mesh.GetTriangles(0);
+            for (int i = 0; i < triangles.Length; i += 3)
+            {
+                int a = triangles[i], b = triangles[i+1], c = triangles[i+2];
+                if (normals[a].y < .999f || normals[b].y < .999f || normals[c].y < .999f) continue;
+                int[] points = { a, b, c };
+                for (int j = 0; j < 3; j++)
+                {
+                    var p = vertices[points[j]]; var q = vertices[points[(j+1)%3]];
+                    if (Mathf.Abs((zAxis ? p.z : p.x)-edgeX) > .001f || Mathf.Abs((zAxis ? q.z : q.x)-edgeX) > .001f) continue;
+                    int low = Mathf.RoundToInt(Mathf.Min(zAxis ? p.x : p.z, zAxis ? q.x : q.z));
+                    int high = Mathf.RoundToInt(Mathf.Max(zAxis ? p.x : p.z, zAxis ? q.x : q.z));
+                    for (int k = Mathf.Max(0, low); k < Mathf.Min(128, high); k++) result[k] = p.y;
+                }
+            }
+            return result;
         }
 
         [Test]

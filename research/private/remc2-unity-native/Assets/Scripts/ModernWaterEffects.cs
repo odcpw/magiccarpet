@@ -117,8 +117,13 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             steam?.Dispose();
-            UnityEngine.Object.Destroy(root);
-            UnityEngine.Object.Destroy(sprayMaterial); UnityEngine.Object.Destroy(emberMaterial);
+            Destroy(root); Destroy(sprayMaterial); Destroy(emberMaterial);
+        }
+        private static void Destroy(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
         }
     }
 }
