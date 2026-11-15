@@ -18,9 +18,21 @@ namespace MagicCarpet.Native
         private bool cursorActive, previousCursorVisible, cursorFailed, warpPending, releasePending;
         private int warpDeadline;
         private Vector2 warpTarget;
+        internal int HoveredSlot { get; private set; } = -1;
+        internal int HoveredTier { get; private set; }
+        internal Vector2Int PanelExtent { get; private set; }
+        internal Vector2Int TierExtent { get; private set; }
+        // mode 0 = opaque sprite, 1 = source TABLES blend, 2 = solid rectangle,
+        // 3 = sprite mask colourized to a fixed source palette index.
+        private readonly List<(int selector, int x, int y, int width, int height, int mode, byte color)> draws = new();
+        private readonly List<(int selector, int x, int y, int width, int height, int mode, byte color)> cachedDraws = new();
+        private object priorAssets;
+        private RectInt priorRect;
+        private Color32[] priorPixels;
+        private Rect cursorRect;
 
         internal static bool UsesBitmap(int selector) =>
-            selector >= 88 && selector <= 122 || selector == 149 || selector == 150 ||
+            selector >= 87 && selector <= 122 || selector == 149 || selector == 150 ||
             selector >= 161 && selector <= 256;
 
         internal static Vector2 GridPointer(int slot) =>
@@ -48,6 +60,13 @@ namespace MagicCarpet.Native
         internal void Close()
         {
             choice = null;
+            HoveredSlot = -1;
+            HoveredTier = 0;
+            PanelExtent = TierExtent = default;
+            draws.Clear();
+            cachedDraws.Clear();
+            priorAssets = null;
+            priorPixels = null;
             releasePending = false;
             if (cursorActive) Cursor.visible = previousCursorVisible;
             cursorActive = false;
@@ -155,16 +174,83 @@ namespace MagicCarpet.Native
         internal static bool HasRequiredBitmaps(EngineSessionTransport.SpellObservation[] spells,
             Func<int, bool> available)
         {
-            foreach (var selector in new[] { 88, 89, 90, 149, 150, 161, 163, 164, 165, 166, 167 })
+            foreach (var selector in new[] { 87, 88, 89, 90, 91, 149, 150, 161, 162, 163, 164, 165, 166, 167 })
                 if (!available(selector)) return false;
             foreach (var spell in spells)
             {
-                if (spell == null || !spell.acquired || !HasArtwork(spell)) continue;
-                if (!available(spell.menu_artwork.grid_icon)) return false;
-                foreach (var icon in spell.menu_artwork.tier_icons)
-                    if (!available(icon)) return false;
+                if (spell == null || spell.menu_help == null) return false;
+                var help = spell.menu_help;
+                if (!help.definition_enabled || (!help.is_standard && !help.discovered)) continue;
+                if (!HasArtwork(spell) || !available(spell.menu_artwork.grid_icon)) return false;
+                if (help.is_standard)
+                    foreach (var icon in spell.menu_artwork.tier_icons)
+                        if (!available(icon)) return false;
             }
             return true;
+        }
+
+        // Preserve the exact indexed layers that this menu drew before the
+        // source popup. The source shader samples them over the current world,
+        // so transparent sprite pixels still reveal the live underlying scene.
+        internal bool TryIndexedPrior(object assets, Func<int, ObjectiveTextboxCompositor.Sprite> sprite,
+            byte[] tables, int tableOffset, out RectInt rect, out Color32[] pixels)
+        {
+            rect = default; pixels = null;
+            if (assets == null || sprite == null || draws.Count == 0) return false;
+            if (tables == null || tableOffset < 0 || tableOffset > tables.Length - 65536)
+                throw new InvalidOperationException("unbound indexed spell blend table");
+            var unchanged = ReferenceEquals(assets, priorAssets) && priorPixels != null && cachedDraws.Count == draws.Count;
+            for (var i = 0; unchanged && i < draws.Count; i++) unchanged = cachedDraws[i] == draws[i];
+            if (!unchanged)
+            {
+                var minY = 480;
+                var maxY = 0;
+                foreach (var draw in draws)
+                {
+                    minY = Math.Min(minY, Math.Max(0, draw.y));
+                    maxY = Math.Max(maxY, Math.Min(480, draw.y + draw.height));
+                }
+                if (minY >= maxY) return false;
+                var nextRect = new RectInt(0, minY, 640, maxY - minY);
+                var next = new Color32[checked(nextRect.width * nextRect.height)];
+                foreach (var draw in draws)
+                {
+                    var source = draw.mode == 2 ? null : sprite(draw.selector);
+                    if (draw.mode != 2 && (source == null || source.Width <= 0 || source.Height <= 0 ||
+                        source.Indices == null || source.Mask == null ||
+                        source.Indices.Length != source.Width * source.Height || source.Mask.Length != source.Indices.Length))
+                        throw new InvalidOperationException("invalid indexed spell sprite");
+                    for (var y = 0; y < draw.height; y++)
+                    for (var x = 0; x < draw.width; x++)
+                    {
+                        var dx = draw.x + x; var dy = draw.y + y;
+                        if (dx < 0 || dx >= 640 || dy < minY || dy >= maxY) continue;
+                        var sourceIndex = draw.mode == 2 ? 0 :
+                            (y * source.Height / draw.height) * source.Width + x * source.Width / draw.width;
+                        if (draw.mode != 2 && source.Mask[sourceIndex] == 0) continue;
+                        var value = draw.mode == 2 || draw.mode == 3 ? draw.color : source.Indices[sourceIndex];
+                        var target = (dy - minY) * 640 + dx;
+                        var previous = next[target];
+                        if (draw.mode != 1)
+                            next[target] = new Color32(value, 0, 0, 5); // one opaque operation
+                        else if ((previous.a & 4) != 0)
+                            next[target] = new Color32(tables[tableOffset + (previous.r << 8) + value], 0, 0, 5);
+                        else
+                        {
+                            var count = previous.a & 3;
+                            if (count == 3) throw new InvalidOperationException("spell underlay exceeds source blend depth");
+                            if (count == 0) previous.r = value;
+                            else if (count == 1) previous.g = value;
+                            else previous.b = value;
+                            previous.a = (byte)(count + 1);
+                            next[target] = previous;
+                        }
+                    }
+                }
+                priorAssets = assets; priorRect = nextRect; priorPixels = next;
+                cachedDraws.Clear(); cachedDraws.AddRange(draws);
+            }
+            rect = priorRect; pixels = priorPixels; return true;
         }
 
         internal EngineSessionTransport.SpellAssignment Draw(
@@ -172,11 +258,15 @@ namespace MagicCarpet.Native
             Func<int, Texture2D> bitmap,
             Func<int, Vector2Int> size,
             bool markHeld,
+            OwnerCampaignMenuCache.ObjectiveAssets assets,
             out EngineSessionTransport.SpellMark mark,
             OwnerAssetCache environment = null)
         {
+            draws.Clear();
             mark = null;
-            if (snapshot?.player_spells == null) { Close(); return null; }
+            if (assets == null || snapshot?.player_spells == null || snapshot.player_vitals == null ||
+                snapshot.spell_menu_wizard_colors == null || snapshot.spell_menu_wizard_colors.Length != 2)
+            { Close(); return null; }
             bool Available(int selector)
             {
                 try
@@ -198,52 +288,134 @@ namespace MagicCarpet.Native
             var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
             PrepareCursor(environment, snapshot.player_spells, view, scale);
             CompleteWarp();
+            PanelExtent = size(89);
+            TierExtent = size(163);
             var pointer = (Event.current.mousePosition - view.position) / scale;
-            void Sprite(int selector, int x, int y)
+            if (cursorTexture != null)
+                cursorRect = new Rect(view.x + pointer.x * scale, view.y + pointer.y * scale,
+                    cursorTexture.width * scale, cursorTexture.height * scale);
+            void Sprite(int selector, int x, int y, bool blended = false, int tint = -1)
             {
                 var extent = size(selector);
-                GUI.DrawTexture(new Rect(view.x + x * scale, view.y + y * scale,
-                    extent.x * scale, extent.y * scale), bitmap(selector), ScaleMode.StretchToFill, true);
+                draws.Add((selector, x, y, extent.x, extent.y, tint >= 0 ? 3 : blended ? 1 : 0,
+                    tint >= 0 ? checked((byte)tint) : (byte)0));
             }
-            Sprite(88, 0, top); Sprite(88, 640 - edge, top);
-            var hovered = -1;
+            void Fill(int x, int y, int width, int height, byte color)
+            {
+                if (width > 0 && height > 0) draws.Add((-1, x, y, width, height, 2, color));
+            }
+            var transparentPanel = !snapshot.spell_menu_panels_opaque;
+            Sprite(88, 0, top, transparentPanel); Sprite(88, 640 - edge, top, transparentPanel);
+            // SelectSpellCategory_6D420 clamps the pointer to the 26 source
+            // cells even when that cell is not currently acquired.
+            var hovered = choice != null ? choice.menu_slot :
+                Mathf.Clamp(((int)pointer.y - top) / panelHeight, 0, 1) * columns +
+                Mathf.Clamp(((int)pointer.x - edge) / panelWidth, 0, columns - 1);
+            var hoveredSpell = Array.Find(snapshot.player_spells, row => row != null && row.menu_slot == hovered);
+            HoveredSlot = hovered;
+            HoveredTier = choice != null ? tier : Mathf.Clamp(hoveredSpell?.menu_help?.selected_tier ?? 0, 0, 2);
+            if (choice != null && !warpPending &&
+                (Event.current.type == EventType.MouseMove || Event.current.type == EventType.MouseDrag))
+            {
+                var start = MagicCarpetRuntime.SpellTierMenuStartX(choice.menu_slot, columns, edge, panelWidth, 3, TierExtent.x);
+                virtualX += pointer.x - physicalX;
+                physicalX = pointer.x;
+                tier = Mathf.Clamp(Mathf.FloorToInt((virtualX - start) / TierExtent.x), 0, choice.unlocked_tier);
+                HoveredTier = tier;
+            }
             for (var slot = 0; slot < columns * 2; slot++)
             {
                 var x = edge + slot % columns * panelWidth;
                 var y = top + slot / columns * panelHeight;
-                var spell = Array.Find(snapshot.player_spells, row => row != null &&
-                    row.menu_slot == slot && row.acquired && !string.IsNullOrEmpty(row.holder_actor) && HasArtwork(row));
-                Sprite(89, x, y);
-                if (spell == null) continue;
-                Sprite(spell.menu_artwork.grid_icon, x, y);
-                if (spell.marked_hand == "left") Sprite(149, x, y);
-                if (spell.marked_hand == "right") Sprite(150, x + panelWidth - size(149).x, y);
-                if (new Rect(x, y, panelWidth, panelHeight).Contains(pointer))
+                var spell = Array.Find(snapshot.player_spells, row => row != null && row.menu_slot == slot);
+                if (spell?.menu_help == null) { Close(); return null; }
+                var help = spell.menu_help;
+                if (help.title_records?.Length != 3 || help.castle_blocked?.Length != 3 ||
+                    help.tier_mana_costs?.Length != 3 || help.experience_thresholds?.Length != 3 ||
+                    help.selected_tier < 0 || help.selected_tier > 2)
+                { Close(); return null; }
+                var currentTier = slot == hovered ? HoveredTier : help.selected_tier;
+                if (!help.definition_enabled)
                 {
-                    hovered = slot;
-                    Sprite(90, x, y);
+                    Sprite(89, x, y, transparentPanel);
+                }
+                else if (help.is_standard)
+                {
+                    if (!help.blink_hidden)
+                    {
+                        var canSummon = !help.castle_blocked[currentTier];
+                        if (canSummon && slot == hovered)
+                        {
+                            var cost = help.tier_mana_costs[currentTier];
+                            if (cost > 0)
+                            {
+                                Sprite(87, x, y);
+                                Fill(x + 6, y + 28, 36 * (snapshot.player_vitals.mana % cost) / cost, 4,
+                                    snapshot.spell_menu_wizard_colors[1]);
+                                var shots = snapshot.player_vitals.mana / cost;
+                                for (var sx = 0; sx < 36 && shots > 0; sx += 2)
+                                    for (var sy = 0; sy < 4 && shots > 0; sy += 2, shots--)
+                                        Fill(x + 6 + sx, y + 28 + sy, 2, 2, snapshot.spell_menu_wizard_colors[0]);
+                            }
+                        }
+                        else Sprite(canSummon ? 89 : 91, x, y, transparentPanel);
+                        Sprite(spell.menu_artwork.grid_icon, x, y, !canSummon);
+                    }
+                    if (help.blink_hidden || slot == hovered)
+                    {
+                        if (spell.marked_hand == "left") Sprite(149, x, y, true);
+                        if (spell.marked_hand == "right") Sprite(150, x + panelWidth - size(149).x, y, true);
+                    }
+                }
+                else
+                {
+                    Sprite(89, x, y, transparentPanel);
+                    if (help.discovered) Sprite(spell.menu_artwork.grid_icon, x, y, tint: 0xa6);
                 }
             }
-            if (choice != null)
+            Sprite(90, edge + hovered % columns * panelWidth, top + hovered / columns * panelHeight);
+            if (hoveredSpell?.menu_help?.is_standard == true)
             {
                 var extent = size(163);
-                var start = MagicCarpetRuntime.SpellTierMenuStartX(choice.menu_slot, columns, edge, panelWidth, 3, extent.x);
-                if (!warpPending && (Event.current.type == EventType.MouseMove || Event.current.type == EventType.MouseDrag))
-                {
-                    virtualX += pointer.x - physicalX;
-                    physicalX = pointer.x;
-                    tier = Mathf.Clamp(Mathf.FloorToInt((virtualX - start) / extent.x), 0, choice.unlocked_tier);
-                }
+                var start = MagicCarpetRuntime.SpellTierMenuStartX(hovered, columns, edge, panelWidth, 3, extent.x);
+                var help = hoveredSpell.menu_help;
                 for (var value = 0; value < 3; value++)
                 {
                     var x = start + value * extent.x;
                     var y = top - extent.y;
-                    Sprite(value > choice.unlocked_tier ? 163 : 161, x, y);
-                    if (value > choice.unlocked_tier) continue;
+                    var unlocked = value <= hoveredSpell.unlocked_tier;
+                    var cost = help.tier_mana_costs[value];
+                    var canSummon = !help.castle_blocked[value];
+                    if (canSummon && cost <= 0)
+                        throw new InvalidOperationException("source spell menu has a nonpositive mana cost");
+                    var canPay = cost > 0 && snapshot.player_vitals.mana / cost != 0;
+                    Sprite(!unlocked ? 163 : canSummon && canPay ? 161 : 162, x, y);
+                    if (!unlocked)
+                    {
+                        if (value == HoveredTier) Sprite(164, x, y);
+                        continue;
+                    }
                     Sprite(165 + value, x + 6, y + 10);
-                    Sprite(choice.menu_artwork.tier_icons[value], x + 18, y + 6);
-                    if (value == tier) Sprite(164, x, y);
+                    Sprite(hoveredSpell.menu_artwork.tier_icons[value], x + 18, y + 6, !canSummon);
+                    if (value == HoveredTier) Sprite(164, x, y);
+                    if (value < 2)
+                    {
+                        var filled = 54;
+                        if (value == hoveredSpell.unlocked_tier)
+                        {
+                            var delta = unchecked(help.experience_thresholds[value + 1] - help.experience_thresholds[value]);
+                            var progress = unchecked(help.experience - help.experience_thresholds[value]);
+                            filled = delta > 0
+                                ? Mathf.Clamp(unchecked((short)(unchecked(54 * progress) / delta)), 0, 54)
+                                : 0;
+                        }
+                        Fill(x + 6, y + 28, 54, 2, assets.BlendSelector);
+                        Fill(x + 6, y + 28, filled, 2, assets.TextColor);
+                    }
                 }
+            }
+            if (choice != null)
+            {
                 if (Event.current.type == EventType.MouseUp && Event.current.button == button)
                 {
                     releasePending = true;
@@ -262,6 +434,7 @@ namespace MagicCarpet.Native
             {
                 var spell = Array.Find(snapshot.player_spells, row => row != null &&
                     row.menu_slot == hovered && row.acquired && !string.IsNullOrEmpty(row.holder_actor) && HasArtwork(row));
+                if (spell == null) return null;
                 if (markHeld)
                 {
                     var hand = Event.current.button == 0 ? "left" : "right";
@@ -275,7 +448,7 @@ namespace MagicCarpet.Native
                 {
                     choice = spell;
                     button = Event.current.button;
-                    tier = Mathf.Clamp(choice.tier, 0, choice.unlocked_tier);
+                    tier = Mathf.Clamp(choice.menu_help.selected_tier, 0, choice.unlocked_tier);
                     var extent = size(163);
                     var start = MagicCarpetRuntime.SpellTierMenuStartX(hovered, columns, edge, panelWidth, 3, extent.x);
                     virtualX = start + (tier + .5f) * extent.x;
@@ -290,10 +463,13 @@ namespace MagicCarpet.Native
                 }
                 Event.current.Use();
             }
-            if (cursorActive && Event.current.type == EventType.Repaint)
-                GUI.DrawTexture(new Rect(view.x + pointer.x * scale, view.y + pointer.y * scale,
-                    cursorTexture.width * scale, cursorTexture.height * scale), cursorTexture, ScaleMode.StretchToFill, true);
             return null;
+        }
+
+        internal void DrawCursor()
+        {
+            if (cursorActive && cursorTexture != null && Event.current?.type == EventType.Repaint)
+                GUI.DrawTexture(cursorRect, cursorTexture, ScaleMode.StretchToFill, true);
         }
     }
 }

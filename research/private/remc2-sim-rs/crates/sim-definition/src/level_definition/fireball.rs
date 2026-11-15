@@ -43,7 +43,7 @@ pub const FIREBALL_PROPERTIES: FireballProperties = FireballProperties {
         FireballTierProperties {
             power: 80,
             cooldown: 15,
-            castle_mana_required: 2_500,
+            castle_mana_required: 160_000,
             mana_cost: 1_500,
             font_type: 0,
             source_life: 2,

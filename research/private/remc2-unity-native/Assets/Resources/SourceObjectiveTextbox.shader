@@ -5,10 +5,12 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
         _Foreground ("Foreground indices and mask", 2D) = "black" {}
         _SceneIndices ("Current scene indices", 2D) = "black" {}
         _BlendRow ("Blend lookup row", 2D) = "black" {}
+        _FullBlend ("Source indexed blend table", 2D) = "black" {}
         _Palette ("Current palette", 2D) = "black" {}
         _PriorOverlay ("Indexed prior overlay", 2D) = "black" {}
         _PriorRect ("Indexed prior rectangle", Vector) = (0, 0, 0, 0)
         _PriorEnabled ("Use indexed prior overlay", Float) = 0
+        _PriorMode ("Prior overlay format", Float) = 0
         _RenderPrior ("Render indexed prior overlay", Float) = 0
         _Raster ("Source raster geometry", Vector) = (0, 0, 0, 0)
         _BlendRect ("Blend geometry", Vector) = (0, 0, 0, 0)
@@ -23,9 +25,9 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
             #pragma vertex vert_img
             #pragma fragment frag
             #include "UnityCG.cginc"
-            sampler2D _Foreground, _SceneIndices, _BlendRow, _Palette, _PriorOverlay;
+            sampler2D _Foreground, _SceneIndices, _BlendRow, _FullBlend, _Palette, _PriorOverlay;
             float4 _Raster, _BlendRect, _PriorRect;
-            float _SceneTopDown, _PriorEnabled, _RenderPrior;
+            float _SceneTopDown, _PriorEnabled, _PriorMode, _RenderPrior;
             fixed4 frag(v2f_img input) : SV_Target
             {
                 float2 local = float2(floor(input.uv.x * _Raster.z),
@@ -43,13 +45,41 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
                     float2 priorUv = float2((priorLocal.x + 0.5) / _PriorRect.z,
                         1.0 - (priorLocal.y + 0.5) / _PriorRect.w);
                     fixed4 prior = tex2D(_PriorOverlay, priorUv);
-                    if (prior.a > 0.5) index = floor(prior.r * 255.0 + 0.5);
-                    if (prior.g > 0.5)
+                    if (_PriorMode > 0.5)
                     {
-                        index = floor(tex2D(_BlendRow, float2((index + 0.5) / 256.0, 0.5)).r * 255.0 + 0.5);
-                        index = floor(tex2D(_BlendRow, float2((index + 0.5) / 256.0, 0.5)).r * 255.0 + 0.5);
+                        float flags = floor(prior.a * 255.0 + 0.5);
+                        float count = fmod(flags, 4.0);
+                        if (count > 0.5)
+                        {
+                            float first = floor(prior.r * 255.0 + 0.5);
+                            if (flags >= 4.0) index = first;
+                            else index = floor(tex2D(_FullBlend, float2((first + 0.5) / 256.0,
+                                (index + 0.5) / 256.0)).r * 255.0 + 0.5);
+                        }
+                        if (count > 1.5)
+                        {
+                            float second = floor(prior.g * 255.0 + 0.5);
+                            index = floor(tex2D(_FullBlend, float2((second + 0.5) / 256.0,
+                                (index + 0.5) / 256.0)).r * 255.0 + 0.5);
+                        }
+                        if (count > 2.5)
+                        {
+                            float third = floor(prior.b * 255.0 + 0.5);
+                            index = floor(tex2D(_FullBlend, float2((third + 0.5) / 256.0,
+                                (index + 0.5) / 256.0)).r * 255.0 + 0.5);
+                        }
+                        priorCoverage = count > 0.5 ? 1.0 : 0.0;
                     }
-                    priorCoverage = max(prior.a, prior.g);
+                    else
+                    {
+                        if (prior.a > 0.5) index = floor(prior.r * 255.0 + 0.5);
+                        if (prior.g > 0.5)
+                        {
+                            index = floor(tex2D(_BlendRow, float2((index + 0.5) / 256.0, 0.5)).r * 255.0 + 0.5);
+                            index = floor(tex2D(_BlendRow, float2((index + 0.5) / 256.0, 0.5)).r * 255.0 + 0.5);
+                        }
+                        priorCoverage = max(prior.a, prior.g);
+                    }
                 }
                 if (_RenderPrior > 0.5)
                 {

@@ -34,14 +34,14 @@ pub const POSSESSION_PROPERTIES: PossessionProperties = PossessionProperties {
         PossessionTierProperties {
             power: 15,
             cooldown: 41,
-            castle_mana_required: 0,
+            castle_mana_required: 1_000,
             mana_cost: 250,
             source_life: 1,
         },
         PossessionTierProperties {
             power: 20,
             cooldown: 51,
-            castle_mana_required: 1_000,
+            castle_mana_required: 20_000,
             mana_cost: 1_000,
             source_life: 2,
         },

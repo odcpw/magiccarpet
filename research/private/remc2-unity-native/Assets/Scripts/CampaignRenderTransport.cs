@@ -5,7 +5,7 @@ using System.Text;
 
 namespace MagicCarpet.Native
 {
-    // MCPO v2 is shared with sim-session and the browser DataView reader.
+    // MCPO v3 is shared with sim-session and the browser DataView reader.
     // This adapter owns its reusable copy buffer; no native pointer escapes.
     internal sealed class CampaignRenderTransport
     {
@@ -55,7 +55,7 @@ namespace MagicCarpet.Native
         internal static Publication Decode(byte[] bytes, int length)
         {
             var r = new Reader(bytes, length);
-            if (r.U32() != 0x4f50434d || r.U32() != 2 || r.U32() != length)
+            if (r.U32() != 0x4f50434d || r.U32() != 3 || r.U32() != length)
                 throw new InvalidDataException("Unsupported render publication header");
             var result = new Publication { RuntimeId = r.U64(), RuntimeGeneration = r.U64() };
             result.Mode = r.Enum(Modes);
@@ -116,7 +116,10 @@ namespace MagicCarpet.Native
                 x = r.U16(), y = r.U16(), z = r.I16(), yaw = r.I16(), pitch = r.I16(), roll = r.I16()
             };
             value.source_camera_fov = r.I16();
-            value.player_spells = new EngineSessionTransport.SpellObservation[r.Count(22)];
+            value.spell_menu_has_any_spell = r.Bool();
+            value.spell_menu_wizard_colors = new[] { r.Byte(), r.Byte() };
+            value.spell_menu_panels_opaque = r.Bool();
+            value.player_spells = new EngineSessionTransport.SpellObservation[r.Count(23)];
             for (var i = 0; i < value.player_spells.Length; i++)
             {
                 var row = new EngineSessionTransport.SpellObservation {
@@ -128,6 +131,15 @@ namespace MagicCarpet.Native
                 if (r.Bool())
                     row.menu_artwork = new EngineSessionTransport.SpellMenuArtwork {
                         grid_icon = r.U16(), tier_icons = new[] { r.U16(), r.U16(), r.U16() }
+                    };
+                if (r.Bool())
+                    row.menu_help = new EngineSessionTransport.SpellMenuHelp {
+                        is_standard = r.Bool(), selected_tier = unchecked((sbyte)r.Byte()),
+                        title_records = new[] { r.U16(), r.U16(), r.U16() },
+                        castle_blocked = new[] { r.Bool(), r.Bool(), r.Bool() }, mana_unavailable = r.Bool(),
+                        definition_enabled = r.Bool(), blink_hidden = r.Bool(), discovered = r.Bool(),
+                        tier_mana_costs = new[] { r.I32(), r.I32(), r.I32() }, experience = r.I32(),
+                        experience_thresholds = new[] { r.I32(), r.I32(), r.I32() }
                     };
                 row.mana_cost = r.I32();
                 row.hand = r.Enum(Hands);

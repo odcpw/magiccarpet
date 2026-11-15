@@ -94,9 +94,9 @@ namespace MagicCarpet.Native.Tests
             foreach (var truncated in new[] { 0, 28, 29, (int)length / 2, (int)length - 1 })
                 Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bytes, truncated));
             var bad = (byte[])bytes.Clone();
-            bad[4] = 1;
+            bad[4] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
-            bad[4] = 2; bad[28] = 2;
+            bad[4] = 3; bad[28] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
             bad[28] = 0;
             for (var i = 12; i < 20; i++) bad[i] = 255;

@@ -81,10 +81,30 @@ namespace MagicCarpet.Native
                 30, 610, 30, 370);
         }
 
+        // Spell help uses the first source textbox's bounds. Type 3 passes
+        // three complete language records to ComputeTextboxSizesFromTextLines,
+        // highlighting the selected tier; other spell rows use type 2.
+        internal static Raster BuildSourceSpellHintForeground(byte[][] records, int highlightedLine,
+            Glyph[] glyphs, byte[] glyphMasks, Sprite corner, Sprite side, Sprite horizontal,
+            byte textColor, byte selectedColor, byte lineColor, byte lineHighlight, int anchorX, int anchorY)
+        {
+            if (records == null || (records.Length != 1 && records.Length != 3) ||
+                (records.Length == 3 && (highlightedLine < 0 || highlightedLine >= 3)) ||
+                anchorX < 0 || anchorX >= 639 || anchorY < 0 || anchorY >= 480)
+                throw new ArgumentException("source spell hint input is invalid");
+            var centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
+            var centerY = anchorY - 94 + 28 < 80 ? anchorY + 66 : anchorY - 94;
+            return BuildSourceForeground(records[0], glyphs, glyphMasks, corner, side, horizontal,
+                textColor, 220, centerX, centerY, true, anchorX, anchorY, lineColor, lineHighlight,
+                exactLines: records.Length == 3 ? records : null,
+                highlightedLine: highlightedLine, selectedColor: selectedColor);
+        }
+
         private static Raster BuildSourceForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
             Sprite corner, Sprite side, Sprite horizontal, byte textColor, int maxWidth,
             int centerX, int centerY, bool pointer, int anchorX, int anchorY,
-            byte lineColor, byte lineHighlight, int minX = 40, int maxX = 600, int minY = 80, int maxY = 260)
+            byte lineColor, byte lineHighlight, int minX = 40, int maxX = 600, int minY = 80, int maxY = 260,
+            byte[][] exactLines = null, int highlightedLine = -1, byte selectedColor = 0)
         {
             if (text == null || glyphs == null || glyphMasks == null || corner == null || side == null || horizontal == null)
                 throw new ArgumentNullException("source objective resources");
@@ -94,19 +114,37 @@ namespace MagicCarpet.Native
             const int charWidth = 8, charHeight = 14;
             var textWidth = checked(charWidth * text.Length);
             var boxWidth = maxWidth;
-            if (textWidth <= boxWidth) boxWidth = textWidth;
-            else if (textWidth % boxWidth < boxWidth / 2)
+            List<byte[]> lines;
+            int layoutLines;
+            if (exactLines != null)
             {
-                while (boxWidth > 0 && textWidth % boxWidth < boxWidth / 2)
-                    boxWidth -= charWidth;
-                if (boxWidth <= 0) throw new ArgumentException("source objective width collapsed");
+                var longest = 0;
+                foreach (var line in exactLines)
+                {
+                    if (line == null || line.Length == 0 || line.Length > 4096 || Array.IndexOf(line, (byte)0) >= 0)
+                        throw new ArgumentException("source spell help line is invalid");
+                    longest = Math.Max(longest, line.Length);
+                }
+                boxWidth = checked(charWidth * longest);
+                lines = new List<byte[]>(exactLines);
+                layoutLines = lines.Count;
             }
-            var lines = SplitSourceLines(text, boxWidth / charWidth);
-            if (lines.Count == 0) throw new ArgumentException("source objective has no drawable text");
-            // ComputeTextboxSizesFromTextWords uses ceil(width/charWidth)
-            // while DrawTextboxText uses floor(width/charWidth).
-            var layoutLines = textWidth <= maxWidth ? 1 :
-                SplitSourceLines(text, (boxWidth + charWidth - 1) / charWidth).Count;
+            else
+            {
+                if (textWidth <= boxWidth) boxWidth = textWidth;
+                else if (textWidth % boxWidth < boxWidth / 2)
+                {
+                    while (boxWidth > 0 && textWidth % boxWidth < boxWidth / 2)
+                        boxWidth -= charWidth;
+                    if (boxWidth <= 0) throw new ArgumentException("source objective width collapsed");
+                }
+                lines = SplitSourceLines(text, boxWidth / charWidth);
+                if (lines.Count == 0) throw new ArgumentException("source objective has no drawable text");
+                // ComputeTextboxSizesFromTextWords uses ceil(width/charWidth)
+                // while DrawTextboxText uses floor(width/charWidth).
+                layoutLines = textWidth <= maxWidth ? 1 :
+                    SplitSourceLines(text, (boxWidth + charWidth - 1) / charWidth).Count;
+            }
             var boxHeight = checked(charHeight * layoutLines);
             var textX = centerX - boxWidth / 2;
             var textY = centerY - boxHeight / 2;
@@ -159,7 +197,8 @@ namespace MagicCarpet.Native
                     var glyph = glyphs[value == 32 || value == 9 ? 33 : value + 1];
                     ValidateGlyph(glyph, glyphMasks);
                     if (value != 32 && value != 9)
-                        DrawGlyph(foreground, width, height, glyph, glyphMasks, cursorX, cursorY, textColor);
+                        DrawGlyph(foreground, width, height, glyph, glyphMasks, cursorX, cursorY,
+                            line == highlightedLine ? selectedColor : textColor);
                     cursorX += glyph.Width;
                 }
             }

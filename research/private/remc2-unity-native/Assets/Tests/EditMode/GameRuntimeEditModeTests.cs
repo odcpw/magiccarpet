@@ -489,6 +489,16 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(SourceSpellMenu.HasRequiredBitmaps(openingSpells,
                     selector => textures.TryGetValue(selector, out var texture) && texture != null), Is.True,
                     "the ordinary Night HUD materializes the original acquired-spell menu artwork");
+                Assert.That(SourceSpellMenu.HasRequiredBitmaps(openingSpells,
+                    selector => selector != 87 && textures.TryGetValue(selector, out var texture) && texture != null), Is.False,
+                    "a missing source mana-bar sprite cannot silently become an opaque fallback");
+                var changed = openingSpells[0];
+                var retainedHelp = changed.menu_help;
+                changed.menu_help = null; // mutate only this detached observation copy
+                Assert.That(SourceSpellMenu.HasRequiredBitmaps(openingSpells,
+                    selector => textures.TryGetValue(selector, out var texture) && texture != null), Is.False,
+                    "missing source metadata cannot be interpreted as a usable spell or absent Castle");
+                changed.menu_help = retainedHelp;
                 Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").hand, Is.EqualTo("right"));
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, false);
@@ -3096,6 +3106,417 @@ namespace MagicCarpet.Native.Tests
                     UnityEngine.Object.DestroyImmediate(root);
                     Directory.Delete(temporary, true);
                 }
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceSpellMenuHoverUsesCurrentOwnerAndSharedClock()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-spell-hover-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source spell menu hover");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            MagicCarpetRuntime.ManaHelpHint Hint() => (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+            int Remaining() => (int)typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags).GetValue(Hint());
+            void RenderCurrentScene()
+            {
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+            }
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime,
+                    new object[] { arguments });
+                yield return StartReturnedParentFromNormalMap(runtime);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.volcano"), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", 0, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                for (var frame = 0; frame < 220 && runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks != 0; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.Zero,
+                    "normal source frames leave the objective before hover help");
+                var sourceMenus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var spellInput = sourceMenus.Step(false, true, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(spellInput.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, spellInput), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.SpellOpen, Is.True);
+                Assert.That((bool)Field("gameRuntimeSpellMenuOpen"), Is.True,
+                    "the accepted source menu reaches the actual GUI consumer");
+                // The EditorWindow host has no focused mouse. Match the
+                // existing pause-hover host: one declared logical pointer is
+                // transformed through the fitted view for every GUI callback.
+                var view = new Rect();
+                var origin = Vector2.zero;
+                var controlledCursor = Vector2.zero;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var inputEvent = Event.current;
+                    var hostCursor = inputEvent.mousePosition;
+                    try
+                    {
+                        inputEvent.mousePosition = view.position + controlledCursor * scale;
+                        typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                    }
+                    finally { inputEvent.mousePosition = hostCursor; }
+                };
+                gui.wantsMouseMove = true;
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), "the real GUI host draws its fitted viewport");
+                    gui.Repaint();
+                    UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                    yield return null;
+                }
+                void Send(EventType type, Vector2 source)
+                {
+                    controlledCursor = source;
+                    var local = view.position + source * (view.width / 640f);
+                    var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = type, mousePosition = local + origin });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw), "the actual GUI host dispatches the source event");
+                }
+                var liveMenu = runtime.GameRuntimeProductionCampaignSnapshot.value;
+                var hoveredSpell = Array.Find(liveMenu.player_spells, item => item?.id == "spell.volcano");
+                Assert.That(hoveredSpell?.menu_help?.is_standard, Is.True,
+                    "the selected actual Volcano holder admits source spell help");
+                var pointer = SourceSpellMenu.GridPointer(hoveredSpell.menu_slot);
+                RenderCurrentScene();
+                Send(EventType.MouseMove, pointer);
+                var sourceSpellMenu = (SourceSpellMenu)Field("gameRuntimeSourceSpellMenu");
+                Assert.That(sourceSpellMenu.HoveredSlot, Is.EqualTo(hoveredSpell.menu_slot), "the delivered MouseMove reaches the source slot");
+                Send(EventType.Repaint, pointer);
+                Assert.That(sourceSpellMenu.HoveredSlot, Is.EqualTo(hoveredSpell.menu_slot));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Hint().SpellVisible, Is.True);
+                Assert.That(Hint().VisibleRow, Is.EqualTo(85));
+                Assert.That(Hint().VisibleSpellRecords, Is.EqualTo(hoveredSpell.menu_help.title_records));
+                Assert.That(Hint().VisibleSpellHighlight, Is.EqualTo(hoveredSpell.menu_help.selected_tier));
+                Assert.That(Remaining(), Is.EqualTo(69), "source row85 lasts 70 draws including the current frame");
+                // Exercise all eight source scan positions with the same real
+                // native hover observation, without advancing the simulation.
+                var cycle = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow);
+                var expectedRows = new System.Collections.Generic.List<int> { 85, 69 };
+                if (Array.Exists(hoveredSpell.menu_help.castle_blocked, blocked => blocked)) expectedRows.Add(70);
+                if (hoveredSpell.unlocked_tier > 0) expectedRows.Add(71);
+                expectedRows.Add(42); // source case4 can be replaced by case5 in the same scan
+                if (hoveredSpell.menu_help.mana_unavailable) expectedRows.Add(41);
+                expectedRows.Add(85);
+                var observedRows = new System.Collections.Generic.List<int>();
+                var priorRow = 0;
+                var beforeCycle = runtime.GameRuntimeProductionIdentity.session.tick;
+                for (var frame = 0; frame < 400 && observedRows.Count < expectedRows.Count; frame++)
+                {
+                    cycle.AdvanceSpell(hoveredSpell, hoveredSpell.menu_slot, hoveredSpell.menu_help.selected_tier,
+                        liveMenu.spell_menu_has_any_spell, true, false,
+                        sourceSpellMenu.PanelExtent.x, sourceSpellMenu.PanelExtent.y,
+                        sourceSpellMenu.TierExtent.x, sourceSpellMenu.TierExtent.y);
+                    var row = cycle.SpellVisible ? cycle.VisibleRow : 0;
+                    if (row != 0 && row != priorRow) observedRows.Add(row);
+                    priorRow = row;
+                }
+                Assert.That(observedRows, Is.EqualTo(expectedRows), "actual source conditions select the eight-position cycle");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(beforeCycle),
+                    "the isolated presentation-clock check cannot step the native owner");
+                RenderCurrentScene();
+                var spellHelpTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var spellHelpReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                for (var redraw = 0; redraw < 3; redraw++)
+                    Send(EventType.Repaint, pointer);
+                Assert.That(Remaining(), Is.EqualTo(69), "repaint cannot advance the shared source popup clock");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(spellHelpTick));
+                CollectionAssert.AreEqual(spellHelpReplay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var spellPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                var spellOutput = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(spellPresenter);
+                Assert.That(spellOutput, Is.Not.Null, "the real Ctrl menu reaches the indexed source popup consumer");
+                var spellPrior = (Color32[])Field("gameRuntimeSpellPriorPixels");
+                var spellPriorRect = (RectInt)typeof(SourceObjectiveTextboxPresenter).GetField("priorRect", flags).GetValue(spellPresenter);
+                var tierWidth = sourceSpellMenu.TierExtent.x;
+                var tierStart = MagicCarpetRuntime.SpellTierMenuStartX(hoveredSpell.menu_slot, 13, 8, 48, 3, tierWidth);
+                var tierTop = 408 - sourceSpellMenu.TierExtent.y;
+                var sourceAssets = menu.ObjectiveForProfile("day");
+                var threshold = hoveredSpell.menu_help.experience_thresholds;
+                var delta = unchecked(threshold[1] - threshold[0]);
+                var progress = unchecked(hoveredSpell.menu_help.experience - threshold[0]);
+                var filled = delta > 0 ? Mathf.Clamp(unchecked((short)(unchecked(54 * progress) / delta)), 0, 54) : 0;
+                var barPixel = spellPrior[(tierTop + 28 - spellPriorRect.y) * spellPriorRect.width + tierStart + 6];
+                Assert.That((barPixel.r, barPixel.a), Is.EqualTo((filled > 0 ? sourceAssets.TextColor : sourceAssets.BlendSelector, (byte)5)),
+                    "the actual source XP bar paints the expected indexed foreground over its tier panel");
+                // Detached renderer controls cover two source arithmetic cases
+                // without changing the real native owner, inventory or replay.
+                var detached = JsonUtility.FromJson<EngineSessionTransport.CampaignRenderValue>(JsonUtility.ToJson(liveMenu));
+                var detachedSpell = Array.Find(detached.player_spells, item => item?.id == hoveredSpell.id);
+                Assert.That(detachedSpell.unlocked_tier, Is.Zero);
+                Assert.That(detachedSpell.menu_help.tier_mana_costs[0], Is.GreaterThan(0));
+                Assert.That(detached.player_vitals.mana / detachedSpell.menu_help.tier_mana_costs[0], Is.Zero,
+                    "the retained real caster mana is below the source tier cost");
+                detachedSpell.menu_help.castle_blocked[0] = false;
+                detachedSpell.menu_help.experience = -300000;
+                detachedSpell.menu_help.experience_thresholds = new[] { 0, 400, 12000 };
+                var textures = (System.Collections.Generic.Dictionary<int, Texture2D>)Field("hudBitmapTextures");
+                var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                var descriptors = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                int Width(int selector) => (int)descriptors[selector].GetType().GetField("stored_width").GetValue(descriptors[selector]);
+                int Height(int selector) => (int)descriptors[selector].GetType().GetField("stored_height").GetValue(descriptors[selector]);
+                int RuntimeWidth(int selector) => (int)descriptors[selector].GetType().GetField("runtime_width").GetValue(descriptors[selector]);
+                int RuntimeHeight(int selector) => (int)descriptors[selector].GetType().GetField("runtime_height").GetValue(descriptors[selector]);
+                int SourcePixel(int selector, int x, int y) =>
+                    (y * Height(selector) / RuntimeHeight(selector)) * Width(selector) + x * Width(selector) / RuntimeWidth(selector);
+                bool Masked(int selector, int x, int y) => x >= 0 && y >= 0 &&
+                    x < RuntimeWidth(selector) && y < RuntimeHeight(selector) && masks[selector][SourcePixel(selector, x, y)] != 0;
+                ObjectiveTextboxCompositor.Sprite Indexed(int selector) =>
+                    new ObjectiveTextboxCompositor.Sprite(Width(selector), Height(selector), indices[selector], masks[selector]);
+                var component = new SourceSpellMenu();
+                var ordinaryDraw = gui.DrawRuntime;
+                try
+                {
+                    gui.DrawRuntime = () => {
+                        var inputEvent = Event.current;
+                        var hostCursor = inputEvent.mousePosition;
+                        try
+                        {
+                            inputEvent.mousePosition = view.position + pointer * (view.width / 640f);
+                            component.Draw(detached, selector => textures[selector],
+                                selector => new Vector2Int(RuntimeWidth(selector), RuntimeHeight(selector)), false, sourceAssets, out _);
+                        }
+                        finally { inputEvent.mousePosition = hostCursor; }
+                    };
+                    Send(EventType.Repaint, pointer);
+                    Assert.That(component.HoveredSlot, Is.EqualTo(hoveredSpell.menu_slot),
+                        "the detached renderer consumes the same declared source slot");
+                    Assert.That(component.TierExtent, Is.EqualTo(sourceSpellMenu.TierExtent),
+                        "the detached renderer uses the actual source runtime scale");
+                    Assert.That(component.TryIndexedPrior(sourceAssets, Indexed, sourceAssets.Tables, sourceAssets.TableOffset,
+                        out var detachedRect, out var detachedPixels), Is.True);
+                    // Source int16 narrows -40500 to +25036 before the 54px clamp.
+                    var lastBar = detachedPixels[(tierTop + 28 - detachedRect.y) * detachedRect.width + tierStart + 59 - detachedRect.x];
+                    Assert.That((lastBar.r, lastBar.a), Is.EqualTo((sourceAssets.TextColor, (byte)5)),
+                        "the real indexed bar reflects source signed-16 narrowing before clamping");
+                    var icon = detachedSpell.menu_artwork.tier_icons[0];
+                    var iconSamples = 0;
+                    for (var iy = 0; iy < RuntimeHeight(icon); iy++)
+                    for (var ix = 0; ix < RuntimeWidth(icon); ix++)
+                    {
+                        var px = 18 + ix; var py = 6 + iy;
+                        if (!Masked(icon, ix, iy) || !Masked(162, px, py) || Masked(165, px - 6, py - 10) ||
+                            (component.HoveredTier == 0 && Masked(164, px, py)) || py >= 28) continue;
+                        var value = indices[icon][SourcePixel(icon, ix, iy)];
+                        var background = indices[162][SourcePixel(162, px, py)];
+                        if (sourceAssets.Tables[sourceAssets.TableOffset + (background << 8) + value] == value) continue;
+                        var actual = detachedPixels[(tierTop + py - detachedRect.y) * detachedRect.width + tierStart + px - detachedRect.x];
+                        Assert.That((actual.r, actual.a), Is.EqualTo((value, (byte)5)),
+                            "a Castle-eligible but unaffordable source icon is opaque over its dimmed panel");
+                        iconSamples++;
+                    }
+                    Assert.That(iconSamples, Is.GreaterThan(0), "the actual source masks contain a discriminating icon pixel");
+                }
+                finally { gui.DrawRuntime = ordinaryDraw; component.Close(); }
+                CollectionAssert.AreEqual(spellHelpReplay, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "detached renderer controls do not alter the actual native owner or replay");
+                for (var draw = 0; draw < 69; draw++) runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Remaining(), Is.Zero);
+                for (var wait = 0; wait < 6; wait++) runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Hint().Visible, Is.False, "source waits six polls before selecting the next spell row");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((Hint().SpellVisible, Hint().VisibleRow), Is.EqualTo((true, 69)),
+                    "the real source cycle reaches spell experience after its six-poll delay");
+                var disabledSpell = Array.Find(runtime.GameRuntimeProductionCampaignSnapshot.value.player_spells,
+                    item => item?.menu_help != null && !item.menu_help.is_standard);
+                Assert.That(disabledSpell, Is.Not.Null, "the real source inventory contains an unavailable family");
+                var disabledPointer = SourceSpellMenu.GridPointer(disabledSpell.menu_slot);
+                RenderCurrentScene();
+                Send(EventType.MouseMove, disabledPointer);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceSpellMenu.HoveredSlot, Is.EqualTo(disabledSpell.menu_slot));
+                Assert.That(Hint().SpellVisible, Is.False, "an unavailable source family closes the current spell help");
+                RenderCurrentScene();
+                Send(EventType.MouseMove, pointer);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((Hint().SpellVisible, Hint().VisibleRow), Is.EqualTo((true, 85)),
+                    "returning to an acquired family restarts the source title cycle");
+                var beforeSpellPause = Remaining();
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((Hint().SpellVisible, Hint().VisibleRow, Remaining()),
+                    Is.EqualTo((true, 85, beforeSpellPause - 1)),
+                    "source spell-menu status takes precedence over the independent pause flag for a real paused frame");
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var closeSpells = sourceMenus.Step(false, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(closeSpells.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, closeSpells), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.SpellOpen, Is.False);
+                Assert.That(Hint().SpellVisible, Is.False, "releasing Ctrl removes the spell popup");
+                var openMap = sourceMenus.Step(true, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(openMap.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, openMap), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.MapOpen, Is.True);
+                var mapSpells = sourceMenus.Step(false, true, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(mapSpells.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, mapSpells), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((sourceMenus.MapOpen, sourceMenus.SpellOpen), Is.EqualTo((true, true)));
+                Send(EventType.MouseMove, pointer);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((Hint().SpellVisible, Hint().VisibleRow), Is.EqualTo((true, 85)));
+                Send(EventType.Repaint, pointer);
+                var mapSurface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var mapPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                var material = (Material)typeof(SourceObjectiveTextboxPresenter).GetField("material", flags).GetValue(mapPresenter);
+                Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(mapSurface.WorldIndices),
+                    "source map+spell help blends the current top-down map, not old flight history");
+                Assert.That(material.GetFloat("_SceneTopDown"), Is.EqualTo(1));
+                var closeMapSpells = sourceMenus.Step(false, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(closeMapSpells.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, closeMapSpells), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var closeMap = sourceMenus.Step(true, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(closeMap.Action, sourceMenus.MapOpen,
+                    sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, closeMap), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((sourceMenus.MapOpen, sourceMenus.SpellOpen), Is.EqualTo((false, false)));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(Field("gameRuntimeManaHint"), Is.Null);
+                Assert.That(Field("gameRuntimeManaHintPresenter"), Is.Null);
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close();
+                else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator ControlledResultsRevisitAdmitsRealSpellTierDrag()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-spell-tier-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("source upgraded spell tier revisit");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                // Existing controlled Results includes declared tier-2 carry;
+                // it is a prior-inventory boundary, not earned progression.
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_RESULTS_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-results.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime,
+                    new object[] { arguments });
+                Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.phase, Is.EqualTo("results"));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.DismissResults), Is.True);
+                var owner = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                const string level = "level.magic_carpet_2.uluth";
+                Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.available_levels, Does.Contain(level));
+                owner.GameRuntimeCampaignMenuAction("select_mission", level);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True,
+                    "the real source menu must admit revisiting this completed portal");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var menus = (SourceCampaignMenus)typeof(MagicCarpetRuntime).GetField("gameRuntimeSourceMenus", flags).GetValue(runtime);
+                var open = menus.Step(false, true, false, false, false, true);
+                Assert.That(menus.QueueAction(open.Action, menus.MapOpen, menus.SpellOpen, menus.PlayerInformationOpen, open), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var observed = runtime.GameRuntimeProductionCampaignSnapshot.value;
+                var spell = Array.Find(observed.player_spells, row => row != null && row.menu_slot >= 2 &&
+                    row.acquired && row.menu_help != null && row.menu_help.is_standard && row.unlocked_tier == 2 &&
+                    !string.IsNullOrEmpty(row.holder_actor));
+                Assert.That(spell, Is.Not.Null, "the controlled carry has a current, acquired upgraded source holder");
+                var menu = (SourceSpellMenu)typeof(MagicCarpetRuntime).GetField("gameRuntimeSourceSpellMenu", flags).GetValue(runtime);
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var grid = SourceSpellMenu.GridPointer(spell.menu_slot);
+                gui.SendEvent(new Event { type = EventType.MouseMove, mousePosition = grid });
+                var waitUntil = Time.realtimeSinceStartupAsDouble + 3;
+                var warp = typeof(SourceSpellMenu).GetField("warpPending", flags);
+                while ((bool)warp.GetValue(menu))
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(waitUntil), "actual source cursor warp completes");
+                    gui.SendEvent(new Event { type = EventType.Repaint, mousePosition = grid });
+                    UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                    yield return null;
+                }
+                gui.SendEvent(new Event { type = EventType.MouseMove, mousePosition = grid });
+                gui.SendEvent(new Event { type = EventType.MouseDown, mousePosition = grid, button = 0 });
+                Assert.That(typeof(SourceSpellMenu).GetField("choice", flags).GetValue(menu), Is.Not.Null,
+                    "the real source pointer admits the current acquired holder");
+                waitUntil = Time.realtimeSinceStartupAsDouble + 3;
+                while ((bool)warp.GetValue(menu))
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(waitUntil), "actual tier cursor warp completes");
+                    gui.SendEvent(new Event { type = EventType.Repaint, mousePosition = grid });
+                    UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                    yield return null;
+                }
+                var tierWidth = menu.TierExtent.x;
+                var start = MagicCarpetRuntime.SpellTierMenuStartX(spell.menu_slot, 13, 8, 48, 3, tierWidth);
+                var physical = (float)typeof(SourceSpellMenu).GetField("physicalX", flags).GetValue(menu);
+                var current = (float)typeof(SourceSpellMenu).GetField("virtualX", flags).GetValue(menu);
+                var target = new Vector2(physical + start + 1.5f * tierWidth - current, grid.y);
+                gui.SendEvent(new Event { type = EventType.MouseDrag, mousePosition = target, button = 0 });
+                Assert.That(menu.HoveredTier, Is.EqualTo(1), "the admitted source drag selects tier1");
+                gui.SendEvent(new Event { type = EventType.MouseUp, mousePosition = target, button = 0 });
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var after = Array.Find(runtime.GameRuntimeProductionCampaignSnapshot.value.player_spells,
+                    row => row?.id == spell.id);
+                Assert.That((after.holder_actor, after.menu_help.selected_tier), Is.EqualTo((spell.holder_actor, (sbyte)1)),
+                    "the ordinary accepted assignment retains the actual holder and source tier");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close();
+                if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }

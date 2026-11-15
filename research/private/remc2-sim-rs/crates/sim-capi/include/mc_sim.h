@@ -1342,7 +1342,7 @@ int32_t mc_game_runtime_identity_json_v1(
 int32_t mc_game_runtime_render_observation_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
-/* Coherent little-endian MCPO render packet (current wire version 2).
+/* Coherent little-endian MCPO render packet (current wire version 3).
  * The payload version is explicit; match the qualified client decoder.
  * On a short buffer, no
  * payload is written and out_written receives the required byte count.

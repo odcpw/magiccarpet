@@ -1,4 +1,4 @@
-//! Transport-neutral binary render publication, version 2.
+//! Transport-neutral binary render publication, version 3.
 //!
 //! Integers are little endian with no padding. Strings are UTF-8 prefixed by a
 //! u32 byte length; vectors use a u32 count; options and booleans use one byte.
@@ -32,6 +32,9 @@ pub struct RenderPublication<'a> {
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: &'a CameraPose,
     pub source_camera_fov: i16,
+    pub spell_menu_has_any_spell: bool,
+    pub spell_menu_wizard_colors: [u8; 2],
+    pub spell_menu_panels_opaque: bool,
     pub player_spells: &'a [SpellObservation],
     pub objective_progress: &'a ObjectiveProgress,
     pub objective_textbox_ticks: u8,
@@ -139,7 +142,7 @@ impl RenderPublication<'_> {
 
     fn write(&self, w: &mut Writer<'_>, length: u32) -> Result<(), EncodeError> {
         w.raw(b"MCPO")?;
-        w.u32(2)?;
+        w.u32(3)?;
         w.u32(length)?;
         w.u64(self.runtime_id)?;
         w.u64(self.runtime_generation)?;
@@ -224,6 +227,11 @@ impl RenderPublication<'_> {
         w.i16(c.pitch)?;
         w.i16(c.roll)?;
         w.i16(self.source_camera_fov)?;
+        w.bool(self.spell_menu_has_any_spell)?;
+        for color in self.spell_menu_wizard_colors {
+            w.u8(color)?;
+        }
+        w.bool(self.spell_menu_panels_opaque)?;
         w.count(self.player_spells.len())?;
         for s in self.player_spells {
             w.string(s.id.as_str())?;
@@ -238,6 +246,28 @@ impl RenderPublication<'_> {
                 w.u16(a.grid_icon)?;
                 for icon in a.tier_icons {
                     w.u16(icon)?;
+                }
+                Ok(())
+            })?;
+            w.optional(s.menu_help.as_ref(), |w, help| {
+                w.bool(help.is_standard)?;
+                w.i8(help.selected_tier)?;
+                for record in help.title_records {
+                    w.u16(record)?;
+                }
+                for blocked in help.castle_blocked {
+                    w.bool(blocked)?;
+                }
+                w.bool(help.mana_unavailable)?;
+                w.bool(help.definition_enabled)?;
+                w.bool(help.blink_hidden)?;
+                w.bool(help.discovered)?;
+                for cost in help.tier_mana_costs {
+                    w.i32(cost)?;
+                }
+                w.i32(help.experience)?;
+                for threshold in help.experience_thresholds {
+                    w.i32(threshold)?;
                 }
                 Ok(())
             })?;

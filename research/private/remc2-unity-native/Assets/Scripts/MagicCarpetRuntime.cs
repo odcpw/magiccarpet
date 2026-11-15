@@ -3043,6 +3043,20 @@ namespace MagicCarpet.Native
                 var identity = session.ObservedCampaignIdentity();
                 var hud = campaignSession.DayHudState(campaignSession.Tick);
                 var observation = gameRuntimeCampaignSnapshot;
+                if (gameRuntimeSpellMenuOpen && gameRuntimeSourceSpellMenu.HoveredSlot >= 0)
+                {
+                    var slot = gameRuntimeSourceSpellMenu.HoveredSlot;
+                    var spell = Array.Find(observation.value.player_spells, row => row != null && row.menu_slot == slot);
+                    var panel = gameRuntimeSourceSpellMenu.PanelExtent;
+                    var tier = gameRuntimeSourceSpellMenu.TierExtent;
+                    gameRuntimeManaHint.AdvanceSpell(spell, slot, gameRuntimeSourceSpellMenu.HoveredTier,
+                        observation.value.spell_menu_has_any_spell,
+                        identity.player_preferences.preferences.show_help,
+                        observation.value.objective_textbox_ticks != 0 || observation.value.exit_sequence_active ||
+                        nativePresentationTutorialOrBriefing || playerPreferences?.IsOpen == true || hud.localPlayerLife < 0,
+                        panel.x, panel.y, tier.x, tier.y);
+                    return;
+                }
                 AdvanceGameRuntimeHelpHint(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0,
                     identity.player_preferences.preferences.show_help,
                     identity.mode == GameRuntimeTransport.PausedMode,
@@ -14034,6 +14048,8 @@ namespace MagicCarpet.Native
             var offsetY = (Screen.height - 480f * scale) * 0.5f;
             var priorMatrix = GUI.matrix;
             var priorColour = GUI.color;
+            var inputEvent = Event.current;
+            var priorPointer = inputEvent?.mousePosition ?? Vector2.zero;
             GUI.matrix = Matrix4x4.TRS(
                 new Vector3(offsetX, offsetY, 0f),
                 Quaternion.identity,
@@ -14087,6 +14103,7 @@ namespace MagicCarpet.Native
             {
                 GUI.matrix = priorMatrix;
                 GUI.color = priorColour;
+                if (inputEvent != null) inputEvent.mousePosition = priorPointer;
             }
         }
 
@@ -14895,12 +14912,19 @@ namespace MagicCarpet.Native
             {
                 drawObjective = true;
                 DrawLevel2DayHud();
+                EnsureGameRuntimeMenu();
+                var profile = campaignSession.Selection.mapType switch {
+                    0 => "day", 1 => "night", 2 => "cave",
+                    _ => throw new InvalidDataException("source spell menu requires its source environment")
+                };
+                var assets = gameRuntimeMenu.ObjectiveForProfile(profile);
                 var assignment = gameRuntimeSourceSpellMenu.Draw(gameRuntimeCampaignSnapshot?.value,
                     selector => hudBitmapTextures[selector],
                     selector => new Vector2Int(hudBitmapDescriptors[selector].runtime_width, hudBitmapDescriptors[selector].runtime_height),
                     (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
                         (playerPreferences?.Held(7) ?? Input.GetKey(KeyCode.RightShift)),
-                    out var mark, gameRuntimeEnvironmentCache ?? ownerAssetCache);
+                    assets, out var mark, gameRuntimeEnvironmentCache ?? ownerAssetCache);
+                DrawGameRuntimeSpellMenuPrior(assets);
                 if (mark != null)
                 {
                     gameRuntimeSpellSelectionRequested = null;

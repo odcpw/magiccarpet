@@ -172,6 +172,10 @@ pub struct SpellObservation {
     /// consumes these bindings without interpreting the semantic spell ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub menu_artwork: Option<SpellMenuArtwork>,
+    /// Bound tier text and authoritative menu-help predicates. Presenters
+    /// select/layout the source hints without reimplementing casting rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub menu_help: Option<SpellMenuHelp>,
     pub mana_cost: i32,
     pub hand: SpellHand,
     pub marked_hand: SpellMarkHand,
@@ -182,6 +186,21 @@ pub struct SpellObservation {
 pub struct SpellMenuArtwork {
     pub grid_icon: u16,
     pub tier_icons: [u16; 3],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SpellMenuHelp {
+    pub is_standard: bool,
+    pub selected_tier: i8,
+    pub title_records: [u16; 3],
+    pub castle_blocked: [bool; 3],
+    pub mana_unavailable: bool,
+    pub definition_enabled: bool,
+    pub blink_hidden: bool,
+    pub discovered: bool,
+    pub tier_mana_costs: [i32; 3],
+    pub experience: i32,
+    pub experience_thresholds: [i32; 3],
 }
 
 /// Authoritative progress through the bound level's semantic objectives.
@@ -276,6 +295,9 @@ pub struct CampaignSnapshot {
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: CameraPose,
     pub source_camera_fov: i16,
+    pub spell_menu_has_any_spell: bool,
+    pub spell_menu_wizard_colors: [u8; 2],
+    pub spell_menu_panels_opaque: bool,
     pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
     /// Authoritative objective-panel countdown; clients never invent a timer.
