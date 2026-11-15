@@ -356,9 +356,9 @@ namespace MagicCarpet.Native
             if (sandbox == null) entities.ReviewCamera(camera);
             voxelWorld?.Render();
             waterSystem.Update(camera);
-            buildings?.Render(camera.transform.position);
             nightLighting.Render(camera);
             terrain.Present(camera.transform.position);
+            buildings?.Render(camera.transform.position);
             var vegetationStart=ModernCapture.BeginMeasurement();
             vegetation.Render(camera);
             ModernCapture.EndMeasurement("vegetation_render",vegetationStart);
