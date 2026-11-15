@@ -57,23 +57,34 @@ namespace MagicCarpet.Native
             for (var level = 0; level < FirstRecord.Length; level++)
                 for (var index = FirstRecord[level]; index <= EndRecord[level]; index++)
                     RequireRecord(index);
+            RequireRecord(284);
+            RequireRecord(285);
         }
 
-        internal static int SourceRecordIndex(ushort internalLevel, byte textSelector, bool isLevelEnd)
+        internal static int SourceRecordIndex(ushort internalLevel, byte textSelector, bool isLevelEnd,
+            int secretAnnouncementRecord = 0)
         {
+            if (internalLevel >= FirstRecord.Length && (internalLevel < 30 || internalLevel > 34))
+                throw new ArgumentOutOfRangeException(nameof(internalLevel),
+                    "Only ordinary source levels 0 through 24 and secret levels 30 through 34 are bound");
+            if (secretAnnouncementRecord != 0)
+            {
+                if (secretAnnouncementRecord != 284 && secretAnnouncementRecord != 285)
+                    throw new ArgumentOutOfRangeException(nameof(secretAnnouncementRecord));
+                return secretAnnouncementRecord;
+            }
             // Source30..34 use the same objective and end strings regardless
             // of their local objective selector.
             if (internalLevel >= 30 && internalLevel <= 34)
                 return isLevelEnd ? EndRecord[10] : FirstRecord[0] + 3;
-            if (internalLevel >= FirstRecord.Length)
-                throw new ArgumentOutOfRangeException(nameof(internalLevel),
-                    "Only ordinary source levels 0 through 24 and secret levels 30 through 34 are bound");
             return isLevelEnd ? EndRecord[internalLevel] : FirstRecord[internalLevel] + textSelector;
         }
 
-        internal string Resolve(ushort internalLevel, NativeSim.CampaignObjectiveStageSnapshot objective)
+        internal string Resolve(ushort internalLevel, NativeSim.CampaignObjectiveStageSnapshot objective,
+            int secretAnnouncementRecord = 0)
         {
-            var index = SourceRecordIndex(internalLevel, objective.textSelector, objective.isLevelEnd != 0);
+            var index = SourceRecordIndex(internalLevel, objective.textSelector, objective.isLevelEnd != 0,
+                secretAnnouncementRecord);
             RequireRecord(index);
             return readRecord(index);
         }

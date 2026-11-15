@@ -1566,6 +1566,23 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(records[0x47]));
             Assert.That(Mc2ObjectiveText.SourceRecordIndex(24, 0, false), Is.EqualTo(0x9c));
             Assert.That(Mc2ObjectiveText.SourceRecordIndex(24, 0, true), Is.EqualTo(0x9e));
+            var liveStage = new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 1 };
+            foreach (var announcement in new[] { 284, 285 })
+            {
+                Assert.That(records[announcement], Is.Not.Empty);
+                Assert.That(text.Resolve(11, liveStage, announcement), Is.EqualTo(records[announcement]),
+                    "the native-selected secret announcement replaces the ordinary text while active");
+                var observed = JsonUtility.FromJson<EngineSessionTransport.CampaignRenderValue>(
+                    "{\"objective_secret_announcement_record\":" + announcement + "}");
+                Assert.That(observed.objective_secret_announcement_record, Is.EqualTo(announcement));
+            }
+            Assert.That(text.Resolve(11, liveStage), Is.EqualTo(records[0x67]),
+                "normal objective text returns when the announcement clears");
+            var noAnnouncement = JsonUtility.FromJson<EngineSessionTransport.CampaignRenderValue>(
+                "{\"objective_secret_announcement_record\":null}");
+            Assert.That(noAnnouncement.objective_secret_announcement_record, Is.Zero);
+            Assert.Throws<ArgumentOutOfRangeException>(() => text.Resolve(11, liveStage, 283));
+            Assert.Throws<ArgumentOutOfRangeException>(() => text.Resolve(29, liveStage, 284));
             for (ushort level = 30; level <= 34; level++)
             {
                 Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 7 }),
@@ -2319,6 +2336,143 @@ namespace MagicCarpet.Native.Tests
                 arguments.Add("-mc-runtime-presentation-cache"); arguments.Add(resource.presentation_cache_path);
             }
             return arguments.ToArray();
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator FreshPavColdAnnouncementUsesSourceSpeechAndSelectedGlyphs()
+        {
+            var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT");
+            if (string.IsNullOrEmpty(input)) Assert.Ignore("Requires the real Jaleen-to-Pav transfer replay");
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-pav-announcement-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual Pav cold secret announcement");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var guiShown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var original = File.ReadAllBytes(input);
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var owner = (NativeSession)Field("session");
+                var identity = runtime.GameRuntimeProductionIdentity;
+                Assert.That(identity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(identity.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.pav_durivium"));
+                CollectionAssert.AreEqual(original, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "cold open retains the real pre-frame transfer and does not award it again");
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime,
+                    new object[] { arguments });
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                Assert.That(preferences.Current.preferences.speech_enabled, Is.True);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var selected = menu.LocaleCache.PrepareLocale(preferences.Current.locale_binding);
+                Assert.That(selected.Record(284), Is.EqualTo("\"You have discovered one of the demon lord's hidden realms.\""));
+                Assert.That(owner.GameRuntimeCampaignSnapshot().value.objective_secret_announcement_record, Is.EqualTo(284));
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                Assert.That(speech.PlayCount, Is.Zero);
+                // A fresh level warms its source palette for two frames before
+                // phase 1 begins; phase 8 is reached on the tenth frame.
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "the real source phase8 emits one announcement");
+                Assert.That((speech.LastTrack, speech.LastStartMs, speech.LastLengthMs), Is.EqualTo((26, 0u, 4999u)));
+                Assert.That(speech.SoundMix, Is.LessThan(1f));
+                Assert.That(speech.MusicMix, Is.LessThan(1f));
+
+                var shown = owner.GameRuntimeCampaignRenderStep(0, 0, 0, 0, 0, showObjective: true);
+                Assert.That(shown.value.objective_secret_announcement_record, Is.EqualTo(284));
+                Assert.That(shown.value.objective_textbox_ticks, Is.EqualTo(1));
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeCampaignSnapshot", flags).SetValue(runtime, shown);
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeSecretPresentation", flags).Invoke(runtime,
+                    new object[] { runtime.GameRuntimeProductionIdentity, shown });
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.EqualTo(selected.Record(284)));
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); guiShown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(gui.DrawCount, Is.GreaterThan(0));
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeObjectiveTextbox");
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                Assert.That(output, Is.Not.Null, "the actual GUI composites the source announcement over the current scene");
+                var artwork = menu.ObjectiveForProfile("cave");
+                var raster = ObjectiveTextboxCompositor.BuildSourceForeground(
+                    Encoding.GetEncoding(28591).GetBytes(selected.Record(284)), artwork.Glyphs, artwork.GlyphMasks,
+                    artwork.Corner, artwork.Side, artwork.Horizontal, artwork.TextColor);
+                var pixels = ReadObjectivePixels(output);
+                var palette = preferences.ApplyBrightnessToPalette(surface.FramePaletteRgb8, 2);
+                var textPixels = 0;
+                Assert.That((output.width, output.height), Is.EqualTo((raster.Width, raster.Height)));
+                for (var y = 0; y < raster.Height; y++)
+                for (var x = 0; x < raster.Width; x++)
+                {
+                    var offset = y * raster.Width + x;
+                    if (raster.IndicesThenMask[raster.Width * raster.Height + offset] == 0 ||
+                        raster.IndicesThenMask[offset] != artwork.TextColor) continue;
+                    var color = artwork.TextColor * 3;
+                    Assert.That(pixels[(raster.Height - 1 - y) * raster.Width + x], Is.EqualTo(new Color32(
+                        palette[color], palette[color + 1], palette[color + 2], 255)));
+                    textPixels++;
+                }
+                Assert.That(textPixels, Is.GreaterThan(0), "original selected glyph pixels reach the composed frame");
+                var tick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                Assert.That(speech.PlayCount, Is.EqualTo(1));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var released = owner.GameRuntimeCampaignRenderStep(0, 0, 0, 0, 0, showObjective: false);
+                Assert.That(released.value.objective_textbox_ticks, Is.Zero, "releasing O removes the source textbox");
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeCampaignSnapshot", flags).SetValue(runtime, released);
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeSecretPresentation", flags).Invoke(runtime,
+                    new object[] { runtime.GameRuntimeProductionIdentity, released });
+                Assert.That(speech.PlayCount, Is.EqualTo(1));
+                Assert.That(presenter.Render(0, surface.ComposedSceneIndices, surface.SceneHistoryGeneration,
+                    surface.SceneHistoryRevision, palette), Is.Null);
+
+                var last = Time.realtimeSinceStartupAsDouble;
+                var deadline = last + speech.LastLengthMs / 1000.0 + 5;
+                do
+                {
+                    UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                    yield return null;
+                    var now = Time.realtimeSinceStartupAsDouble;
+                    Assert.That(now, Is.LessThan(deadline), "real speech and fade callbacks complete");
+                    speech.Tick((float)(now - last));
+                    last = now;
+                } while (speech.IsPlaying || speech.SoundMix < 1f || speech.MusicMix < 1f);
+                Assert.That(speech.SoundMix, Is.EqualTo(1f));
+                Assert.That(speech.MusicMix, Is.EqualTo(1f));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (guiShown) gui.Close();
+                if (gui != null) UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release();
+                UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
         private static System.Collections.IEnumerator StartReturnedParentFromNormalMap(MagicCarpetRuntime runtime)

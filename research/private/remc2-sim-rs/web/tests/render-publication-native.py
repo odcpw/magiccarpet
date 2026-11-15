@@ -23,15 +23,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--scenario', type=Path, default=Path(os.environ.get('MC_RENDER_SCENARIO', PRIVATE / 'generated/mc-voxel-combat-20261107/native-mana-scenario-01.json')))
+    parser.add_argument('--replay', type=Path, default=Path(os.environ['MC_RENDER_REPLAY']) if os.environ.get('MC_RENDER_REPLAY') else None)
     args = parser.parse_args()
     runtime = Runtime(args.library.resolve(), json.loads(args.scenario.read_text())['packages'])
     try:
         ptr, u32, u64 = c.c_void_p, c.c_uint32, c.c_uint64
         runtime._bind('mc_game_runtime_bootstrap_package_set_json_v1', [u64, u64, ptr, u32])
         runtime._bind('mc_game_runtime_open_level_v1', [u64, u64])
-        runtime.check(runtime.lib.mc_game_runtime_bootstrap_package_set_json_v1(
-            runtime.handle.value, 1, runtime.request, len(runtime.request)), 'bootstrap')
-        runtime.check(runtime.lib.mc_game_runtime_open_level_v1(runtime.handle.value, 2), 'open level')
+        if args.replay is not None:
+            runtime.load(args.replay.read_bytes())
+        else:
+            runtime.check(runtime.lib.mc_game_runtime_bootstrap_package_set_json_v1(
+                runtime.handle.value, 1, runtime.request, len(runtime.request)), 'bootstrap')
+            runtime.check(runtime.lib.mc_game_runtime_open_level_v1(runtime.handle.value, 2), 'open level')
         for name in ('mc_game_runtime_identity_json_v1', 'mc_game_runtime_render_observation_json_v1'):
             runtime._bind(name, [u64, ptr, u32, ptr])
         runtime._bind('mc_game_runtime_render_observation_copy_v1', [u64, u64, u64, u64, ptr, u32, ptr])

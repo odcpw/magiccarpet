@@ -13964,6 +13964,9 @@ impl Mc2Simulation {
                             .live
                             .level2_switch_producers_activated
                             .insert(feature.index);
+                        if model == 31 {
+                            self.session.state.live.core.runtime.request_secret_announcement();
+                        }
                     }
                 }
                 (11, model @ (16 | 17)) => {
@@ -30617,6 +30620,21 @@ impl Mc2Simulation {
         self.flush_shared_effects();
     }
 
+    pub(crate) fn secret_announcement(&self) -> crate::campaign::objective_speech::SecretAnnouncementState {
+        self.session.state.live.core.runtime.secret_announcement
+    }
+
+    pub(crate) fn install_initial_secret_announcement(
+        &mut self, state: crate::campaign::objective_speech::SecretAnnouncementState,
+    ) -> Result<()> {
+        if self.state.tick != 0 {
+            return Err(NativeWorldError::new("initial secret announcement requires an unpublished mission"));
+        }
+        self.session.state.live.core.runtime.secret_announcement = state;
+        self.session.rebase();
+        Ok(())
+    }
+
     /// The descriptor owns the source level identity. Service PresentObjective
     /// once after the outer objective pass, including paused frames.
     pub(crate) fn service_campaign_objective_presentation(
@@ -30647,6 +30665,8 @@ impl Mc2Simulation {
             speech_enabled,
             show_foreign_text,
             source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
+            secret_announcement_count: runtime.secret_announcement.active
+                .then_some(runtime.secret_announcement.collected_count),
         };
         let context_help = runtime.objective_expiry_help(self.help_enabled(), objective);
         let actions = self

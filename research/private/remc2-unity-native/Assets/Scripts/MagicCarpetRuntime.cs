@@ -3168,9 +3168,10 @@ namespace MagicCarpet.Native
             gameRuntimeObjectiveText ??= new Mc2ObjectiveText(GameRuntimeLanguageCache());
             var source = campaignSession.Selection.internalLevel;
             var objective = campaignSession.ObjectiveStageState(0, 0);
+            var announcement = gameRuntimeCampaignSnapshot?.value?.objective_secret_announcement_record ?? 0;
             gameRuntimeObjectiveRecord = Mc2ObjectiveText.SourceRecordIndex(source,
-                objective.textSelector, objective.isLevelEnd != 0);
-            return gameRuntimeObjectiveText.Resolve(source, objective);
+                objective.textSelector, objective.isLevelEnd != 0, announcement);
+            return gameRuntimeObjectiveText.Resolve(source, objective, announcement);
         }
 
         private void BindGameRuntimeLocale(OwnerCampaignMenuCache.LocaleTextBinding binding)

@@ -865,10 +865,11 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-15): Oliver authorizes continuing the list with
-the same team. QuietIsland owns the original Default Keys control109, its real
-bitmap/cache and managed consumer; BoldForge owns the existing checked Rust
-preferences operation. Root serializes verification, publication and installation.
+Current capability (2026-11-15): the same team is completing the real special
+secret-entry announcement through cold restore, source speech and original text.
+QuietIsland owns managed consumers; BoldForge owns native state/lifetime joins.
+Root serializes verification, publication and installation. Default Keys below
+is delivered; do not restart it.
 Source SetKeysDialog's immediate default action keeps the dialog open and resets
 ten keys, sound/music volumes127, showHelp and brightness11/13. It preserves
 brightness12, selected language/font, minimap/topbar and other settings: langIndex_4
@@ -916,12 +917,55 @@ bypassed. Current installation, owner data and caches are preserved; disk headro
 is sufficient. Full mc-5r5.2/mc-oi6.5/.6 acceptance remains open.
 
 Next connected capability: the real successful switch31 constructor must request
-the special source announcement, then source phases7/8 select TRACK26/27 (raw375ms),
+the special source announcement, then source phases7/8 select TRACK26/27,
 text284/285, palette/duck and cleanup. The separate wrapping source3E4 counter must
 follow actual CollectLevelStats calls; unique completed-secret history is not its
 equivalent. Existing real Jaleen area722->727->group44 row755/portal770 and Pav return
 checks supply the producer/continuation. Keep this next batch source-traced and
 connected through current speech/text consumers, not an isolated segment function.
+
+The secret speech unit mismatch is now being explicitly resolved under
+mc-oi6.10's original acceptance: the source table stores375 CD frames, but86F20
+omits86EB0's75-Hz conversion before SDL's millisecond timeout. Actual unchanged
+TRACK26/27 contain voiced100ms windows through4.3/4.6seconds, so raw375ms clips
+both sentences just after their start. Reuse the existing source conversion
+(4999ms with its pinned floating truncation), retaining table/selection, source
+state/order, palette and cleanup. This is a deliberate backend-unit correction,
+not exact parity with the SDL clipping bug. Evidence: generated/
+secret-announcement-20261115/secret-media-duration.json. Managed/native exact
+oracles check the corrected duration before delivery; no installed claim yet.
+
+The actual Jaleen area722->727->group44 switch755/portal770 producer now passes
+through special phase7/8, text284, TRACK26/4999ms, real secret entry, fresh Pav
+tick0/zero-operation replay, cold byte/hash equality, paused phase delivery,
+retry/reset, actual Pav completion/statistics and parent return. This connected
+check passes34.23s; suppression/exhaustion passes0.16s and source units/u8 wrap/
+statistics/reset boundaries pass. The first local guard invocation failed before
+runtime because its RCH-embedded package path was unavailable; the existing
+MC_JALEEN_PACKAGE override now selects the actual installed package. No gate
+changed. Declared frontier/pose controls are not an earned campaign route, and
+TRACK27 is conditional source coverage, not a demonstrated natural producer.
+
+One workspace all-target check passes44.8s. Final core compilation387.6s and
+strict Rig native build pass; native dc5009d619f5bbdda3a64bd454ed6bf6f289ee96c0afbc4c96acb48c91e396cb
+and all626 source/header/data inputs match Rig. Existing source membership is
+unchanged;626 is not a test count. Actual fresh-Pav C ABI JSON/MCPOv2 parity passes
+26.11s, including the special record and formerly omitted signed wall counter;
+all clients reject old wire versions and unbound selected records. The Original
+client uses the full JSON view. Independent bounded transport review found no
+introduced defect; UBS is partial/legacy-scoped with no changed critical finding.
+
+The first managed cold check exposed an actual shared Cave-music consumer defect:
+both clients treated every non-Night map as Day track2. Native source/profile/XMI
+already selects Day2/Night1/Cave3. The managed validator now matches all three,
+retaining ABI/tick/generation/timer/hash/reserved guards and rejecting unknown maps.
+Real Pav Cave track3/wrong2 rejection passes0.93s; the failed connected cold speech/
+selected original glyph/O/repeated-read/cleanup check now passes39.54s. The earlier
+ordinary-record check passes1.09s and was not repeated. The inactive Editor host
+proves request/metadata/glyph/DSP-deadline/fade behavior, not active playback or
+audible hardware output. Matching player installation and physical O-panel/speech
+request remain next. Evidence: generated/secret-announcement-20261115. Full
+mc-oi6.10/.6/.9 acceptance/dependencies stay open.
 
 Newest operator direction (2026-11-15): complete the source Shift+F5 display
 control through HUD, original notice, help cleanup and ordinary F5 preservation.

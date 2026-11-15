@@ -77,6 +77,7 @@ pub struct ObjectiveState {
     pub objective_presentation_palette_mod: u8,
     /// Remaining objective-textbox presentation ticks.
     pub objective_textbox_ticks: u8,
+    pub(crate) secret_announcement: super::objective_speech::SecretAnnouncementState,
     pub objectives: Box<[RuntimeObjective]>,
     /// Source `Type_str_0x1AC_428.word_2BDE_12658[8]`, indexed by source
     /// player slot. `sub_5C950` zeros these signed words when it initializes
@@ -98,6 +99,7 @@ impl ObjectiveState {
             objective_presentation_phase,
             objective_presentation_palette_mod: 1,
             objective_textbox_ticks,
+            secret_announcement: super::objective_speech::SecretAnnouncementState { active: false, collected_count: 0 },
             objectives,
             collected_entity_indices: [[0_i16; delivery_collection::COLLECTED_ENTITY_SLOT_COUNT];
                 SOURCE_PLAYER_SLOT_COUNT],

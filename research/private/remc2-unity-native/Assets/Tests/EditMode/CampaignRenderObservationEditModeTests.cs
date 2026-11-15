@@ -34,6 +34,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(render.value.effect_head, Is.EqualTo(full.value.effect_head));
                 Assert.That(JsonUtility.ToJson(render.value.player_motion), Is.EqualTo(JsonUtility.ToJson(full.value.player_motion)));
                 Assert.That(JsonUtility.ToJson(render.value.objective_progress), Is.EqualTo(JsonUtility.ToJson(full.value.objective_progress)));
+                Assert.That(render.value.objective_secret_announcement_record,
+                    Is.EqualTo(full.value.objective_secret_announcement_record));
                 Assert.That(JsonUtility.ToJson(render.value.source_scoreboard), Is.EqualTo(JsonUtility.ToJson(full.value.source_scoreboard)));
                 Assert.That(render.value.player_spells.Select(JsonUtility.ToJson),
                     Is.EqualTo(full.value.player_spells.Select(JsonUtility.ToJson)));
@@ -92,9 +94,9 @@ namespace MagicCarpet.Native.Tests
             foreach (var truncated in new[] { 0, 28, 29, (int)length / 2, (int)length - 1 })
                 Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bytes, truncated));
             var bad = (byte[])bytes.Clone();
-            bad[4] = 2;
+            bad[4] = 1;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
-            bad[4] = 1; bad[28] = 2;
+            bad[4] = 2; bad[28] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
             bad[28] = 0;
             for (var i = 12; i < 20; i++) bad[i] = 255;

@@ -4575,6 +4575,13 @@ impl RuntimeSnapshot {
         self.bytes[67] = 1;
     }
 
+    /// Successful AddSwitch31atyp only; failed/suppressed allocations never
+    /// publish the source flag or restart the objective phase.
+    pub(super) fn request_secret_announcement(&mut self) {
+        self.secret_announcement.active = true;
+        self.request_objective_presentation();
+    }
+
     /// `sub_12330` advances only the high byte of the selected runtime
     /// StageVar's word before applying its thinning rule. Keep the decoded
     /// record and the lossless runtime byte carrier synchronized so reset and

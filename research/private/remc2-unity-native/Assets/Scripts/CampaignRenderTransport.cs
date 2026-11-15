@@ -5,7 +5,7 @@ using System.Text;
 
 namespace MagicCarpet.Native
 {
-    // MCPO v1 is shared with sim-session and the browser DataView reader.
+    // MCPO v2 is shared with sim-session and the browser DataView reader.
     // This adapter owns its reusable copy buffer; no native pointer escapes.
     internal sealed class CampaignRenderTransport
     {
@@ -55,7 +55,7 @@ namespace MagicCarpet.Native
         internal static Publication Decode(byte[] bytes, int length)
         {
             var r = new Reader(bytes, length);
-            if (r.U32() != 0x4f50434d || r.U32() != 1 || r.U32() != length)
+            if (r.U32() != 0x4f50434d || r.U32() != 2 || r.U32() != length)
                 throw new InvalidDataException("Unsupported render publication header");
             var result = new Publication { RuntimeId = r.U64(), RuntimeGeneration = r.U64() };
             result.Mode = r.Enum(Modes);
@@ -110,6 +110,7 @@ namespace MagicCarpet.Native
                     participant = r.Counter(), is_local = r.Bool(), display_name = r.Text(),
                     kind = r.Text(), remaining_frames = r.I16()
                 };
+            value.player_wall_contact_counter = unchecked((sbyte)r.Byte());
             value.player_immobilized_ticks = r.U16();
             value.source_camera_pose = new EngineSessionTransport.CameraPose {
                 x = r.U16(), y = r.U16(), z = r.I16(), yaw = r.I16(), pitch = r.I16(), roll = r.I16()
@@ -139,6 +140,7 @@ namespace MagicCarpet.Native
                 total_count = r.U32(), all_objectives_satisfied = r.Bool()
             };
             value.objective_textbox_ticks = r.Byte();
+            value.objective_secret_announcement_record = r.U16();
             value.exit_sequence_active = r.Bool();
             value.presentation_entities = new EngineSessionTransport.PresentationEntity[r.Count(32)];
             for (var i = 0; i < value.presentation_entities.Length; i++)

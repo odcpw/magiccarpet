@@ -192,6 +192,9 @@ namespace MagicCarpet.Native
             public short source_camera_fov;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
+            // Zero represents the native optional record's null value. The
+            // native owner selects 284/285 while the secret announcement is active.
+            public int objective_secret_announcement_record;
             public bool exit_sequence_active;
             public PresentationEntity[] presentation_entities;
         }
@@ -1123,6 +1126,10 @@ namespace MagicCarpet.Native
             {
                 throw new InvalidOperationException("neutral campaign snapshot is incomplete");
             }
+            if (value.objective_secret_announcement_record != 0 &&
+                value.objective_secret_announcement_record != 284 &&
+                value.objective_secret_announcement_record != 285)
+                throw new InvalidOperationException("invalid secret announcement language record");
             if (value.player_vitals.max_life <= 0 || value.player_vitals.max_mana <= 0 ||
                 value.player_vitals.life > value.player_vitals.max_life ||
                 value.player_vitals.mana > value.player_vitals.max_mana)
