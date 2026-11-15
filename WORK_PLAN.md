@@ -969,12 +969,91 @@ fixture/resource-path runs and the delayed attract-mode capture are retained;
 no test, file/hash guard, source timer or reference raster was weakened.
 
 Continue Oliver's points1–3 with the same one team, one connected capability
-at a time. Next concrete continuity link is actual Results/map F5/save input
-and cold restore through the canonical save owner (`mc-zdo.6`/`.4`), then the
-remaining original help/settings and Day/Night/Cave presentation checks. Reuse
-the delivered language and prior controlled mission/ending evidence; do not
-restart the all30 mission passes or run adaptive playthroughs. Existing full
-acceptance/dependencies stay intact and unfinished beads remain open.
+at a time. Reuse the delivered language and prior controlled mission/ending
+evidence; do not restart all30 mission passes or run adaptive playthroughs.
+Existing full acceptance/dependencies stay intact and unfinished beads stay open.
+
+Results/map and named-slot continuity is now committed and installed (2026-11-15):
+canonical `20911664`, shared carry/catalog correction `3579a38c`, HUD consumer
+`68c95f94` and common cold attachment `b4a21d05`; Original-only remote
+`2a21d23b` is pushed/verified. The qualified Original player is `build-af5fng7c`,
+native `ed42fbf3c3f9cdd10e5b2ddd6843f89ccd627689f259655285eb42c385c65545`.
+Strict Rig native build passes2m30s; all606 qualified inputs match. Four scoped
+production Rust files differ from the prior qualified locale snapshot; extra
+canonical backend tests are not a whole-tree parity claim.
+
+Campaign F5 now retains render-frame edges through fixed dispatch, including
+stationary Results whose source map is intentionally not Ready. Source dialogs
+retain selection/draft after failed Save/Load; corrupt headers remain visible
+without modifying the slot. Actual installed Uluth Results F5 writes the exact
+controlled source packet, survives full process restart, and dismisses to a map
+retaining all25 completions, statistics, full carry and CUT6 history. The actual
+completed Ommosyth return cold-loads its Ammyridia map, retaining its frontier,
+secret statistics and seven-family carry. Managed validation now matches Rust's
+progressed-null-completed map projection; malformed frontier/briefing/phase and
+unavailable/discovered-secret portal controls still reject.
+
+Actual installed named Save, failed write, invalid-header Load, Cancel and valid
+Load preserve the authoritative owner and prior file. Root viewed the reopened
+original dialogs and error text. The completed-phase/cold-owner check passes
+155.58s; full modal recovery passes17.93s. The Editor fixture requests ordinary
+player-loop updates between yields; source animation clocks/timers are unchanged.
+
+Real parent entry exposed a shared carried-spell rebuild dropping its validated
+TMAP catalog. The candidate now reinitializes that immutable catalog's residency
+on the unpublished rebuilt world, preserving source preload and rebase order.
+Actual Ommosyth completion -> Ammyridia frame/feedback -> stale rejection -> cold
+replay and simulation reset passes21.88s; independent bounded review found no
+concrete defect. Full Night cast/save/cold-load/invalid-load/resume/retry passes
+38.27s. A redundant managed HUD Levels1–3 restriction is removed after the
+existing native full-registry/live-owner gate; actual2/3/20 HUDs plus invalid
+selection/tick/generation controls pass. The installed one-click Ammyridia portal
+now reaches real Day scene/HUD and a paused save with exact inherited carry,
+retained map/secret history and suppressed repeat rewards, with zero load retries.
+
+That actual paused source20 save now cold-attaches through the same typed
+environment composer as ordinary loading, including registered secret identities.
+The existing exact active-entry observation admits Playing or Paused; its
+runtime/session/definition/source/artifact guards and JSON ABI are unchanged.
+Native binding checks confirm observational reads preserve identity/replay bytes
+and reject stale/Title/Loading/map requests. The old retained semantic Night route
+is confined to its exact source identity and entirely undeclared presentation
+configuration; declared-but-mismatched resources still fail. No neutral asset,
+schema fallback, mission patch or new API was introduced.
+
+Current map/Results/secret checks pass122.10s; focused actual parent cold scene/HUD,
+exact paused F5, normal Load/new owner, carry/history/reward preservation and
+one-tick resume pass108.62s. Unchanged full Night passes35.14s. These two connected
+checks were separated after the expanded single method reached Unity's180s limit;
+every assertion and the timeout remain. The live fixture now reads the normal
+launcher's actual presentation roles: source1/2 differ from their gameplay roots.
+A dynamic-source extraction was rejected by DCG and abandoned; static literal
+metadata parsing supplied the fixture without executing the provider or changing
+source/owner data. Original schema/hash gates rejected the incorrect fixture.
+
+Root viewed the matching standalone cold paused Ammyridia scene/HUD and original
+pause/objective text, then physically saved at tick21 with exact inherited carry,
+progression, retained map/secret state and reward policy. Terrain/effect hashes
+remain equal. Recorded paused outer frames advance source palette/global RNG/UI
+phases, so the long-running standalone save is not byte-identical to its input;
+no gameplay step was appended. Its owned smoke stopped without escalation.
+This proves the current controlled ordinary/secret-return continuity slice,
+not every save/media/mission acceptance. Full `mc-zdo.6`/`.4`/`.3` stay open.
+
+NEXT: same one team on the remaining original help/settings/text consumers, then
+installed Day/Night/Cave audio/presentation/performance. Root owns serialized
+checks/push/install. Use actual source producers and current selected-record/font
+bindings; do not restart delivered save/carry/catalog/HUD diagnostics or the
+all30 controlled mission passes. Preserve complete original acceptance.
+
+Evidence is `research/private/generated/continuity-20261115/`. Source completions
+use declared frontier/inventory/placement controls; this is not earned human
+campaign progress, human combat, hardware audio, FPS, full missions or old live
+save proof. All owned cold smokes are stopped; no retries were sent. Failed
+opening-only guards and fixture runs are retained. Two old presentation controls
+failed on incompatible legacy cache/layout assumptions; their assertions and
+owner data were not weakened or changed. UBS is partial for C# and reports legacy
+whole-file Rust debt, with no added-hunk critical defect found in these changes.
 
 Previous committed Original runtime is canonical `ef69ab51`, remote Original `ee9a7ee1`;
 native `29688fd01c0303a2155d3ef29338662119f9fe1c753b23c18398e23edce1237e`
