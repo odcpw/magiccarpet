@@ -3050,7 +3050,8 @@ namespace MagicCarpet.Native
                     nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen ||
                     playerPreferences?.IsOpen == true || hud.localPlayerLife < 0,
                     observation.value.player_wall_contact_counter,
-                    observation.value.objective_progress.all_objectives_satisfied);
+                    observation.value.objective_progress.all_objectives_satisfied,
+                    identity.display_settings.minimap);
             }
         }
 
@@ -3671,6 +3672,11 @@ namespace MagicCarpet.Native
                 if (!AutomatedInput && Input.GetKeyDown(KeyCode.F11) &&
                     !gameRuntimeSpellMenuOpen && !gameRuntimeAbandonConfirmationOpen)
                     playerPreferences?.ToggleFullscreen();
+                // Source ProcessKeyboardPresses handles modifiers before
+                // Ctrl can request opening the spell menu in this same pass.
+                if (!AutomatedInput && (session?.ObservedCampaignIdentity().mode is
+                    GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode))
+                    DispatchGameRuntimeF5Input(modifierOnly: true);
                 if (!AutomatedInput && !gameRuntimeAbandonConfirmationOpen &&
                     !gameRuntimeSourceMenus.HasPendingAction &&
                     session?.ObservedCampaignIdentity().mode == GameRuntimeTransport.PlayingMode)
@@ -3785,7 +3791,7 @@ namespace MagicCarpet.Native
                     }
                     if (runtimeIdentity.mode == GameRuntimeTransport.CampaignMode)
                     {
-                        ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
+                        DispatchGameRuntimeF5Input(modifierOnly: false);
                         FreezeGameRuntimeInput(preserveReplaySave: true);
                         return;
                     }
@@ -3812,7 +3818,7 @@ namespace MagicCarpet.Native
                         if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha1 + key - 1))) spellKey = key;
                     if (spellKey != 0) SubmitGameRuntimeSpellKey(spellKey);
                     if (!sourceSuppressCasting && (mapped?.CastSelected ?? Input.GetKeyDown(KeyCode.Space))) RequestGameRuntimeSelectedSpellCast();
-                    ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
+                    DispatchGameRuntimeF5Input(modifierOnly: false);
                     if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L))
                         gameRuntimeRemoveCastleStageRequested = true;
                     if (session.ObservedCampaignIdentity().mode ==
@@ -10642,6 +10648,9 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.Resume:
                         ApplyGameRuntimeProductionInput(true, false, false);
                         break;
+                    case CampaignMenuPresenter.Action.ToggleIconsAndMap:
+                        ToggleGameRuntimeIconsAndMap();
+                        break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
                             SourceCampaignSaveSlots.Write(gameRuntimeReplaySavePath, saveSlot.Index,
@@ -10929,6 +10938,7 @@ namespace MagicCarpet.Native
             UpdateGameRuntimeObjectiveTextbox(gameRuntimeNightSurface);
             gameRuntimeNightSurface.PresentNight(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
+            gameRuntimeNightSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             gameRuntimeNightSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             gameRuntimeNightSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
@@ -11081,6 +11091,7 @@ namespace MagicCarpet.Native
             UpdateGameRuntimeObjectiveTextbox(level3PresentationSurface);
             level3PresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
+            level3PresentationSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             level3PresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             level3PresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
@@ -11101,6 +11112,7 @@ namespace MagicCarpet.Native
             UpdateGameRuntimeObjectiveTextbox(gameRuntimeSecretSurface);
             gameRuntimeSecretSurface.Present(campaignSession, gameRuntimeEnvironmentCache,
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
+            gameRuntimeSecretSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             gameRuntimeSecretSurface.PresentView(observation.value.source_camera_pose,
                 observation.value.source_camera_fov);
             gameRuntimeSecretSurface.PresentImmobilization(
@@ -11230,6 +11242,7 @@ namespace MagicCarpet.Native
             {
                 level2DayPresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                     observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
+                level2DayPresentationSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
                 level2DayPresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
                 level2DayPresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                     observation.value.player_vitals.life >= 0);
@@ -11457,6 +11470,66 @@ namespace MagicCarpet.Native
             // GetKeyDown is a render-frame edge. Retain it through frames
             // without a fixed step, then consume it once before stepping.
             gameRuntimeReplaySaveRequested = true;
+        }
+
+        private void DispatchGameRuntimeF5Input(bool modifierOnly)
+        {
+            var physicalShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            var physicalAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            if (modifierOnly != (physicalShift || physicalAlt)) return;
+            var pressed = playerPreferences?.KeyPressed(KeyCode.F5) ?? Input.GetKeyDown(KeyCode.F5);
+            var admittedShift = (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
+                (playerPreferences?.KeyHeld(KeyCode.RightShift) ?? Input.GetKey(KeyCode.RightShift));
+            ApplyGameRuntimeF5Input(pressed, physicalShift, admittedShift, physicalAlt);
+        }
+
+        private void ApplyGameRuntimeF5Input(bool pressed, bool physicalShift, bool admittedShift, bool physicalAlt)
+        {
+            if (!pressed || physicalAlt) return; // Source Alt branch precedes Shift.
+            if (!physicalShift)
+            {
+                ApplyGameRuntimeReplaySaveInput(true);
+                return;
+            }
+            // A modifier held across a source dialog must be released before
+            // it can admit this chord, and must not turn it into a bare save.
+            if (!admittedShift || !CanToggleGameRuntimeIconsAndMap()) return;
+            ToggleGameRuntimeIconsAndMap();
+        }
+
+        private bool CanToggleGameRuntimeIconsAndMap()
+        {
+            if (!gameRuntimeMode || session == null || !session.UsesGameRuntimeContract ||
+                !string.IsNullOrEmpty(fatalError) || gameRuntimeSecretEntryPending ||
+                gameRuntimeTransitionPresenter?.HasFailure == true || frontendMedia?.Visible == true ||
+                playerPreferences?.IsOpen == true || gameRuntimeMenu?.IsSourceDialogOpen == true ||
+                gameRuntimeAbandonConfirmationOpen || gameRuntimeSourceMenus.HasPendingAction ||
+                !GameRuntimeProductionStartupReady) return false;
+            var identity = session.ObservedCampaignIdentity();
+            return (identity.mode is GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode) &&
+                !GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity);
+        }
+
+        private void ToggleGameRuntimeIconsAndMap()
+        {
+            var before = session.ObservedCampaignIdentity();
+            var after = session.GameRuntimeToggleIconsAndMap();
+            if (before.display_settings.minimap && !after.display_settings.minimap)
+                CloseGameRuntimeHelpHint(after.player_preferences.preferences.show_help);
+            SetGameRuntimeIconsAndMapVisible(after.display_settings.minimap);
+            // The command has the same tick and generation, so replace the
+            // cached per-player notice instead of relying on an identity miss.
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
+        }
+
+        private void SetGameRuntimeIconsAndMapVisible(bool visible)
+        {
+            gameRuntimeNightSurface?.SetIconsAndMapVisible(visible);
+            level2DayPresentationSurface?.SetIconsAndMapVisible(visible);
+            level3PresentationSurface?.SetIconsAndMapVisible(visible);
+            gameRuntimeSecretSurface?.SetIconsAndMapVisible(visible);
         }
 
         private bool CanSaveGameRuntimeReplay()
@@ -13947,6 +14020,7 @@ namespace MagicCarpet.Native
 
         private void DrawLevel2DayHud()
         {
+            if (gameRuntimeMode && session?.ObservedCampaignIdentity().display_settings.top_bar == false) return;
             if (!level2DayHudPresenterReady ||
                 level2DayHud.generation != level2PresentedDayHud.generation ||
                 level2DayHud.tick != level2PresentedDayHud.tick)

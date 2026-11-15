@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -251,6 +251,7 @@ namespace MagicCarpet.Native
             {
                 Action.NewGame => mode == GameRuntimeTransport.TitleMode,
                 Action.Resume => mode == GameRuntimeTransport.PausedMode,
+                Action.ToggleIconsAndMap => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
                     mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,
@@ -335,7 +336,7 @@ namespace MagicCarpet.Native
                     GUI.enabled = true;
                     sourcePauseMenuDrawn = true;
                     return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
-                        preferences, canSave, canLoad);
+                        preferences, canSave, canLoad, identity.display_settings.minimap);
                 }
                 finally { GUI.color = previousColor; GUI.enabled = previousEnabled; }
             }

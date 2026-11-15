@@ -648,6 +648,7 @@ mod tests {
         let mut runtime = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            display_settings: super::DisplaySettings::default(),
             secret_flow: super::secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 771,
@@ -835,6 +836,7 @@ mod tests {
         let mut terminal = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            display_settings: super::DisplaySettings::default(),
             secret_flow: super::secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 772,
@@ -922,6 +924,7 @@ mod tests {
         let mut retained = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            display_settings: super::DisplaySettings::default(),
             secret_flow: super::secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 773,

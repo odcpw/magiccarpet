@@ -2809,6 +2809,10 @@ namespace MagicCarpet.Native
             ulong expectedTick, byte notificationsVisible);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_toggle_icons_map_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_participant_notifications_json_v1(
             ulong handle, IntPtr buffer, uint capacity, out uint length);
 

@@ -357,7 +357,8 @@ namespace MagicCarpet.Native
             }
             AddKeys(previous);
             AddKeys(next);
-            foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.LeftAlt,
+            foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.RightShift,
+                         KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F5,
                          KeyCode.JoystickButton0, KeyCode.JoystickButton1 })
                 if (keyHeld(key)) releaseKeys.Add(key);
             for (var button = 0; button < 3; button++)
@@ -379,7 +380,7 @@ namespace MagicCarpet.Native
             return held && !releaseKeys.Contains(key);
         }
 
-        private bool KeyPressed(KeyCode key)
+        internal bool KeyPressed(KeyCode key)
         {
             if (!keyHeld(key)) releaseKeys.Remove(key);
             return !releaseKeys.Contains(key) && keyPressed(key);

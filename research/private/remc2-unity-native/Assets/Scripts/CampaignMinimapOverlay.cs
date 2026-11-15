@@ -10,6 +10,9 @@ namespace MagicCarpet.Native
         private Texture2D texture;
         private Texture2D web;
         private bool immobilized;
+        private bool iconsAndMapVisible = true;
+        private bool fullMap;
+        internal bool MapVisible => iconsAndMapVisible || fullMap;
         private readonly Color32[] pixels = new Color32[64 * 64];
         private Color32[] labelPixels;
 
@@ -24,6 +27,7 @@ namespace MagicCarpet.Native
             if (indices.Length != 320 * 200 || palette.Length != 768 || tables.Length != 83456 ||
                 labelCoverage != null && labelCoverage.Length != indices.Length)
                 throw new InvalidOperationException("Campaign map overlay has invalid input extents");
+            this.fullMap = fullMap;
             var width = !fullMap && labelCoverage == null ? 64 : 320;
             var height = !fullMap && labelCoverage == null ? 64 : 200;
             if (texture == null || texture.width != width || texture.height != height)
@@ -65,6 +69,8 @@ namespace MagicCarpet.Native
             texture.Apply(false, false);
         }
 
+        internal void SetIconsAndMapVisible(bool visible) => iconsAndMapVisible = visible;
+
         private void OnGUI()
         {
             if (texture == null || Event.current.type != EventType.Repaint) return;
@@ -80,9 +86,12 @@ namespace MagicCarpet.Native
                 GUI.DrawTexture(new Rect(view.x * Screen.width, (1f - view.yMax) * Screen.height,
                     view.width * Screen.width, view.height * Screen.height), web, ScaleMode.StretchToFill, true);
             }
-            GUI.depth = 1; // Existing HUD depth 0 remains above the map.
-            GUI.color = Color.white;
-            GUI.DrawTexture(rectangle, texture, ScaleMode.StretchToFill, true);
+            if (MapVisible)
+            {
+                GUI.depth = 1; // Existing HUD depth 0 remains above the map.
+                GUI.color = Color.white;
+                GUI.DrawTexture(rectangle, texture, ScaleMode.StretchToFill, true);
+            }
             GUI.color = previousColor;
             GUI.depth = previousDepth;
         }

@@ -42,14 +42,19 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.CaptureKey(Event.KeyboardEvent("w")), Is.True);
                 // The old and new forward keys, map key, and confirming mouse
                 // button are down when the draft is committed.
-                keys.UnionWith(new[] { KeyCode.UpArrow, KeyCode.W, KeyCode.Return, KeyCode.LeftShift, KeyCode.F10 });
+                keys.UnionWith(new[] { KeyCode.UpArrow, KeyCode.W, KeyCode.Return, KeyCode.LeftShift,
+                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F5, KeyCode.F10 });
                 downKeys.Add(KeyCode.Return);
+                downKeys.Add(KeyCode.F5);
                 buttons.Add(0);
                 Assert.That(preferences.Apply(), Is.True);
                 Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
                 Assert.That(preferences.Held(0), Is.False);
                 Assert.That(preferences.KeyHeld(KeyCode.UpArrow), Is.False, "old held binding remains suppressed");
                 Assert.That(preferences.KeyHeld(KeyCode.LeftShift), Is.False, "source fixed modifier is suppressed");
+                Assert.That(preferences.KeyHeld(KeyCode.RightShift), Is.False);
+                Assert.That(preferences.KeyHeld(KeyCode.RightAlt), Is.False, "both physical Alt keys share source modifier precedence");
+                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.False, "held F5 cannot leak a save or display toggle");
                 Assert.That(preferences.KeyHeld(KeyCode.F10), Is.True, "reserved recovery controls stay available");
                 Assert.That(preferences.Held(4), Is.False);
                 Assert.That(preferences.Pressed(4), Is.False, "same-frame confirmation cannot open the map");
@@ -74,12 +79,14 @@ namespace MagicCarpet.Native.Tests
 
                 // Observe release while no flight input is sampled, then a
                 // subsequent press is fresh rather than permanently latched.
-                keys.ExceptWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.LeftShift });
+                keys.ExceptWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.LeftShift, KeyCode.RightShift,
+                    KeyCode.RightAlt, KeyCode.F5 });
                 downKeys.Clear();
                 buttons.Remove(0);
                 preferences.AdvanceInputReleaseBarrier();
-                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return });
+                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F5 });
                 downKeys.Add(KeyCode.Return);
+                downKeys.Add(KeyCode.F5);
                 buttons.Add(0);
                 Assert.That(preferences.Held(0), Is.True);
                 Assert.That(preferences.Pressed(4), Is.True);
@@ -89,6 +96,9 @@ namespace MagicCarpet.Native.Tests
                     "a fresh rebound map press reaches the source menu consumer");
                 keys.Add(KeyCode.LeftShift);
                 Assert.That(preferences.KeyHeld(KeyCode.LeftShift), Is.True);
+                Assert.That(preferences.KeyHeld(KeyCode.RightShift), Is.True);
+                Assert.That(preferences.KeyHeld(KeyCode.RightAlt), Is.True);
+                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.True, "release and repress admits the fresh F5 edge");
                 Assert.That(preferences.MouseHeld(0), Is.True);
 
                 // Cancelling another draft preserves the committed mapping

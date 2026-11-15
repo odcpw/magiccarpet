@@ -21,7 +21,7 @@ pub(super) fn observe(backend: &Mc2CampaignBackend) -> Vec<ParticipantNotificati
         .iter()
         .enumerate()
         .filter_map(|(color, notice)| {
-            if notice.state != 1 {
+            if notice.state != 1 && notice.state != 3 {
                 return None;
             }
             let kind = notice

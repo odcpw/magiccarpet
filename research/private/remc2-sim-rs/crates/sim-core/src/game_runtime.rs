@@ -101,6 +101,7 @@ impl RuntimePresentationCue {
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum ReplayOperation<C> {
     Pause,
+    ToggleIconsMap,
     Step {
         command: C,
     },
@@ -172,6 +173,26 @@ pub struct RuntimeGuard {
     pub generation: u64,
 }
 
+/// Source GAME settings, distinct from CONFIG/profile preferences. Both
+/// display bytes are retained across mission and retry boundaries.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DisplaySettings {
+    pub minimap: bool,
+    pub top_bar: bool,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self { Self { minimap: true, top_bar: true } }
+}
+
+impl DisplaySettings {
+    pub(crate) fn is_default(&self) -> bool { *self == Self::default() }
+    pub(crate) fn toggled(self) -> Self {
+        Self { minimap: !self.minimap, top_bar: !self.top_bar }
+    }
+}
+
 /// Canonical observation of the outer runtime and its current binding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RuntimeIdentity {
@@ -184,6 +205,7 @@ pub struct RuntimeIdentity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontend_media: Option<media::MediaSnapshot>,
     pub player_preferences: preferences::PreferencesSnapshot,
+    pub display_settings: DisplaySettings,
     pub presentation: RuntimePresentationCue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign_menu: Option<CampaignMenuSnapshot>,
@@ -476,6 +498,7 @@ pub struct GameRuntime<B> {
     level_statistics: Vec<CompletedLevelStatistics>,
     frontend_media: media::FrontendMedia,
     player_preferences: preferences::PreferenceStore,
+    display_settings: DisplaySettings,
     secret_flow: secret_flow::SecretFlowState,
     retained_campaign: Option<CampaignSaveState>,
 }
@@ -498,6 +521,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             level_statistics: Vec::new(),
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             state: RuntimeState::Title {
@@ -585,6 +609,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             mode,
             frontend_media: self.frontend_media.snapshot(),
             player_preferences: self.player_preferences.snapshot(),
+            display_settings: self.display_settings,
             presentation,
             campaign_menu: self.campaign_menu_snapshot(),
             pending_definition,
@@ -1215,7 +1240,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     /// and the caller's exact receipt verifier all succeed before the runtime
     /// publishes the candidate. Observations borrow the private candidate;
     /// callers must discard them when final receipt verification fails.
-    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O, S, X>(
+    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O, S, T, X>(
         &mut self,
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
@@ -1223,6 +1248,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         session_id: u64,
         operations: I,
         paused: bool,
+        initial_display_settings: DisplaySettings,
         completed_levels: Vec<SemanticLevelId>,
         level_statistics: Vec<CompletedLevelStatistics>,
         resolve_input: F,
@@ -1230,6 +1256,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         mut before_operation: X,
         verify: V,
         mut set_speech: S,
+        mut display_notice: T,
         mut observe: O,
     ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
     where
@@ -1240,6 +1267,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
         S: FnMut(&mut GameSession<B>, bool, bool),
+        T: FnMut(&mut GameSession<B>, bool) -> Result<(), RuntimeTransitionError>,
         X: FnMut(&mut GameSession<B>, usize) -> Result<(), RuntimeTransitionError>,
     {
         self.validate_guard(guard)
@@ -1292,6 +1320,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         prepare(&mut candidate).map_err(RestorePlayingError::Transition)?;
         before_operation(&mut candidate, 0).map_err(RestorePlayingError::Transition)?;
         observe(&candidate);
+        let mut display_settings = initial_display_settings;
         let mut operation_count = 0;
         for (operation_index, operation) in operations.into_iter().enumerate() {
             if operation_index != 0 {
@@ -1301,6 +1330,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             operation_count = operation_index + 1;
             let guard = candidate.identity().guard();
             match operation {
+                ReplayOperation::ToggleIconsMap => {
+                    display_settings = display_settings.toggled();
+                    display_notice(&mut candidate, display_settings.minimap)
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -1353,6 +1387,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.completed_levels = completed_levels;
         self.level_statistics = level_statistics;
         self.generation = next_generation;
+        self.display_settings = display_settings;
         Ok(self.identity())
     }
 
@@ -1931,6 +1966,28 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source ChangeSettings case13. Both guards are checked before either
+    /// the global display bytes or the local type3 notice can be published.
+    pub fn toggle_icons_and_map(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard)
+            .map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let next = self.display_settings.toggled();
+        session.backend_mut().publish_display_notice(next.minimap)?;
+        self.display_settings = next;
+        Ok(self.identity())
+    }
+
+    pub(crate) fn restore_display_settings(&mut self, settings: DisplaySettings) {
+        self.display_settings = settings;
+    }
+
     /// Apply a successfully committed source-global preference without exposing
     /// paused gameplay mutation. The backend records its exact replay boundary.
     pub fn apply_current_dynamic_lighting_preference(
@@ -2511,6 +2568,7 @@ mod tests {
             generation: 4,
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
@@ -2552,6 +2610,7 @@ mod tests {
             generation: 6,
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            display_settings: DisplaySettings::default(),
             completed_levels: resolver
                 .flow()
                 .entries()
@@ -3831,6 +3890,7 @@ mod tests {
                 runtime_id: 523,
                 frontend_media: media::FrontendMedia::default(),
                 player_preferences: preferences::PreferenceStore::default(),
+                display_settings: DisplaySettings::default(),
                 secret_flow: secret_flow::SecretFlowState::default(),
                 retained_campaign: None,
                 generation: 6,
@@ -3945,6 +4005,7 @@ mod tests {
             runtime_id: 525,
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             generation: 6,
@@ -5244,6 +5305,7 @@ mod tests {
         let mut spliced = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 223,

@@ -48,11 +48,16 @@ namespace MagicCarpet.Native
                 var selector = notice.kind switch {
                     "participant.died" => 374,
                     "participant.banished" => 283,
+                    "participant.icons_map_hidden" => 365,
+                    "participant.icons_map_visible" => 366,
                     _ => throw new InvalidDataException("unbound participant notification kind: " + notice.kind)
                 };
                 // Presence is authoritative. Zero is the final visible frame;
                 // filtering it here would shorten every source notice.
-                rows.Add(new Row(notice.display_name + " " + language(selector), x, y));
+                var text = language(selector);
+                if (notice.kind is "participant.died" or "participant.banished")
+                    text = notice.display_name + " " + text;
+                rows.Add(new Row(text, x, y));
                 x = startX;
                 y += lineHeight;
             }

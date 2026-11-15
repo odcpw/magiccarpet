@@ -2054,6 +2054,27 @@ pub extern "C" fn mc_game_runtime_presentation_frame_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_toggle_icons_map_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |record| {
+            record.runtime.toggle_icons_and_map(
+                RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+                sim_session::SessionGuard {
+                    session_id: handle, generation: session_generation, expected_tick,
+                },
+            ).map_err(map_transition_error)?;
+            record.campaign_presentation_dirty = true;
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     handle: u64,
     runtime_generation: u64,
@@ -3860,6 +3881,89 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn runtime_display_toggle_guards_both_owners_and_cold_restores_type_three_notice() {
+        let packages = installed_package_set_json(&[
+            level_three_package(), level_one_package(), level_two_package(),
+        ]);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let title = identity(handle);
+        assert_eq!(title["display_settings"], serde_json::json!({"minimap": true, "top_bar": true}));
+        assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle), title);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
+            handle, 1, packages.as_ptr(), packages.len() as u32,
+        ), MC_STATUS_OK);
+        let loading = identity(handle);
+        assert_ne!(mc_game_runtime_toggle_icons_map_v1(handle, 2, 1, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle), loading);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let before = identity(handle);
+        let before_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let before_save = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+        });
+        for (outer, nested, tick, expected) in [
+            (2, 1, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 2, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 1, 1, MC_STATUS_INVALID_ARGUMENT),
+        ] {
+            assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, outer, nested, tick), expected);
+            assert_eq!(identity(handle), before);
+            assert_eq!(read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }), before_snapshot);
+            assert_eq!(read_bytes(|buffer, capacity, length| {
+                mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+            }), before_save);
+        }
+        assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 3, 1, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["session"], before["session"]);
+        assert_eq!(identity(handle)["display_settings"], serde_json::json!({"minimap": false, "top_bar": false}));
+        let notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(notices["value"].as_array().unwrap().len(), 1);
+        assert_eq!(notices["value"][0]["kind"], "participant.icons_map_hidden");
+        assert_eq!(notices["value"][0]["remaining_frames"], 50);
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["display_settings"], serde_json::json!({"minimap": true, "top_bar": true}));
+        let saved = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        let snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            cold, 1, packages.as_ptr(), packages.len() as u32, saved.as_ptr(), saved.len() as u32,
+        ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cold_identity = identity(cold);
+        assert_eq!(cold_identity["mode"], "paused");
+        assert_eq!(cold_identity["display_settings"], identity(handle)["display_settings"]);
+        let cold_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(cold, buffer, capacity, length)
+        });
+        assert_eq!(cold_snapshot["value"], snapshot["value"]);
+        let cold_notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(cold, buffer, capacity, length)
+        });
+        assert_eq!(cold_notices["value"][0]["kind"], "participant.icons_map_visible");
+        assert_eq!(cold_notices["value"][0]["remaining_frames"], 50);
+        let outer = cold_identity["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_identity["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(cold, outer, nested, 0, buffer, capacity, length)
+        }), saved);
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
