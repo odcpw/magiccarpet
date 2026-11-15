@@ -22,7 +22,7 @@ pub struct LocaleSummary {
     pub non_ascii_record_count: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LocaleSnapshot {
     pub cache_path: String,
     pub binding_sha256: String,

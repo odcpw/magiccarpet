@@ -101,6 +101,10 @@ namespace MagicCarpet.Native
 
         internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
         internal void AttachMedia(FrontendMediaPresenter owner) { media = owner; }
+        internal OwnerCampaignMenuCache LocaleCache => campaignCache ??=
+            new OwnerCampaignMenuCache(campaignCachePath ??
+                throw new InvalidOperationException("source language selection requires the menu cache"));
+        internal Mc2ObjectiveText CreateObjectiveText() => new Mc2ObjectiveText(LocaleCache);
         internal SourceMenuText GameplayText(string level)
         {
             campaignCache ??= new OwnerCampaignMenuCache(campaignCachePath ??
@@ -494,7 +498,9 @@ namespace MagicCarpet.Native
                         0x258980 => Action.Quit,
                         _ => Action.None,
                     };
-                    var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610 || entry.source_action == 0x25a160;
+                    var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610 ||
+                        entry.source_action == 0x25a160 || entry.source_action == 0x2589e0 &&
+                        preferences?.Current.installed_locales?.Length > 0;
                     GUI.enabled = action != Action.None && (action != Action.Save || canSave) ||
                         settings && preferences != null;
                     var hit = new Rect(view.x + entry.x * scale, view.y + entry.y * scale,
@@ -508,6 +514,7 @@ namespace MagicCarpet.Native
                         if (settings)
                         {
                             preferences.Open(entry.source_action switch {
+                                0x2589e0 => SourceSettingsDialog.Page.Language,
                                 0x259e00 => SourceSettingsDialog.Page.Name,
                                 0x25a610 => SourceSettingsDialog.Page.Keys,
                                 _ => SourceSettingsDialog.Page.Joystick
@@ -727,7 +734,8 @@ namespace MagicCarpet.Native
                 !SuppressSourceBriefing(menu.briefing_level_id, secretCampaign))
             {
                 var mission = campaignCache.ForMission(menu.briefing_level_id);
-                source.DrawBriefing(menu, campaignCache.MapFocus(menu), mission.briefing, view, campaignCache.ForMission, PortalSelector);
+                source.DrawBriefing(menu, campaignCache.MapFocus(menu), campaignCache.BriefingText(mission),
+                    view, campaignCache.ForMission, PortalSelector);
             }
             if (!string.IsNullOrEmpty(status)) source.DialogText.DrawText(status, 130, 10, view, source.NearestColor(63, 63, 63));
             return Action.None;

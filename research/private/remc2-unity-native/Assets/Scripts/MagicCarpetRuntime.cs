@@ -654,6 +654,10 @@ namespace MagicCarpet.Native
         private OwnerAssetCache ownerAssetCache;
         private OwnerAssetCache gameRuntimeLanguageCache;
         private Mc2ObjectiveText gameRuntimeObjectiveText;
+        private OwnerCampaignMenuCache.LocaleTextBinding gameRuntimeLocaleBinding;
+        private OwnerCampaignMenuCache.LocaleTextBinding gameRuntimeObjectiveLoggedLocale;
+        private ushort gameRuntimeObjectiveLoggedSource;
+        private int gameRuntimeObjectiveRecord = -1, gameRuntimeObjectiveLoggedRecord = -1;
         private OwnerAssetCache gameRuntimeEnvironmentCache;
         private OwnerAudioPresentation ownerAudio;
         private AudioQualificationCapture audioCapture;
@@ -3151,8 +3155,26 @@ namespace MagicCarpet.Native
         private string ResolveGameRuntimeObjectiveText()
         {
             gameRuntimeObjectiveText ??= new Mc2ObjectiveText(GameRuntimeLanguageCache());
-            return gameRuntimeObjectiveText.Resolve(campaignSession.Selection.internalLevel,
-                campaignSession.ObjectiveStageState(0, 0));
+            var source = campaignSession.Selection.internalLevel;
+            var objective = campaignSession.ObjectiveStageState(0, 0);
+            gameRuntimeObjectiveRecord = Mc2ObjectiveText.SourceRecordIndex(source,
+                objective.textSelector, objective.isLevelEnd != 0);
+            return gameRuntimeObjectiveText.Resolve(source, objective);
+        }
+
+        private void BindGameRuntimeLocale(OwnerCampaignMenuCache.LocaleTextBinding binding)
+        {
+            if (ReferenceEquals(gameRuntimeLocaleBinding, binding)) return;
+            gameRuntimeLocaleBinding = binding;
+            gameRuntimeObjectiveText = gameRuntimeMenu.CreateObjectiveText();
+            gameRuntimeObjectiveTextbox?.Dispose();
+            gameRuntimeObjectiveTextbox = null;
+            if (campaignSession != null)
+            {
+                var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                    level2DayPresentationSurface ?? gameRuntimeNightSurface;
+                if (surface != null) UpdateGameRuntimeObjectiveTextbox(surface);
+            }
         }
 
         private void UpdateGameRuntimeObjectiveTextbox(CampaignPresentationSurface surface)
@@ -3174,7 +3196,8 @@ namespace MagicCarpet.Native
 
         private void DrawGameRuntimeObjectiveTextbox()
         {
-            if (gameRuntimeObjectiveTextbox == null || campaignSession == null ||
+            if (Event.current == null || Event.current.type != EventType.Repaint ||
+                gameRuntimeObjectiveTextbox == null || campaignSession == null ||
                 gameRuntimeCampaignSnapshot?.value == null ||
                 gameRuntimeCampaignSnapshot.value.objective_textbox_ticks <= 0) return;
             var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
@@ -3206,6 +3229,19 @@ namespace MagicCarpet.Native
                 new Rect((Screen.width - 640f * scale) * .5f,
                     (Screen.height - 480f * scale) * .5f, 640f * scale, 480f * scale), palette,
                 gameRuntimeSourceMenus.MapOpen);
+            if (indices != null && gameRuntimeLocaleBinding != null &&
+                (!ReferenceEquals(gameRuntimeObjectiveLoggedLocale, gameRuntimeLocaleBinding) ||
+                 gameRuntimeObjectiveLoggedSource != campaignSession.Selection.internalLevel ||
+                 gameRuntimeObjectiveLoggedRecord != gameRuntimeObjectiveRecord))
+            {
+                gameRuntimeObjectiveLoggedLocale = gameRuntimeLocaleBinding;
+                gameRuntimeObjectiveLoggedSource = campaignSession.Selection.internalLevel;
+                gameRuntimeObjectiveLoggedRecord = gameRuntimeObjectiveRecord;
+                Debug.Log($"MC_SOURCE_LOCALE_OBJECTIVE id={gameRuntimeLocaleBinding.Id} " +
+                    $"binding={gameRuntimeLocaleBinding.BindingSha256} text={gameRuntimeLocaleBinding.TextSha256} " +
+                    $"source={gameRuntimeObjectiveLoggedSource} record={gameRuntimeObjectiveRecord} " +
+                    $"generation={generation} tick={surface.Tick}");
+            }
         }
 
         private void UpdateGameRuntimeBriefing()
@@ -10429,7 +10465,21 @@ namespace MagicCarpet.Native
             {
                 playerPreferences = new PlayerPreferencesPresenter(
                     ApplyGameRuntimePreferences,
-                    string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile, installed);
+                    string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile, installed,
+                    localeApplied: BindGameRuntimeLocale);
+                EnsureGameRuntimeMenu();
+                gameRuntimeMenu.AttachPreferences(playerPreferences);
+                var languages = gameRuntimeMenu.LocaleCache;
+                if (languages.HasLanguage)
+                {
+                    if (playerPreferences.RequiresLanguageInstall(languages) &&
+                        !restorePlaying && before.mode == GameRuntimeTransport.PlayingMode)
+                    {
+                        session.GameRuntimePause();
+                        restorePlaying = true;
+                    }
+                    playerPreferences.BindLanguages(languages);
+                }
             }
             finally
             {
@@ -11043,6 +11093,8 @@ namespace MagicCarpet.Native
             gameRuntimeObjectiveInstruction = null;
             gameRuntimeObjectiveTextbox?.Dispose();
             gameRuntimeObjectiveTextbox = null;
+            gameRuntimeObjectiveLoggedLocale = null;
+            gameRuntimeObjectiveRecord = gameRuntimeObjectiveLoggedRecord = -1;
             if (modernEnvironment != null)
             {
                 modernEnvironment.Dispose();
@@ -16159,6 +16211,7 @@ namespace MagicCarpet.Native
             ResetGameRuntimeHelpHint();
             gameRuntimeLanguageCache = null;
             gameRuntimeObjectiveText = null;
+            gameRuntimeLocaleBinding = null;
             if (wasLevel2)
             {
                 DestroyLevel2IndexedFramePresentation();

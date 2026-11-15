@@ -8,7 +8,7 @@ namespace MagicCarpet.Native
     // stay in PlayerPreferencesPresenter; this leaf only draws and edits them.
     internal sealed class SourceSettingsDialog
     {
-        internal enum Page { Name, Keys, Joystick }
+        internal enum Page { Name, Keys, Joystick, Language }
 
         internal struct Result
         {
@@ -61,10 +61,12 @@ namespace MagicCarpet.Native
         }
 
         internal Result Draw(OwnerCampaignMenuCache cache, Page page, PlayerPreferences draft,
-            int captureKey, int selectedKeySlot, string status)
+            int captureKey, int selectedKeySlot, string status, InstalledLocaleSummary[] installedLocales = null)
         {
             var view = SourceView(out var scale);
             var input = Event.current;
+            if (page == Page.Language)
+                return DrawLanguage(cache, draft, installedLocales, status, view, scale, input);
             if (page == Page.Keys)
                 return DrawKeys(cache, draft, captureKey, selectedKeySlot, status, view, scale, input);
             if (cache == null || cache.StartupBackground == null || cache.Startup == null)
@@ -72,6 +74,55 @@ namespace MagicCarpet.Native
             if (page == Page.Name)
                 return DrawName(cache, draft, status, view, scale, input);
             return DrawJoystick(cache, draft, status, view, scale, input);
+        }
+
+        private Result DrawLanguage(OwnerCampaignMenuCache cache, PlayerPreferences draft,
+            InstalledLocaleSummary[] locales, string status, Rect view, float scale, Event input)
+        {
+            if (cache?.LanguageBackground == null || cache.LanguageCursor == null || locales == null || locales.Length == 0)
+                return CancelOnly(input);
+            var selected = Array.FindIndex(locales, locale => locale != null &&
+                locale.id == (draft.selected_locale ?? cache.DefaultLocaleId));
+            if (selected < 0) return CancelOnly(input);
+            Texture2D flag;
+            try { flag = cache.LanguageFlag(locales[selected].id); }
+            catch (InvalidDataException) { return CancelOnly(input); }
+            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture);
+            GUI.DrawTexture(view, cache.LanguageBackground);
+            DrawBitmap(flag, 263, 134, view, scale);
+            if (!string.IsNullOrEmpty(status))
+                DrawStatus(DialogText(cache), status, 10, 460, view, Color.white);
+            if (input.type == EventType.KeyDown)
+            {
+                if (input.keyCode == KeyCode.Escape)
+                    return Consume(input, new Result { Cancel = true, SelectedKeySlot = -1, BeginKeyCapture = -1 });
+                if (input.keyCode is KeyCode.Return or KeyCode.KeypadEnter)
+                {
+                    draft.selected_locale = locales[selected].id;
+                    return Consume(input, new Result { Confirm = true, SelectedKeySlot = -1, BeginKeyCapture = -1 });
+                }
+                if (input.keyCode is KeyCode.LeftArrow or KeyCode.RightArrow)
+                {
+                    var delta = input.keyCode == KeyCode.LeftArrow ? -1 : 1;
+                    draft.selected_locale = locales[(selected + delta + locales.Length) % locales.Length].id;
+                    input.Use();
+                }
+            }
+            else if (input.type == EventType.MouseDown)
+            {
+                if (input.button == 0)
+                {
+                    draft.selected_locale = locales[(selected + 1) % locales.Length].id;
+                    input.Use();
+                }
+                else if (input.button == 1)
+                {
+                    draft.selected_locale = locales[selected].id;
+                    return Consume(input, new Result { Confirm = true, SelectedKeySlot = -1, BeginKeyCapture = -1 });
+                }
+            }
+            DrawSourceCursor(cache, view, scale, input.mousePosition, cache.LanguageCursor);
+            return EmptyResult();
         }
 
         private static Result CancelOnly(Event input)
@@ -446,7 +497,8 @@ namespace MagicCarpet.Native
             showDone = !showDone;
         }
 
-        private void DrawSourceCursor(OwnerCampaignMenuCache cache, Rect view, float scale, Vector2 mousePosition)
+        private void DrawSourceCursor(OwnerCampaignMenuCache cache, Rect view, float scale, Vector2 mousePosition,
+            Texture2D selectedCursor = null)
         {
             if (cursorDisabledForOpen) return;
             if (!cursorLookupAttempted)
@@ -454,7 +506,7 @@ namespace MagicCarpet.Native
                 cursorLookupAttempted = true;
                 try
                 {
-                    sourceCursor = cache.Settings.Bitmap(110);
+                    sourceCursor = selectedCursor ?? cache.Settings.Bitmap(110);
                     previousCursorVisible = Cursor.visible;
                     Cursor.visible = false;
                     customCursorActive = true;
