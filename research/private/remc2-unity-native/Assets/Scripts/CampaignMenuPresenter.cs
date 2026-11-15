@@ -107,6 +107,12 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("source gameplay font requires the menu cache"));
             return campaignCache.PauseMenu.GameplayText(campaignCache.ForMission(level).pause_profile);
         }
+        internal OwnerCampaignMenuCache.ObjectiveAssets ObjectiveForProfile(string profile)
+        {
+            campaignCache ??= new OwnerCampaignMenuCache(campaignCachePath ??
+                throw new InvalidOperationException("source objective artwork requires the menu cache"));
+            return campaignCache.ObjectiveForProfile(profile);
+        }
         internal Texture2D GameplayBitmap(string level, int selector) =>
             campaignCache.PauseMenu.GameplayBitmap(campaignCache.ForMission(level).pause_profile, selector);
         internal Color GameplayColor(string level, byte index) =>

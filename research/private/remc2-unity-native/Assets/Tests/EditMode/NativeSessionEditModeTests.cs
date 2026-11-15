@@ -16,6 +16,19 @@ namespace MagicCarpet.Native.Tests
 
         private string priorAssetCache;
 
+        [Serializable] private sealed class ObjectiveOracleManifest { public ObjectiveOracleAssets assets; }
+        [Serializable] private sealed class ObjectiveOracleAssets { public ObjectiveOracleFont hfont3; public ObjectiveOracleSprite[] hsprn; }
+        [Serializable] private sealed class ObjectiveOracleFont { public ObjectiveOracleGlyph[] glyphs; public string mask_blob_path; }
+        [Serializable] private sealed class ObjectiveOracleGlyph { public int offset, length, width, height; }
+        [Serializable] private sealed class ObjectiveOracleSprite { public int index, width, height; public string indices_path, mask_path; }
+        [Serializable] private sealed class ObjectiveOracleHud { public ObjectiveOracleRows objective; }
+        [Serializable] private sealed class ObjectiveOracleRows { public ObjectiveOracleRow[] rows; }
+        [Serializable] private sealed class ObjectiveOracleRow
+        {
+            public int reference_x, reference_y, render_width, render_height, blend_x, blend_y, blend_width, blend_height;
+            public string text_bytes_path, raster_path;
+        }
+
         private static string PrivateRoot =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
@@ -152,6 +165,119 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 Level1ExitPresentationMath.SourceDisplayRect(1280, 1024),
                 Is.EqualTo(new Rect(0f, 0.03125f, 1f, 0.9375f)));
+        }
+
+        [Test]
+        public void ObjectiveSourceRasterMatchesQualifiedNightSourceOracle()
+        {
+            var root = Path.Combine(PrivateRoot, "generated/settlement-20261105-integration/owner-closed-v6/night-presentation-v6");
+            var manifest = JsonUtility.FromJson<ObjectiveOracleManifest>(File.ReadAllText(Path.Combine(root, "manifest.json")));
+            var glyphs = manifest.assets.hfont3.glyphs.Select(g =>
+                new ObjectiveTextboxCompositor.Glyph(g.offset, g.length, g.width, g.height)).ToArray();
+            var glyphMasks = File.ReadAllBytes(Path.Combine(root, manifest.assets.hfont3.mask_blob_path));
+            ObjectiveTextboxCompositor.Sprite Sprite(int index)
+            {
+                var sprite = manifest.assets.hsprn.Single(s => s.index == index);
+                return new ObjectiveTextboxCompositor.Sprite(sprite.width, sprite.height,
+                    File.ReadAllBytes(Path.Combine(root, sprite.indices_path)),
+                    File.ReadAllBytes(Path.Combine(root, sprite.mask_path)));
+            }
+            var corner = Sprite(171); var side = Sprite(172); var horizontal = Sprite(173);
+            var rows = JsonUtility.FromJson<ObjectiveOracleHud>(File.ReadAllText(Path.Combine(root, "hud/level1.json"))).objective.rows;
+            Assert.That(rows.Length, Is.EqualTo(6));
+            foreach (var row in rows)
+            {
+                var actual = ObjectiveTextboxCompositor.BuildSourceForeground(
+                    File.ReadAllBytes(Path.Combine(root, row.text_bytes_path)), glyphs, glyphMasks,
+                    corner, side, horizontal, 119);
+                Assert.That(new[] { actual.X, actual.Y, actual.Width, actual.Height, actual.BlendX,
+                    actual.BlendY, actual.BlendWidth, actual.BlendHeight }, Is.EqualTo(new[] {
+                    row.reference_x, row.reference_y, row.render_width, row.render_height,
+                    row.blend_x, row.blend_y, row.blend_width, row.blend_height }), row.text_bytes_path);
+                Assert.That(actual.IndicesThenMask, Is.EqualTo(File.ReadAllBytes(Path.Combine(root, row.raster_path))), row.text_bytes_path);
+            }
+        }
+
+        [Test]
+        public void ObjectiveTextboxGpuSamplesCurrentIndexedSceneAndRespectsLifetime()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null),
+                "this check needs a real graphics device");
+            var glyphs = Enumerable.Range(0, 273).Select(_ => new ObjectiveTextboxCompositor.Glyph(0, 112, 8, 14)).ToArray();
+            var glyphMasks = Enumerable.Repeat((byte)1, 112).ToArray();
+            ObjectiveTextboxCompositor.Sprite Sprite(int width, int height) =>
+                new ObjectiveTextboxCompositor.Sprite(width, height, Enumerable.Repeat((byte)7, width * height).ToArray(),
+                    Enumerable.Repeat((byte)1, width * height).ToArray());
+            var sprites = new[] { Sprite(16, 12), Sprite(16, 14), Sprite(32, 10) };
+            var tables = new byte[0x4000 + 256];
+            for (var i = 0; i < 256; i++) tables[0x4000 + i] = (byte)(255 - i);
+            var palette = new byte[768];
+            for (var i = 0; i < 256; i++) palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] = (byte)i;
+            var assets = new OwnerCampaignMenuCache.ObjectiveAssets(glyphs, glyphMasks, sprites, tables, 0x4000, 0, 119, palette);
+            var text = Encoding.ASCII.GetBytes("Actual source text");
+            var raster = ObjectiveTextboxCompositor.BuildSourceForeground(text, glyphs, glyphMasks,
+                sprites[0], sprites[1], sprites[2], 119);
+            const int worldWidth = 320, worldHeight = 200;
+            var world = new byte[worldWidth * worldHeight];
+            var upload = new byte[world.Length];
+            for (var y = 0; y < worldHeight; y++)
+            for (var x = 0; x < worldWidth; x++)
+            {
+                var value = (byte)((x + y * 3) & 255);
+                world[y * worldWidth + x] = value;
+                upload[(worldHeight - 1 - y) * worldWidth + x] = value;
+            }
+            var scene = new Texture2D(worldWidth, worldHeight, TextureFormat.R8, false, true)
+                { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var map = new Texture2D(worldWidth, worldHeight, TextureFormat.R8, false, true)
+                { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var history = new RenderTexture(worldWidth, worldHeight, 0, RenderTextureFormat.R8,
+                RenderTextureReadWrite.Linear) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var callerTarget = new RenderTexture(4, 4, 0);
+            var readback = new Texture2D(raster.Width, raster.Height, TextureFormat.RGBA32, false, true);
+            var prior = RenderTexture.active;
+            try
+            {
+                scene.LoadRawTextureData(upload); scene.Apply(false, false);
+                map.LoadRawTextureData(world); map.Apply(false, false);
+                history.Create(); Graphics.CopyTexture(scene, history); callerTarget.Create();
+                using (var presenter = new SourceObjectiveTextboxPresenter(assets))
+                {
+                    presenter.Present(Encoding.ASCII.GetString(text), 42);
+                    Assert.That(presenter.Render(0, scene, 42, 0, palette), Is.Null);
+                    Assert.That(presenter.Render(1, scene, 41, 0, palette), Is.Null);
+                    RenderTexture.active = callerTarget;
+                    var rendered = presenter.Render(1, history, 42, 0, palette);
+                    Assert.That(rendered, Is.Not.Null, "revision zero is valid for a real map");
+                    Assert.That(RenderTexture.active, Is.SameAs(callerTarget), "Render must preserve its caller's active target");
+                    RenderTexture.active = rendered;
+                    readback.ReadPixels(new Rect(0, 0, raster.Width, raster.Height), 0, 0); readback.Apply();
+                    var indices = new byte[raster.Width * raster.Height]; var mask = new byte[indices.Length];
+                    ObjectiveTextboxCompositor.ComposeOverlayIndices(1, world, worldWidth, worldHeight, 640, 480,
+                        raster.X, raster.Y, raster.Width, raster.Height, raster.BlendX, raster.BlendY,
+                        raster.BlendWidth, raster.BlendHeight, tables, 0x4000, 0, raster.IndicesThenMask, indices, mask);
+                    var expected = new Color32[indices.Length];
+                    ObjectiveTextboxCompositor.MaterializeBottomUpRgba(indices, mask, raster.Width, raster.Height, palette, expected);
+                    Assert.That(readback.GetPixels32(), Is.EqualTo(expected), "GPU blend must use current indexed pixels");
+                    rendered = presenter.Render(1, map, 42, 0, palette, true);
+                    RenderTexture.active = rendered;
+                    readback.ReadPixels(new Rect(0, 0, raster.Width, raster.Height), 0, 0); readback.Apply();
+                    Assert.That(readback.GetPixels32(), Is.EqualTo(expected), "top-down map and bottom-up scene history must match");
+                    Array.Fill(upload, (byte)3); scene.LoadRawTextureData(upload); scene.Apply(false, false);
+                    rendered = presenter.Render(1, scene, 42, 0, palette);
+                    RenderTexture.active = rendered;
+                    readback.ReadPixels(new Rect(0, 0, raster.Width, raster.Height), 0, 0); readback.Apply();
+                    Assert.That(readback.GetPixels32(), Is.Not.EqualTo(expected), "unchanged map revision must not cache old scene pixels");
+                    RenderTexture.active = prior;
+                }
+            }
+            finally
+            {
+                RenderTexture.active = prior;
+                UnityEngine.Object.DestroyImmediate(callerTarget);
+                UnityEngine.Object.DestroyImmediate(history); UnityEngine.Object.DestroyImmediate(map);
+                UnityEngine.Object.DestroyImmediate(scene); UnityEngine.Object.DestroyImmediate(readback);
+            }
         }
 
         [Test]

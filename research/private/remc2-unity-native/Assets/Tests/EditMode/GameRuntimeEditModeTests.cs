@@ -705,6 +705,113 @@ namespace MagicCarpet.Native.Tests
             Assert.That(objective.textSelector, Is.Zero, "the actual initial source selector starts at zero");
             Assert.That(records[firstRecord], Is.Not.Empty, "the qualified original language record exists");
             Assert.That(new Mc2ObjectiveText(cache).Resolve(source, objective), Is.EqualTo(records[firstRecord]));
+
+            var root = new GameObject("actual later objective glyph consumer");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var environment = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(generated, ownerPath), Path.Combine(generated, packagePath));
+            var surface = new CampaignPresentationSurface();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                typeof(MagicCarpetRuntime).GetField("campaignSession", flags).SetValue(runtime, native);
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeSecretSurface", flags).SetValue(runtime, surface);
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeEnvironmentCache", flags).SetValue(runtime, environment);
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeObjectiveText", flags).SetValue(runtime, new Mc2ObjectiveText(cache));
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeLoadingCachePath", flags).SetValue(runtime,
+                    Path.Combine(generated, "mc2-level1-night-cache-v2"));
+                typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuCachePath", flags).SetValue(runtime,
+                    CampaignMenuCache);
+                typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeObjectiveTextbox", flags)
+                    .Invoke(runtime, new object[] { surface });
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.EqualTo(records[firstRecord]));
+                var presenter = (SourceObjectiveTextboxPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeObjectiveTextbox", flags).GetValue(runtime);
+                Assert.That(presenter, Is.Not.Null, "the canonical runtime binds the actual source objective consumer");
+                surface.PresentEnvironment(native, environment);
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                Assert.That(surface.SceneHistoryGeneration, Is.EqualTo(native.Generation));
+                Assert.That(surface.SceneHistoryRevision, Is.EqualTo(native.SceneFrameRevision));
+                // These direct campaign owners prove real text/world glyph composition;
+                // the normal GameRuntime check separately supplies its authoritative clock.
+                var rendered = presenter.Render(1, surface.ComposedSceneIndices,
+                    surface.SceneHistoryGeneration, surface.SceneHistoryRevision, native.DayIndexedFramePalette);
+                Assert.That(rendered, Is.Not.Null);
+                var pixels = ReadObjectivePixels(rendered);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var artwork = menu.ObjectiveForProfile(mapType == 0 ? "day" : mapType == 1 ? "night" : "cave");
+                var raster = ObjectiveTextboxCompositor.BuildSourceForeground(
+                    Encoding.GetEncoding(28591).GetBytes(records[firstRecord]), artwork.Glyphs,
+                    artwork.GlyphMasks, artwork.Corner, artwork.Side, artwork.Horizontal, artwork.TextColor);
+                Assert.That(rendered.width, Is.EqualTo(raster.Width));
+                Assert.That(rendered.height, Is.EqualTo(raster.Height));
+                var textPixels = 0;
+                for (var y = 0; y < raster.Height; y++)
+                for (var x = 0; x < raster.Width; x++)
+                {
+                    var pixel = y * raster.Width + x;
+                    if (raster.IndicesThenMask[raster.Width * raster.Height + pixel] == 0 ||
+                        raster.IndicesThenMask[pixel] != artwork.TextColor) continue;
+                    var color = artwork.TextColor * 3;
+                    Assert.That(pixels[(raster.Height - 1 - y) * raster.Width + x], Is.EqualTo(new Color32(
+                        native.DayIndexedFramePalette[color], native.DayIndexedFramePalette[color + 1],
+                        native.DayIndexedFramePalette[color + 2], 255)),
+                        "the selected source profile's original glyph pixels reach the rendered region");
+                    textPixels++;
+                }
+                Assert.That(textPixels, Is.GreaterThan(0));
+                var tick = native.TerrainState().tick;
+                var stage = native.ObjectiveStageState(0, 0);
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(presenter.Render(1,
+                    surface.ComposedSceneIndices, native.Generation, surface.SceneHistoryRevision,
+                    native.DayIndexedFramePalette)), "repeated presentation samples the same composed scene");
+                Assert.That(native.TerrainState().tick, Is.EqualTo(tick));
+                var repeatedStage = native.ObjectiveStageState(0, 0);
+                Assert.That((repeatedStage.generation, repeatedStage.textSelector, repeatedStage.stageState,
+                    repeatedStage.done, repeatedStage.isLevelEnd), Is.EqualTo((stage.generation,
+                    stage.textSelector, stage.stageState, stage.done, stage.isLevelEnd)));
+                Assert.That(presenter.Render(0, surface.ComposedSceneIndices, native.Generation,
+                    surface.SceneHistoryRevision, native.DayIndexedFramePalette), Is.Null);
+                Assert.That(presenter.Render(1, surface.ComposedSceneIndices, native.Generation + 1,
+                    surface.SceneHistoryRevision, native.DayIndexedFramePalette), Is.Null,
+                    "an old text owner cannot shade a replacement generation");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release();
+                UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static Color32[] ReadObjectivePixels(RenderTexture texture)
+        {
+            var previous = RenderTexture.active;
+            var pixels = new Texture2D(texture.width, texture.height, TextureFormat.RGBA32, false, true);
+            try
+            {
+                RenderTexture.active = texture;
+                pixels.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0);
+                pixels.Apply();
+                return pixels.GetPixels32();
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                UnityEngine.Object.DestroyImmediate(pixels);
+            }
         }
 
         [Test]
@@ -1882,7 +1989,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
                     "-mc-game-runtime", "-mc-runtime-menu",
                     "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                    "-mc-runtime-menu-cache", Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
                     "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
                     "-mc-runtime-replay-save", save,
                     "-mc-runtime-package", LevelOnePackage,
@@ -1992,6 +2099,11 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationSaveGameRuntimeProductionReplayToPath(save);
                 runtime.QualificationApplyGameRuntimeProductionInput(true, false);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.Null,
+                    "Title clears the former mission's source objective text");
+                Assert.That(typeof(MagicCarpetRuntime).GetField("gameRuntimeObjectiveTextbox",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .GetValue(runtime), Is.Null, "Title releases the former glyph presentation owner");
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True);
                 var restoredPlaying = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
@@ -2064,6 +2176,101 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeNightPresentationHash, Is.EqualTo(resetWorldFrame));
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
                 Assert.That(runtime.GameRuntimeNightMinimapReady, Is.True);
+                const System.Reflection.BindingFlags objectiveFlags =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var objectiveOwner = (NativeSession)typeof(MagicCarpetRuntime)
+                    .GetField("session", objectiveFlags).GetValue(runtime);
+                var objectiveSurface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeNightSurface", objectiveFlags).GetValue(runtime);
+                var objectivePresenter = (SourceObjectiveTextboxPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeObjectiveTextbox", objectiveFlags).GetValue(runtime);
+                Assert.That(objectivePresenter, Is.Not.Null);
+                var objectiveWindow = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                var objectiveDisplay = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32,
+                    RenderTextureReadWrite.Linear);
+                try
+                {
+                    objectiveWindow.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", objectiveFlags)
+                        .Invoke(runtime, null);
+                    objectiveWindow.Show();
+                    // The ordinary source O-input producer sets two, then the
+                    // post-phase draw clock consumes one, including while paused.
+                    Action<bool> observeObjective = held => {
+                        var observed = objectiveOwner.GameRuntimeCampaignPausedRenderFrame(0, held);
+                        typeof(MagicCarpetRuntime).GetField("gameRuntimeCampaignSnapshot", objectiveFlags)
+                            .SetValue(runtime, observed);
+                        typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeNightPresentation", objectiveFlags)
+                            .Invoke(runtime, new object[] { runtime.GameRuntimeProductionIdentity, observed });
+                    };
+                    runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                    observeObjective(true);
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.EqualTo(1));
+                    var objectiveCameras = objectiveSurface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                    Array.Sort(objectiveCameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in objectiveCameras)
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = objectiveDisplay;
+                        camera.Render();
+                    }
+                    var speechPlays = speech.PlayCount;
+                    var objectiveTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                    objectiveWindow.SendEvent(new Event { type = EventType.Layout });
+                    objectiveWindow.SendEvent(new Event { type = EventType.Repaint });
+                    var objectiveOutput = (RenderTexture)typeof(SourceObjectiveTextboxPresenter)
+                        .GetField("output", objectiveFlags).GetValue(objectivePresenter);
+                    Assert.That(objectiveOutput, Is.Not.Null, "normal paused GUI renders the real source objective");
+                    var objectivePixels = ReadObjectivePixels(objectiveOutput);
+                    objectiveWindow.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(objectivePixels, ReadObjectivePixels(objectiveOutput));
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(objectiveTick));
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.EqualTo(1));
+                    Assert.That(speech.PlayCount, Is.EqualTo(speechPlays), "repeated GUI cannot replay objective narration");
+                    observeObjective(false);
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.Zero);
+                    objectiveWindow.SendEvent(new Event { type = EventType.Repaint });
+
+                    runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                    var sourceMenus = (SourceCampaignMenus)typeof(MagicCarpetRuntime)
+                        .GetField("gameRuntimeSourceMenus", objectiveFlags).GetValue(runtime);
+                    var mapInput = sourceMenus.Step(true, false, false, false, false, true);
+                    Assert.That(sourceMenus.QueueAction(mapInput.Action, sourceMenus.MapOpen,
+                        sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, mapInput), Is.True);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(sourceMenus.MapOpen, Is.True,
+                        "the ordinary Return-key proposal receives actual Rust map admission");
+                    runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                    observeObjective(true);
+                    var mapSpeechPlays = speech.PlayCount;
+                    objectiveWindow.SendEvent(new Event { type = EventType.Repaint });
+                    Assert.That(objectiveSurface.WorldIndices, Is.Not.Null);
+                    var objectiveMaterial = (Material)typeof(SourceObjectiveTextboxPresenter)
+                        .GetField("material", objectiveFlags).GetValue(objectivePresenter);
+                    Assert.That(objectiveMaterial.GetTexture("_SceneIndices"), Is.SameAs(objectiveSurface.WorldIndices),
+                        "the live map textbox samples its map texture, not the previous world history");
+                    Assert.That(objectiveMaterial.GetFloat("_SceneTopDown"), Is.EqualTo(1f),
+                        "native map index rows retain their top-down orientation");
+                    var objectivePreferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime)
+                        .GetField("playerPreferences", objectiveFlags).GetValue(runtime);
+                    var objectivePalette = objectivePreferences.ApplyBrightnessToPalette(objectiveSurface.FramePaletteRgb8, 1);
+                    CollectionAssert.AreEqual(objectivePalette,
+                        ((Texture2D)objectiveMaterial.GetTexture("_Palette")).GetRawTextureData<byte>().ToArray(),
+                        "the textbox uses this displayed map's palette and current brightness");
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.EqualTo(1));
+                    Assert.That(speech.PlayCount, Is.EqualTo(mapSpeechPlays));
+                    observeObjective(false);
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.Zero);
+                    runtime.QualificationResetGameRuntimeProduction();
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.objective_textbox_ticks, Is.Zero,
+                        "reset clears the old source textbox generation");
+                }
+                finally
+                {
+                    objectiveWindow.DrawRuntime = null;
+                    objectiveWindow.Close();
+                    if (objectiveWindow != null) UnityEngine.Object.DestroyImmediate(objectiveWindow);
+                    objectiveDisplay.Release();
+                    UnityEngine.Object.DestroyImmediate(objectiveDisplay);
+                }
             }
             finally
             {
@@ -2382,6 +2589,10 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(
                 PrivateRoot,
                 "generated/level1-unity-asset-cache-plan29-final");
+
+        private static string CampaignMenuCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE") ??
+            Path.Combine(PrivateRoot, "generated/mc-shared-source-map-motion-20261026");
 
         private static string OpenedLevelTwoReplay =>
             Path.Combine(PrivateRoot, "generated/opened-l2-runtime-replay-v5.json");

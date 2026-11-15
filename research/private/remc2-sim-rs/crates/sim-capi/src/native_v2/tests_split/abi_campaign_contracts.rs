@@ -2756,6 +2756,93 @@ fn cf12_world_info(handle: u64) -> McCampaignWorldInfoV2 {
 }
 
 #[test]
+fn direct_material_root_campaign_open_binds_primary_frame_and_rejects_wrong_cache() {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let cases = [
+        (
+            5,
+            4,
+            0,
+            "dragon-bee-20261105-integration/level5-owner-current/level5",
+            "secret-lifecycle-20261111-source4-environment",
+        ),
+        (
+            31,
+            30,
+            2,
+            "mc-paj2-source30-campaign-package",
+            "mc-paj2-environment-source30-audio-20261026",
+        ),
+    ];
+    for (index, &(external_level, internal_level, map_type, package, cache)) in
+        cases.iter().enumerate()
+    {
+        let package = generated.join(package);
+        let cache = generated.join(cache);
+        assert!(cache.join("materials/descriptor.json").is_file());
+        assert!(!cache.join("components/gameplay/manifest.json").is_file());
+        let package = package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level,
+            internal_level,
+            map_type,
+            ..McCampaignSelectionV2::default()
+        };
+        let open = |root: &Path, handle: &mut u64| {
+            let root = root.to_string_lossy();
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                root.as_ptr(),
+                root.len() as u32,
+                &raw const selection,
+                handle,
+            )
+        };
+        let mut handle = 0;
+        assert_eq!(
+            open(&cache, &mut handle),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_ne!(handle, 0);
+        let query = cf12_frame_query(0, 0);
+        let mut pixels = vec![0; 320 * 200];
+        let mut frame = McPresentationFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_presentation_frame_copy(
+                handle,
+                &raw const query,
+                pixels.as_mut_ptr(),
+                pixels.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                &raw mut frame,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_OK,
+            "source {internal_level}: {}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!((frame.generation, frame.tick), (0, 0));
+        assert_ne!(frame.index_hash, 0);
+        let wrong_cache = generated.join(cases[1 - index].4);
+        let mut rejected = u64::MAX;
+        assert_eq!(
+            open(&wrong_cache, &mut rejected),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(rejected, 0);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+}
+
+#[test]
 fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
     let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
     let package = generated.join("level3-day-block32-campaign-recipe-v2");

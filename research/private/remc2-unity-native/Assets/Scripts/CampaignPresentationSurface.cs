@@ -190,6 +190,9 @@ namespace MagicCarpet.Native
         private bool pendingExitTable, hasSceneHistory;
 
         internal RenderTexture ComposedSceneIndices => hasSceneHistory ? composedHistory : null;
+        internal Texture2D WorldIndices => worldIndices;
+        internal byte[] FramePaletteRgb8 => worldPaletteSource;
+        internal ulong SceneHistoryGeneration => hasSceneHistory ? historyGeneration : 0;
         internal ulong SceneHistoryRevision => hasSceneHistory ? historyRevision : 0;
 
         private void PrepareComposedScene(NativeCampaignSession session, OwnerAssetCache cache)
