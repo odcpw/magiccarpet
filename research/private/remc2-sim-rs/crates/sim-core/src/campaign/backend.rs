@@ -1652,8 +1652,8 @@ impl Mc2RuntimePackageResolver {
         self.definition_presentation(pending, identity.presentation.cue_id)
     }
 
-    /// Observe the exact installed presentation binding after a direct secret
-    /// entry. This reads the live session; it does not fabricate a Loading mode.
+    /// Observe the exact installed presentation binding of an active session.
+    /// This reads Playing or Paused without fabricating a Loading mode.
     pub fn active_entry_presentation(
         &self,
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
@@ -1665,7 +1665,7 @@ impl Mc2RuntimePackageResolver {
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
         let identity = runtime.identity();
-        if identity.mode != RuntimeMode::Playing {
+        if !matches!(identity.mode, RuntimeMode::Playing | RuntimeMode::Paused) {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Playing,
                 actual: identity.mode,
@@ -1675,7 +1675,7 @@ impl Mc2RuntimePackageResolver {
             runtime
                 .session()
                 .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
-                    message: "Playing has no active session".to_owned(),
+                    message: "active runtime has no session".to_owned(),
                 })?;
         let definition = session.definition();
         self.definition_presentation(
@@ -5869,7 +5869,15 @@ pub(crate) mod tests {
             resolver.loading_presentation(&runtime, title.guard()),
             Err(RuntimeTransitionError::InvalidMode { .. })
         ));
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, title.guard()),
+            Err(RuntimeTransitionError::InvalidMode { .. })
+        ));
         let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, loading.guard()),
+            Err(RuntimeTransitionError::InvalidMode { .. })
+        ));
         let first = resolver
             .loading_presentation(&runtime, loading.guard())
             .unwrap();
@@ -5968,6 +5976,34 @@ pub(crate) mod tests {
             Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
         ));
         assert_eq!(runtime.identity(), playing);
+        resolver.by_level.get_mut(&entry).unwrap().definition = original;
+        {
+            let session = runtime.session_mut().unwrap();
+            session.step(guard(session), GameCommand::default()).unwrap();
+        }
+        let advanced = runtime.identity();
+        assert!(advanced.session.as_ref().unwrap().tick > 0);
+        let paused = runtime.pause(advanced.guard()).unwrap();
+        let before = resolver.save_replay(&runtime).unwrap();
+        let paused_binding = resolver.active_entry_presentation(&runtime, paused.guard()).unwrap();
+        assert_eq!(paused_binding, active);
+        assert_eq!(runtime.identity(), paused);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), before,
+            "observing the paused active binding changes no replay or state");
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, advanced.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        let original = Arc::clone(&resolver.by_level[&entry].definition);
+        resolver.by_level.get_mut(&entry).unwrap().definition =
+            Arc::new(reissue_at_revision(&original, original.revision() + 1).unwrap());
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, paused.guard()),
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
+        ));
+        assert_eq!(runtime.identity(), paused);
+        resolver.by_level.get_mut(&entry).unwrap().definition = original;
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), before);
     }
 
     #[test]

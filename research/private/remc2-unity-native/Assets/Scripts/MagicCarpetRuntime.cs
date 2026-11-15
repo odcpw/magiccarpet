@@ -10211,12 +10211,27 @@ namespace MagicCarpet.Native
                 "existing Rust runtime handle opened its resolver-selected destination");
             gameRuntimeCampaignSnapshot = observation;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
+            ComposeGameRuntimeActivePresentation(identity, observation);
+            InitializeGameRuntimeAudioEffects(observation);
+            gameRuntimeLoadingPresentationGate.Complete(identity);
+            gameRuntimeTransitionPresenter.ClearFailure();
+            PresentGameRuntimeTransition(identity);
+            Debug.Log($"MC_LOADING_OPEN level={destination} runtime={identity.runtime_id} generation={identity.generation} session_generation={identity.session.generation} tick={identity.session.tick} definition={identity.session.definition_hash}");
+            if (!Application.isBatchMode) CaptureMouse();
+        }
+
+        private void ComposeGameRuntimeActivePresentation(GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignRenderObservation observation)
+        {
             var activeBinding = GameRuntimeTransport.ReadActiveEntryPresentation(identity);
             var source = activeBinding.source_selection;
             var selection = NativeSim.CampaignSelection.Create(
                 source.external_level, source.internal_level, source.map_type_id);
-            var selectedResource = ResolveGameRuntimePresentationResource(selection);
-            if (OwnerAssetCache.HasEnvironmentMaterials(selectedResource.presentation_cache_path))
+            var legacyNight = source.external_level == 1 && source.internal_level == 0 && source.map_type_id == 1;
+            var headlessNight = legacyNight && gameRuntimePackages.All(resource =>
+                resource == null || string.IsNullOrWhiteSpace(resource.presentation_cache_path));
+            var selectedResource = ResolveGameRuntimePresentationResource(selection, allowMissing: headlessNight);
+            if (selectedResource != null && OwnerAssetCache.HasEnvironmentMaterials(selectedResource.presentation_cache_path))
             {
                 ComposeGameRuntimeEnvironmentPresentation(identity, observation, activeBinding);
             }
@@ -10224,24 +10239,24 @@ namespace MagicCarpet.Native
             {
                 ComposeGameRuntimeLevel2Presentation(identity, observation);
             }
-            else if (source.external_level == 3 && source.internal_level == 2 && source.map_type_id == 0)
+            else if (source.external_level == 3 && source.internal_level == 2 && source.map_type_id == 0 ||
+                source.external_level == 4 && source.internal_level == 3 && source.map_type_id == 2)
             {
                 ComposeGameRuntimeLevel3Presentation(identity, observation);
             }
-            else if (source.external_level == 1 && source.internal_level == 0 && source.map_type_id == 1)
+            else if (legacyNight)
             {
-                ConfigureGameRuntimeFireballPresentation(
-                    session.GameRuntimePresentationAsset(GameRuntimeFireballAssetSlot), observation);
+                var fireballAsset = session.GameRuntimePresentationAsset(GameRuntimeFireballAssetSlot);
+                Require(fireballAsset.identity.session_id == identity.session.session_id &&
+                    fireballAsset.identity.generation == identity.session.generation &&
+                    fireballAsset.identity.tick == identity.session.tick &&
+                    fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
+                    "production Fireball asset is bound to the same nested session");
+                ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                 ComposeGameRuntimeNightPresentation(identity, observation);
             }
             else
                 throw new InvalidDataException("The selected source package has no validated environment presentation cache.");
-            InitializeGameRuntimeAudioEffects(observation);
-            gameRuntimeLoadingPresentationGate.Complete(identity);
-            gameRuntimeTransitionPresenter.ClearFailure();
-            PresentGameRuntimeTransition(identity);
-            Debug.Log($"MC_LOADING_OPEN level={destination} runtime={identity.runtime_id} generation={identity.generation} session_generation={identity.session.generation} tick={identity.session.tick} definition={identity.session.definition_hash}");
-            if (!Application.isBatchMode) CaptureMouse();
         }
 
         private void BeginGameRuntimeLoadingPresentation(GameRuntimeTransport.Identity loading)
@@ -10986,7 +11001,7 @@ namespace MagicCarpet.Native
 
         private GameRuntimeTransport.InstalledPackageResource
             ResolveGameRuntimePresentationResource(
-                NativeSim.CampaignSelection selection)
+                NativeSim.CampaignSelection selection, bool allowMissing = false)
         {
             var matches = gameRuntimePackages.Where(candidate =>
             {
@@ -11007,6 +11022,7 @@ namespace MagicCarpet.Native
                     return false;
                 }
             }).ToArray();
+            if (allowMissing && matches.Length == 0) return null;
             Require(
                 matches.Length == 1,
                 "resolver-selected campaign has one selection-bound owner presentation cache");
@@ -15449,8 +15465,10 @@ namespace MagicCarpet.Native
                     (identity.mode == GameRuntimeTransport.PlayingMode ||
                      identity.mode == GameRuntimeTransport.PausedMode) &&
                     identity.active_runtime_flow != null &&
-                    identity.active_runtime_flow.entries.Any(entry =>
-                        entry.level_id == identity.active_runtime_flow.bound_level_id),
+                    (identity.active_runtime_flow.entries.Any(entry =>
+                        entry.level_id == identity.active_runtime_flow.bound_level_id) ||
+                     identity.active_runtime_flow.secret_entries?.Any(entry =>
+                        entry.secret_level_id == identity.active_runtime_flow.bound_level_id) == true),
                     "resolver-derived game runtime opened a declared semantic level");
                 Require(
                     identity.session != null &&
@@ -15467,29 +15485,7 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellSelectionRequested = null;
                 gameRuntimeMode = true;
                 gameRuntimeStartupReady = true;
-                if (identity.active_runtime_flow.bound_level_id ==
-                    GameRuntimeLevelTwoId)
-                {
-                    ComposeGameRuntimeLevel2Presentation(identity, observation);
-                }
-                else if (identity.active_runtime_flow.bound_level_id == GameRuntimeLevelThreeId ||
-                         identity.active_runtime_flow.bound_level_id == GameRuntimeLevelFourId)
-                {
-                    ComposeGameRuntimeLevel3Presentation(identity, observation);
-                }
-                else
-                {
-                    var fireballAsset = opened.GameRuntimePresentationAsset(
-                        GameRuntimeFireballAssetSlot);
-                    Require(
-                        fireballAsset.identity.session_id == identity.session.session_id &&
-                        fireballAsset.identity.generation == identity.session.generation &&
-                        fireballAsset.identity.tick == identity.session.tick &&
-                        fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
-                        "production Fireball asset is bound to the same nested session");
-                    ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
-                    ComposeGameRuntimeNightPresentation(identity, observation);
-                }
+                ComposeGameRuntimeActivePresentation(identity, observation);
                 InitializeGameRuntimeAudioEffects(observation, preserveSpeech);
                 Debug.Log(
                     $"MC_GAME_RUNTIME_STARTUP VERIFIED handle={opened.Handle} " +
