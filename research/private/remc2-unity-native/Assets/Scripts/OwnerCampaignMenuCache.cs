@@ -54,13 +54,14 @@ namespace MagicCarpet.Native
             internal SettingsAssets(int width, int height, string backgroundPath,
                 BitmapBinding[] bindings, Func<string, int, byte[]> read)
             {
-                if (width != 640 || height != 480 || bindings?.Length != 3)
+                if (width != 640 || height != 480 || bindings?.Length != 4)
                     throw new InvalidDataException("source settings artwork binding is incomplete");
                 try
                 {
                     Background = Texture(read(backgroundPath, 640 * 480 * 4), 640, 480, "MC2 source settings screen15");
                     LoadBitmaps(bindings, bitmaps, read);
-                    if (!bitmaps.ContainsKey(107) || !bitmaps.ContainsKey(108) || !bitmaps.ContainsKey(110))
+                    if (!bitmaps.ContainsKey(107) || !bitmaps.ContainsKey(108) ||
+                        !bitmaps.ContainsKey(109) || !bitmaps.ContainsKey(110))
                         throw new InvalidDataException("source settings focus artwork is unbound");
                 }
                 catch { Dispose(); throw; }

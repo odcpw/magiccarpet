@@ -14,6 +14,7 @@ namespace MagicCarpet.Native
         {
             internal bool Confirm;
             internal bool Cancel;
+            internal bool ResetDefaults;
             internal int SelectedKeySlot;
             internal int BeginKeyCapture;
             internal bool ClearStatus;
@@ -223,6 +224,10 @@ namespace MagicCarpet.Native
             var done = cache.Settings.Bitmap(108);
             var doneRect = SourceRect(view, scale, 283, 381, done.width, done.height);
             if (showDone) DrawBitmap(done, 283, 381, view, scale);
+            var defaults = cache.Settings.Bitmap(109);
+            var defaultsRect = SourceRect(view, scale, 273, 10, defaults.width, defaults.height);
+            // TestMouseRegions draws the retained source button when hovered.
+            if (defaultsRect.Contains(input.mousePosition)) DrawBitmap(defaults, 273, 10, view, scale);
 
             if (input.type == EventType.KeyDown && captureKey < 0)
             {
@@ -241,6 +246,8 @@ namespace MagicCarpet.Native
             }
             if (input.type == EventType.MouseDown && input.button == 0)
             {
+                if (defaultsRect.Contains(input.mousePosition))
+                    return Consume(input, new Result { ResetDefaults = true, SelectedKeySlot = -1, BeginKeyCapture = -1 });
                 for (var slot = 0; slot < draft.keys.Length; slot++)
                 {
                     var rowY = 50 + 33 * slot;

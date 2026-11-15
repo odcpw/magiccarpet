@@ -5,8 +5,6 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using NUnit.Framework;
 using UnityEngine;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -1091,16 +1089,43 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(cache.LanguageText(binding.TextRecord), Is.Not.Empty);
                 }
             }
-            // An unchanged historical cache remains valid until the new typed
-            // capability is requested; absence cannot become invented metadata.
-            using (var legacy = new OwnerCampaignMenuCache(Path.Combine(PrivateRoot,
-                "generated/locale-source-menu-20261115-candidate2")))
+            var legacyPath = Path.Combine(PrivateRoot, "generated/locale-source-menu-20261115-candidate2");
+            Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(legacyPath),
+                "the unmodified historical three-sprite settings binding lacks source Default");
+            var legacyFixture = Path.Combine(Path.GetTempPath(), "mc-legacy-help-negative-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(legacyFixture);
+            try
             {
+                // Complete only the missing settings sprite with the current
+                // actual owner bytes and receipt; the historical help and
+                // pause bindings remain absent for their independent gates.
+                CopyOwnerMenuFixture(legacyPath, legacyFixture);
+                var oldManifestPath = Path.Combine(legacyFixture, "manifest.json");
+                // Keep absent optional fields absent using the existing .NET
+                // JSON reader; typed JsonUtility round trips turn null strings
+                // into empty strings and would change unrelated admission.
+                var oldManifest = ReadReplayDocument(File.ReadAllBytes(oldManifestPath));
+                var currentManifest = ReadReplayDocument(File.ReadAllBytes(Path.Combine(CampaignMenuCache, "manifest.json")));
+                var currentDefault = currentManifest.SelectSingleNode("/root/settings/bitmaps/item[selector='109']");
+                Assert.That(currentDefault, Is.Not.Null);
+                oldManifest.SelectSingleNode("/root/settings/bitmaps").AppendChild(oldManifest.ImportNode(currentDefault, true));
+                var receipt = currentManifest.SelectSingleNode("/root/outputs/item[path='settings-109.rgba8']");
+                Assert.That(receipt, Is.Not.Null);
+                oldManifest.SelectSingleNode("/root/outputs").AppendChild(oldManifest.ImportNode(receipt, true));
+                File.Copy(Path.Combine(CampaignMenuCache, "settings-109.rgba8"), Path.Combine(legacyFixture, "settings-109.rgba8"));
+                using (var bytes = new MemoryStream())
+                {
+                    using (var writer = JsonReaderWriterFactory.CreateJsonWriter(bytes, Encoding.UTF8, false))
+                        oldManifest.WriteTo(writer);
+                    File.WriteAllBytes(oldManifestPath, bytes.ToArray());
+                }
+                using var legacy = new OwnerCampaignMenuCache(legacyFixture);
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(72));
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(3));
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(1));
                 Assert.Throws<InvalidDataException>(() => { var ignored = legacy.ObjectiveForProfile("night").PauseSprites; });
             }
+            finally { Directory.Delete(legacyFixture, true); }
 
             var fixture = Path.Combine(Path.GetTempPath(), "mc-context-help-negative-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(fixture);
@@ -4045,6 +4070,103 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(File.Exists(Path.Combine(preferencesProfile, "player-preferences.json")), Is.True);
                     Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.locale_binding.id,
                         Is.EqualTo(localeSnapshot.id));
+
+                    // SetKeysDialog's selector109 acts immediately on the
+                    // source owner; Done and Cancel remain separate actions.
+                    var priorSoundEnabled = localePreferences.Current.preferences.sound_enabled;
+                    var priorMusicEnabled = localePreferences.Current.preferences.music_enabled;
+                    Assert.That(localePreferences.ApplySource(value => {
+                        value.keys[0] = "W"; value.sound_volume = 31; value.music_volume = 32;
+                        value.sound_enabled = false; value.music_enabled = false;
+                        value.show_help = false; value.brightness[0] = 2; value.brightness[1] = 3; value.brightness[2] = 4;
+                    }), Is.True);
+                    var keysButton = Array.Find(localeCache.Startup.buttons, entry => entry.source_action == 0x25a610);
+                    Assert.That(keysButton, Is.Not.Null);
+                    var keysPoint = new Vector2((localeScreen.x - 640 * localeScale) * .5f +
+                        (keysButton.x + keysButton.width * .5f) * localeScale,
+                        (localeScreen.y - 480 * localeScale) * .5f + (keysButton.y + keysButton.height * .5f) * localeScale);
+                    void OpenKeys()
+                    {
+                        localeGui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = keysPoint + localeGuiOrigin });
+                        localeGui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = keysPoint + localeGuiOrigin });
+                        Assert.That(localePreferences.IsOpen, Is.True, "the real source Title button opens Set Keys");
+                    }
+                    var nonDefault = JsonUtility.ToJson(localePreferences.Current.preferences);
+                    OpenKeys();
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    Assert.That(localePreferences.IsOpen, Is.False);
+                    Assert.That(JsonUtility.ToJson(localePreferences.Current.preferences), Is.EqualTo(nonDefault),
+                        "Cancel does not invoke source defaults");
+                    OpenKeys();
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                    Assert.That(localePreferences.IsOpen, Is.False);
+                    Assert.That(JsonUtility.ToJson(localePreferences.Current.preferences), Is.EqualTo(nonDefault),
+                        "ordinary Done does not invoke source defaults");
+                    OpenKeys();
+                    localeGui.SendEvent(new Event { type = EventType.Layout });
+                    localeGui.SendEvent(new Event { type = EventType.Repaint });
+                    var defaultButton = localeCache.Settings.Bitmap(109);
+                    Assert.That((defaultButton.width, defaultButton.height), Is.EqualTo((73, 37)),
+                        "the actual source selector109 owns its hit extent");
+                    var defaultPoint = new Vector2((localeScreen.x - 640 * localeScale) * .5f +
+                        (273 + defaultButton.width * .5f) * localeScale,
+                        (localeScreen.y - 480 * localeScale) * .5f + (10 + defaultButton.height * .5f) * localeScale);
+                    var beforeDefault = JsonUtility.ToJson(localePreferences.Current.preferences);
+                    var outsideDefault = new Vector2((localeScreen.x - 640 * localeScale) * .5f + 272 * localeScale,
+                        (localeScreen.y - 480 * localeScale) * .5f + 20 * localeScale);
+                    localeGui.SendEvent(new Event { type = EventType.MouseDown, button = 0,
+                        mousePosition = outsideDefault + localeGuiOrigin });
+                    Assert.That(JsonUtility.ToJson(localePreferences.Current.preferences), Is.EqualTo(beforeDefault),
+                        "a click outside the actual source sprite cannot reset preferences");
+                    localeGui.SendEvent(new Event { type = EventType.MouseDown, button = 0,
+                        mousePosition = defaultPoint + localeGuiOrigin });
+                    Assert.That(localePreferences.IsOpen, Is.True, "Default resets in place, rather than acting as Done");
+                    var resetPrefs = localePreferences.Current.preferences;
+                    CollectionAssert.AreEqual(new[] { "UpArrow", "DownArrow", "LeftArrow", "RightArrow", "Return",
+                        "LeftControl", "LeftAlt", "RightShift", "RightShift", "LeftAlt" }, resetPrefs.keys);
+                    Assert.That((resetPrefs.sound_volume, resetPrefs.music_volume, resetPrefs.show_help), Is.EqualTo((127, 127, true)));
+                    CollectionAssert.AreEqual(new[] { 0, 3, 0 }, resetPrefs.brightness,
+                        "source resets brightness11/13, preserving brightness12");
+                    Assert.That((resetPrefs.sound_enabled, resetPrefs.music_enabled), Is.EqualTo((false, false)),
+                        "source volume defaults do not unmute the independent enable flags");
+                    Assert.That(resetPrefs.selected_locale, Is.EqualTo(localeSnapshot.id));
+                    Assert.That(localeCache.PrepareLocale(localePreferences.Current.locale_binding), Is.SameAs(localeBinding));
+                    var resetDraft = (PlayerPreferences)typeof(PlayerPreferencesPresenter).GetField("draft",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(localePreferences);
+                    CollectionAssert.AreEqual(resetPrefs.keys, resetDraft.keys);
+                    Assert.That((int)typeof(PlayerPreferencesPresenter).GetField("selectedKeySlot",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(localePreferences), Is.Zero);
+                    using (var coldOwner = new GameRuntimeTransport())
+                    {
+                        var heldKeys = new System.Collections.Generic.HashSet<KeyCode> { KeyCode.W };
+                        var coldPreferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                            coldOwner.Handle, coldOwner.IdentitySnapshot(), json), preferencesProfile,
+                            keyHeld: heldKeys.Contains, keyPressed: _ => false,
+                            mouseHeld: _ => false, mousePressed: _ => false);
+                        coldPreferences.BindLanguages(localeCache);
+                        CollectionAssert.AreEqual(resetPrefs.keys, coldPreferences.Current.preferences.keys);
+                        CollectionAssert.AreEqual(resetPrefs.brightness, coldPreferences.Current.preferences.brightness);
+                        Assert.That(coldPreferences.Current.preferences.selected_locale, Is.EqualTo(localeSnapshot.id));
+                        Assert.That((coldPreferences.Current.preferences.sound_volume, coldPreferences.Current.preferences.music_volume,
+                            coldPreferences.Current.preferences.show_help), Is.EqualTo((127, 127, true)));
+                        Assert.That(coldPreferences.SampleInput(0, true).Forward, Is.False,
+                            "the replaced W mapping no longer drives flight after cold profile load");
+                        heldKeys.Add(KeyCode.UpArrow);
+                        Assert.That(coldPreferences.SampleInput(0, true).Forward, Is.True,
+                            "the reset source forward key reaches the normal input consumer");
+                    }
+                    // A later uncommitted edit is cancellable without undoing
+                    // the already accepted and persisted Default action.
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.W, character = 'w' });
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    localeGui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    Assert.That(localePreferences.IsOpen, Is.False);
+                    Assert.That(localePreferences.Current.preferences.keys[0], Is.EqualTo("UpArrow"));
+                    Assert.That(localePreferences.ApplySource(value => {
+                        value.sound_enabled = priorSoundEnabled; value.music_enabled = priorMusicEnabled; value.brightness[1] = 0;
+                    }), Is.True);
                 }
                 finally
                 {
