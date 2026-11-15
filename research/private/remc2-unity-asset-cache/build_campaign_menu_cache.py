@@ -136,6 +136,30 @@ def source_startup() -> dict:
             first_selector=row[4], last_selector=row[5], step_ticks=4) for row in rows])
 
 
+def source_gameplay_help() -> bytes:
+    """Bind the source spell hint and objective-expiry context rows."""
+    source = cache.pinned_remc2_blob("remc2/engine/engine_support.cpp")
+    body = source.decode().split("type_array_str_E2A74 str_E2A74 {{", 1)[1].split("}};", 1)[0]
+    rows = re.findall(r"^\{(0x[0-9A-Fa-f]+),\{([^{}]+)\},([^{}]+)\}", body, re.MULTILINE)
+    if len(rows) != 105:
+        raise cache.CacheError("pinned gameplay help table extent changed")
+    bindings = []
+    for index in (41, *range(72, 81)):
+        kind, axes, tail = rows[index]
+        values = [int(value.strip(), 0) for value in axes.split(",")]
+        extra = [int(value.strip(), 0) for value in tail.split(",")]
+        if len(values) != 5 or len(extra) != 6:
+            raise cache.CacheError("pinned gameplay help row shape changed")
+        kind = int(kind, 0)
+        if kind != (5 if index == 41 else 7) or values[2] <= 0:
+            raise cache.CacheError("pinned gameplay help row type or duration changed")
+        bindings.append(dict(row=index, kind=kind, flags=values[0], text_record=values[1],
+            duration=values[2], x=values[3], y=values[4], age_threshold=extra[3],
+            priority=extra[4]))
+    return (json.dumps(dict(schema="mc2-gameplay-help/v1", source_sha256=hashlib.sha256(source).hexdigest(),
+        rows=bindings), sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+
+
 def source_campaign_controls() -> list[dict]:
     source = subprocess.run(["git", "-C", str(cache.REMC2_GIT), "show",
         f"{cache.PINNED_REMC2_COMMIT}:remc2/engine/MenusAndIntros.cpp"],
@@ -576,8 +600,9 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                 **cache.wav_properties(payload, f"source map sample{sample_id}")))
     catalog_payload, _ = source_catalog()
     write("source-runtime-catalog.tsv", catalog_payload)
+    write("gameplay-help.json", source_gameplay_help())
     manifest = dict(schema=SCHEMA, source_commit=cache.PINNED_REMC2_COMMIT,
-                    source_catalog_path="source-runtime-catalog.tsv",
+                    source_catalog_path="source-runtime-catalog.tsv", gameplay_help_path="gameplay-help.json",
                     source_hscreen_sha256=hashlib.sha256(source).hexdigest(),
                     source_language_sha256=hashlib.sha256(language).hexdigest(),
                     language_cache=dict(path="language", binding_sha256=language_binding["binding_sha256"],

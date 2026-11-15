@@ -3318,7 +3318,13 @@ namespace MagicCarpet.Native
                 }
                 if (effect.kind == NativeSim.CampaignEffectFlight && effect.code == 5)
                 {
-                    ConsumeGameRuntimeHelpHint(effect);
+                    // sub_88BA0 requests a context row; zero retains the
+                    // popup owner's pending selector, rather than row zero.
+                    if (effect.value1 == 8)
+                        RequestGameRuntimeContextHelpHint(effect.value0,
+                            session.ObservedCampaignIdentity().player_preferences.preferences.show_help);
+                    else
+                        ConsumeGameRuntimeHelpHint(effect);
                     continue;
                 }
                 if (effect.kind == NativeSim.CampaignEffectFlight && effect.code == 6)

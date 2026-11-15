@@ -101,6 +101,22 @@ namespace MagicCarpet.Native
         { public string id, palette_path, colours_path, tables_path; public ObjectiveSpriteBinding[] sprites; }
         [Serializable] private sealed class ObjectiveBinding
         { public string font_id; public int table_offset; public ObjectiveProfileBinding[] profiles; }
+        [Serializable] private sealed class GameplayHelpRecord
+        {
+            public int row, kind, text_record, duration, flags, x, y, age_threshold, priority;
+        }
+        [Serializable] private sealed class GameplayHelpDocument
+        { public string schema, source_sha256; public GameplayHelpRecord[] rows; }
+        internal sealed class GameplayHelpBinding
+        {
+            internal readonly int Row, TextRecord, Duration, Flags, X, Y, AgeThreshold, Priority;
+            internal GameplayHelpBinding(int row, int textRecord, int duration, int flags,
+                int x, int y, int ageThreshold, int priority)
+            {
+                Row = row; TextRecord = textRecord; Duration = duration; Flags = flags;
+                X = x; Y = y; AgeThreshold = ageThreshold; Priority = priority;
+            }
+        }
         internal sealed class ObjectiveAssets
         {
             internal readonly ObjectiveTextboxCompositor.Glyph[] Glyphs;
@@ -156,7 +172,7 @@ namespace MagicCarpet.Native
         }
         [Serializable] private sealed class Manifest
         {
-            public string schema, source_commit, source_language_sha256, source_catalog_path;
+            public string schema, source_commit, source_language_sha256, source_catalog_path, gameplay_help_path;
             public LanguageBinding language_cache;
             public LanguageScreenBinding language_screen;
             public int width, height, view_width, view_height;
@@ -179,6 +195,7 @@ namespace MagicCarpet.Native
         private byte[] portalSound;
         private byte[] clickSound;
         private readonly Dictionary<string, LocaleTextBinding> localeBindings = new(StringComparer.Ordinal);
+        private readonly Dictionary<int, GameplayHelpBinding> gameplayHelp = new();
         private readonly Dictionary<string, int> briefingSelectors = new(StringComparer.Ordinal);
         private string languageCachePath, defaultLocaleId;
         private LocaleTextBinding currentLocale;
@@ -248,6 +265,35 @@ namespace MagicCarpet.Native
             }
             try
             {
+                if (manifest.gameplay_help_path != null)
+                {
+                    if (manifest.gameplay_help_path != "gameplay-help.json")
+                        throw new InvalidDataException("source gameplay help path is unbound");
+                    var helpReceipt = manifest.outputs.SingleOrDefault(row => row.path == manifest.gameplay_help_path);
+                    if (helpReceipt == null || helpReceipt.bytes != 1226)
+                        throw new InvalidDataException("source gameplay help receipt is incomplete");
+                    var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
+                    if (Digest(helpBytes) != "d2b8d993ba46ce4f31d9c05060b83b4ed7781e4836043d369f99c0d6a3db994e")
+                        throw new InvalidDataException("source gameplay help table identity differs");
+                    var help = JsonUtility.FromJson<GameplayHelpDocument>(Encoding.ASCII.GetString(helpBytes));
+                    if (help?.schema != "mc2-gameplay-help/v1" ||
+                        help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
+                        help.rows?.Length != 10)
+                        throw new InvalidDataException("source gameplay help table is incomplete");
+                    for (var index = 0; index < help.rows.Length; index++)
+                    {
+                        var row = help.rows[index];
+                        var expectedRow = index == 0 ? 41 : 71 + index;
+                        if (row == null || row.row != expectedRow || row.kind != (index == 0 ? 5 : 7) ||
+                            row.text_record < 0 || row.text_record >= 471 || row.duration <= 0 ||
+                            row.flags < 0 || row.x < 0 || row.y < 0 || row.age_threshold < 0 ||
+                            row.priority < 0 || row.priority > 6 || localeBindings.Count == 0 ||
+                            localeBindings.Values.Any(locale => string.IsNullOrEmpty(locale.Record(row.text_record))))
+                            throw new InvalidDataException("source gameplay help row or locale record is invalid");
+                        gameplayHelp.Add(row.row, new GameplayHelpBinding(row.row, row.text_record,
+                            row.duration, row.flags, row.x, row.y, row.age_threshold, row.priority));
+                    }
+                }
                 if (manifest.schema == "mc2-owner-campaign-menu-cache/v3")
                 {
                     if (manifest.source_catalog_path != "source-runtime-catalog.tsv")
@@ -480,6 +526,10 @@ namespace MagicCarpet.Native
         internal ObjectiveAssets ObjectiveForProfile(string profile) =>
             objectiveProfiles.TryGetValue(profile, out var assets) ? assets :
                 throw new InvalidDataException("source objective assets are not bound for " + profile);
+
+        internal GameplayHelpBinding GameplayHelpForRow(int row) =>
+            gameplayHelp.TryGetValue(row, out var binding) ? binding :
+                throw new InvalidDataException("source gameplay help row is unbound: " + row);
 
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
             .OrderBy(row => row.source_ordinary_index).ToArray();
@@ -783,6 +833,7 @@ namespace MagicCarpet.Native
         {
             currentLocale = null;
             localeBindings.Clear();
+            gameplayHelp.Clear();
             briefingSelectors.Clear();
             foreach (var flag in languageFlags.Values) Destroy(flag);
             languageFlags.Clear();

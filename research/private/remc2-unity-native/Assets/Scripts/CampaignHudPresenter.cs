@@ -55,21 +55,31 @@ namespace MagicCarpet.Native
         }
 
         private AbilityImprovedNotification gameRuntimeAbilityNotification;
-        // The only gameplay hint emitted by the opening spell activation path.
-        // engine_support.cpp str_E2A74[41]: text 329, duration 50, age 800,
-        // base priority 2. sub_88B60 raises priority to 6; it does not create a
-        // seconds timer or bypass GetHelpPopupTextAndCoords affordability.
+        // Shared cached popup state for source hint 41 and the forced objective
+        // context rows. The outer source frame is the only clock owner.
         internal sealed class ManaHelpHint
         {
-            private const int Cooldown = 800;
-            private int age = Cooldown;
+            private readonly Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> rowFor;
+            private readonly OwnerCampaignMenuCache.GameplayHelpBinding mana;
+            private int age;
             // SetTextBoxMinMaxSizes_87090 clears dword_0x72; the 20-pass
             // delay is installed only by suppression or sub_87C10.
             private int pollDelay;
             private int remaining;
-            internal int Priority { get; private set; } = 2;
+            private int currentRow;
+            private int pendingRow;
+            internal int Priority { get; private set; }
             internal bool Visible { get; private set; }
+            internal int VisibleRow { get; private set; }
             internal int AnchorX { get; private set; } = 540;
+
+            internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding)
+            {
+                rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
+                mana = rowFor(41) ?? throw new InvalidDataException("Missing source mana help row");
+                age = mana.AgeThreshold;
+                Priority = mana.Priority;
+            }
 
             internal void Promote(int hint, int priority)
             {
@@ -82,6 +92,7 @@ namespace MagicCarpet.Native
                 bool enabled, bool paused, bool suppressed)
             {
                 Visible = false;
+                VisibleRow = 0;
                 // DrawHelpPopUps_871F0 enters its pause branch instead of
                 // advancing sub_87B30/sub_87B70. Keep the current popup carrier.
                 if (!enabled || paused) return;
@@ -96,20 +107,30 @@ namespace MagicCarpet.Native
                     // Eligibility is sampled by SetHelpPopupCoords only when
                     // selecting a popup, not reevaluated during its 50 draws.
                     Visible = true;
+                    VisibleRow = currentRow;
                     if (--remaining == 0) Close();
                 }
-                else if (--pollDelay <= 0 && age > Cooldown &&
-                    (leftUnavailable || rightUnavailable))
+                else if (--pollDelay <= 0)
                 {
-                    AnchorX = leftUnavailable ? 540 : 600;
-                    remaining = 50;
+                    if (pendingRow != 0)
+                    {
+                        currentRow = pendingRow;
+                        pendingRow = 0;
+                        remaining = rowFor(currentRow).Duration;
+                    }
+                    else if (age > mana.AgeThreshold && (leftUnavailable || rightUnavailable))
+                    {
+                        currentRow = 41;
+                        AnchorX = leftUnavailable ? 540 : 600;
+                        remaining = mana.Duration;
+                    }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
                     // DrawPopupTextBox_87610 starts on the following frame.
                 }
                 age = unchecked(age + 1);
-                if (age > Cooldown * 3)
+                if (age > mana.AgeThreshold * 3)
                 {
-                    age = Cooldown;
+                    age = mana.AgeThreshold;
                     Priority = Math.Min(5, Priority + 1);
                 }
             }
@@ -117,9 +138,30 @@ namespace MagicCarpet.Native
             private void Close()
             {
                 remaining = 0;
-                age = 0;
-                Priority = 2;
+                if (currentRow == 41)
+                {
+                    age = 0;
+                    Priority = mana.Priority;
+                }
+                currentRow = 0;
                 pollDelay = 20;
+            }
+
+            internal void RequestObjectiveContext(int row, bool enabled)
+            {
+                if (!enabled) return;
+                // A source kind outside the mapped cases leaves word_0x88
+                // unchanged, but still closes the popup with an eight-pass delay.
+                if (row != 0)
+                {
+                    if (row < 72 || row > 80 || rowFor(row) == null)
+                        throw new InvalidDataException("Unbound source objective help row");
+                    pendingRow = row;
+                }
+                if (remaining != 0) Close();
+                Visible = false;
+                VisibleRow = 0;
+                pollDelay = 8;
             }
 
             internal void CloseCurrent(bool enabled)
@@ -130,6 +172,7 @@ namespace MagicCarpet.Native
                 if (remaining != 0) Close();
                 else pollDelay = 20;
                 Visible = false;
+                VisibleRow = 0;
             }
         }
 
@@ -143,7 +186,7 @@ namespace MagicCarpet.Native
             if (string.IsNullOrEmpty(languageCache.LanguageText(329)))
                 throw new InvalidDataException("Missing source language record 329");
             gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
-            gameRuntimeManaHint = new ManaHelpHint();
+            gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -157,6 +200,11 @@ namespace MagicCarpet.Native
         private void CloseGameRuntimeHelpHint(bool showHelp)
         {
             gameRuntimeManaHint?.CloseCurrent(showHelp);
+        }
+
+        private void RequestGameRuntimeContextHelpHint(int row, bool showHelp)
+        {
+            gameRuntimeManaHint?.RequestObjectiveContext(row, showHelp);
         }
 
         private void AdvanceGameRuntimeHelpHint(bool leftUnavailable, bool rightUnavailable,
@@ -199,8 +247,12 @@ namespace MagicCarpet.Native
                 _ => throw new InvalidDataException("source hint requires its source environment")
             };
             gameRuntimeManaHintPresenter ??= new SourceObjectiveTextboxPresenter(gameRuntimeMenu.ObjectiveForProfile(profile));
-            gameRuntimeManaHintPresenter.PresentHint(gameRuntimeMenu.GameplayLanguageText(329),
-                campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+            var helpRow = gameRuntimeMenu.GameplayHelpForRow(gameRuntimeManaHint.VisibleRow);
+            var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
+            if (helpRow.Row == 41)
+                gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+            else
+                gameRuntimeManaHintPresenter.PresentContextHint(helpText, campaignSession.Generation, helpRow.X, helpRow.Y);
             var palette = surface.FramePaletteRgb8;
             if (playerPreferences != null)
                 palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);

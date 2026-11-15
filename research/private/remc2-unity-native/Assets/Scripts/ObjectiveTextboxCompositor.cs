@@ -42,6 +42,16 @@ namespace MagicCarpet.Native
             => BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,
                 textColor, 320, 320, 300, false, 0, 0, 0, 0);
 
+        // DrawPopupTextBox_87610 type 1 uses the top-centred source box.
+        internal static Raster BuildSourceContextHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, int centerX, int centerY)
+        {
+            if (centerX != 320 || centerY != 80)
+                throw new ArgumentException("source context hint center is invalid");
+            return BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,
+                textColor, 320, centerX, centerY, false, 0, 0, 0, 0);
+        }
+
         // DrawPopupTextBox_87610 type 2, using SetTextBoxMinMaxSizes_87090
         // and ComputeTextboxSizes_89830 at the original 640x480 boundary.
         internal static Raster BuildSourceHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,

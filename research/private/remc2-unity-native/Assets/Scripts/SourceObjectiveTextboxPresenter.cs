@@ -57,6 +57,15 @@ namespace MagicCarpet.Native
             PresentRaster(next, sourceText, sessionGeneration, anchorX);
         }
 
+        internal void PresentContextHint(string sourceText, ulong sessionGeneration, int centerX, int centerY)
+        {
+            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == -2) return;
+            var bytes = SourceBytes(sourceText);
+            var next = ObjectiveTextboxCompositor.BuildSourceContextHintForeground(bytes, assets.Glyphs,
+                assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor, centerX, centerY);
+            PresentRaster(next, sourceText, sessionGeneration, -2);
+        }
+
         private static byte[] SourceBytes(string sourceText)
         {
             if (sourceText == null) throw new ArgumentNullException(nameof(sourceText));

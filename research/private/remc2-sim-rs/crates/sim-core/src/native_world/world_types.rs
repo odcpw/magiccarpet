@@ -4525,6 +4525,23 @@ impl RuntimeSnapshot {
         self.bytes[69] = 0;
     }
 
+    /// Read the source `sub_88BA0` callback at the imminent 1 -> 0 edge.
+    /// Pending popup selection/consumption belongs to the presentation owner.
+    pub(super) fn objective_expiry_help(
+        &self,
+        show_help: bool,
+        objective: RuntimeObjective,
+    ) -> Option<crate::campaign::objective_speech::ObjectiveContextHelp> {
+        (show_help && self.objective_textbox_ticks == 1).then(|| {
+            crate::campaign::objective_speech::ObjectiveContextHelp::for_stage(
+                objective.is_level_end != 0,
+                self.stages
+                    .get(usize::from(objective.text_selector))
+                    .map(|stage| stage.kind),
+            )
+        })
+    }
+
     /// Service the source-visible objective presentation cadence that remains
     /// outside the paused `UpdateEntities` gate. This changes presentation
     /// carriers only; it never advances the gameplay turn or player input.

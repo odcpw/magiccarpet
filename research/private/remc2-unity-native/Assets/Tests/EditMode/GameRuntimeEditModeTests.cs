@@ -664,14 +664,15 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void ManaHelpHintKeepsSourceEligibilityPauseAndDrawCadence()
         {
-            var fresh = new MagicCarpetRuntime.ManaHelpHint();
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            var fresh = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             fresh.Advance(true, false, true, false, false);
             Assert.That(fresh.Visible, Is.False, "the zero initial poll still requires age above 800");
             fresh.Advance(true, false, true, false, false);
             Assert.That(fresh.Visible, Is.False, "the second source pass selects without drawing");
             fresh.Advance(true, false, true, false, false);
             Assert.That(fresh.Visible, Is.True, "fresh construction does not invent a 20-frame delay");
-            var suppressed = new MagicCarpetRuntime.ManaHelpHint();
+            var suppressed = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             suppressed.Advance(false, false, true, false, true);
             for (var pass = 0; pass < 19; pass++)
             {
@@ -682,7 +683,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(suppressed.Visible, Is.False, "suppression installs the source 20-pass poll delay");
             suppressed.Advance(true, false, true, false, false);
             Assert.That(suppressed.Visible, Is.True);
-            var hint = new MagicCarpetRuntime.ManaHelpHint();
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             hint.Promote(41, 6);
             for (var i = 0; i < 20; i++) hint.Advance(false, false, true, false, false);
             Assert.That(hint.Visible, Is.False, "priority cannot bypass actual mana affordability");
@@ -700,6 +701,93 @@ namespace MagicCarpet.Native.Tests
             Assert.That(hint.Priority, Is.EqualTo(2));
             hint.Advance(true, false, true, false, true);
             Assert.That(hint.Visible, Is.False, "objective/menu suppression closes the popup");
+
+            var context = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            context.RequestObjectiveContext(76, true);
+            context.RequestObjectiveContext(0, true);
+            context.RequestObjectiveContext(73, false);
+            for (var pass = 0; pass < 8; pass++)
+            {
+                context.Advance(false, false, true, false, false);
+                Assert.That(context.Visible, Is.False, "eight source passes select without drawing");
+            }
+            context.Advance(false, false, true, true, false);
+            Assert.That(context.Visible, Is.False, "pause retains the selected context without drawing");
+            for (var pass = 0; pass < 50; pass++)
+            {
+                context.Advance(false, false, true, false, false);
+                Assert.That(context.Visible, Is.True);
+                Assert.That(context.VisibleRow, Is.EqualTo(76), "KeepPending and disabled requests preserve the actual pending selector");
+            }
+            context.Advance(false, false, true, false, false);
+            Assert.That(context.Visible, Is.False);
+            context.RequestObjectiveContext(0, true);
+            for (var pass = 0; pass < 21; pass++) context.Advance(false, false, true, false, false);
+            Assert.That(context.Visible, Is.False, "consumed word88 is zero, not the previously displayed row");
+        }
+
+        [Test]
+        public void SourceContextHelpBindsOwnerRowsAndRejectsRehashedReplacement()
+        {
+            using (var cache = new OwnerCampaignMenuCache(CampaignMenuCache))
+            {
+                for (var row = 72; row <= 80; row++)
+                {
+                    var binding = cache.GameplayHelpForRow(row);
+                    Assert.That((binding.Row, binding.TextRecord, binding.Duration, binding.Flags, binding.X, binding.Y),
+                        Is.EqualTo((row, 334 + row - 72, 50, 4, 320, 80)));
+                    Assert.That(binding.AgeThreshold, Is.EqualTo(row == 80 ? 140 : 600));
+                    Assert.That(binding.Priority, Is.EqualTo(row == 80 ? 4 : 3));
+                    Assert.That(cache.LanguageText(binding.TextRecord), Is.Not.Empty);
+                }
+            }
+            // An unchanged historical cache remains valid until the new typed
+            // capability is requested; absence cannot become invented metadata.
+            using (var legacy = new OwnerCampaignMenuCache(Path.Combine(PrivateRoot,
+                "generated/locale-source-menu-20261115-candidate2")))
+                Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(72));
+
+            var fixture = Path.Combine(Path.GetTempPath(), "mc-context-help-negative-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(fixture);
+            try
+            {
+                CopyOwnerMenuFixture(CampaignMenuCache, fixture);
+                var privateType = System.Reflection.BindingFlags.NonPublic;
+                var manifestType = typeof(OwnerCampaignMenuCache).GetNestedType("Manifest", privateType);
+                var documentType = typeof(OwnerCampaignMenuCache).GetNestedType("GameplayHelpDocument", privateType);
+                var manifestPath = Path.Combine(fixture, "manifest.json");
+                var originalManifest = File.ReadAllText(manifestPath);
+                var manifest = JsonUtility.FromJson(originalManifest, manifestType);
+                manifestType.GetField("gameplay_help_path").SetValue(manifest, "unbound-help.json");
+                File.WriteAllText(manifestPath, JsonUtility.ToJson(manifest) + "\n");
+                Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
+                    Does.Contain("source gameplay help path"));
+
+                manifest = JsonUtility.FromJson(originalManifest, manifestType);
+                var tablePath = Path.Combine(fixture, "gameplay-help.json");
+                var originalTable = File.ReadAllBytes(tablePath);
+                var table = JsonUtility.FromJson(Encoding.ASCII.GetString(originalTable), documentType);
+                var rows = (Array)documentType.GetField("rows").GetValue(table);
+                var changed = rows.GetValue(1);
+                changed.GetType().GetField("duration").SetValue(changed, 51);
+                var altered = Encoding.ASCII.GetBytes(JsonUtility.ToJson(table) + "\n");
+                Assert.That(altered.Length, Is.EqualTo(originalTable.Length));
+                File.WriteAllBytes(tablePath, altered);
+                var outputs = (Array)manifestType.GetField("outputs").GetValue(manifest);
+                foreach (var output in outputs)
+                {
+                    var type = output.GetType();
+                    if ((string)type.GetField("path").GetValue(output) != "gameplay-help.json") continue;
+                    using var sha = System.Security.Cryptography.SHA256.Create();
+                    type.GetField("sha256").SetValue(output,
+                        BitConverter.ToString(sha.ComputeHash(altered)).Replace("-", "").ToLowerInvariant());
+                }
+                File.WriteAllText(manifestPath, JsonUtility.ToJson(manifest) + "\n");
+                Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
+                    Does.Contain("source gameplay help table identity"),
+                    "a coherent output receipt cannot replace the pinned source table");
+            }
+            finally { Directory.Delete(fixture, true); }
         }
 
         [TestCase((ushort)5, (ushort)4, (byte)0, "dragon-bee-20261105-integration/level5-owner-current/level5",
@@ -1761,6 +1849,70 @@ namespace MagicCarpet.Native.Tests
                     camera.Render();
                 }
             }
+            void CompleteObjectiveContextPopup()
+            {
+                // The real expiry frame already consumed the first of the
+                // eight delayed source passes. Selection still precedes draw.
+                for (var pass = 0; pass < 8; pass++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(Hint().Visible, Is.EqualTo(pass == 7));
+                }
+                Assert.That(Hint().VisibleRow, Is.EqualTo(76),
+                    "the retained Ammyridia stage0 is source kind7, which requests context row76");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var binding = menu.GameplayHelpForRow(76);
+                Assert.That(binding.TextRecord, Is.EqualTo(338));
+                var text = menu.GameplayLanguageText(338);
+                Assert.That(text, Is.EqualTo("Your current objective is to kill creatures"),
+                    "the actual available GOG context record is retained byte-for-byte");
+                RenderCurrentScene();
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter),
+                    Is.EqualTo(text), "the accepted source row reaches selected-locale text and the actual glyph renderer");
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", flags).GetValue(presenter);
+                Assert.That((raster.X, raster.Y, raster.Width, raster.Height), Is.EqualTo((176, 80, 288, 52)),
+                    "pinned source width loop224, two lines28px, and actual Day171/172/173 extents");
+                Assert.That((raster.BlendX, raster.BlendY, raster.BlendWidth, raster.BlendHeight),
+                    Is.EqualTo((192, 90, 256, 32)));
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                Assert.That(output, Is.Not.Null);
+                var pixels = ReadObjectivePixels(output);
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var palette = ((PlayerPreferencesPresenter)Field("playerPreferences"))
+                    .ApplyBrightnessToPalette(surface.FramePaletteRgb8, 0);
+                var artwork = menu.ObjectiveForProfile("day");
+                Assert.That(artwork.HelpTextColor, Is.EqualTo(224));
+                var ink = new Color32(palette[224 * 3], palette[224 * 3 + 1], palette[224 * 3 + 2], 255);
+                Assert.That(pixels[(raster.Height - 1 - (94 - raster.Y)) * raster.Width + 208 - raster.X],
+                    Is.EqualTo(ink), "actual HFONT3 Y mask(0,2), at source text origin208/92, reaches the current-frame output");
+                var owner = (NativeSession)Field("session");
+                var before = owner.GameRuntimeCampaignSnapshot();
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var remaining = Remaining();
+                var speechCount = ((CampaignSpeechPresenter)Field("campaignSpeech")).PlayCount;
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                Assert.That(owner.GameRuntimeCampaignSnapshot().value.state_hash, Is.EqualTo(before.value.state_hash));
+                Assert.That(Remaining(), Is.EqualTo(remaining));
+                Assert.That(((CampaignSpeechPresenter)Field("campaignSpeech")).PlayCount, Is.EqualTo(speechCount));
+                Assert.That(remaining, Is.EqualTo(49), "the first visible frame consumed one of fifty source draws");
+                for (var draw = 0; draw < remaining; draw++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(Hint().Visible, Is.True);
+                    Assert.That(Hint().VisibleRow, Is.EqualTo(76));
+                }
+                Assert.That(Remaining(), Is.Zero);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Hint().Visible, Is.False, "the following source frame clears the expired overlay");
+            }
             void ObserveObjectiveInput(bool held)
             {
                 var owner = (NativeSession)Field("session");
@@ -1793,6 +1945,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(menu.LocaleCache.LanguageText(329), Is.EqualTo("Not enough mana to cast"),
                     "the available GOG source record is the independent geometry oracle");
                 Assert.That(preferences.Current.preferences.show_help, Is.True);
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); guiShown = true; gui.position = new Rect(0, 0, 640, 480);
                 Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.volcano"), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", 0, false);
@@ -1818,9 +1973,6 @@ namespace MagicCarpet.Native.Tests
                 RenderCurrentScene();
                 var objectiveTick = runtime.GameRuntimeProductionIdentity.session.tick;
                 var objectiveSpeech = ((CampaignSpeechPresenter)Field("campaignSpeech")).PlayCount;
-                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
-                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
-                gui.Show(); guiShown = true; gui.position = new Rect(0, 0, 640, 480);
                 gui.SendEvent(new Event { type = EventType.Layout });
                 gui.SendEvent(new Event { type = EventType.Repaint });
                 var objectivePresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeObjectiveTextbox");
@@ -1833,6 +1985,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(objectiveTick));
                 Assert.That(((CampaignSpeechPresenter)Field("campaignSpeech")).PlayCount, Is.EqualTo(objectiveSpeech));
                 ObserveObjectiveInput(false);
+                CompleteObjectiveContextPopup();
                 // At most the source post-suppression poll and its following draw.
                 for (var pass = 0; pass < 21 && !Hint().Visible; pass++) runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(Hint().Visible, Is.True);

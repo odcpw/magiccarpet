@@ -30639,6 +30639,7 @@ impl Mc2Simulation {
             show_foreign_text,
             source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
         };
+        let context_help = runtime.objective_expiry_help(self.help_enabled(), objective);
         let actions = self
             .session
             .state
@@ -30646,6 +30647,12 @@ impl Mc2Simulation {
             .core
             .runtime
             .service_campaign_objective_presentation(input);
+        if let Some(request) = context_help {
+            // PresentObjective calls sub_88BA0 before processing a new phase.
+            // Keep this request ordered ahead of that phase's sound/speech.
+            self.push_flight_effect(request.event());
+            self.flush_shared_effects();
+        }
         if actions == ObjectivePresentationActions::default() {
             return;
         }
@@ -31052,6 +31059,64 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_objective_expiry_requests_source_context_help_once_per_outer_frame() {
+        use crate::campaign::journal::CampaignEffect;
+        use crate::campaign::objective_speech::ObjectiveContextHelp;
+
+        let baseline = CampaignSession::open(
+            level_one_descriptor_fixture_path(), CampaignSelection::LEVEL1,
+        ).expect("real ordinary objective owner");
+        for show_help in [false, true] {
+            for paused in [false, true] {
+                let mut campaign = baseline.clone();
+                campaign.set_speech_enabled(false);
+                campaign.simulation_mut().set_help_enabled(show_help);
+                let advance = |campaign: &mut CampaignSession| {
+                    if paused {
+                        campaign.paused_frame();
+                    } else {
+                        campaign.step(PlayerCommand::default(), 0);
+                    }
+                };
+                // The ordinary opening phase, rather than a counter write,
+                // installs the source's complete 200-frame textbox.
+                for _ in 0..2 {
+                    advance(&mut campaign);
+                }
+                assert_eq!(campaign.simulation().runtime().objective_textbox_ticks, 200);
+                let tick = campaign.simulation().state.tick;
+                let local = usize::from(campaign.simulation().runtime().local_player_slot);
+                let color = usize::from(campaign.simulation().players()[local].player_color_index());
+                let objective = campaign.simulation().runtime().objectives[color];
+                let stage = campaign.simulation().runtime().stages[usize::from(objective.text_selector)].kind;
+                let expected = ObjectiveContextHelp::for_stage(objective.is_level_end != 0, Some(stage)).event();
+                let context_events = |campaign: &CampaignSession| {
+                    campaign.simulation().effect_journal().records().iter().filter_map(|record| {
+                        match record.effect {
+                            CampaignEffect::Flight(event @ FlightEvent::ShowHelpHint { state: 8, .. }) => Some(event),
+                            _ => None,
+                        }
+                    }).collect::<Vec<_>>()
+                };
+                for remaining in (0..200).rev() {
+                    // Read/query repetition does not service the callback.
+                    let hash = campaign.state_hash();
+                    assert_eq!(campaign.simulation().runtime().objective_textbox_ticks, remaining + 1);
+                    assert_eq!(campaign.state_hash(), hash);
+                    advance(&mut campaign);
+                    assert_eq!(campaign.simulation().runtime().objective_textbox_ticks, remaining);
+                    assert_eq!(context_events(&campaign), if show_help && remaining == 0 { vec![expected] } else { vec![] });
+                }
+                assert_eq!(campaign.simulation().state.tick, if paused { tick } else { tick + 200 });
+                advance(&mut campaign);
+                assert_eq!(context_events(&campaign), if show_help { vec![expected] } else { vec![] });
+                campaign.reset();
+                assert!(context_events(&campaign).is_empty());
+            }
+        }
+    }
 
     #[test]
     fn imported_spell_dispatch_uses_current_row_after_reclaim_and_new_event() {

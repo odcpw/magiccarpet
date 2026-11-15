@@ -1078,6 +1078,79 @@ Special switch 31 announcements,
 objective-expiry context help and broader recursive help remain open. Evidence:
 `research/private/generated/help-20261115/`. Full `.6`/`.10` stay open.
 
+The bounded read-integrity investigation has now stopped without identifying a
+cause. Plain native frontend/map-load passes; private allocation pattern checks
+found no error. A single-byte difference was also captured in C2GAME2 (offset
+29,377,061, `0xf6` instead of disk `0xf7`). Both differing offsets are 549 modulo
+4096; that observation does not identify hardware or a writer. A hash-boundary
+probe observed 160 matching input/result hashes but hit the unchanged test timeout.
+A lower-overhead diagnostic protected each exact native WAV allocation's interior
+pages until its real free: all 160 protects/releases succeeded, no protected CPU
+write was caught, and the full hint/selection/v8 cold-load test passed in 96.53s.
+The guard is ignored diagnostic code, never a shipping workaround. GDB then
+stopped on ordinary SIG36 during shutdown after NUnit wrote its passing result;
+owned processes are stopped. Actual native GOT bindings for read/malloc/free/
+realloc all resolve to glibc. These are bounded non-reproductions, not an integrity
+fix or installed-client qualification. Original installation remains unchanged.
+Evidence: `wav-guard-1.ranges`, `unity-wav-guard-1.xml`, `native-binding.json` in
+the same help batch directory. The first binding probe lacked the plugin symbol
+path and was stopped; the corrected binding-only probe stopped before gameplay.
+
+Continue the SAME full help capability rather than extending diagnostics or
+starting another family: BoldForge now owns the missing natural objective
+textbox 1→0 `sub_88BA0` context-help72–80 producer and shared joins; VioletAnchor
+owns actual selected source metadata/assets, SilentBrook the existing original
+indexed presenter. Require actual narrow grants and a coordinated interface.
+The source still assumes help-disabled at the expiry edge despite the delivered
+configurable preference. Finish the real enabled path with natural timing,
+paused/query/reset negatives and selected glyph/frame consumption. Root owns
+serialized checks and delivery. Installation and full acceptance stay open;
+no claim that byte corruption was fixed. Preserve original criteria and the
+separate queued secret announcements/recursive-help work.
+
+Objective-expiry context source batch is now integrated and frozen. It ports
+`sub_88BA0` stage selection/KeepPending to the existing ordered effect path,
+then source pending selection, eight-pass delay, selected-language rows334–342,
+original type1 top-centred frame/glyphs, fifty draws and cleanup. Hint41 shares
+the validated metadata rather than a parallel guessed table. The real ordinary
+native200-frame expiry check passes4.11s for help on/off and Playing/Paused,
+plus pinned mapping, legacy source-order and foreign-text cadence controls.
+A legacy source20 regression never entered runtime because its compiled RCH
+absolute owner-package path is absent locally; retain that coverage limit.
+The actual new647-output cache receipts match independently. Strict Rig native
+`ce48b7c0a0828399acdf1777fa9c14be85950b809b3d14a9b12dc3b802502db8`
+and all606inputs match the qualified Original snapshot. It is in the Editor
+plugin only; the installed player remains `build-af5fng7c`/`ed42fbf3c3f9`.
+
+The popup cadence and rehashed-metadata rejection checks pass uninstrumented.
+The full actual O-release→row76→GOG338→current-scene glyph pixel→all50draws→
+clear→existing mana41/V8cold replay case passes104.64s WITH the ignored read
+sampler/protection probe. This is conditional behavior verification, not normal
+client qualification or an integrity fix. Corrected test setup: English speech
+correctly has no automatic objective textbox; actual O release exercises its
+expiry, while the native speech-disabled control retains all200natural frames.
+The missing-metadata negative now uses the previously admitted current locale
+cache, rather than an ancient cache rejected earlier for missing language data.
+
+Uninstrumented qualification again captured Game2's same6d73 SHA/one-bit change,
+offset29,377,061 (`f6`vs`f7`), from another real cache root. A guarded run captured
+Game1 source31 SHA522e7841524a: offset63,554,085 (`fa`vs`fb`), also549mod4096,
+inside the successfully protected allocation, with no observed SEGV and57paired
+protect/free releases. Do not infer a writer or continuous protection from that
+alone. A subsequent bounded volatile pre/post-arm page549 sampler found no
+difference across160reads; it is non-reproduction and covers only sampled bytes.
+A standalone32GiB private allocation passed four patterns in29.75s; it does not
+clear all RAM or establish a hardware cause. All probes are stopped; source/data
+and installed player are intact. No further unchanged retries or broad diagnosis.
+Preserve captures/comparisons and `context-*` evidence in the help batch directory.
+Staged11-file UBS is PARTIAL for C# callable/conditional/flow budgets; none
+of its14critical whole-file findings is on an added line. Existing Guid temporary
+path/public-source-hash/secret-level-index false positives were triaged, not
+suppressed. This is not a clean static-analysis claim. Formatting debt remains.
+All teammates are frozen pending actual consumer failure; root owns landing.
+Full `.6`/`.10`, recursive help, special announcements and installed qualification
+remain OPEN. Installation stays held on the reproduced integrity blocker.
+
 Evidence is `research/private/generated/continuity-20261115/`. Source completions
 use declared frontier/inventory/placement controls; this is not earned human
 campaign progress, human combat, hardware audio, FPS, full missions or old live
