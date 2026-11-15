@@ -263,6 +263,10 @@ impl SourceAnimationResidency {
         self.catalog.as_ref() == Some(catalog)
     }
 
+    pub(crate) fn catalog(&self) -> Option<&SourceTmapCatalog> {
+        self.catalog.as_ref()
+    }
+
     pub(crate) fn is_bound(&self) -> bool {
         self.catalog.is_some()
     }

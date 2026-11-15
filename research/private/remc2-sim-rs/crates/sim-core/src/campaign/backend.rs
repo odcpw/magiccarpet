@@ -6299,6 +6299,41 @@ pub(crate) mod tests {
         assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
         assert_eq!(cold.session().unwrap().backend().campaign.simulation()
             .level_exit_sequence().ordinary_exit_route, OrdinaryExitRoute::CampaignMap);
+        if source == 34 {
+            // The real returned carry rematerializes Ammyridia before its
+            // first frame. The ordinary renderer and feedback must still use
+            // the exact installed parent catalog, including after replay/reset.
+            let owner = resolver.package(&origin).unwrap().inputs.owner_cache.as_ref().unwrap();
+            let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(owner).unwrap();
+            let catalog = assets.source_animation_catalog().expect("qualified parent TMAP catalog");
+            let session = cold.session().unwrap();
+            let generation = session.identity().generation;
+            let campaign = &session.backend().campaign;
+            campaign.simulation().validate_source_animation_catalog(Some(catalog)).unwrap();
+            assert!(campaign.simulation().validate_source_animation_catalog(None).is_err());
+            let initial_animations = campaign.simulation().source_animations.clone();
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            let before = resolver.save_replay(&cold).unwrap();
+            assert!(cold.session_mut().unwrap().backend_mut()
+                .acknowledge_primary_sprite_frame(&frame, generation.wrapping_add(1)).is_err());
+            assert_eq!(resolver.save_replay(&cold).unwrap(), before, "stale frame is atomic");
+            cold.acknowledge_primary_sprite_frame(&frame).unwrap();
+            let observed = cold.session().unwrap().backend().snapshot();
+            let animations = cold.session().unwrap().backend().campaign.simulation().source_animations.clone();
+            let played = resolver.save_replay(&cold).unwrap();
+            let mut replay = GameRuntime::<Mc2CampaignBackend>::title(10_234).unwrap();
+            let guard = replay.identity().guard();
+            resolver.load_replay(&mut replay, guard, 10_234, &played).unwrap();
+            let restored = replay.session().unwrap().backend();
+            assert_eq!(restored.snapshot(), observed);
+            assert_eq!(restored.campaign.simulation().source_animations, animations);
+            assert_eq!(restored.initial_semantic_spell_carry().unwrap(), carry);
+            let restored = replay.session_mut().unwrap().backend_mut();
+            restored.campaign.simulation_mut().reset();
+            assert_eq!(restored.campaign.simulation().source_animations, initial_animations);
+            restored.campaign.simulation().validate_source_animation_catalog(Some(catalog)).unwrap();
+        }
         write_controlled_campaign_save("MC_COMPLETED_SECRET_SAVE_OUTPUT", &bytes);
     }
 
