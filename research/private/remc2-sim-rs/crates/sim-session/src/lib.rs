@@ -280,6 +280,9 @@ pub struct CampaignSnapshot {
     pub objective_progress: ObjectiveProgress,
     /// Authoritative objective-panel countdown; clients never invent a timer.
     pub objective_textbox_ticks: u8,
+    /// Selected owner-language record for the source special announcement.
+    /// Absent means that the ordinary objective binding remains authoritative.
+    pub objective_secret_announcement_record: Option<u16>,
     pub exit_sequence_active: bool,
     pub presentation_entities: Vec<PresentationEntity>,
 }

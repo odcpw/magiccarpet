@@ -15,6 +15,50 @@ pub struct SpeechSegment {
     pub length_ms: u32,
 }
 
+/// Source D41A0 byte36E0B bit1 and the local player's byte3E4. The flag
+/// survives inner LevelInitGame; sub_53160 resets the player byte. Only the
+/// outer sub_48350 clears the flag. Neither is semantic secret progress.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct SecretAnnouncementState {
+    pub active: bool,
+    pub collected_count: u8,
+}
+
+impl SecretAnnouncementState {
+    pub(crate) fn is_default(&self) -> bool { *self == Self::default() }
+
+    pub(crate) fn text_record(self) -> Option<u16> {
+        self.active.then_some(284 + u16::from(self.collected_count != 0))
+    }
+
+    /// Actual CollectLevelStats_5C530 visits, not unique secret completions.
+    pub(crate) fn collect_statistics(&mut self, visits: u8) {
+        if self.active { self.collected_count = self.collected_count.wrapping_add(visits); }
+    }
+
+    pub(crate) fn after_level_init(self) -> Self {
+        Self { active: self.active, collected_count: 0 }
+    }
+
+    pub(crate) fn append_hash(self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        if !self.is_default() {
+            hasher.update(b"source-secret-announcement-v1");
+            hasher.update([u8::from(self.active), self.collected_count]);
+        }
+    }
+}
+
+/// The two literal CollectLevelStats calls in source sub_46830. Bit4 retry
+/// skips the first call; source-secret result bit0x10 and level>=24 can add
+/// the second call. The caller commits this only at an accepted handoff.
+pub(crate) const fn source_statistics_visits(result: u8, internal_level: u16) -> u8 {
+    if result & 4 != 0 { return 0; } // source rewrites the result to4 first
+    (result & 2 != 0) as u8
+        + (result & 0x10 != 0 && internal_level >= 24 && result & 2 != 0) as u8
+}
+
 /// `sub_88BA0` writes the pending popup selector, then closes the current
 /// popup with the eight-frame poll delay. Unmapped stage kinds deliberately
 /// retain the presentation owner's pending selector; they do not repeat the
@@ -431,6 +475,8 @@ pub struct ObjectivePresentationInput {
     /// Source `autoShowObjectivesForForeignLanguages && SelectedLangIndex != 2`.
     pub show_foreign_text: bool,
     pub source_level: u8,
+    /// Some is the source special announcement flag, carrying byte3E4.
+    pub secret_announcement_count: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -460,7 +506,8 @@ pub fn service_objective_presentation(
     if !input.speech_enabled {
         *phase = 0;
         actions.textbox_ticks = Some(200);
-        actions.sound_id = (input.objective_index != 0).then_some(61);
+        actions.sound_id = if input.secret_announcement_count.is_some() { Some(41) }
+            else { (input.objective_index != 0).then_some(61) };
         return actions;
     }
     match *phase {
@@ -472,13 +519,21 @@ pub fn service_objective_presentation(
         8 => {
             *phase = 9;
             actions.palette_flash = true;
-            actions.sound_id = (input.objective_index != 0).then_some(61);
+            actions.sound_id = if input.secret_announcement_count.is_some() { None }
+                else { (input.objective_index != 0).then_some(61) };
             let segment = if input.level_ended {
                 9
             } else {
                 input.objective_index.wrapping_add(1)
             };
-            actions.speech = if (30..=34).contains(&input.source_level) {
+            actions.speech = if let Some(count) = input.secret_announcement_count {
+                // Deliberate owner-media-supported adaptation: 86F20 omits
+                // 86EB0's CD-frame conversion, so SDL cuts these 375-frame
+                // announcements after375ms. Actual TRACK26/27 speech lasts
+                // over4s. Use the same source conversion as ordinary speech
+                // (375 frames ->4999ms), retaining its literal/truncation.
+                source_speech_segment(25 + u8::from(count != 0), 0)
+            } else if (30..=34).contains(&input.source_level) {
                 if input.level_ended {
                     source_speech_segment(10, 9)
                 } else {
@@ -505,6 +560,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_announcement_uses_source_cd_units_statistics_width_and_distinct_reset_boundaries() {
+        let mut input = level_three_input();
+        input.objective_index = 4;
+        input.secret_announcement_count = Some(0);
+        let alert = service_objective_presentation(&mut 7, input);
+        assert_eq!(alert.sound_id, Some(41));
+        assert!(alert.palette_flash);
+        let spoken = service_objective_presentation(&mut 8, input);
+        assert_eq!(SOURCE_SEGMENTS[25][0], (0, 375), "retain the original CD-frame table");
+        assert_eq!(SOURCE_SEGMENTS[26][0], (0, 375));
+        assert_eq!(spoken.speech, Some(SpeechSegment { track: 26, segment: 0, start_ms: 0, length_ms: 4999 }));
+        assert!(spoken.duck_audio && spoken.palette_flash);
+        assert_eq!(spoken.sound_id, None, "special speech does not also emit ordinary objective61");
+        input.secret_announcement_count = Some(1);
+        assert_eq!(service_objective_presentation(&mut 8, input).speech,
+            Some(SpeechSegment { track: 27, segment: 0, start_ms: 0, length_ms: 4999 }));
+        input.speech_enabled = false;
+        let silent = service_objective_presentation(&mut 7, input);
+        assert_eq!((silent.sound_id, silent.textbox_ticks, silent.speech), (Some(41), Some(200), None));
+        let mut state = SecretAnnouncementState { active: true, collected_count: 255 };
+        state.collect_statistics(source_statistics_visits(0x0a, 11));
+        assert_eq!(state.collected_count, 0, "CollectStats uses the source unsigned byte wrap");
+        assert_eq!(state.text_record(), Some(284));
+        state.collect_statistics(source_statistics_visits(0x1a, 32));
+        assert_eq!(state.collected_count, 2, "literal secret-result source branch has two visits");
+        assert_eq!(state.text_record(), Some(285));
+        assert_eq!(state.after_level_init(), SecretAnnouncementState { active: true, collected_count: 0 });
+        assert_eq!(source_statistics_visits(4, 24), 0);
+        assert_eq!(source_statistics_visits(0x16, 32), 0,
+            "retry rewrites mixed secret/completed flags to4 before the second branch");
+        assert_eq!(source_statistics_visits(0x1e, 32), 0);
+        assert_eq!(source_statistics_visits(0x18, 32), 0);
+        let mut inactive = SecretAnnouncementState::default();
+        inactive.collect_statistics(2);
+        assert_eq!(inactive, SecretAnnouncementState::default());
+        assert_eq!(inactive.text_record(), None);
+    }
+
+    #[test]
     fn objective_expiry_context_uses_source_stage_mapping_and_keeps_pending_default() {
         for (stage, row) in [(0, 72), (1, 75), (2, 73), (3, 77), (5, 79), (7, 76), (8, 78), (9, 74), (-1, 80)] {
             assert_eq!(ObjectiveContextHelp::for_stage(false, Some(stage)), ObjectiveContextHelp::Select(row));
@@ -524,6 +618,7 @@ mod tests {
             speech_enabled: true,
             show_foreign_text: false,
             source_level: 2,
+            secret_announcement_count: None,
         }
     }
 

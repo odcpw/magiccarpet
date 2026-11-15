@@ -1,5 +1,5 @@
 /**
- * MCPO v1 is one copied, coherent native publication. Decode before retaining
+ * MCPO v2 is one copied, coherent native publication. Decode before retaining
  * the result: a WebAssembly memory view can be overwritten or detached on growth.
  * No references to the supplied bytes survive this call.
  */
@@ -87,7 +87,7 @@ const availability = ['ready', 'not_acquired', 'invalid_holder', 'invalid_caster
 export function decodeRenderPublication(bytes: Uint8Array) {
   const r = new Reader(bytes);
   if (r.u8() !== 0x4d || r.u8() !== 0x43 || r.u8() !== 0x50 || r.u8() !== 0x4f) throw new Error('invalid render publication magic');
-  if (r.u32() !== 1) throw new Error('unsupported render publication version');
+  if (r.u32() !== 2) throw new Error('unsupported render publication version');
   if (r.u32() !== bytes.byteLength) throw new Error('render publication length mismatch');
   const runtime_id = r.u64();
   const runtime_generation = r.u64();
@@ -116,6 +116,7 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   const source_scoreboard = { players, projection_error: r.option(() => r.string()) };
   const participant_notifications = r.array(19, () => ({ participant: r.u64(), is_local: r.bool(),
     display_name: r.string(), kind: r.string(), remaining_frames: r.i16() }));
+  const player_wall_contact_counter = r.i8();
   const player_immobilized_ticks = r.u16();
   const source_camera_pose = { x: r.u16(), y: r.u16(), z: r.i16(), yaw: r.i16(), pitch: r.i16(), roll: r.i16() };
   const source_camera_fov = r.i16();
@@ -132,7 +133,12 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   });
   const objective_progress = { current_objective: r.option(() => r.string()), completed_count: r.u32(),
     total_count: r.u32(), all_objectives_satisfied: r.bool() };
-  const objective_textbox_ticks = r.u8(); const exit_sequence_active = r.bool();
+  const objective_textbox_ticks = r.u8();
+  const announcementRecord = r.u16();
+  if (announcementRecord !== 0 && announcementRecord !== 284 && announcementRecord !== 285)
+    throw new Error('invalid objective announcement record');
+  const objective_secret_announcement_record = announcementRecord === 0 ? null : announcementRecord;
+  const exit_sequence_active = r.bool();
   const presentation_entities = r.array(32, () => ({ actor: r.u64(), kind: r.string(),
     pose: { x: r.u16(), y: r.u16(), z: r.i16(), yaw: r.i16(), pitch: r.i16() },
     logical_height: r.u16(), asset: { id: r.string(), content_address: r.string() } }));
@@ -140,8 +146,10 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   return freeze({ runtime_id, runtime_generation, runtime_mode, identity, terrain_mutation_sequence,
     value: { tick, effect_head, player_pose, player_motion, player_vitals,
       ...(source_menu_admission === null ? {} : { source_menu_admission }), return_to_title_requested,
-      source_scoreboard, participant_notifications, player_immobilized_ticks, source_camera_pose,
-      source_camera_fov, player_spells, objective_progress, objective_textbox_ticks, exit_sequence_active,
+      source_scoreboard, participant_notifications, player_wall_contact_counter,
+      player_immobilized_ticks, source_camera_pose,
+      source_camera_fov, player_spells, objective_progress, objective_textbox_ticks,
+      objective_secret_announcement_record, exit_sequence_active,
       presentation_entities } });
 }
 

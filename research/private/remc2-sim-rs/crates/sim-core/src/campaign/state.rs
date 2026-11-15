@@ -1449,6 +1449,7 @@ fn digest_objectives(objectives: &super::objectives::ObjectiveState) -> Canonica
             hasher.update(objective.stage_selectors);
         }
         objectives.append_collected_entity_hash(hasher);
+        objectives.secret_announcement.append_hash(hasher);
     })
 }
 

@@ -885,6 +885,8 @@ struct Mc2CampaignReplaySave {
     paused: bool,
     #[serde(default, skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
     initial_display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(default, skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
+    initial_secret_announcement: super::objective_speech::SecretAnnouncementState,
     definition: GameDefinition,
     semantic_spell_carry: Mc2SemanticSpellCarry,
     #[serde(default, skip_serializing_if = "GlobalSpecialState::is_default")]
@@ -937,6 +939,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     paused: bool,
     #[serde(skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
     initial_display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
+    initial_secret_announcement: super::objective_speech::SecretAnnouncementState,
     definition: &'a GameDefinition,
     semantic_spell_carry: &'a Mc2SemanticSpellCarry,
     #[serde(skip_serializing_if = "GlobalSpecialState::is_default")]
@@ -990,6 +994,7 @@ impl Mc2CampaignReplaySave {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
             paused,
             initial_display_settings: crate::game_runtime::DisplaySettings::default(),
+            initial_secret_announcement: super::objective_speech::SecretAnnouncementState::default(),
             definition,
             semantic_spell_carry,
             initial_global_context: GlobalSpecialState::default(),
@@ -1024,6 +1029,7 @@ impl Mc2CampaignReplaySave {
             save_contract: &self.save_contract,
             paused: self.paused,
             initial_display_settings: self.initial_display_settings,
+            initial_secret_announcement: self.initial_secret_announcement,
             definition: &self.definition,
             semantic_spell_carry: &self.semantic_spell_carry,
             initial_global_context: &self.initial_global_context,
@@ -1090,6 +1096,7 @@ impl fmt::Display for Mc2CampaignReplaySaveError {
 impl Error for Mc2CampaignReplaySaveError {}
 
 const MC2_CAMPAIGN_MAP_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-map-save/v1";
+fn source_count_is_zero(value: &u8) -> bool { *value == 0 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1106,6 +1113,8 @@ struct Mc2CampaignMapSave {
     played_cutscenes: Option<u8>,
     #[serde(default, skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
     display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(default, skip_serializing_if = "source_count_is_zero")]
+    source_secret_announcement_count: u8,
     receipt_sha256: String,
 }
 
@@ -1137,6 +1146,10 @@ impl Mc2CampaignMapSave {
         let bytes = if self.display_settings.is_default() { bytes } else {
             serde_json::to_vec(&(bytes, "source-display-settings-v1", self.display_settings))
                 .expect("source display settings are serializable")
+        };
+        let bytes = if self.source_secret_announcement_count == 0 { bytes } else {
+            serde_json::to_vec(&(bytes, "source-secret-statistics-byte-v1", self.source_secret_announcement_count))
+                .expect("source secret statistics byte is serializable")
         };
         hex_digest(Sha256::digest(bytes).into())
     }
@@ -1276,6 +1289,7 @@ struct Mc2PendingSpellCarry {
     session_generation: u64,
     destination_level: SemanticLevelId,
     carry: Mc2SemanticSpellCarry,
+    source_secret_announcement_count: u8,
 }
 
 impl Mc2RuntimePackageResolver {
@@ -1840,6 +1854,7 @@ impl Mc2RuntimePackageResolver {
         self.exact_package_for_definition(session.definition())?;
         let carry = session.backend().initial_semantic_spell_carry()?;
         let source_context = session.backend().campaign.source_global_context();
+        let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let destination_level = session
             .definition()
             .runtime_flow()
@@ -1869,6 +1884,7 @@ impl Mc2RuntimePackageResolver {
                 session_generation,
                 destination_level,
                 carry,
+                source_secret_announcement_count,
             },
         );
         Ok(identity)
@@ -2176,6 +2192,8 @@ impl Mc2RuntimePackageResolver {
                 source_context: contexts.get(&runtime.identity().runtime_id).copied(),
                 played_cutscenes: (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes()),
                 display_settings: runtime.identity().display_settings,
+                source_secret_announcement_count: pending.get(&runtime.identity().runtime_id)
+                    .map_or(0, |handoff| handoff.source_secret_announcement_count),
                 receipt_sha256: String::new(),
             };
             if mode == crate::game_runtime::RuntimeMode::Title
@@ -2296,6 +2314,7 @@ impl Mc2RuntimePackageResolver {
             save.initial_secret_continuation = Some(entry);
         }
         save.initial_global_context = session.backend().package_campaign.source_global_context();
+        save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
         save.global_context_changes = session.backend().global_context_changes.clone();
         save.initial_dynamic_lighting = session
             .backend()
@@ -2415,6 +2434,11 @@ impl Mc2RuntimePackageResolver {
                     message: "campaign map receipt does not verify".to_owned(),
                 });
             }
+            if save.source_secret_announcement_count != 0 && save.semantic_spell_carry.is_none() {
+                return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                    message: "source player statistics byte requires its retained player carry".into(),
+                });
+            }
             if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid cutscene history".to_owned() });
             }
@@ -2513,6 +2537,7 @@ impl Mc2RuntimePackageResolver {
                             .expect("restored Campaign owns generation"),
                         destination_level: destination.expect("validated carry destination"),
                         carry,
+                        source_secret_announcement_count: save.source_secret_announcement_count,
                     },
                 );
             } else {
@@ -2701,6 +2726,7 @@ impl Mc2RuntimePackageResolver {
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
         let initial_global_context = save.initial_global_context;
+        let initial_secret_announcement = save.initial_secret_announcement;
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
@@ -2752,6 +2778,7 @@ impl Mc2RuntimePackageResolver {
                     candidate
                         .backend_mut()
                         .install_initial_source_context(initial_global_context)?;
+                    candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
                     candidate
                         .backend_mut()
                         .install_initial_exit_route(initial_exit_route)?;
@@ -3022,6 +3049,7 @@ impl Mc2RuntimePackageResolver {
             let secret_id = entry.secret_level_id().clone();
             let carry = session.backend().transition_spell_carry()?;
             let context = session.backend().campaign.source_global_context();
+            let secret_announcement = session.backend().secret_announcement_after_statistics().after_level_init();
             let rewards = simulation.mission_rewards();
             let show_help = runtime.identity().player_preferences.preferences.show_help;
             let receipt =
@@ -3047,6 +3075,7 @@ impl Mc2RuntimePackageResolver {
                         }
                     })?;
                     candidate.backend_mut().apply_semantic_spell_carry(&carry)?;
+                    candidate.backend_mut().install_initial_secret_announcement(secret_announcement)?;
                     candidate
                         .backend_mut()
                         .install_initial_source_context(context)?;
@@ -3069,6 +3098,7 @@ impl Mc2RuntimePackageResolver {
             return Ok(None);
         }
         let carry = session.backend().transition_spell_carry()?;
+        let source_secret_announcement_count = session.backend().secret_announcement_after_statistics().collected_count;
         let context = session.backend().campaign.source_global_context();
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
@@ -3118,6 +3148,7 @@ impl Mc2RuntimePackageResolver {
                     .expect("secret return owns map lifetime"),
                 destination_level,
                 carry,
+                source_secret_announcement_count,
             },
         );
         contexts.insert(guard.runtime_id, context);
@@ -3158,6 +3189,7 @@ impl Mc2RuntimePackageResolver {
 
         let carry = session.backend().initial_semantic_spell_carry()?;
         let context = session.backend().campaign.source_global_context();
+        let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "resolver spell-carry state is unavailable".to_owned(),
@@ -3206,6 +3238,7 @@ impl Mc2RuntimePackageResolver {
                     .expect("abandoned secret return owns map lifetime"),
                 destination_level,
                 carry,
+                source_secret_announcement_count,
             },
         );
         contexts.insert(guard.runtime_id, context);
@@ -3256,6 +3289,9 @@ impl Mc2RuntimePackageResolver {
         let source_index = source_package.selection.internal_level;
         let reward_enabled = source.backend().campaign.simulation().mission_rewards() != super::rewards::MissionRewards::Suppressed;
         let final_reward = source.backend().initial_final_reward && reward_enabled;
+        let source_secret_announcement_count = if reward_enabled {
+            source.backend().secret_announcement_after_statistics().collected_count
+        } else { source.backend().campaign.simulation().secret_announcement().collected_count };
         // The bit-4 replay branch resets the source result byte to 4 before
         // MenusAndIntros observes it; it must not look like a fresh success.
         let campaign_return = reward_enabled.then(|| (
@@ -3317,6 +3353,7 @@ impl Mc2RuntimePackageResolver {
                 session_generation: receipt.source_session.generation + 1,
                 destination_level,
                 carry,
+                source_secret_announcement_count,
             },
         );
         debug_assert!(replaced.is_none());
@@ -3561,6 +3598,27 @@ impl Mc2CampaignBackend {
                 })?;
         }
         Ok(())
+    }
+
+    fn install_initial_secret_announcement(
+        &mut self, state: super::objective_speech::SecretAnnouncementState,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        for campaign in [&mut self.campaign, &mut self.package_campaign] {
+            campaign.simulation_mut().install_initial_secret_announcement(state)
+                .map_err(|error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message: error.to_string() })?;
+        }
+        Ok(())
+    }
+
+    /// Stage actual source main-loop statistics visits. Failed resolver
+    /// publication must not consume the player byte or change a read query.
+    fn secret_announcement_after_statistics(&self) -> super::objective_speech::SecretAnnouncementState {
+        let simulation = self.campaign.simulation();
+        let mut state = simulation.secret_announcement();
+        state.collect_statistics(super::objective_speech::source_statistics_visits(
+            simulation.source_exit_result_byte(), self.campaign.definition().identity.internal_level,
+        ));
+        state
     }
 
     fn install_initial_source_context(
@@ -3980,6 +4038,7 @@ pub struct CampaignRenderObservation {
     pub player_spells: Vec<sim_session::SpellObservation>,
     pub objective_progress: ObjectiveProgress,
     pub objective_textbox_ticks: u8,
+    pub objective_secret_announcement_record: Option<u16>,
     pub exit_sequence_active: bool,
     pub presentation_entities: Vec<PresentationEntity>,
 }
@@ -4186,6 +4245,7 @@ impl Mc2CampaignBackend {
                 all_objectives_satisfied,
             },
             objective_textbox_ticks: compatibility.runtime().objective_textbox_ticks,
+            objective_secret_announcement_record: compatibility.secret_announcement().text_record(),
             exit_sequence_active: compatibility.level_exit_sequence().active,
             presentation_entities,
         }
@@ -4257,6 +4317,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             player_spells,
             objective_progress,
             objective_textbox_ticks,
+            objective_secret_announcement_record,
             exit_sequence_active,
             presentation_entities,
         } = self.render_observation();
@@ -4278,6 +4339,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             player_spells,
             objective_progress,
             objective_textbox_ticks,
+            objective_secret_announcement_record,
             exit_sequence_active,
             presentation_entities,
             state_hash,
@@ -4449,6 +4511,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let source_context = self.campaign.source_global_context();
         let dynamic_lighting_enabled = self.dynamic_lighting_enabled();
         let help_enabled = self.help_enabled();
+        let secret_announcement = self.campaign.simulation().secret_announcement().after_level_init();
         let mut campaign = self.package_campaign.clone();
         campaign
             .apply_semantic_level_variant(
@@ -4486,6 +4549,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        campaign.simulation_mut().install_initial_secret_announcement(secret_announcement)
+            .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
+        self.package_campaign.simulation_mut().install_initial_secret_announcement(secret_announcement)
+            .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
@@ -7907,6 +7974,7 @@ pub(crate) mod tests {
             played_cutscenes: None,
             display_settings: crate::game_runtime::DisplaySettings::default(),
             receipt_sha256: String::new(),
+            source_secret_announcement_count: 0,
         };
         save.receipt_sha256 = save.compute_receipt_sha256();
         let bytes = serde_json::to_vec(&save).unwrap();
@@ -8192,6 +8260,7 @@ pub(crate) mod tests {
             session_generation: session_guard.generation + 1,
             destination_level: resolver.flow().entry_level_id().clone(),
             carry: carry.clone(),
+            source_secret_announcement_count: 0,
         };
         // Reproduce only the resolver storage condition created by an accepted
         // edge. Opening/closing above uses the real package and public runtime
@@ -22205,6 +22274,8 @@ pub(crate) mod tests {
         current
             .backend_mut()
             .apply_semantic_spell_carry(&trace.semantic_spell_carry)
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        current.backend_mut().install_initial_secret_announcement(trace.initial_secret_announcement)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         let mut display_settings = trace.initial_display_settings;
         for (operation_index, operation) in trace.operations.into_iter().enumerate() {
@@ -41182,6 +41253,46 @@ pub(crate) mod tests {
             .find(|row| row.active && row.authored_index == 770 && row.model == 4).expect("real portal770");
         let trigger = *sim(game).economy().authored_switch_producers().iter()
             .find(|row| row.active && row.authored_index == 755 && row.model == 31).expect("real secret entry755");
+        // The constructor, not the portal overlap or a test-set flag, owns
+        // this request. These are genuine outer source frames after the
+        // declared existing area controls above, not an earned playthrough.
+        assert_eq!(sim(game).secret_announcement(), super::super::objective_speech::SecretAnnouncementState {
+            active: true, collected_count: 0,
+        });
+        assert_eq!(game.backend().render_observation().objective_secret_announcement_record, Some(284));
+        let observed = game.snapshot();
+        let constructor_render = game.backend().render_observation();
+        for _ in 0..2 {
+            assert_eq!(game.snapshot(), observed);
+            assert_eq!(game.backend().render_observation().objective_secret_announcement_record, Some(284));
+        }
+        let phase = sim(game).runtime().objective_presentation_phase;
+        assert!((1..=8).contains(&phase), "real constructor restarts pending phase, got {phase}");
+        let cursor = sim(game).effect_journal().cursor(0).next_sequence;
+        for _ in phase..=8 { step(game); }
+        let announcement = sim(game).effect_journal().records().iter().filter(|record| record.sequence >= cursor)
+            .filter_map(|record| match &record.effect {
+                crate::campaign::journal::CampaignEffect::ObjectivePresentation(actions) => Some(*actions),
+                _ => None,
+            }).collect::<Vec<_>>();
+        assert_eq!(announcement.iter().filter_map(|action| action.speech).collect::<Vec<_>>(),
+            [super::super::objective_speech::SpeechSegment { track: 26, segment: 0, start_ms: 0, length_ms: 4999 }]);
+        assert!(announcement.iter().any(|action| action.palette_flash && action.sound_id == Some(41)));
+        assert!(announcement.iter().any(|action| action.palette_flash && action.duck_audio && action.speech.is_some()));
+        assert!(!announcement.iter().any(|action| action.sound_id == Some(61)));
+        let spoken_snapshot = game.snapshot();
+        let spoken_render = game.backend().render_observation();
+        let speech_receipt = serde_json::json!({
+            "schema": "mc-secret-announcement-source-receipt/v1",
+            "producer": { "authored_index": 755, "model": 31, "source_slot": trigger.source_entity_index },
+            "constructor": { "snapshot": observed, "render": constructor_render },
+            "spoken": { "snapshot": spoken_snapshot, "render": spoken_render },
+            "actions": announcement.iter().map(|action| serde_json::json!({
+                "speech": action.speech, "sound_id": action.sound_id,
+                "palette_flash": action.palette_flash, "duck_audio": action.duck_audio,
+            })).collect::<Vec<_>>(),
+            "controls": "existing declared Jaleen area poses and genuine source overlap; not an earned route or pose-qualified replay",
+        });
         let portal_handle = sim(game).source_arena().handle(portal.source_entity_index).unwrap();
         let entry_handle = sim(game).source_arena().handle(trigger.source_entity_index).unwrap();
         assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (70, 11));
@@ -41222,8 +41333,58 @@ pub(crate) mod tests {
         assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
         assert_eq!(runtime.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
             OrdinaryExitRoute::CampaignMap);
+        let first_secret = resolver.save_replay(&runtime).unwrap();
+        let mut live_cold = GameRuntime::<Mc2CampaignBackend>::title(12322).unwrap();
+        let title = live_cold.identity();
+        resolver.load_replay(&mut live_cold, title.guard(), 12322, &first_secret).unwrap();
+        assert_eq!(resolver.save_replay(&live_cold).unwrap(), first_secret);
+        assert_eq!(live_cold.session().unwrap().backend().render_observation().objective_secret_announcement_record, Some(284));
+        assert_eq!(live_cold.session().unwrap().snapshot().value.state_hash, runtime.session().unwrap().snapshot().value.state_hash);
+        let paused = live_cold.pause(live_cold.identity().guard()).unwrap();
+        let nested = live_cold.session().unwrap().identity().guard();
+        let cursor = live_cold.session().unwrap().backend().campaign.simulation().effect_journal().cursor(0).next_sequence;
+        for _ in 0..10 { live_cold.paused_campaign_frame_timed(paused.guard(), nested, 0, false).unwrap(); }
+        assert_eq!(live_cold.session().unwrap().identity().tick, 0, "paused source phases do not step gameplay");
+        let speech = live_cold.session().unwrap().backend().campaign.simulation().effect_journal().records().iter()
+            .filter(|record| record.sequence >= cursor).filter_map(|record| match &record.effect {
+                crate::campaign::journal::CampaignEffect::ObjectivePresentation(actions) => actions.speech,
+                _ => None,
+            }).collect::<Vec<_>>();
+        assert_eq!(speech, [super::super::objective_speech::SpeechSegment { track: 26, segment: 0, start_ms: 0, length_ms: 4999 }]);
+        live_cold.resume(paused.guard()).unwrap();
+        let session = live_cold.session_mut().unwrap();
+        session.reset(session.identity().guard()).unwrap();
+        assert_eq!(session.backend().campaign.simulation().secret_announcement(),
+            super::super::objective_speech::SecretAnnouncementState { active: true, collected_count: 0 });
+        let paused = live_cold.pause(live_cold.identity().guard()).unwrap();
+        let tag = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let profile = std::env::temp_dir().join(format!("mc-secret-announcement-{}-{tag}", std::process::id()));
+        live_cold.preferences_command(paused.guard(), crate::game_runtime::preferences::PreferencesCommand::Install {
+            profile_dir: profile.to_string_lossy().into_owned(),
+        }).unwrap();
+        let mut preferences = live_cold.identity().player_preferences.preferences;
+        preferences.speech_enabled = false;
+        live_cold.preferences_command(paused.guard(), crate::game_runtime::preferences::PreferencesCommand::Apply { preferences }).unwrap();
+        let nested = live_cold.session().unwrap().identity().guard();
+        let cursor = live_cold.session().unwrap().backend().campaign.simulation().effect_journal().cursor(0).next_sequence;
+        for _ in 0..3 { live_cold.paused_campaign_frame_timed(paused.guard(), nested, 0, false).unwrap(); }
+        assert_eq!(live_cold.session().unwrap().identity().tick, 0);
+        assert!(live_cold.session().unwrap().backend().campaign.simulation().effect_journal().records().iter()
+            .filter(|record| record.sequence >= cursor).all(|record| match &record.effect {
+                crate::campaign::journal::CampaignEffect::ObjectivePresentation(actions) => actions.speech.is_none(),
+                _ => true,
+            }));
+        let observed = live_cold.session().unwrap().snapshot();
+        assert!(observed.value.objective_textbox_ticks > 0);
+        assert_eq!(observed.value.objective_secret_announcement_record, Some(284));
+        assert_eq!(live_cold.session().unwrap().snapshot(), observed);
+        std::fs::remove_dir_all(profile).unwrap();
         assert_eq!(crate::native_world::tests::complete_pav_source32_for_test(runtime.session_mut().unwrap()), 0x0a);
         let won = runtime.session().unwrap();
+        let completed_snapshot = won.snapshot();
+        assert_eq!(won.backend().secret_announcement_after_statistics().collected_count, 1);
+        assert_eq!(won.backend().secret_announcement_after_statistics().collected_count, 1);
+        assert_eq!(won.snapshot(), completed_snapshot, "statistics queries cannot consume the source byte");
         let GameCompletionStatus::Completed { completion } = won.backend().completion_status()
             else { panic!("Pav's actual exit must publish completion") };
         let statistics = completion.statistics.unwrap();
@@ -41247,6 +41408,8 @@ pub(crate) mod tests {
         assert_eq!(results[0].statistics, statistics);
         assert!(!runtime.campaign_return_active(), "source11 has no first-return cutscene");
         let bytes = resolver.save_replay(&runtime).unwrap();
+        let source_map: Mc2CampaignMapSave = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(source_map.source_secret_announcement_count, 1, "actual Pav0a collects once");
         let mut cold = GameRuntime::<Mc2CampaignBackend>::title(12321).unwrap();
         let cold_guard = cold.identity().guard();
         let restored = resolver.load_replay(&mut cold, cold_guard, 12321, &bytes).unwrap();
@@ -41256,8 +41419,13 @@ pub(crate) mod tests {
         assert_eq!(cold.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &origin);
         assert_eq!(cold.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), carry);
         assert_eq!(cold.session().unwrap().backend().semantic_spell_carry().unwrap(), carry);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation().secret_announcement(),
+            super::super::objective_speech::SecretAnnouncementState::default(), "outer menu clears flag and new LevelInit zeros3E4");
+        assert_eq!(cold.session().unwrap().backend().render_observation().objective_secret_announcement_record, None);
         assert_eq!(cold.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,
             OrdinaryExitRoute::CampaignMap);
+        write_controlled_campaign_save("MC_SECRET_ANNOUNCEMENT_RECEIPT", &serde_json::to_vec_pretty(&speech_receipt).unwrap());
+        write_controlled_campaign_save("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT", &first_secret);
     }
 
     #[test]

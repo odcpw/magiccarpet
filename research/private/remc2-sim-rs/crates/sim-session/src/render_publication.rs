@@ -1,4 +1,4 @@
-//! Transport-neutral binary render publication, version 1.
+//! Transport-neutral binary render publication, version 2.
 //!
 //! Integers are little endian with no padding. Strings are UTF-8 prefixed by a
 //! u32 byte length; vectors use a u32 count; options and booleans use one byte.
@@ -28,12 +28,15 @@ pub struct RenderPublication<'a> {
     pub return_to_title_requested: bool,
     pub source_scoreboard: &'a SourceScoreboard,
     pub participant_notifications: &'a [ParticipantNotification],
+    pub player_wall_contact_counter: i8,
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: &'a CameraPose,
     pub source_camera_fov: i16,
     pub player_spells: &'a [SpellObservation],
     pub objective_progress: &'a ObjectiveProgress,
     pub objective_textbox_ticks: u8,
+    /// Zero on the wire denotes no special objective-text record.
+    pub objective_secret_announcement_record: Option<u16>,
     pub exit_sequence_active: bool,
     pub presentation_entities: &'a [PresentationEntity],
 }
@@ -136,7 +139,7 @@ impl RenderPublication<'_> {
 
     fn write(&self, w: &mut Writer<'_>, length: u32) -> Result<(), EncodeError> {
         w.raw(b"MCPO")?;
-        w.u32(1)?;
+        w.u32(2)?;
         w.u32(length)?;
         w.u64(self.runtime_id)?;
         w.u64(self.runtime_generation)?;
@@ -211,6 +214,7 @@ impl RenderPublication<'_> {
             w.string(n.kind.as_str())?;
             w.i16(n.remaining_frames)?;
         }
+        w.i8(self.player_wall_contact_counter)?;
         w.u16(self.player_immobilized_ticks)?;
         let c = self.source_camera_pose;
         w.u16(c.x)?;
@@ -264,6 +268,7 @@ impl RenderPublication<'_> {
         w.u32(o.total_count)?;
         w.bool(o.all_objectives_satisfied)?;
         w.u8(self.objective_textbox_ticks)?;
+        w.u16(self.objective_secret_announcement_record.unwrap_or(0))?;
         w.bool(self.exit_sequence_active)?;
         w.count(self.presentation_entities.len())?;
         for e in self.presentation_entities {

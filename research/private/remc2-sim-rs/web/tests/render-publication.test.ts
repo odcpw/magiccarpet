@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { decodeRenderPublication } from '../src/render-publication.ts';
 
-// Hand-authored v1 packet: every nested field, each option, non-ASCII UTF-8,
+// Hand-authored v2 packet: every nested field, each option, non-ASCII UTF-8,
 // signed values, enum cases and identifiers beyond JavaScript's safe integers.
-function packet(emptyOptions = false) {
+function packet(emptyOptions = false, announcement: number | null = emptyOptions ? null : 284) {
   const bytes: number[] = [];
   const offsets: Record<string, number> = {};
   const mark = (name: string) => { offsets[name] = bytes.length; };
@@ -14,7 +14,7 @@ function packet(emptyOptions = false) {
   const u32 = (v: number) => { u16(v); u16(v >>> 16); };
   const u64 = (v: bigint) => { for (let i = 0n; i < 8n; i++) u8(Number((v >> (8n * i)) & 255n)); };
   const str = (s: string) => { const b = new TextEncoder().encode(s); u32(b.length); bytes.push(...b); };
-  bytes.push(77, 67, 80, 79); u32(1); u32(0);
+  bytes.push(77, 67, 80, 79); u32(2); u32(0);
   u64(9007199254740993n); u64(9007199254740994n); mark('mode'); u8(1);
   mark('firstStringLength'); str('é'); str('graph'); str('definition');
   u64(2n); u64(3n); u64(4n); u64(5n); u64(6n); mark('valueTick'); u64(5n); u64(9007199254740995n);
@@ -28,14 +28,14 @@ function packet(emptyOptions = false) {
   [-1, 2, -3, 4, -5, 6, -7, 8].forEach(u16);
   u8(emptyOptions ? 0 : 1); if (!emptyOptions) str('projection failure');
   u32(1); u64(9007199254740996n); u8(1); str('Mág'); str('notice.spell'); u16(-9);
-  u16(15); [16, 17, -18, -19, -20, -21].forEach(u16); u16(-22);
+  u8(-12); u16(15); [16, 17, -18, -19, -20, -21].forEach(u16); u16(-22);
   u32(1); str('spell.fireball'); str('Fireball'); u8(1); u8(emptyOptions ? 0 : 1);
   if (!emptyOptions) u64(9007199254740997n);
   u8(1); u8(-3); u8(4); u8(5); u8(emptyOptions ? 0 : 1);
   if (!emptyOptions) { u16(6); [7, 8, 9].forEach(u16); }
   u32(-10); u8(3); u8(2); u8(5);
   u8(emptyOptions ? 0 : 1); if (!emptyOptions) str('objective.finish');
-  u32(17); u32(18); u8(1); u8(19); u8(1);
+  u32(17); u32(18); u8(1); u8(19); u16(announcement ?? 0); u8(1);
   u32(1); u64(9007199254740998n); str('creature.goat'); [20, 21, -22, -23, -24].forEach(u16);
   u16(25); str('asset.goat'); str('sha256:abcd');
   const result = Uint8Array.from(bytes);
@@ -43,7 +43,7 @@ function packet(emptyOptions = false) {
   return { result, offsets };
 }
 
-test('decodes all v1 fields, preserves wide integers, and owns an immutable result', () => {
+test('decodes all v2 fields, preserves wide integers, and owns an immutable result', () => {
   const { result } = packet();
   const actual = decodeRenderPublication(result);
   const padded = new Uint8Array(result.length + 2); padded.set(result, 1);
@@ -62,12 +62,13 @@ test('decodes all v1 fields, preserves wide integers, and owns an immutable resu
       source_scoreboard: { players: [{ source_slot: 9, display_name: 'Player', outline_palette_index: 10,
         text_palette_index: 11, max_mana: -12, kills8: [-1, 2, -3, 4, -5, 6, -7, 8] }], projection_error: 'projection failure' },
       participant_notifications: [{ participant: 9007199254740996n, is_local: true, display_name: 'Mág', kind: 'notice.spell', remaining_frames: -9 }],
-      player_immobilized_ticks: 15, source_camera_pose: { x: 16, y: 17, z: -18, yaw: -19, pitch: -20, roll: -21 }, source_camera_fov: -22,
+      player_wall_contact_counter: -12, player_immobilized_ticks: 15,
+      source_camera_pose: { x: 16, y: 17, z: -18, yaw: -19, pitch: -20, roll: -21 }, source_camera_fov: -22,
       player_spells: [{ id: 'spell.fireball', display_name: 'Fireball', acquired: true, holder_actor: 9007199254740997n,
         selected: true, tier: -3, unlocked_tier: 4, menu_slot: 5, menu_artwork: { grid_icon: 6, tier_icons: [7, 8, 9] },
         mana_cost: -10, hand: 'both', marked_hand: 'right', availability: 'insufficient_mana' }],
       objective_progress: { current_objective: 'objective.finish', completed_count: 17, total_count: 18, all_objectives_satisfied: true },
-      objective_textbox_ticks: 19, exit_sequence_active: true,
+      objective_textbox_ticks: 19, objective_secret_announcement_record: 284, exit_sequence_active: true,
       presentation_entities: [{ actor: 9007199254740998n, kind: 'creature.goat', pose: { x: 20, y: 21, z: -22, yaw: -23, pitch: -24 },
         logical_height: 25, asset: { id: 'asset.goat', content_address: 'sha256:abcd' } }] },
   });
@@ -84,6 +85,14 @@ test('represents absent options consistently with the diagnostic projection', ()
   assert.ok(!('menu_artwork' in actual.player_spells[0]!));
   assert.equal(actual.source_scoreboard.projection_error, null);
   assert.equal(actual.objective_progress.current_objective, null);
+  assert.equal(actual.objective_secret_announcement_record, null);
+});
+
+test('carries the selected special text record and rejects unbound records', () => {
+  for (const record of [284, 285])
+    assert.equal(decodeRenderPublication(packet(false, record).result).value.objective_secret_announcement_record, record);
+  assert.throws(() => decodeRenderPublication(packet(false, 283).result), /announcement/);
+  assert.throws(() => decodeRenderPublication(packet(false, 286).result), /announcement/);
 });
 
 test('rejects invalid headers, truncation, booleans, UTF-8, counts and trailing bytes', () => {
@@ -95,7 +104,7 @@ test('rejects invalid headers, truncation, booleans, UTF-8, counts and trailing 
   }
   const changed = (offset: number, value: number) => { const b = result.slice(); b[offset] = value; return b; };
   assert.throws(() => decodeRenderPublication(changed(0, 0)), /magic/);
-  assert.throws(() => decodeRenderPublication(changed(4, 2)), /version/);
+  assert.throws(() => decodeRenderPublication(changed(4, 1)), /version/);
   assert.throws(() => decodeRenderPublication(changed(8, 0)), /length/);
   assert.throws(() => decodeRenderPublication(changed(offsets.mode!, 2)), /enum/);
   assert.throws(() => decodeRenderPublication(changed(offsets.valueTick!, 6)), /tick mismatch/);
@@ -128,7 +137,7 @@ test('native C ABI publication agrees field-for-field with its diagnostic projec
       (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     const { contract: _contract, ...expected } = diagnostic;
     assert.deepEqual(actual, expected);
-    const malformed = Uint8Array.from(bytes); malformed[4] = 2;
+    const malformed = Uint8Array.from(bytes); malformed[4] = 1;
     assert.throws(() => decodeRenderPublication(malformed), /version/);
     assert.throws(() => decodeRenderPublication(bytes.subarray(0, bytes.length - 1)), /length/);
   }

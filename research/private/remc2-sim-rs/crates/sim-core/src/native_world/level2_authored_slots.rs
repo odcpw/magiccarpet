@@ -8697,6 +8697,45 @@ mod source_effect_allocator_tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
 
+    #[test]
+    fn real_jaleen_secret_constructor_suppression_and_exhaustion_do_not_announce() {
+        let package = std::env::var_os("MC_JALEEN_PACKAGE").map_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/archer-20261105-integration/level12-owner-current/level12")
+        }, std::path::PathBuf::from);
+        let baseline = CampaignSession::open(&package, CampaignSelection::ordinary(12).unwrap()).unwrap();
+        for suppressed in [true, false] {
+            let mut candidate = baseline.clone();
+            let simulation = candidate.simulation_mut();
+            // Declared source setting/allocation failure controls. The
+            // announcement flag/count and phase are never written here.
+            if suppressed {
+                simulation.session.state.live.economy.activation_settings.secret_entry_suppressed = true;
+            } else {
+                // A group publication reclaims hidden rows before rebuilding
+                // NewEvent's arena. Drain that real source boundary first;
+                // clearing only its old free stack is not exhaustion.
+                assert!(!simulation.mission().authored_features().iter()
+                    .any(|row| row.kind != 0 && row.activation_group == i16::MAX));
+                simulation.activate_authored_group_prerequisite_for_test(i16::MAX as u16).unwrap();
+                simulation.economy_mut().exhaust_new_event_capacity_for_test();
+                let mut allocation_probe = simulation.session.state.live.economy.economy.clone();
+                assert_eq!(allocation_probe.allocate_slot(), None,
+                    "declared exhaustion must remove ordinary AND replaceable NewEvent candidates");
+            }
+            let before = (simulation.secret_announcement(), simulation.runtime().objective_presentation_phase);
+            let _ = simulation.activate_authored_group_prerequisite_for_test(44);
+            assert!(!simulation.economy().authored_switch_producers().iter()
+                .any(|row| row.active && row.authored_index == 755 && row.model == 31),
+                "real model31 was admitted: suppression={suppressed}, rows={:?}",
+                simulation.economy().authored_switch_producers().iter()
+                    .filter(|row| row.authored_index == 755).collect::<Vec<_>>());
+            assert_eq!((simulation.secret_announcement(), simulation.runtime().objective_presentation_phase), before,
+                "failed actual model31 construction cannot publish phase1 or flag1; suppression={suppressed}");
+            assert_eq!(simulation.secret_announcement().text_record(), None);
+        }
+    }
+
     fn arena() -> crate::campaign::source_arena::SourceArena {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");

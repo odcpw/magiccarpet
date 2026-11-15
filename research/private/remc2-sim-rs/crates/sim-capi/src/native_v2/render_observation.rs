@@ -43,7 +43,7 @@ pub extern "C" fn mc_game_runtime_render_observation_json_v1(
     })
 }
 
-/// Copy a coherent, guarded v1 packet to a reusable caller-owned byte buffer.
+/// Copy a coherent, guarded MCPO v2 packet to a reusable caller-owned buffer.
 /// A short buffer receives no bytes and `out_written` receives the exact size.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
@@ -120,12 +120,14 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
                 return_to_title_requested: value.return_to_title_requested,
                 source_scoreboard: &value.source_scoreboard,
                 participant_notifications: &value.participant_notifications,
+                player_wall_contact_counter: value.player_wall_contact_counter,
                 player_immobilized_ticks: value.player_immobilized_ticks,
                 source_camera_pose: &value.source_camera_pose,
                 source_camera_fov: value.source_camera_fov,
                 player_spells: &value.player_spells,
                 objective_progress: &value.objective_progress,
                 objective_textbox_ticks: value.objective_textbox_ticks,
+                objective_secret_announcement_record: value.objective_secret_announcement_record,
                 exit_sequence_active: value.exit_sequence_active,
                 presentation_entities: &value.presentation_entities,
             };
@@ -282,7 +284,7 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(&short[..4], b"MCPO");
-        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(short[8..12].try_into().unwrap()), length);
         assert_eq!(u64::from_le_bytes(short[12..20].try_into().unwrap()), id);
         assert_eq!(

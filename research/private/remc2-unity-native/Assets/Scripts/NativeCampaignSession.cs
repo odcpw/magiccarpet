@@ -2055,12 +2055,19 @@ namespace MagicCarpet.Native
             ulong expectedGeneration,
             ulong expectedTick)
         {
+            var expectedTrack = Selection.mapType switch
+            {
+                0 => 2, // Day
+                1 => 1, // Night
+                2 => 3, // Cave
+                _ => throw new InvalidDataException("Unknown campaign music map type"),
+            };
             if (state.abiVersion != NativeSim.AbiVersion ||
                 state.structSize != 80 ||
                 state.generation != expectedGeneration ||
                 state.tick != expectedTick ||
                 state.assetSlot != 0 ||
-                state.track != (Selection.mapType == 1 ? 1 : 2) ||
+                state.track != expectedTrack ||
                 state.volume != 127 ||
                 state.initialized > 1 ||
                 state.loaded > 1 ||

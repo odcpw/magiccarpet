@@ -611,6 +611,28 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void PavCaveMusicAcceptsItsRealTrackAndRejectsDayTrack()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var package = Path.Combine(generated, "mc-paj2-source-secret-32-campaign-package");
+            var cache = Path.Combine(generated, "campaign-original-environments/source32");
+            using var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(33, 32, 2), cache);
+            var actual = session.DayMusicState();
+            Assert.That(actual.track, Is.EqualTo(3), "the real Cave owner selects source track 3");
+            var invalid = actual;
+            invalid.track = 2;
+            var validator = typeof(NativeCampaignSession).GetMethod("ValidateDayMusicState",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Assert.That(validator, Is.Not.Null);
+            var error = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+                validator.Invoke(session, new object[] { invalid, session.Generation, session.Tick }));
+            Assert.That(error.InnerException, Is.TypeOf<InvalidDataException>(),
+                "a valid owner snapshot with the Day track substituted must still fail");
+            Assert.That(session.DayMusicState().track, Is.EqualTo(3), "a rejected copy leaves the real owner intact");
+        }
+
+        [Test]
         public void Level2DayMusicLifecycleIsSessionIsolated()
         {
             var root = new GameObject("Level 2 Day music production route");
