@@ -16,6 +16,7 @@ namespace MagicCarpet.Native
             internal Vector2 Size;
             internal int Slot;
             internal Vector3[] WindowCenters, WindowNormals;
+            internal Foundation Foundation;
         }
         internal struct LiveBuilding
         {
@@ -31,6 +32,7 @@ namespace MagicCarpet.Native
         private readonly Material material;
         private readonly ModernBuildingLayout layout;
         private readonly bool voxel;
+        private readonly ModernTerrainMesh terrain;
         private readonly List<Vector3> windowCenters=new(),windowNormals=new();
         private readonly List<Bounds> changedFootprints=new();
         private bool prepared;
@@ -51,6 +53,7 @@ namespace MagicCarpet.Native
         {
             this.parent=parent;
             this.voxel=voxel;
+            this.terrain=terrain;
             layout=source??ModernBuildingLayout.LoadRequested();
             if(layout==null) return;
             layout.ValidateProfiles();
@@ -172,6 +175,7 @@ namespace MagicCarpet.Native
             // Register before creating children so rollback also owns partial instances.
             var instance=new Instance { Node=node,Position=best,Size=ModernBuildingMeshes.Footprint(profile),Slot=entry.source_slot };
             instances.Add(instance);
+            if(terrain!=null) instance.Foundation=new Foundation(node.transform,profile,material);
             var lods=new LOD[3];var thresholds=new[] {.22f,.07f,.008f};
             for(var lod=0;lod<3;lod++)
             {
@@ -179,7 +183,8 @@ namespace MagicCarpet.Native
                 child.AddComponent<MeshFilter>().sharedMesh=levels[lod];
                 var renderer=child.AddComponent<MeshRenderer>();renderer.sharedMaterial=material;
                 renderer.shadowCastingMode=ShadowCastingMode.On;renderer.receiveShadows=true;
-                lods[lod]=new LOD(thresholds[lod],new Renderer[] { renderer });
+                lods[lod]=new LOD(thresholds[lod],instance.Foundation==null
+                    ? new Renderer[] { renderer } : new Renderer[] { renderer,instance.Foundation.Renderer });
             }
             var group=node.AddComponent<LODGroup>();group.SetLODs(lods);group.RecalculateBounds();
             var centers=voxel ? ModernBuildingMeshes.VoxelWindowCenters(profile,0) : ModernBuildingMeshes.WindowCenters(profile);
@@ -200,8 +205,13 @@ namespace MagicCarpet.Native
         internal void Render(Vector3 viewer)
         {
             foreach(var item in instances)
+            {
                 item.Node.transform.position=new Vector3(viewer.x+WrappedDelta(item.Position.x,viewer.x),
                     item.Position.y,viewer.z+WrappedDelta(item.Position.z,viewer.z));
+                if(item.Node.activeSelf&&item.Foundation!=null &&
+                    item.Foundation.Refresh(item.Node.transform.position,terrain.SampleVisualHeight))
+                    item.Node.GetComponent<LODGroup>().RecalculateBounds();
+            }
         }
         internal void SetLighting(int mode) => material?.SetFloat("_WindowLight",mode==0?0:mode==1?.45f:.8f);
 
@@ -213,7 +223,7 @@ namespace MagicCarpet.Native
         }
         private void ClearInstances()
         {
-            foreach(var item in instances) Destroy(item.Node);
+            foreach(var item in instances) { item.Foundation?.Dispose();Destroy(item.Node); }
             instances.Clear();windowCenters.Clear();windowNormals.Clear();
             changedFootprints.Clear();
             liveFlattened=liveVisible=null;
@@ -221,5 +231,78 @@ namespace MagicCarpet.Native
         }
         private static void Destroy(UnityEngine.Object item)
         { if(item==null)return;if(Application.isPlaying)UnityEngine.Object.Destroy(item);else UnityEngine.Object.DestroyImmediate(item); }
+
+        // One exterior skirt per instance, sampled on the source-profile perimeter.
+        // Shared roof meshes and native heights remain untouched. A metre spacing
+        // resolves the terrain triangles while keeping the wall bounded by perimeter.
+        private sealed class Foundation : IDisposable
+        {
+            private readonly Vector3[] edge;
+            private readonly float[] ground;
+            private readonly Mesh mesh;
+            internal readonly MeshRenderer Renderer;
+
+            internal Foundation(Transform parent,ModernBuildingMeshes.Profile profile,Material material)
+            {
+                int nx=(profile.columns-1)*4,nz=(profile.rows-1)*4;
+                edge=new Vector3[2*(nx+nz)];ground=new float[edge.Length];
+                int n=0;
+                void Add(int x,int z)
+                {
+                    int ix=Mathf.Min(x/4,profile.columns-2),iz=Mathf.Min(z/4,profile.rows-2);
+                    float u=x/4f-ix,v=z/4f-iz;
+                    // Along an outer edge, bilinear interpolation is identical to
+                    // either of the source triangles sharing that edge.
+                    float a=profile.heights[ix+iz*profile.columns],b=profile.heights[ix+1+iz*profile.columns];
+                    float c=profile.heights[ix+(iz+1)*profile.columns],d=profile.heights[ix+1+(iz+1)*profile.columns];
+                    edge[n]=new Vector3(x-nx*.5f,Mathf.Lerp(Mathf.Lerp(a,b,u),Mathf.Lerp(c,d,u),v),z-nz*.5f);
+                    ground[n++]=float.NaN;
+                }
+                for(int x=0;x<nx;x++)Add(x,0);
+                for(int z=0;z<nz;z++)Add(nx,z);
+                for(int x=nx;x>0;x--)Add(x,nz);
+                for(int z=nz;z>0;z--)Add(0,z);
+                var child=new GameObject("Source building foundation");child.transform.SetParent(parent,false);
+                mesh=new Mesh { name="Source building foundation" };
+                child.AddComponent<MeshFilter>().sharedMesh=mesh;
+                Renderer=child.AddComponent<MeshRenderer>();Renderer.sharedMaterial=material;
+                Renderer.shadowCastingMode=ShadowCastingMode.On;Renderer.receiveShadows=true;
+            }
+
+            internal bool Refresh(Vector3 position,Func<float,float,float> sample)
+            {
+                bool changed=false;
+                for(int i=0;i<edge.Length;i++)
+                {
+                    float y=sample(position.x+edge[i].x,position.z+edge[i].z)-position.y;
+                    if(float.IsNaN(y)||float.IsInfinity(y)) throw new InvalidOperationException("Invalid building foundation terrain height");
+                    if(float.IsNaN(ground[i])||Mathf.Abs(ground[i]-y)>.001f) { ground[i]=y;changed=true; }
+                }
+                if(!changed)return false;
+                var vertices=new List<Vector3>();var normals=new List<Vector3>();var uv=new List<Vector2>();
+                var palette=new List<Vector2>();var colors=new List<Color>();var triangles=new List<int>();
+                for(int i=0;i<edge.Length;i++)
+                {
+                    int j=(i+1)%edge.Length;
+                    // Ignore the existing 0.025 placement offset on flat ground.
+                    float d0=edge[i].y-ground[i],d1=edge[j].y-ground[j];
+                    if(d0<=.05f&&d1<=.05f)continue;
+                    Vector3 a=edge[i],b=edge[j],c=b,d=a;
+                    c.y=Mathf.Min(b.y,ground[j]-.025f);d.y=Mathf.Min(a.y,ground[i]-.025f);
+                    var normal=new Vector3(b.z-a.z,0,a.x-b.x).normalized;
+                    int first=vertices.Count;
+                    foreach(var point in new[] { a,b,c,d })
+                    { vertices.Add(point);normals.Add(normal);uv.Add(new Vector2(point.x,point.z));palette.Add(Vector2.zero);colors.Add(Color.white); }
+                    if((b.y-c.y)>.0001f) { triangles.Add(first);triangles.Add(first+1);triangles.Add(first+2); }
+                    if((a.y-d.y)>.0001f) { triangles.Add(first);triangles.Add(first+2);triangles.Add(first+3); }
+                }
+                mesh.Clear();mesh.SetVertices(vertices);mesh.SetNormals(normals);mesh.SetUVs(0,uv);mesh.SetUVs(1,palette);
+                mesh.SetColors(colors);mesh.SetTriangles(triangles,0);mesh.RecalculateBounds();
+                Renderer.enabled=triangles.Count!=0;
+                return true;
+            }
+
+            public void Dispose() => Destroy(mesh);
+        }
     }
 }
