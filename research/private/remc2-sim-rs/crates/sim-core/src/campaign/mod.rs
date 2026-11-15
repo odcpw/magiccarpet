@@ -547,6 +547,11 @@ impl CampaignSession {
             .campaign_reset_session_with_spell_entry(&self.definition, Some(learned))?;
         let mut candidate = self.clone();
         candidate.simulation = simulation;
+        if let Some(catalog) = self.simulation.source_animations.catalog() {
+            // Spell entry rematerializes the unpublished world; reinitialize
+            // its validated source bank and preload against that new world.
+            candidate.simulation.bind_source_animation_catalog(catalog.clone())?;
+        }
         candidate.install_initial_source_global_context(self.source_global_context())?;
         for (player_index, objective) in self.simulation.runtime().objectives.iter().enumerate() {
             candidate
