@@ -67,6 +67,11 @@ namespace MagicCarpet.Native
             public PlayerPreferences preferences;
             public PlayerLocaleBinding expected_locale_binding;
         }
+        [Serializable] private sealed class ResetDefaultKeysCommand
+        {
+            public string operation = "reset_default_keys_checked";
+            public PlayerLocaleBinding expected_locale_binding;
+        }
         [Serializable] private sealed class InstallLanguagesCommand
         {
             public string operation = "install_languages_checked";
@@ -249,6 +254,37 @@ namespace MagicCarpet.Native
                 captureKey = -1;
                 sourceSettingsDialog.Close();
                 Debug.Log($"MC_PREFERENCES_APPLIED player={Current.preferences.player_name} forward={Current.preferences.keys[0]} sound={Current.preferences.sound_volume} help={Current.preferences.show_help}");
+                return true;
+            }
+            catch (Exception error)
+            {
+                sourceSettingsDialog.RestoreCursor();
+                status = error.Message;
+                return false;
+            }
+        }
+
+        internal bool ResetDefaultKeys()
+        {
+            if (draft == null || page != SourceSettingsDialog.Page.Keys) return false;
+            try
+            {
+                if (languageCache == null || Current.locale_binding == null)
+                    throw new InvalidOperationException("source language binding is unavailable");
+                var candidate = languageCache.PrepareLocale(Current.locale_binding);
+                var accepted = command(JsonUtility.ToJson(new ResetDefaultKeysCommand {
+                    expected_locale_binding = candidate.Identity }));
+                if (!SameLocale(candidate.Identity, accepted.locale_binding))
+                    throw new InvalidOperationException("native and prepared source locale owners differ");
+                var previous = Current.preferences;
+                Synchronize(accepted);
+                ArmInputReleaseBarrier(previous, Current.preferences);
+                draft = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));
+                draft.selected_locale = Current.preferences.selected_locale;
+                selectedKeySlot = 0;
+                captureKey = 0;
+                keyCaptureRejected = false;
+                status = null;
                 return true;
             }
             catch (Exception error)
@@ -445,7 +481,7 @@ namespace MagicCarpet.Native
             return frame;
         }
 
-        internal void Draw(OwnerCampaignMenuCache cache)
+        internal void Draw(OwnerCampaignMenuCache cache, Action playClick = null)
         {
             if (!IsOpen) return;
             try
@@ -457,7 +493,12 @@ namespace MagicCarpet.Native
                 else if (result.Status != null) status = result.Status;
                 if (result.SelectedKeySlot >= 0) selectedKeySlot = result.SelectedKeySlot;
                 if (result.BeginKeyCapture >= 0) BeginKeyCapture(result.BeginKeyCapture);
-                if (result.Confirm) Apply();
+                if (result.ResetDefaults)
+                {
+                    playClick?.Invoke(); // TestMouseRegions plays source sample14 before resetting.
+                    ResetDefaultKeys();
+                }
+                else if (result.Confirm) Apply();
                 else if (result.Cancel) Cancel();
             }
             catch (Exception error)

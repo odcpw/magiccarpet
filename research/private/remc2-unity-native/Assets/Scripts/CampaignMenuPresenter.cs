@@ -312,7 +312,7 @@ namespace MagicCarpet.Native
             {
                 if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
                     DrawStartup(now, repaint, canSave, canLoad, status, false);
-                preferences.Draw(campaignCache);
+                preferences.Draw(campaignCache, PlayClick);
                 return Action.None;
             }
             if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)

@@ -801,6 +801,64 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+Current capability (2026-11-15): Oliver authorizes continuing the list with
+the same team. QuietIsland owns the original Default Keys control109, its real
+bitmap/cache and managed consumer; BoldForge owns the existing checked Rust
+preferences operation. Root serializes verification, publication and installation.
+Source SetKeysDialog's immediate default action keeps the dialog open and resets
+ten keys, sound/music volumes127, showHelp and brightness11/13. It preserves
+brightness12, selected language/font, minimap/topbar and other settings: langIndex_4
+is scratch, SelectedLangIndex is the persisted language, and LevelIndex_0xc is the
+local player index, not campaign progression. Cancel after an accepted reset must
+retain it while discarding subsequent draft edits. Full original acceptance stays
+open; no default-state payload from the client or whole-preference replacement.
+
+Default Keys is now implemented, verified and installed. One checked native
+preferences operation derives only the source reset from committed state, validates
+the unchanged selected-locale binding and publishes through the existing atomic
+profile transaction. The real source109 bitmap and sample14-before-reset reach the
+Title key dialog; the dialog stays open at its first assignment. All678 cache outputs
+were independently rehashed; exactly settings-109.rgba8 was added, all677 prior
+outputs are unchanged. Incomplete three-sprite settings caches now reject early.
+The focused native current-locale/field-preservation/guard/IO/Cancel/cold/live-owner
+check passes0.22s. Its first invocation selected an oldv3 package and correctly
+failed collision admission before runtime; only the environment was corrected to
+the existing v5 package. No source gate or expected result was weakened.
+
+Connected original Title->Keys->Default/current-profile/cold-input->normal Night
+cast/save/load/resume/retry passes37.70s; the prior source-help refusal/receipt and
+held-input release checks pass1.15s. Only the failed legacy fixture was rerun: its
+typed JSON serialization had changed absent fields into empty strings. The final
+fixture uses the existing .NET JSON reader to append only the real109 descriptor/
+bytes/receipt, retaining all original missing-help/pause negatives. Two intervening
+isolated-test compile failures were resolved without production or native changes;
+the older Original project does not carry the shared project's Newtonsoft package.
+No extra package was introduced and passing gameplay evidence was reused. UBS is
+partial/legacy-scoped; final changed hunks have no critical/warning finding.
+
+Strict Rig core compilation and production native build pass; all626 captured
+source/header/data inputs and returned native bytes match. Original build-ha52skcb
+with nativea828d36efe614d5f84f48f904a3659ba4e471bb85548de54cf412aea043b842c
+is installed and --check-installed passes. Root viewed actual physical Title/Keys/
+Default/Cancel, exact private-profile reset and a fresh process's UP binding/source
+button. The cold process then reached normal all30-resource map/loading/NightSpire
+terrain/HUD/help with one portal click and zero retries. Both owned smokes stopped.
+This is UI/profile/launch-load proof, not flight, human combat/FPS/hardware audio,
+full missions or a historical WAV root-cause correction. Evidence is in
+generated/default-keys-20261115 and help-20261115/default-keys-*.
+Deletion of the verified105.7MB superseded Linux-before-build-ha52skcb player was
+blocked by DCG's recursive-removal approval gate; no bytes were removed or guard
+bypassed. Current installation, owner data and caches are preserved; disk headroom
+is sufficient. Full mc-5r5.2/mc-oi6.5/.6 acceptance remains open.
+
+Next connected capability: the real successful switch31 constructor must request
+the special source announcement, then source phases7/8 select TRACK26/27 (raw375ms),
+text284/285, palette/duck and cleanup. The separate wrapping source3E4 counter must
+follow actual CollectLevelStats calls; unique completed-secret history is not its
+equivalent. Existing real Jaleen area722->727->group44 row755/portal770 and Pav return
+checks supply the producer/continuation. Keep this next batch source-traced and
+connected through current speech/text consumers, not an isolated segment function.
+
 Newest operator direction (2026-11-15): complete the source Shift+F5 display
 control through HUD, original notice, help cleanup and ordinary F5 preservation.
 The Astra diagnostic worker is stopped at Oliver's request; the installed route

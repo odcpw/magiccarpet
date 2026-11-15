@@ -233,6 +233,11 @@ pub enum PreferencesCommand {
         preferences: PlayerPreferences,
         expected_locale_binding: LocaleSnapshot,
     },
+    /// SetKeysDialog result1 / source sub_5BCC0. This is an immediate
+    /// committed reset of the named source fields, not a replacement draft.
+    ResetDefaultKeysChecked {
+        expected_locale_binding: LocaleSnapshot,
+    },
     PreviewAudio {
         sound_enabled: bool,
         music_enabled: bool,
@@ -395,13 +400,28 @@ impl PreferenceStore {
                 self.locale = Some(locale);
             }
             command @ (PreferencesCommand::Apply { .. }
-            | PreferencesCommand::ApplyChecked { .. }) => {
+            | PreferencesCommand::ApplyChecked { .. }
+            | PreferencesCommand::ResetDefaultKeysChecked { .. }) => {
                 let (mut preferences, expected) = match command {
                     PreferencesCommand::Apply { preferences } => (preferences, None),
                     PreferencesCommand::ApplyChecked {
                         preferences,
                         expected_locale_binding,
                     } => (preferences, Some(expected_locale_binding)),
+                    PreferencesCommand::ResetDefaultKeysChecked { expected_locale_binding } => {
+                        let mut preferences = self.current.clone();
+                        preferences.keys = PlayerPreferences::default().keys;
+                        preferences.sound_volume = 127;
+                        preferences.music_volume = 127;
+                        preferences.show_help = true;
+                        preferences.brightness[0] = 0;
+                        preferences.brightness[2] = 0;
+                        // langIndex_4 is only the bootstrap lookup scratch;
+                        // active text and WriteConfigDat use SelectedLangIndex.
+                        // brightness_12, display settings and other preferences
+                        // are not written by source sub_5BCC0.
+                        (preferences, Some(expected_locale_binding))
+                    }
                     _ => unreachable!(),
                 };
                 preferences.player_name.make_ascii_uppercase();
@@ -910,6 +930,171 @@ mod tests {
             assert_eq!(runtime.player_preferences.input_generation, None);
             assert_eq!(runtime.player_preferences.assistance.unchanged, 0);
         }
+    }
+
+    #[test]
+    fn source_default_keys_preserves_selected_locale_and_publishes_only_source_fields_atomically() {
+        use crate::{
+            campaign::backend::{Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, load_mc2_campaign},
+            game_definition::default_catalog,
+            game_runtime::{GameRuntime, RuntimeGuard},
+        };
+        let cache = PathBuf::from(std::env::var_os("MC_LANGUAGE_CACHE")
+            .expect("set MC_LANGUAGE_CACHE to the actual installed language directory"));
+        let tag = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let profile = std::env::temp_dir().join(format!("mc-source-default-keys-{}-{tag}", std::process::id()));
+        fs::create_dir(&profile).unwrap();
+        let isolated = profile.join("languages");
+        fs::create_dir(&isolated).unwrap();
+        let manifest_bytes = fs::read(cache.join("manifest.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        for row in manifest["outputs"].as_array().unwrap() {
+            let relative = row["path"].as_str().unwrap();
+            let destination = isolated.join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(cache.join(relative), destination).unwrap();
+        }
+        fs::write(isolated.join("manifest.json"), manifest_bytes).unwrap();
+        let locale = InstalledLanguages::load(&isolated).unwrap().binding(None).unwrap();
+        let expected = locale.identity.clone();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8870).unwrap();
+        let outer = runtime.identity().guard();
+        runtime.preferences_command(outer, PreferencesCommand::Install {
+            profile_dir: profile.to_string_lossy().into_owned(),
+        }).unwrap();
+        runtime.preferences_command(outer, PreferencesCommand::InstallLanguagesChecked {
+            cache_dir: isolated.to_string_lossy().into_owned(), expected_locale_binding: expected.clone(),
+        }).unwrap();
+        let mut customized = PlayerPreferences::default();
+        customized.player_name = "CUSTOM".into();
+        customized.selected_locale = Some(expected.id.clone());
+        customized.keys = [InputKey::W, InputKey::S, InputKey::A, InputKey::D,
+            InputKey::Return, InputKey::LeftControl, InputKey::LeftAlt, InputKey::RightShift,
+            InputKey::RightShift, InputKey::LeftAlt];
+        customized.sound_volume = 17;
+        customized.music_volume = 23;
+        customized.show_help = false;
+        customized.brightness = [4, 3, 2];
+        customized.sound_enabled = false;
+        customized.music_enabled = false;
+        customized.speech_enabled = false;
+        customized.auto_show_objectives_for_foreign_languages = true;
+        customized.input_device = InputDevice::Joystick;
+        customized.invert_mouse = true;
+        customized.mouse_sensitivity = 137;
+        customized.joystick_dead_zone = 27;
+        customized.reflections = false;
+        customized.sky = false;
+        customized.shadows = false;
+        customized.dynamic_lighting = false;
+        customized.flight_assistance = true;
+        customized.fullscreen = true;
+        runtime.preferences_command(outer, PreferencesCommand::ApplyChecked {
+            preferences: customized.clone(), expected_locale_binding: expected.clone(),
+        }).unwrap();
+        let path = profile.join("player-preferences.json");
+        let before = runtime.identity();
+        let before_bytes = fs::read(&path).unwrap();
+        let mut changed_binding = expected.clone();
+        changed_binding.text_sha256 = "0".repeat(64);
+        assert!(runtime.preferences_command(outer, PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: changed_binding,
+        }).is_err());
+        assert_eq!(runtime.identity(), before);
+        assert_eq!(fs::read(&path).unwrap(), before_bytes);
+        assert!(runtime.preferences_command(RuntimeGuard { generation: outer.generation + 1, ..outer },
+            PreferencesCommand::ResetDefaultKeysChecked { expected_locale_binding: expected.clone() }).is_err());
+        assert_eq!(runtime.identity(), before);
+        assert_eq!(fs::read(&path).unwrap(), before_bytes);
+
+        // Real missing output and real atomic-rename failure both retain the
+        // current binding/preferences and the existing usable profile bytes.
+        let output = manifest["outputs"][0]["path"].as_str().unwrap();
+        let output_path = isolated.join(output);
+        let retained = fs::read(&output_path).unwrap();
+        fs::remove_file(&output_path).unwrap();
+        assert!(runtime.preferences_command(outer, PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: expected.clone(),
+        }).is_err());
+        assert_eq!(runtime.identity(), before);
+        assert_eq!(fs::read(&path).unwrap(), before_bytes);
+        fs::write(output_path, retained).unwrap();
+        let retained_profile = profile.join("retained-profile.json");
+        fs::rename(&path, &retained_profile).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(runtime.preferences_command(outer, PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: expected.clone(),
+        }).is_err());
+        assert_eq!(runtime.identity(), before);
+        assert_eq!(fs::read(&retained_profile).unwrap(), before_bytes);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(retained_profile, &path).unwrap();
+
+        let request = serde_json::json!({"operation": "reset_default_keys_checked", "expected_locale_binding": &expected});
+        let accepted = runtime.preferences_command(outer, serde_json::from_value(request).unwrap()).unwrap();
+        let mut source_default = customized.clone();
+        // Literal source scan codes 48,50,4b,4d,1c,1d,38,36,36,38.
+        source_default.keys = [InputKey::UpArrow, InputKey::DownArrow, InputKey::LeftArrow, InputKey::RightArrow,
+            InputKey::Return, InputKey::LeftControl, InputKey::LeftAlt, InputKey::RightShift, InputKey::RightShift, InputKey::LeftAlt];
+        source_default.sound_volume = 127;
+        source_default.music_volume = 127;
+        source_default.show_help = true;
+        source_default.brightness = [0, 3, 0];
+        assert_eq!(accepted.preferences, source_default);
+        assert_eq!(accepted.locale_binding.as_ref(), Some(&expected));
+        assert_eq!(runtime.identity().display_settings, before.display_settings);
+        assert_eq!(runtime.selected_locale_binding().unwrap().records[48], locale.records[48]);
+        let reset_bytes = fs::read(&path).unwrap();
+        runtime.preferences_command(outer, PreferencesCommand::Cancel).unwrap();
+        assert_eq!(runtime.identity().player_preferences.preferences, source_default, "Cancel after immediate Default does not undo it");
+        assert_eq!(fs::read(&path).unwrap(), reset_bytes);
+        let mut cold = PreferenceStore::default();
+        cold.command(PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() }).unwrap();
+        cold.command(PreferencesCommand::InstallLanguagesChecked {
+            cache_dir: isolated.to_string_lossy().into_owned(), expected_locale_binding: expected.clone(),
+        }).unwrap();
+        assert_eq!(cold.snapshot().preferences, source_default);
+        assert_eq!(cold.snapshot().locale_binding, Some(expected.clone()));
+        assert_eq!(fs::read(&path).unwrap(), reset_bytes);
+
+        // The same operation respects the existing menu-mode boundary, and
+        // changes no gameplay/GAME carrier when admitted while paused.
+        runtime.preferences_command(outer, PreferencesCommand::ApplyChecked {
+            preferences: customized.clone(), expected_locale_binding: expected.clone(),
+        }).unwrap();
+        let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq8-level1-collision-v5-night")
+        }, PathBuf::from);
+        let definition = Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        let loading = runtime.new_game(outer, definition).unwrap();
+        assert!(runtime.preferences_command(loading.guard(), PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: expected.clone(),
+        }).is_err());
+        assert_eq!(runtime.identity(), loading);
+        assert_eq!(fs::read(&path).unwrap(), before_bytes);
+        runtime.open_level(loading.guard(), &Mc2CampaignAdapter, Mc2CampaignInputs::new(&package), 8870).unwrap();
+        let playing = runtime.identity();
+        assert!(runtime.preferences_command(playing.guard(), PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: expected.clone(),
+        }).is_err());
+        assert_eq!(runtime.identity(), playing);
+        assert_eq!(fs::read(&path).unwrap(), before_bytes);
+        let nested = runtime.session().unwrap().identity().guard();
+        runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
+        let paused = runtime.pause(playing.guard()).unwrap();
+        let snapshot = runtime.session().unwrap().snapshot();
+        let operations = runtime.session().unwrap().backend().replay_operation_count();
+        runtime.preferences_command(paused.guard(), PreferencesCommand::ResetDefaultKeysChecked {
+            expected_locale_binding: expected,
+        }).unwrap();
+        assert_eq!(runtime.identity().player_preferences.preferences, source_default);
+        assert_eq!(runtime.identity().display_settings, paused.display_settings, "source Default does not set minimap/topbar");
+        assert!(!runtime.identity().display_settings.minimap);
+        assert_eq!(runtime.identity().generation, paused.generation);
+        assert_eq!(runtime.session().unwrap().snapshot(), snapshot);
+        assert_eq!(runtime.session().unwrap().backend().replay_operation_count(), operations);
+        assert_eq!(fs::read(&path).unwrap(), reset_bytes);
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

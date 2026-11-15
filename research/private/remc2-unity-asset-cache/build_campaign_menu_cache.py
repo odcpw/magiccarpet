@@ -353,7 +353,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         write("settings-background.rgba8", settings_rgba)
         settings = dict(width=640, height=480, background_path="settings-background.rgba8",
             bitmaps=[bitmap(startup_sprites, startup_table, settings_palette, selector,
-                f"settings-{selector:03d}.rgba8") for selector in (107, 108, 110)])
+                f"settings-{selector:03d}.rgba8") for selector in (107, 108, 109, 110)])
         # sub_7A110_load_hscreen(8,4) loads its own coloured 7px font.
         # DrawText_7FB90 indexes this table by the original byte directly;
         # DATA/FONT1's byte+1 monochrome mapping is a different draw path.
