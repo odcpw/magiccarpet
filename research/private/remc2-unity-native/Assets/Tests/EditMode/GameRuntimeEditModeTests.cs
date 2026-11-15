@@ -24,6 +24,21 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [Serializable]
+        private sealed class WallHelpFrame
+        {
+            public EngineSessionTransport.CampaignSnapshotObservation snapshot;
+            // The render JSON shares the full DTO's presentation fields but
+            // deliberately omits its three expensive receipt/hash fields.
+            public EngineSessionTransport.CampaignSnapshotValue render;
+        }
+
+        [Serializable]
+        private sealed class WallHelpReceipt
+        {
+            public WallHelpFrame contact, dry, reset;
+        }
+
         private const string SecretOriginLevel = "level.magic_carpet_2.t_klom";
         private const string SecretDestinationLevel = "level.magic_carpet_2.karakir";
 
@@ -727,10 +742,250 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void OrdinaryHelpScannerKeepsPerRowPriorityAgeAndPendingContextOrder()
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            var tied = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            tied.Promote(41, 6);
+            tied.Advance(true, false, true, false, false, 1);
+            tied.Advance(true, false, true, false, false, 1);
+            Assert.That(tied.Visible, Is.False, "both rows start at their own threshold; the second pass selects");
+            tied.Advance(false, false, true, false, false, 0);
+            Assert.That(tied.VisibleRow, Is.EqualTo(3), "equal priority and overdue age retain earlier source row3");
+            Assert.That(tied.Visible, Is.True, "current contact is not reevaluated while drawing a selected popup");
+
+            foreach (var promoted in new[] { false, true })
+            {
+                var scan = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+                if (promoted) scan.Promote(41, 6);
+                scan.Advance(false, false, true, false, false, 1);
+                scan.Advance(false, false, true, false, false, 1);
+                scan.Advance(false, false, true, false, false, 1);
+                Assert.That(scan.VisibleRow, Is.EqualTo(3));
+                scan.CloseCurrent(true);
+                // Reset only selected row3, then let its real 600-pass cooldown
+                // expire. Row41 continues aging even while neither is eligible.
+                for (var pass = 0; pass < 601; pass++)
+                    scan.Advance(false, false, true, false, false, 0);
+                scan.Advance(true, false, true, false, false, -1);
+                Assert.That(scan.Visible, Is.False, "selection does not draw in the same pass");
+                scan.Advance(true, false, true, false, false, 0);
+                Assert.That(scan.VisibleRow, Is.EqualTo(promoted ? 41 : 3),
+                    "priority precedes age; at equal priority the largest positive overdue age wins");
+                if (promoted)
+                {
+                    scan.CloseCurrent(true);
+                    for (var pass = 0; pass < 20; pass++)
+                        scan.Advance(true, false, true, false, false, 1);
+                    scan.Advance(false, false, true, false, false, 0);
+                    Assert.That(scan.VisibleRow, Is.EqualTo(3), "closing row41 cannot reset row3's retained age");
+                }
+            }
+
+            var pending = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            pending.Promote(41, 6);
+            pending.RequestObjectiveContext(76, true);
+            for (var pass = 0; pass < 8; pass++)
+                pending.Advance(true, true, true, false, false, 1);
+            pending.Advance(true, true, true, false, false, 1);
+            Assert.That(pending.VisibleRow, Is.EqualTo(76), "word88 bypasses even eligible priority6 ordinary rows");
+            pending.Advance(true, true, true, true, false, 1);
+            Assert.That(pending.Visible, Is.False, "pause hides without consuming the retained context");
+            pending.Advance(true, true, false, false, false, 1);
+            Assert.That(pending.Visible, Is.False, "disabled help cannot select or advance any row");
+            pending.Advance(true, true, true, false, true, 1);
+            Assert.That(pending.Visible, Is.False, "objective/menu suppression closes the selected context");
+            for (var pass = 0; pass < 20; pass++)
+                pending.Advance(false, false, true, false, false, 1);
+            pending.Advance(false, false, true, false, false, 0);
+            Assert.That(pending.VisibleRow, Is.EqualTo(3));
+
+            var ended = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            ended.Promote(41, 6);
+            for (var pass = 0; pass < 3; pass++)
+                ended.Advance(true, true, true, false, false, 1, true);
+            Assert.That(ended.Visible, Is.False,
+                "source IsLevelEnd removes both ordinary rows3/41 before an exit sequence begins");
+            ended.RequestObjectiveContext(80, true);
+            for (var pass = 0; pass < 8; pass++)
+                ended.Advance(true, true, true, false, false, 1, true);
+            ended.Advance(true, true, true, false, false, 1, true);
+            Assert.That(ended.VisibleRow, Is.EqualTo(80), "forced pending80 bypasses the level-end ordinary mask");
+
+            var retained = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+            retained.Advance(false, false, true, false, false, 1);
+            retained.Advance(false, false, true, false, false, 1);
+            retained.Advance(false, false, true, false, false, 1, true);
+            Assert.That(retained.VisibleRow, Is.EqualTo(3),
+                "the mask changes polling eligibility; it does not erase an already selected popup");
+        }
+
+        [Test]
+        public void WallContactReceiptReachesSelectedSourceGlyphsWithoutConsumingTheOwner()
+        {
+            var path = Environment.GetEnvironmentVariable("MC_WALL_HELP_RECEIPT") ??
+                Path.Combine(PrivateRoot, "generated/help-20261115/wall-contact-observation.json");
+            var receipt = JsonUtility.FromJson<WallHelpReceipt>(File.ReadAllText(path));
+            Assert.That(receipt, Is.Not.Null);
+            foreach (var frame in new[] { receipt.contact, receipt.dry, receipt.reset })
+            {
+                Assert.That(frame, Is.Not.Null);
+                EngineSessionTransport.ValidateIdentity(frame.snapshot.identity);
+                EngineSessionTransport.ValidateCampaignSnapshot(frame.snapshot.value, frame.snapshot.identity);
+                Assert.That(frame.render.tick, Is.EqualTo(frame.snapshot.identity.tick));
+                Assert.That(frame.render.state_hash, Is.Null.Or.Empty);
+                Assert.That(frame.render.terrain_hash, Is.Null.Or.Empty);
+                Assert.That(frame.render.effect_journal_sha256, Is.Null.Or.Empty);
+                Assert.That(frame.render.player_wall_contact_counter,
+                    Is.EqualTo(frame.snapshot.value.player_wall_contact_counter));
+                Assert.That(frame.render.objective_progress.all_objectives_satisfied,
+                    Is.EqualTo(frame.snapshot.value.objective_progress.all_objectives_satisfied));
+                Assert.That(JsonUtility.ToJson(frame.render.player_pose),
+                    Is.EqualTo(JsonUtility.ToJson(frame.snapshot.value.player_pose)));
+            }
+            Assert.That(typeof(EngineSessionTransport.CampaignSnapshotValue).GetField("player_wall_contact_counter").FieldType,
+                Is.EqualTo(typeof(sbyte)), "the source signed byte must not become an unsigned duration");
+            Assert.That(receipt.contact.render.player_wall_contact_counter, Is.EqualTo(1));
+            Assert.That(receipt.contact.render.objective_textbox_ticks, Is.Zero,
+                "the actual source producer receipt must allow ordinary help with no visible objective");
+            Assert.That(receipt.contact.render.objective_progress.all_objectives_satisfied, Is.False);
+            Assert.That(receipt.dry.render.player_wall_contact_counter, Is.Zero);
+            Assert.That(ulong.Parse(receipt.dry.render.tick), Is.EqualTo(ulong.Parse(receipt.contact.render.tick) + 1));
+            Assert.That(receipt.reset.render.player_wall_contact_counter, Is.Zero);
+            Assert.That(receipt.reset.render.tick, Is.EqualTo("0"));
+
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-wall-help-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            Texture2D scene = null;
+            try
+            {
+                // The receipt above is the real controlled Level3 collision.
+                // This separate native owner and retained Night reset frame
+                // check the managed component, not same-session earned travel.
+                using var native = NativeSession.OpenGameRuntime(ResolverPackages());
+                native.GameRuntimePause();
+                using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+                var preferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    native.Handle, native.GameRuntimeIdentity(), json), Path.Combine(temporary, "profile"));
+                preferences.BindLanguages(cache);
+                Assert.That(preferences.Current.preferences.show_help, Is.True);
+                var identity = native.GameRuntimeIdentity();
+                var generation = ulong.Parse(identity.session.generation);
+                var before = JsonUtility.ToJson(identity);
+                var replay = native.GameRuntimeSaveReplay();
+                var observed = native.GameRuntimeCampaignSnapshot();
+                Assert.That(observed.value.player_wall_contact_counter, Is.Zero);
+                void Unchanged()
+                {
+                    Assert.That(JsonUtility.ToJson(native.GameRuntimeIdentity()), Is.EqualTo(before));
+                    Assert.That(native.GameRuntimeCampaignSnapshot().value.state_hash, Is.EqualTo(observed.value.state_hash));
+                    Assert.That(native.GameRuntimeCampaignSnapshot().value.player_wall_contact_counter, Is.Zero);
+                    CollectionAssert.AreEqual(replay, native.GameRuntimeSaveReplay(),
+                        "queries and rendering never dispatch a native frame or consume the source counter");
+                }
+
+                var popup = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+                var contact = receipt.contact.render.player_wall_contact_counter;
+                var dry = receipt.dry.render.player_wall_contact_counter;
+                // Hold the genuine sampled predicate for the two ordinary
+                // selection passes of this component; no claim that the
+                // captured native collision repeated on a second gameplay tick.
+                popup.Advance(false, false, true, false, false, contact,
+                    receipt.contact.render.objective_progress.all_objectives_satisfied);
+                popup.Advance(false, false, true, false, false, contact,
+                    receipt.contact.render.objective_progress.all_objectives_satisfied);
+                Assert.That(popup.Visible, Is.False);
+                popup.Advance(false, false, true, false, false, dry,
+                    receipt.dry.render.objective_progress.all_objectives_satisfied);
+                Assert.That(popup.Visible, Is.True);
+                Assert.That(popup.VisibleRow, Is.EqualTo(3));
+                var binding = cache.GameplayHelpForRow(popup.VisibleRow);
+                var text = cache.LanguageText(binding.TextRecord);
+                Assert.That((binding.TextRecord, binding.Duration, binding.X, binding.Y), Is.EqualTo((288, 50, 320, 80)));
+                Assert.That(text, Is.EqualTo("Walls cannot be passed"));
+
+                var ownerRoot = Path.Combine(PrivateRoot, "generated/settlement-20261105-integration/owner-closed-v6");
+                var owner = OwnerAssetCache.OpenAndValidate(Path.Combine(ownerRoot, "night-presentation-v6"),
+                    MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
+                    Path.Combine(ownerRoot, "level1"));
+                var retained = owner.ReadOutput(CampaignTransitionPresenter.IndicesPath);
+                Assert.That(retained.Length, Is.EqualTo(320 * 200));
+                var palette = Array.ConvertAll(owner.ReadOutput(CampaignTransitionPresenter.PalettePath),
+                    value => checked((byte)(value * 4)));
+                scene = new Texture2D(320, 200, TextureFormat.R8, false, true)
+                    { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+                scene.LoadRawTextureData(retained); scene.Apply(false, false);
+                using var presenter = new SourceObjectiveTextboxPresenter(cache.ObjectiveForProfile("night"));
+                presenter.PresentContextHint(text, generation, binding.X, binding.Y);
+                var output = presenter.Render(1, scene, generation, 0, palette, true);
+                var pixels = ReadObjectivePixels(output);
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", flags).GetValue(presenter);
+                Assert.That((raster.X, raster.Y, raster.Width, raster.Height), Is.EqualTo((208, 80, 224, 38)));
+                Assert.That((raster.BlendX, raster.BlendY, raster.BlendWidth, raster.BlendHeight),
+                    Is.EqualTo((224, 90, 192, 18)), "source 22-byte text, 8x14 layout and owner frame extents");
+                Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                Color32 At(int x, int y) => pixels[(raster.Height - 1 - (y - raster.Y)) * raster.Width + x - raster.X];
+                var artwork = cache.ObjectiveForProfile("night");
+                Assert.That(artwork.HelpTextColor, Is.EqualTo(176));
+                Assert.That(At(232, 94), Is.EqualTo(Colour(176)),
+                    "source W byte+1 glyph88 first set pixel is text232/92 +(0,2)");
+                var blendPixel = (90 - raster.Y) * raster.Width + 224 - raster.X;
+                Assert.That(raster.IndicesThenMask[raster.Width * raster.Height + blendPixel], Is.Zero);
+                // The GPU samples this 320x200 retained source via normalized
+                // 640x480 pixel centers; do not read it as a full-size texture.
+                var underlying = retained[37 * 320 + 112];
+                var blended = artwork.Tables[artwork.TableOffset + artwork.BlendSelector * 256 + underlying];
+                Assert.That(At(224, 90), Is.EqualTo(Colour(blended)),
+                    "the unmasked textbox interior blends the actual retained source index");
+                for (var repaint = 0; repaint < 3; repaint++)
+                {
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(presenter.Render(1, scene,
+                        generation, 0, palette, true)));
+                    Assert.That(popup.VisibleRow, Is.EqualTo(3));
+                    Unchanged();
+                }
+                Assert.That(presenter.Render(1, scene, generation + 1, 0, palette, true), Is.Null);
+                Assert.That(presenter.Render(0, scene, generation, 0, palette, true), Is.Null);
+                for (var sourceDraw = 1; sourceDraw < binding.Duration; sourceDraw++)
+                {
+                    popup.Advance(false, false, true, false, false, dry);
+                    Assert.That(popup.Visible, Is.True, "all 50 selected source draws survive contact clearing");
+                    Assert.That(popup.VisibleRow, Is.EqualTo(3));
+                }
+                popup.Advance(false, false, true, false, false, dry);
+                Assert.That(popup.Visible, Is.False, "the following ordinary pass clears the expired overlay");
+                Assert.That(presenter.Render(popup.Visible ? 1 : 0, scene, generation, 0, palette, true), Is.Null);
+                var off = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
+                for (var pass = 0; pass < 3; pass++)
+                    off.Advance(false, false, false, false, false, contact);
+                Assert.That(off.Visible, Is.False);
+                off.Advance(false, false, true, true, false, contact);
+                Assert.That(off.Visible, Is.False);
+                off.Advance(false, false, true, false, false, receipt.reset.render.player_wall_contact_counter);
+                Assert.That(off.Visible, Is.False, "fresh/reset state plus a cleared native counter cannot select wall help");
+                Unchanged();
+            }
+            finally
+            {
+                if (scene != null) UnityEngine.Object.DestroyImmediate(scene);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
         public void SourceContextHelpBindsOwnerRowsAndRejectsRehashedReplacement()
         {
             using (var cache = new OwnerCampaignMenuCache(CampaignMenuCache))
             {
+                var wall = cache.GameplayHelpForRow(3);
+                Assert.That((wall.Row, wall.TextRecord, wall.Duration, wall.Flags, wall.X, wall.Y,
+                    wall.AgeThreshold, wall.Priority), Is.EqualTo((3, 288, 50, 4, 320, 80, 600, 6)));
+                Assert.That(cache.LanguageText(wall.TextRecord), Is.EqualTo("Walls cannot be passed"));
                 for (var row = 72; row <= 80; row++)
                 {
                     var binding = cache.GameplayHelpForRow(row);
@@ -747,6 +1002,7 @@ namespace MagicCarpet.Native.Tests
                 "generated/locale-source-menu-20261115-candidate2")))
             {
                 Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(72));
+                Assert.Throws<InvalidDataException>(() => legacy.GameplayHelpForRow(3));
                 Assert.Throws<InvalidDataException>(() => { var ignored = legacy.ObjectiveForProfile("night").PauseSprites; });
             }
 
@@ -769,26 +1025,34 @@ namespace MagicCarpet.Native.Tests
                 manifest = JsonUtility.FromJson(originalManifest, manifestType);
                 var tablePath = Path.Combine(fixture, "gameplay-help.json");
                 var originalTable = File.ReadAllBytes(tablePath);
-                var table = JsonUtility.FromJson(Encoding.ASCII.GetString(originalTable), documentType);
-                var rows = (Array)documentType.GetField("rows").GetValue(table);
-                var changed = rows.GetValue(1);
-                changed.GetType().GetField("duration").SetValue(changed, 51);
-                var altered = Encoding.ASCII.GetBytes(JsonUtility.ToJson(table) + "\n");
-                Assert.That(altered.Length, Is.EqualTo(originalTable.Length));
-                File.WriteAllBytes(tablePath, altered);
-                var outputs = (Array)manifestType.GetField("outputs").GetValue(manifest);
-                foreach (var output in outputs)
+                foreach (var changedRow in new[] { 3, 76 })
                 {
-                    var type = output.GetType();
-                    if ((string)type.GetField("path").GetValue(output) != "gameplay-help.json") continue;
-                    using var sha = System.Security.Cryptography.SHA256.Create();
-                    type.GetField("sha256").SetValue(output,
-                        BitConverter.ToString(sha.ComputeHash(altered)).Replace("-", "").ToLowerInvariant());
+                    var table = JsonUtility.FromJson(Encoding.ASCII.GetString(originalTable), documentType);
+                    var rows = (Array)documentType.GetField("rows").GetValue(table);
+                    object changed = null;
+                    foreach (var row in rows)
+                        if ((int)row.GetType().GetField("row").GetValue(row) == changedRow) changed = row;
+                    Assert.That(changed, Is.Not.Null);
+                    changed.GetType().GetField(changedRow == 3 ? "text_record" : "duration")
+                        .SetValue(changed, changedRow == 3 ? 289 : 51);
+                    var altered = Encoding.ASCII.GetBytes(JsonUtility.ToJson(table) + "\n");
+                    Assert.That(altered.Length, Is.EqualTo(originalTable.Length));
+                    File.WriteAllBytes(tablePath, altered);
+                    manifest = JsonUtility.FromJson(originalManifest, manifestType);
+                    var outputs = (Array)manifestType.GetField("outputs").GetValue(manifest);
+                    foreach (var output in outputs)
+                    {
+                        var type = output.GetType();
+                        if ((string)type.GetField("path").GetValue(output) != "gameplay-help.json") continue;
+                        using var sha = System.Security.Cryptography.SHA256.Create();
+                        type.GetField("sha256").SetValue(output,
+                            BitConverter.ToString(sha.ComputeHash(altered)).Replace("-", "").ToLowerInvariant());
+                    }
+                    File.WriteAllText(manifestPath, JsonUtility.ToJson(manifest) + "\n");
+                    Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
+                        Does.Contain("source gameplay help table identity"),
+                        "a coherent output receipt cannot replace pinned source row" + changedRow);
                 }
-                File.WriteAllText(manifestPath, JsonUtility.ToJson(manifest) + "\n");
-                Assert.That(Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)).Message,
-                    Does.Contain("source gameplay help table identity"),
-                    "a coherent output receipt cannot replace the pinned source table");
                 File.WriteAllText(manifestPath, originalManifest);
                 File.WriteAllBytes(tablePath, originalTable);
                 var pauseMaskPath = Path.Combine(fixture, "pause-night-177.mask.u8");

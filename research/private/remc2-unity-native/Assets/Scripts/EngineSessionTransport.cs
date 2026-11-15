@@ -187,6 +187,7 @@ namespace MagicCarpet.Native
             public ParticipantNotification[] participant_notifications;
             public SpellObservation[] player_spells;
             public ushort player_immobilized_ticks;
+            public sbyte player_wall_contact_counter;
             public CameraPose source_camera_pose;
             public short source_camera_fov;
             public ObjectiveProgress objective_progress;
