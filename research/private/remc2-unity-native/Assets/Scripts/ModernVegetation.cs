@@ -264,7 +264,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal ModernVegetation(ModernTerrainMesh terrain)
+        internal ModernVegetation(ModernTerrainMesh terrain, bool voxel = false)
         {
             this.terrain = terrain ?? throw new ArgumentNullException(nameof(terrain));
             mainBatches = new BatchAccumulator(SubmitMainBatch);
@@ -282,8 +282,9 @@ namespace MagicCarpet.Native
             distantMaterials = new Material[7];
             try
             {
-                var treeBounds = ScannedTreeBounds();
-                for (var i = 0; i < meshes.Length; i++) meshes[i] = LoadSourceMesh(i, treeBounds);
+                var treeBounds = voxel ? default : ScannedTreeBounds();
+                for (var i = 0; i < meshes.Length; i++)
+                    meshes[i] = voxel ? LoadVoxelMesh(i, 0) : LoadSourceMesh(i, treeBounds);
                 materials[0] = ScannedMaterial(shader, "grass_medium_01", meshes[0], true);
                 materials[1] = ScannedMaterial(shader, "fern_02", meshes[1], true);
                 materials[2] = ScannedMaterial(shader, "shrub_02", meshes[2], true);
@@ -294,19 +295,38 @@ namespace MagicCarpet.Native
                 materials[6] = ScannedMaterial(shader, "tree_small_02_leaves", meshes[6], true);
                 for (var i = 0; i < meshes.Length; i++)
                 {
-                    var intermediate = Resources.Load<Mesh>("ModernNature/" + IntermediateResourceName(i));
-                    if (intermediate == null) throw new InvalidOperationException("Missing authored vegetation mesh: " + IntermediateResourceName(i));
-                    intermediateMeshes[i] = UnityEngine.Object.Instantiate(intermediate);
-                    if (i < 3 || i == 6)
+                    if (voxel)
                     {
-                        distantMeshes[i] = MakeImpostorCards(meshes[i]);
-                        var name = i == 0 ? "grass" : i == 1 ? "fern" : i == 2 ? "shrub" : "tree_leaves";
-                        distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], name);
+                        intermediateMeshes[i] = LoadVoxelMesh(i, 1);
+                        // Surface colors are baked once from source albedo and
+                        // alpha; retain the instanced wind/fade shader path.
+                        materials[i].SetFloat("_UseTextures", 0f);
+                        materials[i].SetFloat("_UseNormalMap", 0f);
+                        materials[i].SetFloat("_UseRoughnessMap", 0f);
+                        materials[i].SetFloat("_Smoothness", 0f);
+                        if (Voxels.VoxelVegetationMesh.UsesAlpha(i))
+                        {
+                            distantMeshes[i] = MakeImpostorCards(meshes[i]);
+                            distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], "Voxels/" + Voxels.VoxelVegetationMesh.KindName(i));
+                        }
+                        else distantMeshes[i] = LoadVoxelMesh(i, 2);
                     }
-                    else if (i == 3 || i == 5)
-                        distantMeshes[i] = LoadScannedMesh("tree_small_02_lod", i == 3 ? "tree_trunk" : "tree_branches", 4.5f, treeBounds);
                     else
-                        distantMeshes[i] = LoadScannedMesh("rock_moss_set_01_lod", "rock_moss_set_01_rock03", 2.4f);
+                    {
+                        var intermediate = Resources.Load<Mesh>("ModernNature/" + IntermediateResourceName(i));
+                        if (intermediate == null) throw new InvalidOperationException("Missing authored vegetation mesh: " + IntermediateResourceName(i));
+                        intermediateMeshes[i] = UnityEngine.Object.Instantiate(intermediate);
+                        if (i < 3 || i == 6)
+                        {
+                            distantMeshes[i] = MakeImpostorCards(meshes[i]);
+                            var name = i == 0 ? "grass" : i == 1 ? "fern" : i == 2 ? "shrub" : "tree_leaves";
+                            distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], name);
+                        }
+                        else if (i == 3 || i == 5)
+                            distantMeshes[i] = LoadScannedMesh("tree_small_02_lod", i == 3 ? "tree_trunk" : "tree_branches", 4.5f, treeBounds);
+                        else
+                            distantMeshes[i] = LoadScannedMesh("rock_moss_set_01_lod", "rock_moss_set_01_rock03", 2.4f);
+                    }
                     if (distantMaterials[i] == null)
                         distantMaterials[i] = new Material(materials[i]) { enableInstancing = true, name = materials[i].name + " distant" };
                     // Endpoint batches need no per-instance MaterialPropertyBlock.
@@ -322,6 +342,15 @@ namespace MagicCarpet.Native
                 Dispose();
                 throw;
             }
+        }
+
+        private static Mesh LoadVoxelMesh(int kind, int lod)
+        {
+            var name = Voxels.VoxelVegetationMesh.ResourceName(kind, lod);
+            var mesh = Resources.Load<Mesh>("ModernNature/Voxels/" + name);
+            if (mesh == null || mesh.vertexCount == 0 || mesh.GetIndexCount(0) == 0)
+                throw new InvalidOperationException("Missing voxel vegetation mesh: " + name);
+            return UnityEngine.Object.Instantiate(mesh);
         }
 
         // Call after the source terrain planes change, even if the camera has not moved.
