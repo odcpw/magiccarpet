@@ -137,21 +137,21 @@ def source_startup() -> dict:
 
 
 def source_gameplay_help() -> bytes:
-    """Bind source spell, objective-expiry and pause-menu help rows."""
+    """Bind source wall, spell, objective-expiry and pause-menu help rows."""
     source = cache.pinned_remc2_blob("remc2/engine/engine_support.cpp")
     body = source.decode().split("type_array_str_E2A74 str_E2A74 {{", 1)[1].split("}};", 1)[0]
     rows = re.findall(r"^\{(0x[0-9A-Fa-f]+),\{([^{}]+)\},([^{}]+)\}", body, re.MULTILINE)
     if len(rows) != 105:
         raise cache.CacheError("pinned gameplay help table extent changed")
     bindings = []
-    for index in (41, *range(72, 81), *range(86, 91)):
+    for index in (3, 41, *range(72, 81), *range(86, 91)):
         kind, axes, tail = rows[index]
         values = [int(value.strip(), 0) for value in axes.split(",")]
         extra = [int(value.strip(), 0) for value in tail.split(",")]
         if len(values) != 5 or len(extra) != 6:
             raise cache.CacheError("pinned gameplay help row shape changed")
         kind = int(kind, 0)
-        expected_kind = 5 if index == 41 else 7 if index <= 80 else 11
+        expected_kind = 1 if index == 3 else 5 if index == 41 else 7 if index <= 80 else 11
         if kind != expected_kind or (values[2] == 0) != (expected_kind == 11):
             raise cache.CacheError("pinned gameplay help row type or duration changed")
         bindings.append(dict(row=index, kind=kind, flags=values[0], text_record=values[1],

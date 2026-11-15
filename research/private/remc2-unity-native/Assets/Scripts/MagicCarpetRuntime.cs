@@ -3048,7 +3048,9 @@ namespace MagicCarpet.Native
                     identity.mode == GameRuntimeTransport.PausedMode,
                     observation.value.objective_textbox_ticks != 0 || observation.value.exit_sequence_active ||
                     nativePresentationTutorialOrBriefing || gameRuntimeSpellMenuOpen ||
-                    playerPreferences?.IsOpen == true || hud.localPlayerLife < 0);
+                    playerPreferences?.IsOpen == true || hud.localPlayerLife < 0,
+                    observation.value.player_wall_contact_counter,
+                    observation.value.objective_progress.all_objectives_satisfied);
             }
         }
 

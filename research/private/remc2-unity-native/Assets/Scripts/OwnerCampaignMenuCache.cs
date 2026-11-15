@@ -274,21 +274,21 @@ namespace MagicCarpet.Native
                     if (manifest.gameplay_help_path != "gameplay-help.json")
                         throw new InvalidDataException("source gameplay help path is unbound");
                     var helpReceipt = manifest.outputs.SingleOrDefault(row => row.path == manifest.gameplay_help_path);
-                    if (helpReceipt == null || helpReceipt.bytes != 1771)
+                    if (helpReceipt == null || helpReceipt.bytes != 1880)
                         throw new InvalidDataException("source gameplay help receipt is incomplete");
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
-                    if (Digest(helpBytes) != "237afc3b849ab7bb23fe783f9afaaf6ef8dcdea2da03ba19971ee9c5d43d0b4c")
+                    if (Digest(helpBytes) != "b1374ef896bb5b0dc29877ad30a9ac61adcaf320281922ebf0e9c6424925101a")
                         throw new InvalidDataException("source gameplay help table identity differs");
                     var help = JsonUtility.FromJson<GameplayHelpDocument>(Encoding.ASCII.GetString(helpBytes));
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
-                        help.rows?.Length != 15)
+                        help.rows?.Length != 16)
                         throw new InvalidDataException("source gameplay help table is incomplete");
                     for (var index = 0; index < help.rows.Length; index++)
                     {
                         var row = help.rows[index];
-                        var expectedRow = index == 0 ? 41 : index < 10 ? 71 + index : 76 + index;
-                        var expectedKind = index == 0 ? 5 : index < 10 ? 7 : 11;
+                        var expectedRow = index == 0 ? 3 : index == 1 ? 41 : index < 11 ? 70 + index : 75 + index;
+                        var expectedKind = index == 0 ? 1 : index == 1 ? 5 : index < 11 ? 7 : 11;
                         if (row == null || row.row != expectedRow || row.kind != expectedKind ||
                             row.text_record < 0 || row.text_record >= 471 ||
                             (expectedKind == 11 ? row.duration != 0 : row.duration <= 0) ||

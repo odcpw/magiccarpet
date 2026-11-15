@@ -810,6 +810,8 @@ Use the existing small native team and complete connected capabilities, committi
 and pushing coherent source batches. Preserve original full acceptance and open
 installation/dependency gaps.
 
+Pause-menu hover source is canonical `fc6d503a`, pushed/remote-verified Original
+`1e0d98f1` on `codex/original-ending`; unrelated Modern ancestry was excluded.
 Pause-menu hover help is implemented in the existing Original owners: actual
 ReadPauseMenuEvents cursor/byte_aa -> rows86–90 -> selected source records/glyphs,
 geometry/pointer -> leave/dialog/resume/reset cleanup. HSPR174–178 now retain
@@ -833,13 +835,45 @@ gameplay/presentation work. UBS is partial on C# flow/conditional budgets;
 added profile-null warnings are ruled out by the non-null constructor-owned
 dictionary, and changed-hunk review found no critical defect.
 
-Next connected non-sound guidance capability: real impassable-terrain movement
-already writes FlightState.water_counter, but the current client lacks its
-eligibility projection and source E2A74 row3/record288 (Walls cannot be passed).
-Join the ordinary collision -> counter -> source help poll -> original text ->
-expiry/cleanup; keep actual source priority/age/order. The off_DB558 sentinel
-stream is credits, not a fabricated tutorial producer. Do not restart delivered
-gameplay, all30mission, context72–80 or mana41 slices.
+Wall-contact guidance is now implemented through the existing native JSON
+observations and Original help tail: unmodified Level3 terrain material256 ->
+actual Accelerate contact -> signed current-player counter -> source row3/record288
+(Walls cannot be passed) -> original source glyph/frame -> full50-draw expiry.
+The common bound-row scanner now tracks each row's own age/priority, selects the
+highest priority then greatest positive overdue age with source-order ties, and
+preserves pending objective precedence. Fresh review caught missing final-objective
+masking; the corrected ordinary scan suppresses both3/41 after actual IsLevelEnd
+while preserving forced80 and already selected popups. It reuses the exact existing
+all_objectives_satisfied projection, not exit_sequence_active or a new timer.
+
+Qualified Original actual contact/dry/reset check passes0.17s and emits real
+full/render observations at ticks2/3/0 with counters1/0/0. The earlier added210-step
+objective-expiry precondition failed because English/speech-enabled source startup
+does not create an automatic textbox; the fixture now asserts actual initial and
+contact textbox0 without inventing or shortening a timer. Its real geometry/pose,
+ordinary movement, read stability, dry decrement and reset assertions remain.
+The managed receipt-to-glyph check passes2.41s: actual full/native carrier validation,
+selected owner text, literal W pixel232/94=index176, current-frame LUT blending,
+expiry and paused native identity/replay stability. It declares controlled contact
+sampling plus a separate native owner/retained Night frame, not continuous earned
+travel, hardware input or installed Level3 visuals. Corrected source selection/
+context precedence, original mana and both coherent-metadata-tamper checks pass1.39s.
+All677 candidate outputs independently match receipts; prior15 source rows remain
+unchanged. Rig workspace/all-target release check passes54.6s. Evidence lives in
+`generated/help-20261115/wall-*` logs/XML, wall-contact-observation.json and
+wall-help-menu-candidate-1. The existing Original JSON path is verified; separate
+Modern MCPO binary publication is not extended or claimed qualified here.
+
+Rust UBS reports whole-file legacy totals; no added critical, and added warnings
+are assert/unwrap/create-only output in the focused test. C# UBS remains partial
+on flow/conditional budgets; no added critical/warning. Fresh bounded source review
+supports the fixed joins, not complete help certification. Root owns final native
+source binding and source landing. Normal player installation, sound/read-integrity,
+full tutorial/help/speech, selected non-ASCII installed proof and presentation/
+performance acceptance remain open. The off_DB558 sentinel stream is credits;
+do not invent a tutorial producer from it. Continue remaining source guidance and
+Results-phase save/input through existing acceptance, without replaying delivered
+mission or spell/creature paths.
 
 Continue the existing all-30-mission outcome `mc-xa7.1`; the shared families
 below are delivered checkpoints, not a reason to restart them. Original

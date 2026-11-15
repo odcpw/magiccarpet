@@ -270,6 +270,8 @@ pub struct CampaignSnapshot {
     pub return_to_title_requested: bool,
     pub source_scoreboard: SourceScoreboard,
     pub participant_notifications: Vec<ParticipantNotification>,
+    /// Source player contact counter used by the ordinary wall-help poll.
+    pub player_wall_contact_counter: i8,
     /// Source Spider immobilization countdown; presentation must not invent one.
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: CameraPose,

@@ -3940,6 +3940,7 @@ pub struct CampaignRenderObservation {
     pub return_to_title_requested: bool,
     pub source_scoreboard: sim_session::SourceScoreboard,
     pub participant_notifications: Vec<sim_session::ParticipantNotification>,
+    pub player_wall_contact_counter: i8,
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: sim_session::CameraPose,
     pub source_camera_fov: i16,
@@ -4119,6 +4120,7 @@ impl Mc2CampaignBackend {
                 projection_error: Some(error.to_string()),
             }),
             participant_notifications: self.participant_notifications(),
+            player_wall_contact_counter: flight.water_counter,
             player_spells: spells::observe(
                 shared_spells,
                 |holder| self.spell_holder_actor(holder),
@@ -4215,6 +4217,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             return_to_title_requested,
             source_scoreboard,
             participant_notifications,
+            player_wall_contact_counter,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -4235,6 +4238,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             return_to_title_requested,
             source_scoreboard,
             participant_notifications,
+            player_wall_contact_counter,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -9747,6 +9751,90 @@ pub(crate) mod tests {
             session_id: identity.session_id,
             generation: identity.generation,
             expected_tick: identity.tick,
+        }
+    }
+
+    #[test]
+    fn campaign_wall_help_observation_tracks_real_contact_and_decay() {
+        use crate::{FlightWorld, Position};
+        use sim_session::LongitudinalControl;
+
+        // This unmodified Level 3 owner terrain has dry type 3 at (79,80)
+        // and source material 256/type 8 immediately east at (80,80).
+        // The declared starting pose is one unit west of that boundary;
+        // ordinary player acceleration, not a counter write, reaches it.
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, Arc::new(definition), 8192, Mc2CampaignInputs::new(&root),
+        ).unwrap();
+        let baseline = session.snapshot();
+        assert_eq!(baseline.value.player_wall_contact_counter, 0);
+        // Speech-enabled English does not automatically open a textbox. This
+        // raw owner's zero is the unsuppressed source state, not an expired
+        // textbox or a pending-context-help claim.
+        assert_eq!(baseline.value.objective_textbox_ticks, 0);
+        assert!(baseline.value.player_vitals.life >= 0);
+        let sim = session.backend().campaign.simulation();
+        let player = sim.state.entity_index;
+        let west = Position { x: (80 << 8) - 1, y: (80 << 8) + 128, z: 0 };
+        let east = Position { x: 80 << 8, ..west };
+        assert_ne!(sim.canonical_terrain().material_mask(west), crate::MOVEMENT_REDIRECT_MASK);
+        assert_eq!(sim.canonical_terrain().material_mask(east), crate::MOVEMENT_REDIRECT_MASK);
+        let spawn = Position { z: sim.canonical_terrain().ground_height(west) + 512, ..west };
+        let sim = session.backend_mut().campaign.simulation_mut();
+        sim.set_level2_entity_position(player, spawn).unwrap();
+        sim.set_level2_player_aim_for_test(512, 0);
+
+        let mut contact = None;
+        for _ in 0..16 {
+            let observed = session.step(guard(&session), GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default()
+            }).unwrap();
+            if observed.value.player_wall_contact_counter != 0 {
+                contact = Some(observed);
+                break;
+            }
+        }
+        let contact = contact.expect("ordinary flight must reach the source material boundary");
+        assert_eq!(contact.value.player_wall_contact_counter, 1);
+        assert!(contact.value.player_vitals.life >= 0);
+        assert_eq!(contact.value.objective_textbox_ticks, 0,
+            "a visible objective suppresses ordinary help polling");
+        let render = session.backend().render_observation();
+        assert_eq!(render.player_wall_contact_counter, 1);
+        assert_eq!(serde_json::to_value(&render).unwrap()["player_wall_contact_counter"], 1);
+        assert_eq!(serde_json::to_value(&contact.value).unwrap()["player_wall_contact_counter"], 1);
+        let reread = session.snapshot();
+        assert_eq!(reread.value.state_hash, contact.value.state_hash);
+        assert_eq!(reread.value.player_wall_contact_counter, 1,
+            "observation cannot consume the source help predicate");
+
+        // A declared retreat to the dry tile lets the next real flight pass
+        // perform the source's normal decrement without another contact.
+        session.backend_mut().campaign.simulation_mut().set_level2_entity_position(player,
+            Position { x: (79 << 8) + 128, ..spawn }).unwrap();
+        let dry = session.step(guard(&session), GameCommand::default()).unwrap();
+        assert_eq!(dry.value.player_wall_contact_counter, 0);
+        let dry_render = session.backend().render_observation();
+        assert_eq!(dry_render.player_wall_contact_counter, 0);
+        session.reset(guard(&session)).unwrap();
+        let reset = session.snapshot();
+        assert_eq!(reset.value.player_wall_contact_counter, 0);
+        assert_eq!(reset.value.state_hash, baseline.value.state_hash);
+        let reset_render = session.backend().render_observation();
+        assert_eq!(reset_render.player_wall_contact_counter, 0);
+        if let Some(path) = std::env::var_os("MC_WALL_HELP_RECEIPT") {
+            // An optional, create-only handoff of these actual observations
+            // lets the existing managed consumer check the same producer.
+            let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+            serde_json::to_writer(file, &serde_json::json!({
+                "contact": { "snapshot": contact, "render": render },
+                "dry": { "snapshot": dry, "render": dry_render },
+                "reset": { "snapshot": reset, "render": reset_render },
+            })).unwrap();
         }
     }
 

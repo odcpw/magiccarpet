@@ -55,20 +55,35 @@ namespace MagicCarpet.Native
         }
 
         private AbilityImprovedNotification gameRuntimeAbilityNotification;
-        // Shared cached popup state for source hint 41 and the forced objective
-        // context rows. The outer source frame is the only clock owner.
+        // Shared source popup scanner for currently bound ordinary rows and
+        // forced objective context. The outer source frame is the only clock.
         internal sealed class ManaHelpHint
         {
+            private sealed class RowState
+            {
+                internal readonly OwnerCampaignMenuCache.GameplayHelpBinding Binding;
+                internal int Age;
+                internal int Priority;
+
+                internal RowState(OwnerCampaignMenuCache.GameplayHelpBinding binding)
+                {
+                    Binding = binding ?? throw new InvalidDataException("Missing source help row");
+                    Age = binding.AgeThreshold;
+                    // sub_88B20 initially promotes source type7 context rows.
+                    Priority = binding.Row >= 72 && binding.Row <= 80 ? 6 : binding.Priority;
+                }
+            }
+
             private readonly Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> rowFor;
-            private readonly OwnerCampaignMenuCache.GameplayHelpBinding mana;
-            private int age;
+            private readonly RowState[] rows;
+            private readonly RowState mana;
             // SetTextBoxMinMaxSizes_87090 clears dword_0x72; the 20-pass
             // delay is installed only by suppression or sub_87C10.
             private int pollDelay;
             private int remaining;
-            private int currentRow;
+            private RowState currentRow;
             private int pendingRow;
-            internal int Priority { get; private set; }
+            internal int Priority => mana.Priority;
             internal bool Visible { get; private set; }
             internal int VisibleRow { get; private set; }
             internal int AnchorX { get; private set; } = 540;
@@ -76,20 +91,25 @@ namespace MagicCarpet.Native
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
-                mana = rowFor(41) ?? throw new InvalidDataException("Missing source mana help row");
-                age = mana.AgeThreshold;
-                Priority = mana.Priority;
+                // Keep source row order: equal overdue ages retain the first
+                // eligible row in GetHelpPopupIndex_88450.
+                rows = new RowState[11];
+                rows[0] = new RowState(rowFor(3));
+                rows[1] = mana = new RowState(rowFor(41));
+                for (var index = 2; index < rows.Length; index++)
+                    rows[index] = new RowState(rowFor(72 + index - 2));
             }
 
             internal void Promote(int hint, int priority)
             {
                 if (hint != 41 || priority != 6)
                     throw new InvalidDataException("Unbound campaign help hint");
-                Priority = priority;
+                mana.Priority = priority;
             }
 
             internal void Advance(bool leftUnavailable, bool rightUnavailable,
-                bool enabled, bool paused, bool suppressed)
+                bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
+                bool levelEnd = false)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -107,43 +127,75 @@ namespace MagicCarpet.Native
                     // Eligibility is sampled by SetHelpPopupCoords only when
                     // selecting a popup, not reevaluated during its 50 draws.
                     Visible = true;
-                    VisibleRow = currentRow;
+                    VisibleRow = currentRow.Binding.Row;
                     if (--remaining == 0) Close();
                 }
                 else if (--pollDelay <= 0)
                 {
                     if (pendingRow != 0)
                     {
-                        currentRow = pendingRow;
+                        currentRow = FindRow(pendingRow);
                         pendingRow = 0;
-                        remaining = rowFor(currentRow).Duration;
                     }
-                    else if (age > mana.AgeThreshold && (leftUnavailable || rightUnavailable))
+                    else
                     {
-                        currentRow = 41;
-                        AnchorX = leftUnavailable ? 540 : 600;
-                        remaining = mana.Duration;
+                        // Current eligibility is sampled only by the source
+                        // poll. A contact event does not promote or select row3.
+                        var bestOverdue = 0;
+                        for (var priority = 6; priority >= 0 && currentRow == null; priority--)
+                        {
+                            foreach (var row in rows)
+                            {
+                                var eligible = row.Binding.Row == 3 ? wallContactCounter != 0 :
+                                    row.Binding.Row == 41 && (leftUnavailable || rightUnavailable);
+                                // GetHelpPopupTextAndCoords_87CF0 applies this
+                                // mask after normal eligibility when IsLevelEnd
+                                // is set. Forced word88 selection bypasses it.
+                                if (levelEnd && (row.Binding.Flags & 0x4ff) != 0) eligible = false;
+                                var overdue = row.Age - row.Binding.AgeThreshold;
+                                if (!eligible || row.Priority != priority || overdue <= bestOverdue) continue;
+                                currentRow = row;
+                                bestOverdue = overdue;
+                            }
+                        }
+                    }
+                    if (currentRow != null)
+                    {
+                        if (currentRow.Binding.Row == 41) AnchorX = leftUnavailable ? 540 : 600;
+                        remaining = currentRow.Binding.Duration;
                     }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
                     // DrawPopupTextBox_87610 starts on the following frame.
                 }
-                age = unchecked(age + 1);
-                if (age > mana.AgeThreshold * 3)
+                // sub_87B70 services every source row after selection/draw,
+                // including rows that are not currently eligible.
+                foreach (var row in rows)
                 {
-                    age = mana.AgeThreshold;
-                    Priority = Math.Min(5, Priority + 1);
+                    row.Age = unchecked(row.Age + 1);
+                    if (row.Age > row.Binding.AgeThreshold * 3)
+                    {
+                        row.Age = row.Binding.AgeThreshold;
+                        row.Priority = Math.Max(0, Math.Min(5, row.Priority + 1));
+                    }
                 }
+            }
+
+            private RowState FindRow(int row)
+            {
+                foreach (var state in rows)
+                    if (state.Binding.Row == row) return state;
+                throw new InvalidDataException("Unbound source help row");
             }
 
             private void Close()
             {
                 remaining = 0;
-                if (currentRow == 41)
+                if (currentRow != null)
                 {
-                    age = 0;
-                    Priority = mana.Priority;
+                    currentRow.Age = 0;
+                    currentRow.Priority = currentRow.Binding.Priority;
                 }
-                currentRow = 0;
+                currentRow = null;
                 pollDelay = 20;
             }
 
@@ -208,9 +260,10 @@ namespace MagicCarpet.Native
         }
 
         private void AdvanceGameRuntimeHelpHint(bool leftUnavailable, bool rightUnavailable,
-            bool showHelp, bool paused, bool suppressed)
+            bool showHelp, bool paused, bool suppressed, sbyte wallContactCounter, bool levelEnd)
         {
-            gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed);
+            gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
+                wallContactCounter, levelEnd);
         }
 
         private void DrawGameRuntimeHelpHint()
