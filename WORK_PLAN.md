@@ -802,29 +802,79 @@ acceptance open; a working control panel alone does not finish the environment.
 ## Current Original mission delivery — 2026-11-14
 
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
-the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music and F2
-flight assistance are
+the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
+flight assistance and F1 Help Mode are
 implemented, verified, committed, pushed and installed. Do not restart their
-delivered checkpoints below. Next is source bare F1/Options0 Help Mode through
-the existing real popup, source400/401 notices, selector clear and ON row/age
-reinitialization. F1 is absent; Options0 uses generic Apply. Pinned source
-sub_871E0 returns1 unconditionally, making its No Help Data branch unreachable;
-do not invent an ordinary missing-data producer or a filesystem-derived host
-capability. Use the actual retained validated help rows/glyph owner and preserve
-its current recoverable asset-binding failure. BoldForge owns native integration,
-PearlBay the input/transport joins and QuietIsland the focused popup owner; root
-serializes checks and installation. Keep full existing acceptance and source
-update order, rather than extending the scope into a new availability platform.
+delivered checkpoints below. Next is the connected four-control graphics family:
+Shift+F1/F2/F3/F4 and Options8/9/10/11 reflections/sky/shadows/lights. Renderer
+consumers already exist; missing source actions/notices and wrong profile
+authority must join the actual GAME/save/current world state. Source GAME owns
+these four flags; CONFIG omits them. They retain across retry, mission and same-
+process Title/New Game; fresh process uses startup defaults. Pinned speed5 keeps
+all capabilities available and sky's extra guard is a global allocated buffer,
+not map type or filesystem existence. Preserve strict old-save receipts and
+unrelated legacy profile fields through deliberate read migration; never infer
+old unsaved GAME values from the receiving profile. Existing active lighting
+history already records its actual value; old map packets do not. BoldForge owns
+the integrated capability/shared joins, with independent renderer and client
+owners coordinated before writes. Root serializes checks/push/install. No leaf
+renderer rewrites, availability platform or new planning round.
 Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
 resolution switching remains the explicitly classified separate renderer option,
 not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
 through real consumer failures. Preserve unrelated Modern/browser work and fixed
 ABI extents.
 
+Help Mode checkpoint: canonical7cf0fb39 is pushed as Originalcb2058b5; all20
+owned blobs match. Original build-xgpo_q20/native
+f74c1c8042302a194c71048d9f65df57242de8e903e13794a639e8686922ddf9 is installed;
+--check-installed passes. Bare F1 and Options0 share guarded atomic CONFIG/help
+policy and400/401 type3/50 notice publication. Existing exact-boundary native
+help-policy history makes immediate save/cold replay strict; no fake gameplay
+step or profile overwrite during replay. ON reinitializes actual retained popup
+rows/ages/priorities and active/pending state; OFF hides it, both edges clear only
+pause hover and keep Options open. Unrelated ability notification is preserved.
+Pinned source sub_871E0 unconditionally returns1, so No Help Data is not claimed
+as an ordinary reachable producer; real missing/invalid assets retain the actual
+asset-binding failure route. No host filesystem availability guess was added.
+
+Five native focused checks pass, including atomic failure/preview/guards,
+policy+notice immediate exact cold/resave,50-draw clock and F2 replay regression.
+The first new assertion incorrectly expected public gameplay hash to include
+HELP: explicit native true->false passed while that hash stayed equal. Source
+inspection proved HELP belongs to reset/conformance domains. The corrected gate
+retains full snapshot equality except the independently checked notice and adds
+actual reset AND conformance changes, isolating policy from the notice. It passes;
+the test-only correction leaves the entire production native binary byte-identical.
+Workspace all-targets43.29s, targeted gate typecheck, strict Rig build and all627
+native input comparisons pass. Canonical116-source typecheck passes2.421s; UBS
+has no added critical Rust or managed warning/critical finding, with C# partial
+analysis/legacy totals explicitly retained. Fresh bounded source review found no
+further concrete defect in the reviewed seams.
+
+Real selected-glyph hint/popup/F1/save-load check passes128.619s, Options/cold
+32.864s and held F1 barrier0.012s. Its first Load exposed a genuine qualified-
+client rebind bug: preference preparation synchronized an OLD borrowed campaign
+projection against the NEW runtime. The qualified client now uses canonical's
+existing Load/recovery transaction without relaxing guards. The dedicated real
+paused-load/audio/old-root disposal/malformed-save guard passes23.498s. That test
+initially selected an obsolete menu cache; only its resource arguments changed
+to qualified current owner data and private profiles, retaining every assertion.
+An obsolete test expectation that F5 saves was corrected to the existing explicit
+save request; delivered physical F5 sound assertions remain intact. No v8 data
+retagging occurred: a stale label was corrected to actual current v9.
+
+Root viewed normal canonical map/one portal/NightSpire and physical F1/P,
+original Help Mode OFF/ON Options and400/401 notices; matching mapped native,
+zero retries/errors, owned processes stopped. Actual popup rendering and warm
+Load/recovery are separately established by the matching managed checks, not
+claimed as human flight/combat/FPS/hardware-audio/full-mission/historical-save
+proof. Evidence: generated/help-mode-20261116. All full existing beads stay OPEN.
+
 Flight-assistance checkpoint: canonical cdcc8498 is pushed as Original235baa78;
 all22 owned blobs match. Original build-a75ffnon/native
-f327d31480c075c2aae3086265bee96e3a93be1d934998d329a9ea2317ce4fa8 is installed;
---check-installed passes. Real bare F2 and Options4 share the guarded atomic
+f327d31480c075c2aae3086265bee96e3a93be1d934998d329a9ea2317ce4fa8 was installed;
+--check-installed passed. Real bare F2 and Options4 share the guarded atomic
 profile/398..399 type3/50 notice action. Current supported campaign is explicitly
 offline; AI rows and replay are not multiplayer admission. Suppressed states
 retain the source mouse/counter; accepted pause/resume remaps only the exact
