@@ -1,5 +1,33 @@
 # Shared-engine delivery plan
 
+## Original Level 1 browser adapter — 2026-11-16
+
+Oliver explicitly requests playable Level 1 with original assets in Three.js,
+using the existing Rust backend. Keep WASM as discussion, not implementation.
+The browser consumes original indexed scene/palette data and source HUD/menu
+observations, and sends native input/control requests. Do not build another
+simulation or alter gameplay rules. Root owns the Three.js client and integrated
+browser checks; the native bridge owner owns startup, scheduling, input and
+save/load; the HUD owner owns source asset/overlay consumers. Preserve the
+separate existing Modern browser experiment and all ongoing OG work. Verify
+real startup, visible terrain/sprites/HUD, flight/casting, pause, reset and
+save/load in the browser. State local-backend versus standalone-WASM support
+truthfully; raw world frames alone do not establish complete Original UI.
+
+The first integrated Three.js/native browser route now shows source terrain,
+sprites, palette, HUD, objective and maps. Actual 3090 Chrome checks pass flight,
+spell-grid hand assignment, casting with native mana use, pause tick stability,
+and persistent save/load restoring tick and pose, with no browser errors. The
+private static route is `http://3090.bumblebee-hue.ts.net:8882/`; exact launch and
+verification commands are in `web/ORIGINAL_BROWSER.md` under the Rust workspace.
+This route displays Rust's existing software world renderer through Three.js;
+it is not yet a Three.js geometry renderer or standalone WASM. Audio, original
+pause/options submenus, Beyond Sight labels and map-mode hand flashes remain
+open. The resume/publication race is fixed in `cfcf308f`; a final real-browser
+run on the built Tailnet route also passes actual mouse capture, Escape pause,
+reload and the previous checks, with no console or HTTP errors. Full mission
+completion remains separate.
+
 ## Operator scope — art alongside Original completion (2026-11-15)
 
 Oliver clarified that Modern/Voxel assets and environment should be completed
