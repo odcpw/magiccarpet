@@ -1429,6 +1429,12 @@ namespace MagicCarpet.Native.Tests
                     false, false, false, 14, menu.GameplayLanguageText);
                 Assert.That(plainRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(443)));
                 stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 5 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.IncreaseBrightness), "left click proposes the source clamped increase");
+                Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 5 * 18 + 9), 1);
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.DecreaseBrightness), "right click proposes the source clamped decrease");
+                Unchanged();
                 menu.ResetPauseHoverHelp();
                 Hover(SourcePauseMenu.IconRect(174).center);
                 menu.ResetPauseHoverHelp();
@@ -2466,7 +2472,7 @@ namespace MagicCarpet.Native.Tests
                     Encoding.GetEncoding(28591).GetBytes(selected.Record(284)), artwork.Glyphs, artwork.GlyphMasks,
                     artwork.Corner, artwork.Side, artwork.Horizontal, artwork.TextColor);
                 var pixels = ReadObjectivePixels(output);
-                var palette = preferences.ApplyBrightnessToPalette(surface.FramePaletteRgb8, 2);
+                var palette = surface.FramePaletteRgb8;
                 var textPixels = 0;
                 Assert.That((output.width, output.height), Is.EqualTo((raster.Width, raster.Height)));
                 for (var y = 0; y < raster.Height; y++)
@@ -2705,8 +2711,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(output, Is.Not.Null);
                 var pixels = ReadObjectivePixels(output);
                 var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
-                var palette = ((PlayerPreferencesPresenter)Field("playerPreferences"))
-                    .ApplyBrightnessToPalette(surface.FramePaletteRgb8, 0);
+                var palette = surface.FramePaletteRgb8;
                 var artwork = menu.ObjectiveForProfile("day");
                 Assert.That(artwork.HelpTextColor, Is.EqualTo(224));
                 var ink = new Color32(palette[224 * 3], palette[224 * 3 + 1], palette[224 * 3 + 2], 255);
@@ -2840,7 +2845,7 @@ namespace MagicCarpet.Native.Tests
                 var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
                 Assert.That(presenter, Is.Not.Null, "the actual runtime GUI binds the selected source glyph consumer");
                 var artwork = menu.ObjectiveForProfile("day");
-                var palette = preferences.ApplyBrightnessToPalette(surface.FramePaletteRgb8, 0);
+                var palette = surface.FramePaletteRgb8;
                 foreach (var anchor in new[] { 540, 600 })
                 {
                     var raster = ObjectiveTextboxCompositor.BuildSourceHintForeground(
@@ -3286,9 +3291,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(beforeFlat.display_settings.flat_shading, Is.False);
                 var f7 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF7Input", flags);
                 void F7(bool pressed, bool physical, bool admitted, bool alt) => f7.Invoke(runtime, new object[] { pressed, physical, admitted, alt });
-                F7(true, false, false, false); F7(true, true, false, false); F7(true, true, true, true);
+                F7(false, false, false, false); F7(true, true, false, false); F7(true, true, true, true);
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.False,
-                    "unshifted, held-through-dialog and Alt chords do not toggle flat shading");
+                    "no press, held-through-dialog and Alt chords do not toggle flat shading");
                 F7(true, true, true, false);
                 var flat = runtime.GameRuntimeProductionIdentity;
                 Assert.That(flat.display_settings.flat_shading, Is.True);
@@ -3316,6 +3321,90 @@ namespace MagicCarpet.Native.Tests
                     "a real Day retry re-applies source LevelInit default");
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.True,
                     "a real retry preserves the global source flat-shading setting");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var brightnessTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var startupReceipt = runtime.QualificationSaveGameRuntimeProductionReplay();
+                F7(true, false, false, false);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.Zero,
+                    "the actual source palette startup guard refuses bare F7");
+                CollectionAssert.AreEqual(startupReceipt, runtime.QualificationSaveGameRuntimeProductionReplay());
+                // Normal startup takes eight palette frames. The actual speech
+                // objective then requests flashes on frames 9/10, followed by
+                // case 8 and the source case-9 step0 plus sixteen fade steps.
+                runtime.QualificationDriveGameRuntimeFrames(28);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(brightnessTick));
+                var basePalette = (byte[])surface.FramePaletteRgb8.Clone();
+                Assert.That(preferences.Current.preferences.brightness[0], Is.Zero);
+                F7(true, false, false, false);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(1), "bare F7 reaches the native source setting");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(brightnessTick));
+                CollectionAssert.AreEqual(basePalette, surface.FramePaletteRgb8, "request step0 retains the installed palette");
+                var fadingReceipt = runtime.QualificationSaveGameRuntimeProductionReplay();
+                F7(true, false, false, false);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(1), "a pending palette fade blocks another change");
+                CollectionAssert.AreEqual(fadingReceipt, runtime.QualificationSaveGameRuntimeProductionReplay());
+                for (var frame = 0; frame < 5; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var step = Math.Max(0, frame);
+                    var expectedPalette = new byte[basePalette.Length];
+                    for (var i = 0; i < expectedPalette.Length; i++)
+                    {
+                        var original = basePalette[i] >> 2;
+                        var target = Math.Min(63, original + 6);
+                        expectedPalette[i] = (byte)((original + step * (target - original) / 4) << 2);
+                    }
+                    CollectionAssert.AreEqual(expectedPalette, surface.FramePaletteRgb8,
+                        $"source RGB6 fade step {step} reaches the real indexed world");
+                }
+                var worldPalette = (Texture2D)typeof(CampaignPresentationSurface).GetField("worldPalette", flags).GetValue(surface);
+                CollectionAssert.AreEqual(surface.FramePaletteRgb8, worldPalette.GetRawTextureData<byte>().ToArray(),
+                    "the world samples the published source palette once");
+                // Reset disposes the old HUD owner and changes the scene epoch.
+                // Render the real cameras again before asking the GUI to use it.
+                foreach (var camera in cameras) camera.Render();
+                Assert.That(surface.SceneHistoryGeneration, Is.EqualTo(surface.Generation),
+                    "the reset scene publishes current-generation indexed history");
+                Assert.That(surface.HudUnderlayIndices, Is.Not.Null);
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var hudPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeHudPresenter");
+                Assert.That(hudPresenter, Is.Not.Null, "the real repaint recreates the current-generation HUD owner");
+                var hudMaterial = (Material)typeof(SourceObjectiveTextboxPresenter).GetField("material", flags).GetValue(hudPresenter);
+                CollectionAssert.AreEqual(surface.FramePaletteRgb8,
+                    ((Texture2D)hudMaterial.GetTexture("_Palette")).GetRawTextureData<byte>().ToArray(),
+                    "the indexed HUD samples the same source palette without a second brightness transform");
+                using (var coldOwner = new GameRuntimeTransport())
+                {
+                    var coldPreferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                        coldOwner.Handle, coldOwner.IdentitySnapshot(), json), Path.Combine(temporary, "profile"));
+                    Assert.That(coldPreferences.Current.preferences.brightness[0], Is.EqualTo(1),
+                        "the accepted setting survives a cold profile load");
+                }
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.IncreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(2), "Options increment uses the same native action");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.DecreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(2), "Options decrease is blocked during source fade");
+                runtime.QualificationDriveGameRuntimeFrames(5);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.DecreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(1));
+                runtime.QualificationDriveGameRuntimeFrames(5);
+                foreach (var expected in new[] { 2, 3, 4, 0 })
+                {
+                    F7(true, false, false, false);
+                    Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(expected), "bare F7 uses source wrap rather than menu clamp");
+                    runtime.QualificationDriveGameRuntimeFrames(5);
+                }
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(brightnessTick));
+                var beforeClamp = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.DecreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.Zero, "Options clamps at the source lower endpoint");
+                CollectionAssert.AreNotEqual(beforeClamp, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "an admitted clamped endpoint still requests the source refade");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.IncreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.Zero, "the endpoint refade owns the guard");
+                runtime.QualificationDriveGameRuntimeFrames(5);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.IncreaseBrightness), Is.True);
+                Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(1));
             }
             finally
             {
@@ -5532,9 +5621,7 @@ namespace MagicCarpet.Native.Tests
                         "the live map textbox samples the current map and HUD indexed result");
                     Assert.That(objectiveMaterial.GetFloat("_SceneTopDown"), Is.Zero,
                         "the composed GPU scene has bottom-up orientation");
-                    var objectivePreferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime)
-                        .GetField("playerPreferences", objectiveFlags).GetValue(runtime);
-                    var objectivePalette = objectivePreferences.ApplyBrightnessToPalette(objectiveSurface.FramePaletteRgb8, 1);
+                    var objectivePalette = objectiveSurface.FramePaletteRgb8;
                     CollectionAssert.AreEqual(objectivePalette,
                         ((Texture2D)objectiveMaterial.GetTexture("_Palette")).GetRawTextureData<byte>().ToArray(),
                         "the textbox uses this displayed map's palette and current brightness");

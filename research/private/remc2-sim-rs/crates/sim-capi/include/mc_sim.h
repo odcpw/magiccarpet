@@ -41,6 +41,8 @@ extern "C" {
 #define MC_STATUS_CURSOR_EXPIRED 13
 #define MC_STATUS_INTERNAL_PANIC 14
 #define MC_STATUS_LOCK_FAILED 15
+/* The guarded source action was valid but temporarily blocked by game state. */
+#define MC_STATUS_SOURCE_ACTION_BLOCKED 16
 
 #define MC_PROFILE_OUTDOOR 0u
 #define MC_PROFILE_CAVE 1u
@@ -1456,6 +1458,8 @@ int32_t mc_game_runtime_campaign_menu_command_json_v1(
 int32_t mc_game_runtime_media_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
+/* source_brightness may return MC_STATUS_SOURCE_ACTION_BLOCKED while the
+ * guarded palette cannot accept a change; this leaves the owner unchanged. */
 int32_t mc_game_runtime_preferences_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);

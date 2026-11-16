@@ -7165,6 +7165,14 @@ impl Mc2Simulation {
         &self.session.state.live.economy.fields.palette
     }
 
+    pub(crate) fn bind_source_brightness(&mut self, brightness: u8) {
+        self.session.state.live.economy.fields.palette.bind_source_brightness(brightness);
+    }
+
+    pub(crate) fn request_source_brightness(&mut self, brightness: u8) {
+        self.session.state.live.economy.fields.palette.request_brightness(brightness);
+    }
+
     pub fn field_source_rows(&self) -> Vec<EntitySnapshot> {
         self.session.state.live.economy.fields.source_rows()
     }
@@ -30875,13 +30883,14 @@ impl Mc2Simulation {
                 .then_some(runtime.secret_announcement.collected_count),
         };
         let context_help = runtime.objective_expiry_help(self.help_enabled(), objective);
+        let source_palette_phase = self.field_palette().source_phase();
         let actions = self
             .session
             .state
             .live
             .core
             .runtime
-            .service_campaign_objective_presentation(input);
+            .service_campaign_objective_presentation(input, source_palette_phase);
         if let Some(request) = context_help {
             // PresentObjective calls sub_88BA0 before processing a new phase.
             // Keep this request ordered ahead of that phase's sound/speech.
@@ -30933,10 +30942,10 @@ impl Mc2Simulation {
                 effects.palette_submode = mode;
             }
         }
-        if field_speed_gate
-            && let Some(effects) = self.session.state.live.core.context.effects.as_mut()
-        {
-            effects.move_speed_flag = 1;
+        let source_policy = self.field_palette().source_phase().is_some();
+        if let Some(effects) = self.session.state.live.core.context.effects.as_mut() {
+            if source_policy { effects.move_speed_flag = u8::from(field_speed_gate); }
+            else if field_speed_gate { effects.move_speed_flag = 1; }
         }
     }
 

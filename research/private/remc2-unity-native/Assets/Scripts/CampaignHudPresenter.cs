@@ -610,7 +610,6 @@ namespace MagicCarpet.Native
             gameRuntimeHudGeneration = surface.HudUnderlayGeneration;
             gameRuntimeHudRevision = surface.HudUnderlayRevision;
             var palette = surface.FramePaletteRgb8;
-            if (playerPreferences != null) palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeHudPresenter.DrawPausePrior(underlay, campaignSession.Generation,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
@@ -703,8 +702,6 @@ namespace MagicCarpet.Native
                     gameRuntimeManaHintPresenter.PresentContextHint(helpText, campaignSession.Generation, helpRow.X, helpRow.Y);
             }
             var palette = surface.FramePaletteRgb8;
-            if (playerPreferences != null)
-                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeManaHintPresenter.Draw(1, indices, generation, revision,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
@@ -736,8 +733,6 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellPriorGeneration = campaignSession.Generation;
             }
             var palette = surface.FramePaletteRgb8;
-            if (playerPreferences != null)
-                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeManaHintPresenter.DrawPausePrior(scene, generation,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,

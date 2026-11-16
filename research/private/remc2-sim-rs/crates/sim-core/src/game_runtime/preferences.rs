@@ -216,6 +216,11 @@ fn optional_locale<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreferencesCommand {
+    SourceBrightness {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+        action: SourceBrightnessAction,
+    },
     Install {
         profile_dir: String,
     },
@@ -248,6 +253,28 @@ pub enum PreferencesCommand {
     Cancel,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceBrightnessAction { Cycle, Increment, Decrement }
+
+fn deserialize_brightness_guard<'de, D: serde::Deserializer<'de>>(deserializer: D)
+    -> Result<sim_session::SessionGuard, D::Error>
+{
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Guard { session_id: String, generation: String, expected_tick: String }
+    let guard = Guard::deserialize(deserializer)?;
+    let parse = |value: &str| -> Result<u64, D::Error> {
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit())
+            || (value.len() > 1 && value.starts_with('0')) {
+            return Err(serde::de::Error::custom("session guard requires canonical decimal strings"));
+        }
+        value.parse::<u64>().map_err(serde::de::Error::custom)
+    };
+    Ok(sim_session::SessionGuard { session_id: parse(&guard.session_id)?, generation: parse(&guard.generation)?,
+        expected_tick: parse(&guard.expected_tick)? })
+}
+
 #[derive(Clone, Debug)]
 struct AudioPreview {
     sound_enabled: bool,
@@ -266,6 +293,10 @@ pub struct PreferencesSnapshot {
     pub installed_locales: Vec<LocaleSummary>,
     pub locale_binding: Option<LocaleSnapshot>,
     pub language_status: String,
+    /// Ephemeral result consumed directly by the existing command dispatcher.
+    /// It is never stored in runtime identity or preferences persistence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_brightness_admitted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -283,6 +314,25 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    fn write_profile(&self, preferences: &PlayerPreferences) -> Result<(), String> {
+        let path = self.path.as_ref().ok_or("preferences profile is not installed")?;
+        let parent = path.parent().ok_or("preferences path has no parent")?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec_pretty(preferences).map_err(|error| error.to_string())?;
+        let mut candidate = None;
+        for suffix in 0..128 {
+            let temp = parent.join(format!(".player-preferences-{}-{suffix}.tmp", std::process::id()));
+            match OpenOptions::new().write(true).create_new(true).open(&temp) {
+                Ok(file) => { candidate = Some((temp, file)); break; }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let (temp, mut file) = candidate.ok_or("cannot allocate preferences publication file")?;
+        file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|error| error.to_string())?;
+        fs::rename(temp, path).map_err(|error| error.to_string())
+    }
+
     /// Borrow the authoritative name without materializing a preferences snapshot.
     pub(super) fn player_name(&self) -> &str {
         &self.current.player_name
@@ -328,11 +378,13 @@ impl PreferenceStore {
                 .map_or_else(Vec::new, |languages| languages.summaries.clone()),
             locale_binding: self.locale.as_ref().map(|locale| locale.identity.clone()),
             language_status: self.language_status.clone(),
+            source_brightness_admitted: None,
         }
     }
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
+            PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
             PreferencesCommand::Install { profile_dir } => {
                 if self.path.is_some() {
                     return Err("preferences profile is already installed".into());
@@ -426,10 +478,7 @@ impl PreferenceStore {
                 };
                 preferences.player_name.make_ascii_uppercase();
                 preferences.validate()?;
-                let path = self
-                    .path
-                    .as_ref()
-                    .ok_or("preferences profile is not installed")?;
+                if self.path.is_none() { return Err("preferences profile is not installed".into()); }
                 // Revalidate the complete candidate before either preferences
                 // publication or resource replacement. Failed reads retain the
                 // old in-memory text/fonts and leave the profile untouched.
@@ -456,30 +505,7 @@ impl PreferenceStore {
                         "locale selection requires the installed language resource owner".into(),
                     );
                 }
-                let parent = path.parent().ok_or("preferences path has no parent")?;
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                let bytes = serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?;
-                let mut candidate = None;
-                for suffix in 0..128 {
-                    let temp = parent.join(format!(
-                        ".player-preferences-{}-{suffix}.tmp",
-                        std::process::id()
-                    ));
-                    match OpenOptions::new().write(true).create_new(true).open(&temp) {
-                        Ok(file) => {
-                            candidate = Some((temp, file));
-                            break;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(e.to_string()),
-                    }
-                }
-                let (temp, mut file) =
-                    candidate.ok_or("cannot allocate preferences publication file")?;
-                file.write_all(&bytes)
-                    .and_then(|()| file.sync_all())
-                    .map_err(|e| e.to_string())?;
-                fs::rename(&temp, path).map_err(|e| e.to_string())?;
+                self.write_profile(&preferences)?;
                 self.current = preferences;
                 if let Some(candidate) = language_candidate {
                     self.languages = Some(Arc::new(candidate));
@@ -618,6 +644,46 @@ pub enum PreferenceStepError<E> {
     Session(super::GameSessionError<E>),
 }
 
+impl super::GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source case6 alone may change CONFIG brightness while Playing. Both
+    /// guards and source palette readiness precede file or retained mutation.
+    pub fn source_brightness_preferences(
+        &mut self, guard: super::RuntimeGuard, session_guard: sim_session::SessionGuard,
+        action: SourceBrightnessAction,
+    ) -> Result<PreferencesSnapshot, super::RuntimeTransitionError> {
+        use super::{RuntimeMode, RuntimeState, RuntimeTransitionError};
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        if !session.backend().source_brightness_admitted() {
+            let mut snapshot = self.player_preferences.snapshot();
+            snapshot.source_brightness_admitted = Some(false);
+            return Ok(snapshot);
+        }
+        let index = session.backend().source_brightness_slot();
+        let mut preferences = self.player_preferences.current.clone();
+        let current = preferences.brightness[index];
+        preferences.brightness[index] = match action {
+            SourceBrightnessAction::Cycle => (current + 1) % 5,
+            SourceBrightnessAction::Increment => current.saturating_add(1).min(4),
+            SourceBrightnessAction::Decrement => current.saturating_sub(1),
+        };
+        self.player_preferences.write_profile(&preferences)
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        // All remaining publication is infallible after the private file has
+        // atomically committed. Do not reset input/audio/locale draft owners.
+        session.backend_mut().request_source_brightness(preferences.brightness[index]);
+        self.player_preferences.current = preferences;
+        self.player_preferences.load_status = "saved".into();
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_brightness_admitted = Some(true);
+        Ok(snapshot)
+    }
+}
+
 impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::GameRuntime<B> {
     /// Input assistance precedes the ordinary recorded command. Rejected
     /// commands (including stale guards or unavailable spells) do not consume
@@ -650,6 +716,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             .completion_status(guard)
             .map_err(|error| PreferenceStepError::Session(sim_session::GameSessionError::Guard(error)))?;
         let top_bar = self.display_settings.top_bar;
+        let brightness = self.player_preferences.current.brightness;
         let previous_assistance = self.player_preferences.assistance.clone();
         let previous_sequence = self.player_preferences.assistance_sequence;
         let previous_generation = self.player_preferences.input_generation;
@@ -683,6 +750,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         }
         let session = self.session_mut().ok_or(PreferenceStepError::Unavailable)?;
         session.backend_mut().prepare_hud_frame(top_bar);
+        session.backend_mut().prepare_palette_frame(brightness);
         let result = session.advance(guard, command)
             .map_err(PreferenceStepError::Session);
         if result.is_err() {

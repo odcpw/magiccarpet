@@ -453,6 +453,23 @@ namespace MagicCarpet.Native
         private static extern int mc_game_runtime_preferences_command_json_v1(
             ulong handle, ulong generation, byte[] request, uint length);
 
+        private const int SourceActionBlocked = 16;
+        internal enum SourceBrightnessAction { Cycle, Increment, Decrement }
+
+        [Serializable]
+        private sealed class SourceBrightnessGuard
+        {
+            public string session_id, generation, expected_tick;
+        }
+
+        [Serializable]
+        private sealed class SourceBrightnessCommand
+        {
+            public string operation = "source_brightness";
+            public SourceBrightnessGuard session_guard;
+            public string action;
+        }
+
         internal static PlayerPreferencesSnapshot PreferencesCommand(
             ulong handle, Identity identity, string json)
         {
@@ -1157,6 +1174,47 @@ namespace MagicCarpet.Native
                 after.display_settings.flat_shading == before.display_settings.flat_shading)
                 throw new InvalidDataException("flat shading toggle changed the wrong source state");
             return after;
+        }
+
+        internal bool SourceBrightness(SourceBrightnessAction action, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source brightness");
+            var before = Current;
+            var actionName = action switch {
+                SourceBrightnessAction.Cycle => "cycle",
+                SourceBrightnessAction.Increment => "increment",
+                SourceBrightnessAction.Decrement => "decrement",
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var command = new SourceBrightnessCommand {
+                action = actionName,
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id,
+                    generation = before.session.generation,
+                    expected_tick = before.session.tick
+                }
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));
+            var status = mc_game_runtime_preferences_command_json_v1(
+                RequireHandle(), ParseCounter(before.generation, "generation"),
+                bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) {
+                identity = null;
+                return false;
+            }
+            Check(status, "change source brightness");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.player_preferences?.preferences?.brightness == null)
+                throw new InvalidDataException("source brightness changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignStep(

@@ -515,16 +515,5 @@ namespace MagicCarpet.Native
             return ApplySource(preferences => preferences.fullscreen = !fullscreen);
         }
 
-        /// sub_47650: each six-bit VGA component gains 6*setting and
-        /// saturates at 63. Owner caches retain the equivalent RGB8 values.
-        internal byte[] ApplyBrightnessToPalette(byte[] rgb8, int terrain)
-        {
-            var setting = Current.preferences.brightness[Mathf.Clamp(terrain, 0, 2)];
-            if (setting == 0) return rgb8;
-            var adjusted = new byte[rgb8.Length];
-            for (var i = 0; i < adjusted.Length; i++)
-                adjusted[i] = checked((byte)Math.Min(252, rgb8[i] + 24 * setting));
-            return adjusted;
-        }
     }
 }

@@ -878,6 +878,14 @@ struct Mc2HudAdmissionChange {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct Mc2PaletteChange {
+    before_operation: usize,
+    brightness: u8,
+    refade: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Mc2PrimaryVisibilityChange {
     before_operation: usize,
     tick: u64,
@@ -960,6 +968,8 @@ struct Mc2CampaignReplaySave {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hud_admission_changes: Vec<Mc2HudAdmissionChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    palette_changes: Vec<Mc2PaletteChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
@@ -1016,6 +1026,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     help_preference_changes: &'a [Mc2HelpPreferenceChange],
     #[serde(skip_serializing_if = "<[Mc2HudAdmissionChange]>::is_empty")]
     hud_admission_changes: &'a [Mc2HudAdmissionChange],
+    #[serde(skip_serializing_if = "<[Mc2PaletteChange]>::is_empty")]
+    palette_changes: &'a [Mc2PaletteChange],
     #[serde(skip_serializing_if = "<[Mc2PrimaryVisibilityChange]>::is_empty")]
     primary_visibility_changes: &'a [Mc2PrimaryVisibilityChange],
     #[serde(skip_serializing_if = "<[voxels::VoxelModeChange]>::is_empty")]
@@ -1068,6 +1080,7 @@ impl Mc2CampaignReplaySave {
             dynamic_lighting_changes: Vec::new(),
             help_preference_changes: Vec::new(),
             hud_admission_changes: Vec::new(),
+            palette_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             completed_levels: Some(completed_levels),
@@ -1106,6 +1119,7 @@ impl Mc2CampaignReplaySave {
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
             help_preference_changes: &self.help_preference_changes,
             hud_admission_changes: &self.hud_admission_changes,
+            palette_changes: &self.palette_changes,
             primary_visibility_changes: &self.primary_visibility_changes,
             voxel_mode_changes: &self.voxel_mode_changes,
             completed_levels: self.completed_levels.as_deref(),
@@ -1132,6 +1146,7 @@ impl Mc2CampaignReplaySave {
         let historical_hand_fields_absent = self.initial_hand_selection_flash_ticks == [0; 2]
             && self.hand_selection_flash_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
+            && self.palette_changes.is_empty()
             && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none());
         ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
             || (self.save_contract == PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
@@ -2431,6 +2446,7 @@ impl Mc2RuntimePackageResolver {
         save.dynamic_lighting_changes = session.backend().dynamic_lighting_changes.clone();
         save.help_preference_changes = session.backend().help_preference_changes.clone();
         save.hud_admission_changes = session.backend().hud_admission_changes.clone();
+        save.palette_changes = session.backend().palette_changes.clone();
         save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
         save.voxel_mode_changes = session.backend().voxel_mode_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -2710,6 +2726,12 @@ impl Mc2RuntimePackageResolver {
                 ),
             });
         }
+        if save.palette_changes.len() > 2 * MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
+            || save.palette_changes.iter().any(|change| change.before_operation > save.operations.len() || change.brightness > 4)
+            || save.palette_changes.windows(2).any(|pair| pair[0].before_operation > pair[1].before_operation)
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "source palette has an invalid replay boundary".into() });
+        }
         if save.hud_admission_changes.len() > save.operations.len()
             || save.hud_admission_changes.iter().any(|change| !matches!(save.operations.get(change.before_operation),
                 Some(crate::game_runtime::ReplayOperation::Step { .. } | crate::game_runtime::ReplayOperation::PausedFrame { .. })))
@@ -2885,6 +2907,7 @@ impl Mc2RuntimePackageResolver {
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
         let mut help_preference_changes = save.help_preference_changes.into_iter().peekable();
         let mut hud_admission_changes = save.hud_admission_changes.into_iter().peekable();
+        let mut palette_changes = save.palette_changes.into_iter().peekable();
         let mut primary_visibility_changes = save.primary_visibility_changes.into_iter().peekable();
         let mut voxel_mode_changes = save.voxel_mode_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
@@ -2952,6 +2975,10 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
+                    while palette_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
+                        let change = palette_changes.next().expect("matched source palette boundary");
+                        candidate.backend_mut().apply_palette_change(change)?;
+                    }
                     if hud_admission_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
                         let change = hud_admission_changes.next().expect("matched HUD admission boundary");
                         candidate.backend_mut().record_hud_admission(change.top_bar);
@@ -3612,6 +3639,8 @@ pub struct Mc2CampaignBackend {
     fresh_help_profile_pending: bool,
     hand_selection_flash_start_operation: Option<usize>,
     hud_admission_changes: Vec<Mc2HudAdmissionChange>,
+    palette_changes: Vec<Mc2PaletteChange>,
+    pending_palette_brightness: Option<[u8; 3]>,
     // Replay-selected frame policy and one pending guarded frame argument;
     // neither is another authoritative copy of the runtime's display setting.
     hud_admission: Option<bool>,
@@ -3636,6 +3665,40 @@ impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
 }
 
 impl Mc2CampaignBackend {
+    pub(crate) fn source_brightness_slot(&self) -> usize {
+        match self.campaign.simulation().canonical_terrain().map_type() {
+            crate::native_world::MapType::Day => 0,
+            crate::native_world::MapType::Night => 1,
+            crate::native_world::MapType::Cave => 2,
+        }
+    }
+
+    pub(crate) fn source_brightness_admitted(&self) -> bool {
+        self.campaign.simulation().field_palette().brightness_admitted()
+    }
+
+    fn prepare_palette_candidate(&self, candidate: &mut CampaignSession, brightness: Option<[u8; 3]>) -> Option<u8> {
+        let value = brightness?[self.source_brightness_slot()];
+        if candidate.simulation().field_palette().source_brightness() == Some(value) { return None; }
+        candidate.simulation_mut().bind_source_brightness(value);
+        Some(value)
+    }
+
+    fn apply_palette_change(&mut self, change: Mc2PaletteChange) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        if change.brightness > 4 || (change.refade && !self.source_brightness_admitted()) {
+            return Err(crate::game_runtime::RuntimeTransitionError::InvalidReplay { message: "source brightness request was not palette-admitted".into() });
+        }
+        if change.refade { self.campaign.simulation_mut().request_source_brightness(change.brightness); }
+        else { self.campaign.simulation_mut().bind_source_brightness(change.brightness); }
+        self.palette_changes.push(change);
+        Ok(())
+    }
+
+    pub(crate) fn request_source_brightness(&mut self, brightness: u8) {
+        self.campaign.simulation_mut().request_source_brightness(brightness);
+        self.palette_changes.push(Mc2PaletteChange { before_operation: self.replay_operations.len(), brightness, refade: true });
+    }
+
     fn record_hud_admission(&mut self, top_bar: bool) {
         self.hud_admission = Some(top_bar);
         if self.hud_admission_changes.last().is_some_and(|change| change.top_bar == top_bar) { return; }
@@ -4119,6 +4182,8 @@ impl GameAdapter for Mc2CampaignAdapter {
             hud_admission_changes: Vec::new(),
             hud_admission: Some(true),
             pending_hud_top_bar: None,
+            palette_changes: Vec::new(),
+            pending_palette_brightness: None,
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             initial_final_reward: false,
@@ -4677,10 +4742,16 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.pending_hud_top_bar = Some(top_bar);
     }
 
+    fn prepare_palette_frame(&mut self, brightness: [u8; 3]) {
+        self.pending_palette_brightness = Some(brightness);
+    }
+
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
         let hud_admission = self.pending_hud_top_bar.take().or(self.hud_admission);
+        let brightness = self.pending_palette_brightness.take();
         let mut player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
+        let palette_change = self.prepare_palette_candidate(&mut candidate, brightness);
         candidate.simulation_mut().configure_source_hud_tail(hud_admission.is_some(), hud_admission.is_none());
         let show_objective =
             source_objective_input_admitted(candidate.simulation(), command.show_objective);
@@ -4711,6 +4782,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .finish_source_menu_action(command.abandon_action, menu_admitted);
         if let Some(top_bar) = hud_admission { candidate.simulation_mut().finish_source_hud_frame(top_bar); }
         self.campaign = candidate;
+        if let Some(brightness) = palette_change {
+            self.palette_changes.push(Mc2PaletteChange { before_operation: self.replay_operations.len(), brightness, refade: false });
+        }
+        self.pending_palette_brightness = None;
         if let Some(top_bar) = hud_admission { self.record_hud_admission(top_bar); }
         self.fresh_help_profile_pending = false;
         self.replay_operations
@@ -4744,7 +4819,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         show_objective: bool,
     ) -> Result<(), Self::Error> {
         let hud_admission = self.pending_hud_top_bar.take().or(self.hud_admission);
+        let brightness = self.pending_palette_brightness.take();
         let mut candidate = self.campaign.clone();
+        let palette_change = self.prepare_palette_candidate(&mut candidate, brightness);
         candidate.simulation_mut().configure_source_hud_tail(hud_admission.is_some(), hud_admission.is_none());
         candidate
             .simulation_mut()
@@ -4763,6 +4840,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
         }
         if let Some(top_bar) = hud_admission { candidate.simulation_mut().finish_source_hud_frame(top_bar); }
         self.campaign = candidate;
+        if let Some(brightness) = palette_change {
+            self.palette_changes.push(Mc2PaletteChange { before_operation: self.replay_operations.len(), brightness, refade: false });
+        }
+        self.pending_palette_brightness = None;
         if let Some(top_bar) = hud_admission { self.record_hud_admission(top_bar); }
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::PausedFrame {
@@ -4864,6 +4945,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.dynamic_lighting_changes.clear();
         self.help_preference_changes.clear();
         self.hud_admission_changes.clear();
+        self.palette_changes.clear();
+        self.pending_palette_brightness = None;
         self.hud_admission = Some(true);
         self.fresh_help_profile_pending = false;
         self.hand_selection_flash_start_operation = None;
@@ -6763,6 +6846,107 @@ pub(crate) mod tests {
             actual.expected_terrain_hash, actual.expected_effect_head, &actual.expected_effect_journal_sha256));
         assert_eq!(ticks(&actual_cold), [0, 0]);
         assert_eq!(fs::read(path).unwrap(), actual_bytes, "historical input is never rewritten");
+    }
+
+    #[test]
+    fn source_brightness_guard_fade_config_and_immediate_cold_save_are_atomic() {
+        use crate::game_runtime::{GameRuntime, RuntimeGuard, preferences::{PreferenceStore, PreferencesCommand, SourceBrightnessAction}};
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let tag = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let profile = std::env::temp_dir().join(format!("mc-source-brightness-{}-{tag}", std::process::id()));
+        let path = profile.join("player-preferences.json");
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8990).unwrap();
+        let outer = runtime.identity().guard();
+        runtime.preferences_command(outer, PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() }).unwrap();
+        let mut preferences = runtime.identity().player_preferences.preferences;
+        preferences.brightness = [2, 0, 3];
+        // A real CONFIG choice isolates startup brightness from objective
+        // speech flashes. The ordinary objective textbox may remain active.
+        preferences.speech_enabled = false;
+        preferences.show_help = false;
+        runtime.preferences_command(outer, PreferencesCommand::Apply { preferences: preferences.clone() }).unwrap();
+        let invalid = sim_session::SessionGuard { session_id: 8990, generation: 0, expected_tick: 0 };
+        assert!(runtime.source_brightness_preferences(outer, invalid, SourceBrightnessAction::Cycle).is_err());
+        let loading = resolver.new_game(&mut runtime, outer).unwrap();
+        assert!(runtime.source_brightness_preferences(loading.guard(), invalid, SourceBrightnessAction::Cycle).is_err());
+        resolver.open_pending(&mut runtime, loading.guard(), 8990).unwrap();
+        runtime.pause(runtime.identity().guard()).unwrap();
+        let draw = |runtime: &mut GameRuntime<Mc2CampaignBackend>| {
+            let outer = runtime.identity().guard();
+            let inner = runtime.session().unwrap().identity().guard();
+            runtime.paused_campaign_frame_timed(outer, inner, 0, false).unwrap();
+            assert_eq!(runtime.session().unwrap().identity().tick, 0);
+        };
+        let blocked = |runtime: &mut GameRuntime<Mc2CampaignBackend>| {
+            let before = runtime.identity();
+            let bytes = resolver.save_replay(runtime).unwrap();
+            let file = fs::read(&path).unwrap();
+            let inner = runtime.session().unwrap().identity().guard();
+            let result = runtime.source_brightness_preferences(before.guard(), inner, SourceBrightnessAction::Cycle).unwrap();
+            assert_eq!(result.source_brightness_admitted, Some(false));
+            assert_eq!(runtime.identity(), before);
+            assert_eq!(resolver.save_replay(runtime).unwrap(), bytes);
+            assert_eq!(fs::read(&path).unwrap(), file);
+        };
+        blocked(&mut runtime);
+        for _ in 0..3 { draw(&mut runtime); blocked(&mut runtime); }
+        for step in 0..5 { draw(&mut runtime); if step < 4 { blocked(&mut runtime); } }
+        assert!(runtime.session().unwrap().backend().source_brightness_admitted());
+        assert_eq!(runtime.session().unwrap().backend().source_brightness_slot(), 1, "actual Night owner selects CONFIG byte12");
+        let ready = runtime.identity();
+        let inner = runtime.session().unwrap().identity().guard();
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        for (outer, nested) in [
+            (RuntimeGuard { generation: ready.generation + 1, ..ready.guard() }, inner),
+            (ready.guard(), sim_session::SessionGuard { generation: inner.generation + 1, ..inner }),
+            (ready.guard(), sim_session::SessionGuard { expected_tick: inner.expected_tick + 1, ..inner }),
+        ] {
+            assert!(runtime.source_brightness_preferences(outer, nested, SourceBrightnessAction::Cycle).is_err());
+            assert_eq!(runtime.identity(), ready);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
+        }
+        let retained = profile.join("retained.json");
+        fs::rename(&path, &retained).unwrap(); fs::create_dir(&path).unwrap();
+        assert!(runtime.source_brightness_preferences(ready.guard(), inner, SourceBrightnessAction::Cycle).is_err());
+        assert_eq!(runtime.identity(), ready);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
+        fs::remove_dir(&path).unwrap(); fs::rename(retained, &path).unwrap();
+        for action in [SourceBrightnessAction::Decrement, SourceBrightnessAction::Cycle,
+            SourceBrightnessAction::Cycle, SourceBrightnessAction::Cycle, SourceBrightnessAction::Cycle,
+            SourceBrightnessAction::Increment, SourceBrightnessAction::Cycle] {
+            let identity = runtime.identity();
+            let before = identity.player_preferences.preferences.clone();
+            let inner = runtime.session().unwrap().identity().guard();
+            let accepted = runtime.source_brightness_preferences(identity.guard(), inner, action).unwrap();
+            assert_eq!(accepted.source_brightness_admitted, Some(true));
+            let expected = match action { SourceBrightnessAction::Cycle => (before.brightness[1] + 1) % 5,
+                SourceBrightnessAction::Increment => before.brightness[1].saturating_add(1).min(4),
+                SourceBrightnessAction::Decrement => before.brightness[1].saturating_sub(1) };
+            let mut unchanged = before; unchanged.brightness[1] = expected;
+            assert_eq!(accepted.preferences, unchanged);
+            assert_eq!(runtime.identity().session, identity.session);
+            // Save at the SAME operation boundary, before even one fade draw.
+            let saved = resolver.save_replay(&runtime).unwrap();
+            let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8991).unwrap();
+            let title = cold.identity();
+            resolver.load_replay(&mut cold, title.guard(), 8991, &saved).unwrap();
+            assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+            assert_eq!(cold.session().unwrap().snapshot().value, runtime.session().unwrap().snapshot().value);
+            assert!(!cold.session().unwrap().backend().source_brightness_admitted());
+            let mut reopened = PreferenceStore::default();
+            assert_eq!(reopened.command(PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() }).unwrap().preferences, unchanged);
+            blocked(&mut runtime);
+            for _ in 0..5 { draw(&mut runtime); }
+            assert!(runtime.session().unwrap().backend().source_brightness_admitted());
+        }
+        // Ordinary Playing does not grant the generic Apply mutation path.
+        let id = runtime.identity(); runtime.resume(id.guard()).unwrap();
+        assert!(runtime.preferences_command(runtime.identity().guard(), PreferencesCommand::Apply { preferences }).is_err());
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

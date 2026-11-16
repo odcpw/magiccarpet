@@ -12,9 +12,49 @@ pub struct Palette {
     effect: u8,
     weight: u8,
     fading: bool,
+    // None retains verified pre-policy replay history exactly. Runtime frame
+    // admission installs the source startup policy at a recorded boundary.
+    source: Option<SourcePalette>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourcePalette { phase: u8, brightness: u8, fade: Option<BrightnessFade> }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BrightnessFade { from: Option<u8>, step: u8, running: bool }
+
 impl Palette {
+    pub(crate) fn source_brightness(&self) -> Option<u8> { self.source.map(|source| source.brightness) }
+    pub(crate) fn source_phase(&self) -> Option<u8> { self.source.map(|source| source.phase) }
+
+    pub(crate) fn brightness_admitted(&self) -> bool {
+        self.source.is_some_and(|source| source.phase >= 3) && self.pending == 0
+    }
+
+    pub(crate) fn bind_source_brightness(&mut self, brightness: u8) {
+        if let Some(source) = self.source {
+            if source.brightness != brightness { self.request_brightness(brightness); }
+        } else {
+            *self = Self { source: Some(SourcePalette { phase: 0, brightness, fade: None }), ..Self::default() };
+        }
+    }
+
+    /// sub_47650 changes the target and requests case1, including a clamped
+    /// endpoint. The installed VGA palette stays at the old value until the
+    /// ordinary PaletteChanges prefix performs its single-step fade.
+    pub(crate) fn request_brightness(&mut self, brightness: u8) {
+        let source = self.source.as_mut().expect("source brightness requires an admitted palette policy");
+        let old = source.brightness;
+        source.brightness = brightness;
+        if source.phase >= 3 {
+            source.fade = Some(BrightnessFade { from: Some(old), step: 0, running: false });
+            self.pending = 1;
+            self.effect = 0;
+            self.weight = 0;
+            self.fading = false;
+        }
+    }
+
     /// Current source paletteSubMod, including an unconsumed request.
     pub(crate) fn mode(&self) -> u8 {
         self.pending
@@ -30,6 +70,27 @@ impl Palette {
     /// Returns moveSpeedFlag for the same following player upkeep. Repeating
     /// upkeep may request the current slowing stage again, as in sub_5ED50.
     pub(crate) fn advance_frame(&mut self) -> bool {
+        if let Some(source) = &mut self.source {
+            if source.phase < 3 {
+                source.phase += 1;
+                if source.phase == 3 {
+                    // PaletteChanges case2 installs black, loads the selected
+                    // base palette and calls sub_47650 before the case1 fade.
+                    source.fade = Some(BrightnessFade { from: None, step: 0, running: false });
+                    self.pending = 1;
+                }
+                return false;
+            }
+            if self.pending == 1 && let Some(fade) = &mut source.fade {
+                if fade.running { fade.step += 1; } else { fade.running = true; }
+                if fade.step == 4 { source.fade = None; self.pending = 0; }
+                return true;
+            }
+            // A new effect request changes only the pending submode. It
+            // supersedes the installed brightness fade when consumed here,
+            // not when an objective/actor publishes the request later in a frame.
+            if self.pending != 1 { source.fade = None; }
+        }
         match self.pending {
             // Case 5 clears the target palette, then case 10 performs a
             // separate 28-step fade. Neither the request nor the first
@@ -94,6 +155,18 @@ impl Palette {
     /// math remains RGB6. Flashes retain index0; source black fade covers
     /// every installed VGA color, including the background at index0.
     pub fn apply_rgb8(&self, palette: &mut [u8]) {
+        if let Some(source) = self.source {
+            if source.phase < 3 { palette.fill(0); return; }
+            for channel in palette.iter_mut() {
+                let base = i32::from(*channel >> 2);
+                let target = (base + 6 * i32::from(source.brightness)).min(63);
+                let value = if let Some(fade) = source.fade {
+                    let from = fade.from.map_or(0, |old| (base + 6 * i32::from(old)).min(63));
+                    from + i32::from(fade.step) * (target - from) / 4
+                } else { target };
+                *channel = (value as u8) << 2;
+            }
+        }
         if self.effect == 0 || self.weight == 0 {
             return;
         }
@@ -158,6 +231,14 @@ impl Palette {
             u8::from(self.fading),
         ]);
         hasher.update(self.count.to_le_bytes());
+        if let Some(source) = self.source {
+            hasher.update(b"source-brightness-palette-v1");
+            hasher.update([source.phase, source.brightness]);
+            match source.fade {
+                None => hasher.update([0]),
+                Some(fade) => hasher.update([1, fade.from.unwrap_or(255), fade.step, u8::from(fade.running)]),
+            }
+        }
     }
 }
 
@@ -170,6 +251,55 @@ mod tests {
         let mut hasher = Sha256::new();
         palette.hash(&mut hasher);
         hasher.finalize().to_vec()
+    }
+
+    #[test]
+    fn source_brightness_startup_refade_and_endpoint_follow_actual_palette_prefix() {
+        let base = [4, 80, 240];
+        let mut palette = Palette::default();
+        palette.bind_source_brightness(3);
+        for phase in 1..=3 {
+            assert!(!palette.brightness_admitted());
+            assert!(!palette.advance_frame());
+            assert_eq!(palette.source_phase(), Some(phase));
+            let mut rgb = base;
+            palette.apply_rgb8(&mut rgb);
+            assert_eq!(rgb, [0; 3], "loading prefix installs black before case1");
+        }
+        for step in 0..=4 {
+            assert!(palette.advance_frame());
+            let mut rgb = base;
+            palette.apply_rgb8(&mut rgb);
+            assert_eq!(rgb, [(19 * step / 4 * 4) as u8, (38 * step / 4 * 4) as u8, (63 * step / 4 * 4) as u8]);
+            assert_eq!(palette.brightness_admitted(), step == 4);
+        }
+        palette.request_brightness(4);
+        assert_eq!(palette.mode(), 1);
+        let before = hash(&palette);
+        for _ in 0..10 { let mut rgb = base; palette.apply_rgb8(&mut rgb); assert_eq!(rgb, [76, 152, 252]); }
+        assert_eq!(hash(&palette), before, "reads cannot advance the fade");
+        for (step, expected) in [[76, 152, 252], [80, 156, 252], [88, 164, 252], [92, 168, 252], [100, 176, 252]].into_iter().enumerate() {
+            palette.advance_frame();
+            let mut rgb = base;
+            palette.apply_rgb8(&mut rgb);
+            assert_eq!(rgb, expected);
+            assert_eq!(palette.brightness_admitted(), step == 4);
+        }
+        palette.request_brightness(4);
+        assert!(!palette.brightness_admitted(), "clamped endpoints still request source submode1");
+        for _ in 0..5 { palette.advance_frame(); }
+        assert!(palette.brightness_admitted());
+        palette.request(PaletteRequest { mode: 2, count: 0 });
+        assert!(!palette.brightness_admitted(), "hit/transport/objective palette requests block case6 too");
+        for _ in 0..6 { palette.advance_frame(); }
+        assert!(palette.brightness_admitted());
+        palette.request_brightness(0);
+        for expected in [[100, 176, 252], [76, 152, 252], [52, 128, 248], [28, 104, 244], [4, 80, 240]] {
+            palette.advance_frame();
+            let mut rgb = base;
+            palette.apply_rgb8(&mut rgb);
+            assert_eq!(rgb, expected, "negative RGB6 deltas truncate toward zero before VGA scaling");
+        }
     }
 
     #[test]

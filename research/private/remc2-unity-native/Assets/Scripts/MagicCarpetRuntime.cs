@@ -3235,8 +3235,6 @@ namespace MagicCarpet.Native
                 level2DayPresentationSurface ?? gameRuntimeNightSurface;
             if (!TryGetGameRuntimeHudScene(surface, out var indices, out var generation, out var revision)) return;
             var palette = surface.FramePaletteRgb8;
-            if (playerPreferences != null)
-                palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeObjectiveTextbox.Draw(gameRuntimeCampaignSnapshot.value.objective_textbox_ticks,
                 indices, generation, revision,
@@ -10581,10 +10579,6 @@ namespace MagicCarpet.Native
                     gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
                 }
             }
-            gameRuntimeNightSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 1));
-            level2DayPresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 0));
-            var mapType = campaignSession?.Selection.mapType ?? 0;
-            level3PresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, mapType));
         }
 
         internal bool StepGameRuntimeTitleMedia(uint elapsedUs, bool input, bool escape,
@@ -10683,6 +10677,12 @@ namespace MagicCarpet.Native
                         break;
                     case CampaignMenuPresenter.Action.ToggleFlatShading:
                         ToggleGameRuntimeFlatShading();
+                        break;
+                    case CampaignMenuPresenter.Action.IncreaseBrightness:
+                        ApplyGameRuntimeBrightness(GameRuntimeTransport.SourceBrightnessAction.Increment);
+                        break;
+                    case CampaignMenuPresenter.Action.DecreaseBrightness:
+                        ApplyGameRuntimeBrightness(GameRuntimeTransport.SourceBrightnessAction.Decrement);
                         break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
@@ -10896,7 +10896,6 @@ namespace MagicCarpet.Native
             gameRuntimeEnvironmentCache = environment;
             if (ownerAssetCache.IsDayAggregate || environment != null)
                 level2DayPresentationSurface = new CampaignPresentationSurface(transform);
-            level2DayPresentationSurface?.SetPaletteTransform(bytes => playerPreferences?.ApplyBrightnessToPalette(bytes, 0) ?? bytes);
             level2DayHudDescriptor = ownerAssetCache.DayHud;
             MaterializeCampaignDayHud();
             AppendCampaignSpellMenuBitmaps(environment);
@@ -10947,7 +10946,6 @@ namespace MagicCarpet.Native
                 return;
             }
             gameRuntimeNightSurface = new CampaignPresentationSurface(transform);
-            gameRuntimeNightSurface.SetPaletteTransform(bytes => playerPreferences?.ApplyBrightnessToPalette(bytes, 1) ?? bytes);
             MaterializeCampaignNightHud();
             if (gameRuntimeCamera != null) gameRuntimeCamera.enabled = false;
             UpdateGameRuntimeNightPresentation(identity, observation);
@@ -11010,7 +11008,6 @@ namespace MagicCarpet.Native
                 selection);
             level3PresentationSurface?.Dispose();
             level3PresentationSurface = new CampaignPresentationSurface(transform);
-            level3PresentationSurface.SetPaletteTransform(bytes => playerPreferences?.ApplyBrightnessToPalette(bytes, selection.mapType) ?? bytes);
             level3StartupReady = true;
             UpdateGameRuntimeLevel3Presentation(identity, observation);
             Debug.Log(
@@ -11054,8 +11051,6 @@ namespace MagicCarpet.Native
                 "secret scene cache matches the guarded source selection and definition provenance");
 
             var environmentSurface = new CampaignPresentationSurface(transform);
-            environmentSurface.SetPaletteTransform(bytes =>
-                playerPreferences?.ApplyBrightnessToPalette(bytes, source.map_type_id) ?? bytes);
             gameRuntimeSecretSurface?.Dispose();
             gameRuntimeSecretSurface = environmentSurface;
             ownerAssetCache = environment;
@@ -11562,8 +11557,13 @@ namespace MagicCarpet.Native
 
         private void ApplyGameRuntimeF7Input(bool pressed, bool physicalShift, bool admittedShift, bool physicalAlt)
         {
-            if (!pressed || !physicalShift || !admittedShift || physicalAlt || !CanToggleGameRuntimeIconsAndMap()) return;
-            ToggleGameRuntimeFlatShading();
+            if (!pressed || physicalAlt || !CanToggleGameRuntimeIconsAndMap()) return;
+            if (physicalShift)
+            {
+                if (admittedShift) ToggleGameRuntimeFlatShading();
+                return;
+            }
+            ApplyGameRuntimeBrightness(GameRuntimeTransport.SourceBrightnessAction.Cycle);
         }
 
         private bool CanToggleGameRuntimeIconsAndMap()
@@ -11625,6 +11625,22 @@ namespace MagicCarpet.Native
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
             gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
             gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
+        }
+
+        private void ApplyGameRuntimeBrightness(GameRuntimeTransport.SourceBrightnessAction action)
+        {
+            if (!session.GameRuntimeSourceBrightness(action, out var after)) return;
+            playerPreferences?.Synchronize(after.player_preferences);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            if (level2Mode)
+                UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (level3Mode)
+                UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeSecretSurface != null)
+                UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
         }
 
         private void SetGameRuntimePanelsOpaque(bool opaque)
@@ -14868,8 +14884,7 @@ namespace MagicCarpet.Native
                 gameRuntimeMenu?.ClearPauseHoverHelp();
                 return;
             }
-            var palette = playerPreferences.ApplyBrightnessToPalette(surface.FramePaletteRgb8,
-                campaignSession.Selection.mapType);
+            var palette = surface.FramePaletteRgb8;
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeMenu.DrawPauseHoverHelp(identity, indices, generation, revision,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
