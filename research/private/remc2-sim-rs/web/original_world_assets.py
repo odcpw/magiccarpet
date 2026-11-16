@@ -137,6 +137,7 @@ class OriginalWorldAssets:
         if bytes(blob[palette_out['shade_lut']['offset']:palette_out['shade_lut']['offset'] + 65536]) != tables[:65536]:
             raise ValueError('TABLESN shade table mismatch')
         palette_out['blend_lut'] = add(tables[0x4000:0x14000])
+        terrain['map_colors'] = add(tables[0x14000:0x14100])
         rows, unavailable, seen = [], [], set()
         for row in d['tmaps1']['textures']:
             selector = row['index']

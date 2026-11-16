@@ -45,6 +45,8 @@ class WorldAssetsTest(unittest.TestCase):
         raw = (self.night / self.source['palette']['tablesn_path']).read_bytes()
         self.assertEqual(self.get(p['shade_lut']), raw[:65536])
         self.assertEqual(self.get(p['blend_lut']), raw[0x4000:0x14000])
+        self.assertEqual(len(self.get(t['map_colors'])), 256)
+        self.assertEqual(self.get(t['map_colors']), raw[0x14000:0x14100])
         self.assertEqual(len(self.get(p['rgb8'])), 768)
         self.assertEqual(len(self.get(p['clrn'])), 4096)
 
