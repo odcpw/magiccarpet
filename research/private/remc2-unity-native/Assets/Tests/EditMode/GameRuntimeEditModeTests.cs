@@ -1441,6 +1441,13 @@ namespace MagicCarpet.Native.Tests
                 Send(EventType.MouseDown, new Vector2(320, 67 + 6 * 18 + 9), 1);
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.SpeedSecondary), "right click proposes source super-fast mode");
                 Unchanged();
+                Assert.That(menu.GameplayLanguageText(13).ToLowerInvariant(), Is.EqualTo("alter screen size"));
+                Send(EventType.MouseDown, new Vector2(320, 67 + 7 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ViewportDecrease));
+                Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 7 * 18 + 9), 1);
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ViewportIncrease));
+                Unchanged();
                 var speedLabels = new[] { "speed normal", "speed fast", "speed super fast" };
                 for (var speed = 0; speed < speedLabels.Length; speed++)
                     Assert.That(menu.GameplayLanguageText(SourcePauseMenu.SpeedTextRecord(speed)), Is.EqualTo(speedLabels[speed]));
@@ -1903,6 +1910,7 @@ namespace MagicCarpet.Native.Tests
                 foreach (var texture in new[] { current, prior, lut }) { texture.filterMode = FilterMode.Point; texture.Apply(); }
                 material.SetTexture("_SceneHistory", prior); material.SetTexture("_BlendLut", lut);
                 material.SetFloat("_BlendHistory", 1);
+                Assert.That(CampaignPresentationSurface.SourceViewportBounds(40), Is.EqualTo(new Vector4(0, 0, 1, 1)));
                 GL.sRGBWrite = false;
                 Graphics.Blit(current, output, material);
                 RenderTexture.active = output;
@@ -1910,6 +1918,47 @@ namespace MagicCarpet.Native.Tests
                 var rgba = pixels.GetPixels32(); var actual = new byte[rgba.Length];
                 for (var i = 0; i < actual.Length; i++) actual[i] = rgba[i].r;
                 CollectionAssert.AreEqual(table, actual, "each actual source LUT entry uses current-high/prior-low indices");
+
+                // The real source viewport has an asymmetric bottom margin at
+                // size 17. Its outside must remain clear even during mode 2.
+                var bounds = CampaignPresentationSurface.SourceViewportBounds(17);
+                Assert.That(bounds, Is.EqualTo(new Vector4(92 / 320f, 58 / 200f, 228 / 320f, 143 / 200f)));
+                var clear = (byte)(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path)[0] >> 2);
+                var index = Array.FindIndex(table, value => value != clear);
+                Assert.That(index, Is.GreaterThanOrEqualTo(0));
+                var currentIndex = (byte)(index >> 8); var priorIndex = (byte)index;
+                var scene = new Texture2D(320, 200, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
+                var oldScene = new Texture2D(320, 200, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
+                var smallOutput = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                var smallPixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    var currentBytes = new byte[320 * 200]; var priorBytes = new byte[320 * 200];
+                    Array.Fill(currentBytes, currentIndex); Array.Fill(priorBytes, priorIndex);
+                    scene.LoadRawTextureData(currentBytes); scene.Apply();
+                    oldScene.LoadRawTextureData(priorBytes); oldScene.Apply();
+                    material.SetTexture("_SceneHistory", oldScene);
+                    material.SetVector("_SourceViewport", bounds);
+                    material.SetFloat("_ViewportClearIndex", clear);
+                    Graphics.Blit(scene, smallOutput, material);
+                    RenderTexture.active = smallOutput;
+                    smallPixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); smallPixels.Apply();
+                    var result = smallPixels.GetPixels32();
+                    byte At(int x, int y) => result[y * 320 + x].r;
+                    Assert.That(At(91, 100), Is.EqualTo(clear));
+                    Assert.That(At(228, 100), Is.EqualTo(clear));
+                    Assert.That(At(160, 57), Is.EqualTo(clear));
+                    Assert.That(At(160, 143), Is.EqualTo(clear));
+                    Assert.That(At(92, 58), Is.EqualTo(table[index]));
+                    Assert.That(At(227, 142), Is.EqualTo(table[index]),
+                        "history retains source LUT order inside the actual viewport");
+                }
+                finally
+                {
+                    smallOutput.Release();
+                    foreach (var resource in new UnityEngine.Object[] { scene, oldScene, smallOutput, smallPixels })
+                        UnityEngine.Object.DestroyImmediate(resource);
+                }
             }
             finally
             {
@@ -3475,6 +3524,135 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(warm.GameRuntimeIdentity().source_speed_index, Is.EqualTo(2), "warm load retains the receiver's process speed");
                 runtime.QualificationResetGameRuntimeProduction();
                 Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.Zero, "a real retry resets source speed");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceViewportChangesRealWorldAndKeepsFullHud()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-viewport-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source viewport");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                yield return StartReturnedParentFromNormalMap(runtime);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras) if (camera.targetTexture == null) camera.targetTexture = display;
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var beforeYield = runtime.QualificationSaveGameRuntimeProductionReplay();
+                UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                yield return null;
+                CollectionAssert.AreEqual(beforeYield, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "a GUI frame does not advance the inactive actual session");
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.display_settings.viewport_size, Is.EqualTo(40));
+                var fullFrame = (byte[])campaign.SceneFrameIndices.Clone();
+                var key = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeViewportInput", flags);
+                void Key(bool left, bool right, bool shift = false, bool alt = false, bool control = false) =>
+                    key.Invoke(runtime, new object[] { left, right, shift, alt, control });
+                Key(false, true, true); Key(false, true, false, true); Key(false, true, false, false, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(40),
+                    "source modifier branches suppress bracket resize");
+                for (var i = 0; i < 24; i++)
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                var small = runtime.GameRuntimeProductionIdentity;
+                Assert.That(small.display_settings.viewport_size, Is.EqualTo(16));
+                Assert.That((small.generation, small.session.generation, small.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)));
+                var environment = (OwnerAssetCache)Field("gameRuntimeEnvironmentCache");
+                var clear = environment.ReadOutput(environment.EnvironmentMaterials.palette.rgb8_path)[0] >> 2;
+                var smallFrame = (byte[])campaign.SceneFrameIndices.Clone();
+                Assert.That(smallFrame[0], Is.EqualTo(clear), "the exterior uses the original base-palette clear index");
+                var visible = false;
+                for (var y = 60; y < 140 && !visible; y++)
+                    for (var x = 96; x < 224 && !visible; x++) visible = smallFrame[y * 320 + x] != clear;
+                Assert.That(visible, Is.True, "the actual projected source world remains visible inside the viewport");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePanelTransparency), Is.True);
+                foreach (var camera in cameras) camera.Render();
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var hudTexture = (RenderTexture)Field("gameRuntimeHudIndices");
+                Assert.That(hudTexture, Is.Not.Null, "the actual HUD remains admitted at full size");
+                var hud = runtime.Level2ProductionDayHud;
+                var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                var rows = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                var descriptor = rows[(int)hud.minimapPanelSelector];
+                Assert.That(descriptor, Is.Not.Null);
+                int Extent(string name) => (int)descriptor.GetType().GetField(name).GetValue(descriptor);
+                var width = Extent("stored_width"); var height = Extent("stored_height");
+                var drawWidth = Extent("runtime_width"); var drawHeight = Extent("runtime_height");
+                var hudPixels = new Texture2D(640, 480, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    RenderTexture.active = hudTexture;
+                    hudPixels.ReadPixels(new Rect(0, 0, 640, 480), 0, 0); hudPixels.Apply();
+                    var pixels = hudPixels.GetPixels32(); var checkedPixel = false;
+                    for (var y = 0; y < drawHeight && !checkedPixel; y++)
+                    for (var x = 0; x < drawWidth && !checkedPixel; x++)
+                    {
+                        var source = y * height / drawHeight * width + x * width / drawWidth;
+                        if (masks[hud.minimapPanelSelector][source] == 0) continue;
+                        Assert.That(pixels[(479 - (2 + y)) * 640 + 2 + x].r,
+                            Is.EqualTo(indices[hud.minimapPanelSelector][source]), "source HUD pixels remain full-sized");
+                        checkedPixel = true;
+                    }
+                    Assert.That(checkedPixel, Is.True);
+                }
+                finally { UnityEngine.Object.DestroyImmediate(hudPixels); RenderTexture.active = previousTarget; }
+                var minimumReceipt = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Key(false, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(16));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                CollectionAssert.AreEqual(minimumReceipt, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(minimumReceipt, resources))
+                    Assert.That(cold.GameRuntimeIdentity().display_settings.viewport_size, Is.EqualTo(16));
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, minimumReceipt, resources))
+                    Assert.That(warm.GameRuntimeIdentity().display_settings.viewport_size, Is.EqualTo(16));
+                Key(true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(17));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                for (var i = 0; i < 24; i++)
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportIncrease), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(40));
+                CollectionAssert.AreEqual(fullFrame, campaign.SceneFrameIndices, "reversal restores the same actual world frame");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(39),
+                    "retry preserves the GAME viewport");
             }
             finally
             {

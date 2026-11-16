@@ -403,10 +403,10 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 6 || index is 8 or 9 or 10 or 11 or 12 or 13 or 14;
+                var supported = index <= 14;
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
-                    3 => prefs.speech_enabled, 4 => prefs.flight_assistance,
+                    3 => prefs.speech_enabled, 4 => prefs.flight_assistance, 7 => true,
                     8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
                     11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading, _ => false
                 };
@@ -419,6 +419,13 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 7)
+                    {
+                        var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.ViewportIncrease :
+                            CampaignMenuPresenter.Action.ViewportDecrease;
+                        Event.current.Use();
+                        return action;
+                    }
                     if (index == 6)
                     {
                         var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.SpeedSecondary :

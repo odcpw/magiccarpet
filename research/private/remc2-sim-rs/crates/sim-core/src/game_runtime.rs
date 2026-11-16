@@ -185,10 +185,34 @@ pub struct DisplaySettings {
     pub panels_opaque: bool,
     /// Source GAME byte 15; process default off, retained across LevelInit.
     pub flat_shading: bool,
+    /// Source GAME byte 3: in-game world viewport, independent of resolution.
+    pub viewport_size: u8,
 }
 
 impl Default for DisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false, flat_shading: false } }
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false, flat_shading: false, viewport_size: 40 } }
+}
+
+/// Source case8 menu controls and the two ordinary bracket-key branches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum SourceViewportAction {
+    MenuDecrease = 0,
+    MenuIncrease = 1,
+    KeyboardEnlarge = 2,
+    KeyboardShrink = 3,
+}
+
+impl SourceViewportAction {
+    fn apply(self, size: u8) -> u8 {
+        match self {
+            Self::MenuDecrease => size.saturating_sub(1).max(16),
+            Self::MenuIncrease => size.saturating_add(1).min(40),
+            Self::KeyboardEnlarge if size < 40 => size + 1,
+            Self::KeyboardShrink if size > 17 => size - 1,
+            Self::KeyboardEnlarge | Self::KeyboardShrink => size,
+        }
+    }
 }
 
 impl DisplaySettings {
@@ -1995,6 +2019,21 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// ChangeSettings case8 on the supported ordinary screen mode. The source
+    /// emits no notice; unchanged endpoint requests leave GAME/replay untouched.
+    pub fn source_viewport(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard, action: SourceViewportAction,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        self.display_settings.viewport_size = action.apply(self.display_settings.viewport_size);
+        Ok(true)
+    }
+
     /// Source default case7 (the alternative renderer CLI cycle is not enabled).
     /// This runtime supplies single-player ordinary sessions, not source demo
     /// playback. The engine's replay journal is not a source movie flag.

@@ -381,6 +381,12 @@ namespace MagicCarpet.Native
         internal sealed class DisplaySettings
         {
             public bool minimap, top_bar, panels_opaque, flat_shading;
+            public byte viewport_size;
+        }
+
+        internal enum SourceViewportAction : byte
+        {
+            MenuDecrease = 0, MenuIncrease = 1, KeyboardEnlarge = 2, KeyboardShrink = 3
         }
 
         [Serializable]
@@ -1134,7 +1140,8 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap == before.display_settings.minimap ||
                 after.display_settings.top_bar == before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading != before.display_settings.flat_shading)
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size)
                 throw new InvalidDataException("icons and map toggle changed the wrong source state");
             return after;
         }
@@ -1155,7 +1162,8 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque == before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading != before.display_settings.flat_shading)
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size)
                 throw new InvalidDataException("panel transparency toggle changed the wrong source state");
             return after;
         }
@@ -1176,9 +1184,46 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading == before.display_settings.flat_shading)
+                after.display_settings.flat_shading == before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size)
                 throw new InvalidDataException("flat shading toggle changed the wrong source state");
             return after;
+        }
+
+        internal bool SourceViewport(SourceViewportAction action, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source viewport");
+            var before = Current;
+            var size = before.display_settings.viewport_size;
+            var expected = action switch {
+                SourceViewportAction.MenuDecrease => Math.Max(16, size - 1),
+                SourceViewportAction.MenuIncrease => Math.Min(40, size + 1),
+                SourceViewportAction.KeyboardEnlarge => Math.Min(40, size + 1),
+                SourceViewportAction.KeyboardShrink => size > 17 ? size - 1 : size,
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var status = NativeSim.mc_game_runtime_source_viewport_v1(
+                RequireHandle(), ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick"), (byte)action);
+            if (status == SourceActionBlocked) {
+                identity = null;
+                return false;
+            }
+            Check(status, "change source viewport");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != expected)
+                throw new InvalidDataException("source viewport changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceSpeed(bool secondary, out Identity identity)
@@ -1203,6 +1248,7 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
                 after.source_speed_index != expectedSpeed)
                 throw new InvalidDataException("source speed changed the wrong runtime state");
             identity = after;
@@ -1263,6 +1309,7 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
                 after.player_preferences?.preferences?.brightness == null)
                 throw new InvalidDataException("source brightness changed the wrong runtime state");
             identity = after;
@@ -1540,6 +1587,7 @@ namespace MagicCarpet.Native
         internal static void ValidateIdentity(Identity identity, ulong handle)
         {
             if (identity == null || identity.display_settings == null || identity.runtime_contract != RuntimeContract ||
+                identity.display_settings.viewport_size < 16 || identity.display_settings.viewport_size > 40 ||
                 identity.source_speed_index > 2 ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
                 !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }

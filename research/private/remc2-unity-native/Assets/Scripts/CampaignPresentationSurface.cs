@@ -189,6 +189,23 @@ namespace MagicCarpet.Native
         private ulong historyGeneration, historyRevision;
         private byte pendingSceneBlur;
         private bool pendingExitTable, hasSceneHistory;
+        private byte sourceViewportSize = 40, sourceViewportClearIndex;
+
+        internal static Vector4 SourceViewportBounds(byte size)
+        {
+            if (size < 16 || size > 40) throw new ArgumentOutOfRangeException(nameof(size));
+            var left = (40 - size) * 4;
+            var top = (40 - size) * 5 / 2;
+            var bottom = 200 - top - 5 * size;
+            return new Vector4(left / 320f, bottom / 200f,
+                (left + 8 * size) / 320f, (bottom + 5 * size) / 200f);
+        }
+
+        internal void SetSourceViewport(byte size)
+        {
+            SourceViewportBounds(size);
+            sourceViewportSize = size;
+        }
 
         internal RenderTexture ComposedSceneIndices => hasSceneHistory ? composedHistory : null;
         internal Texture2D WorldIndices => worldIndices;
@@ -315,6 +332,8 @@ namespace MagicCarpet.Native
             historyMaterial.SetTexture("_SceneHistory", composedHistory);
             historyMaterial.SetTexture("_BlendLut", pendingExitTable ? exitBlendTable : sceneBlendTable);
             historyMaterial.SetFloat("_BlendHistory", hasSceneHistory && pendingSceneBlur == 2 ? 1f : 0f);
+            historyMaterial.SetVector("_SourceViewport", SourceViewportBounds(sourceViewportSize));
+            historyMaterial.SetFloat("_ViewportClearIndex", sourceViewportClearIndex);
             var previousTarget = RenderTexture.active;
             var previousSrgb = GL.sRGBWrite;
             try
@@ -712,6 +731,7 @@ namespace MagicCarpet.Native
             if (environmentCache == null)
             {
                 environmentCache = cache;
+                sourceViewportClearIndex = (byte)(cache.ReadOutput(descriptor.palette.rgb8_path)[0] >> 2);
                 // Pause/resume advances the same runtime's generation. Bind
                 // immutable assets to its owner, then validate each returned
                 // frame against the current generation below/above.

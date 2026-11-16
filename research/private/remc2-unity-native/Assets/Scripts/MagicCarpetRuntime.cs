@@ -3685,6 +3685,7 @@ namespace MagicCarpet.Native
                     DispatchGameRuntimeF6Input();
                     DispatchGameRuntimeF7Input();
                     DispatchGameRuntimeF3Input();
+                    DispatchGameRuntimeViewportInput();
                 }
                 if (!AutomatedInput && !gameRuntimeAbandonConfirmationOpen &&
                     !gameRuntimeSourceMenus.HasPendingAction &&
@@ -10701,6 +10702,12 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.SpeedSecondary:
                         ApplyGameRuntimeSourceSpeed(true);
                         break;
+                    case CampaignMenuPresenter.Action.ViewportDecrease:
+                        ApplyGameRuntimeSourceViewport(GameRuntimeTransport.SourceViewportAction.MenuDecrease);
+                        break;
+                    case CampaignMenuPresenter.Action.ViewportIncrease:
+                        ApplyGameRuntimeSourceViewport(GameRuntimeTransport.SourceViewportAction.MenuIncrease);
+                        break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
                             SourceCampaignSaveSlots.Write(gameRuntimeReplaySavePath, saveSlot.Index,
@@ -10988,6 +10995,7 @@ namespace MagicCarpet.Native
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             gameRuntimeNightSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             gameRuntimeNightSurface.SetPanelsOpaque(identity.display_settings.panels_opaque);
+            gameRuntimeNightSurface.SetSourceViewport(identity.display_settings.viewport_size);
             gameRuntimeNightSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             gameRuntimeNightSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
@@ -11139,6 +11147,7 @@ namespace MagicCarpet.Native
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             level3PresentationSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             level3PresentationSurface.SetPanelsOpaque(identity.display_settings.panels_opaque);
+            level3PresentationSurface.SetSourceViewport(identity.display_settings.viewport_size);
             level3PresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             level3PresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
@@ -11161,6 +11170,7 @@ namespace MagicCarpet.Native
                 observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
             gameRuntimeSecretSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
             gameRuntimeSecretSurface.SetPanelsOpaque(identity.display_settings.panels_opaque);
+            gameRuntimeSecretSurface.SetSourceViewport(identity.display_settings.viewport_size);
             gameRuntimeSecretSurface.PresentView(observation.value.source_camera_pose,
                 observation.value.source_camera_fov);
             gameRuntimeSecretSurface.PresentImmobilization(
@@ -11292,6 +11302,7 @@ namespace MagicCarpet.Native
                     observation.value.source_camera_pose.yaw, gameRuntimeSourceMenus.MapOpen);
                 level2DayPresentationSurface.SetIconsAndMapVisible(identity.display_settings.minimap);
                 level2DayPresentationSurface.SetPanelsOpaque(identity.display_settings.panels_opaque);
+                level2DayPresentationSurface.SetSourceViewport(identity.display_settings.viewport_size);
                 level2DayPresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
                 level2DayPresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                     observation.value.player_vitals.life >= 0);
@@ -11580,6 +11591,28 @@ namespace MagicCarpet.Native
             ApplyGameRuntimeF3Input(pressed, shift, alt);
         }
 
+        private void DispatchGameRuntimeViewportInput()
+        {
+            var left = playerPreferences?.KeyPressed(KeyCode.LeftBracket) ?? Input.GetKeyDown(KeyCode.LeftBracket);
+            var right = playerPreferences?.KeyPressed(KeyCode.RightBracket) ?? Input.GetKeyDown(KeyCode.RightBracket);
+            bool PhysicalBinding(int slot) => playerPreferences?.Current?.preferences?.keys != null &&
+                Enum.TryParse<KeyCode>(playerPreferences.Current.preferences.keys[slot], out var key) && Input.GetKey(key);
+            var shift = Input.GetKey(KeyCode.LeftShift) || PhysicalBinding(8) ||
+                (playerPreferences == null && Input.GetKey(KeyCode.RightShift));
+            var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt) || PhysicalBinding(9);
+            var control = PhysicalBinding(5) || (playerPreferences == null &&
+                (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)));
+            ApplyGameRuntimeViewportInput(left, right, shift, alt, control);
+        }
+
+        private void ApplyGameRuntimeViewportInput(bool left, bool right, bool shift, bool alt, bool control)
+        {
+            if ((!left && !right) || shift || alt || control || !CanToggleGameRuntimeIconsAndMap() ||
+                gameRuntimeSourceMenus.SpellOpen || gameRuntimeSourceMenus.PlayerInformationOpen) return;
+            ApplyGameRuntimeSourceViewport(left ? GameRuntimeTransport.SourceViewportAction.KeyboardEnlarge :
+                GameRuntimeTransport.SourceViewportAction.KeyboardShrink);
+        }
+
         private void ApplyGameRuntimeF3Input(bool pressed, bool shift, bool alt)
         {
             if (!pressed || shift || alt || !CanToggleGameRuntimeIconsAndMap()) return;
@@ -11662,6 +11695,21 @@ namespace MagicCarpet.Native
         {
             if (!session.GameRuntimeSourceBrightness(action, out var after)) return;
             playerPreferences?.Synchronize(after.player_preferences);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            if (level2Mode)
+                UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (level3Mode)
+                UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeSecretSurface != null)
+                UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+        }
+
+        private void ApplyGameRuntimeSourceViewport(GameRuntimeTransport.SourceViewportAction action)
+        {
+            if (!session.GameRuntimeSourceViewport(action, out var after)) return;
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
             if (level2Mode)
                 UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);

@@ -395,6 +395,7 @@ namespace MagicCarpet.Native
             AddKeys(next);
             foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.RightShift,
                          KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7,
+                         KeyCode.LeftBracket, KeyCode.RightBracket,
                          KeyCode.JoystickButton0, KeyCode.JoystickButton1 })
                 if (keyHeld(key)) releaseKeys.Add(key);
             for (var button = 0; button < 3; button++)

@@ -693,6 +693,7 @@ pub struct WorldRenderOptions {
     pub sky: bool,
     pub shadows: bool,
     pub flat_shading: bool,
+    pub viewport_size: u8,
 }
 
 impl WorldRenderOptions {
@@ -703,6 +704,7 @@ impl WorldRenderOptions {
             sky: true,
             shadows: true,
             flat_shading: false,
+            viewport_size: 40,
         }
     }
 }
@@ -1060,12 +1062,24 @@ fn render_environment_indexed_frame(
     let mut camera = camera_from_session(session)?;
     camera.reflections = render_options.reflections;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
+    let viewport = crate::terrain_frame::source_viewport(render_options.viewport_size)
+        .ok_or_else(|| DayIndexedFrameError::new("source viewport size must be 16..40"))?;
+    // The source map pane temporarily uses its own fixed right-hand world
+    // rectangle; it does not replace the retained ordinary GAME viewport.
+    let reduced_viewport = (!map_viewport && render_options.viewport_size != 40)
+        .then_some(viewport);
+    let background = assets.palette_rgb8()[0] >> 2;
     let sprite_projection = if map_viewport {
         crate::terrain_frame::source_map_projection(camera)
+    } else if let Some(viewport) = reduced_viewport {
+        crate::terrain_frame::source_viewport_projection(camera, viewport)
     } else {
         crate::terrain_frame::level1_projection(camera)
     };
     let mut terrain_projection = ClassicHdProjection::from_profile(&profile, camera);
+    if let Some(viewport) = reduced_viewport {
+        terrain_projection = ClassicHdProjection::source_viewport(&profile, camera, viewport);
+    }
     if map_viewport {
         terrain_projection.scale = sprite_projection.scale;
         terrain_projection.pitch_offset = sprite_projection.pitch_offset;
@@ -1112,7 +1126,7 @@ fn render_environment_indexed_frame(
         )
     } else {
         Terrain::Outdoor(
-            if map_viewport || !render_options.sky {
+            if map_viewport || reduced_viewport.is_some() || !render_options.sky {
                 build_classic_hd_terrain_projected(
                     &profile,
                     camera,
@@ -1126,7 +1140,13 @@ fn render_environment_indexed_frame(
                     ClassicHdSkyBank::Base256,
                     terrain_projection,
                     if render_options.sky {
-                        crate::terrain_frame::draw_source_map_sky(camera, assets.sky())
+                        if let Some(viewport) = reduced_viewport {
+                            crate::terrain_frame::draw_source_viewport_sky(
+                                camera, assets.sky(), viewport, background,
+                            )
+                        } else {
+                            crate::terrain_frame::draw_source_map_sky(camera, assets.sky())
+                        }
                             .map_err(|error| DayIndexedFrameError::new(error.to_string()))?
                     } else {
                         let clear_index = assets
@@ -1223,6 +1243,9 @@ fn render_environment_indexed_frame(
             .map_err(|error| DayIndexedFrameError::new(error.to_string()))
         })
         .transpose()?;
+    if let (Some(sprites), Some(viewport)) = (source_sprites.as_mut(), reduced_viewport) {
+        sprites.set_viewport(viewport);
+    }
     let identity = {
         let mut writer = ClassicHdFrameWriter::from_planes(
             &profile,
@@ -1331,6 +1354,12 @@ fn render_environment_indexed_frame(
             "Day indexed frame hash does not match its output bytes",
         ));
     }
+    if let Some(viewport) = reduced_viewport {
+        clear_viewport_exterior(&mut indices, viewport, background);
+        if let Some(orders) = cave_terrain_orders.as_mut() {
+            clear_viewport_exterior(orders, viewport, 0);
+        }
+    }
     let scene_indices = indices.clone();
     let scene_revision = prior
         .map_or(Some(1), |frame| frame.scene_revision.checked_add(1))
@@ -1340,6 +1369,11 @@ fn render_environment_indexed_frame(
             .materials
             .composite_exit(&mut indices, &prior.indices, exit)
             .map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
+    }
+    if let Some(viewport) = reduced_viewport {
+        // Exit blending is pointwise. Its prior MAIN may have been rendered
+        // at a different size; source DrawWorld still leaves the surround clear.
+        clear_viewport_exterior(&mut indices, viewport, background);
     }
     // The approved v2 presentation enables the source map layer. Retained v1
     // material captures keep their terrain-only contract.
@@ -1407,6 +1441,23 @@ fn render_environment_indexed_frame(
         cache_content_sha256: assets.cache_content_sha256.clone(),
         package_sha256: assets.package_sha256.clone(),
     })
+}
+
+fn clear_viewport_exterior<T: Copy>(
+    pixels: &mut [T], viewport: crate::classic_hd::ClassicHdViewport, value: T,
+) {
+    let left = viewport.x as usize;
+    let right = left + viewport.width as usize;
+    let top = viewport.y as usize;
+    let bottom = top + viewport.height as usize;
+    for (y, row) in pixels.chunks_exact_mut(usize::from(DAY_FRAME_WIDTH)).enumerate() {
+        if y < top || y >= bottom {
+            row.fill(value);
+        } else {
+            row[..left].fill(value);
+            row[right..].fill(value);
+        }
+    }
 }
 
 /// Source `GameUI.cpp::sub_63670_draw_minimap_a`, selected opaque branch.
@@ -2209,6 +2260,69 @@ mod tests {
         assert!(error.to_string().contains("authoritative render source changed"));
         assert_eq!(campaign.state_hash(), hash);
         assert_eq!(campaign.simulation().source_animations, animations);
+    }
+
+    #[test]
+    fn source_viewport_projects_real_day_and_cave_without_cropping_full_frame() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        for (package, cache, selection) in [
+            ("level3-day-block32-campaign-recipe-v2", "mc-level3-environment-exit-20261025", CampaignSelection::LEVEL3),
+            ("mc-bhq6-ordinary-20261025-zclu5fjj/level12", "mc-oi62-environment-level12-v1",
+                CampaignSelection { external_level: 12, internal_level: 11, map_type_id: 2 }),
+        ] {
+            let mut campaign = CampaignSession::open_with_owner_cache(
+                generated_path(package), generated_path(cache), selection,
+            ).unwrap();
+            if selection.map_type_id == 0 {
+                // Existing captured Level3 water viewpoint, with original
+                // actors and geometry intact; this is a declared camera control.
+                campaign.simulation_mut().session.state.scratch.source_camera_pose = Some(
+                    sim_session::CameraPose { x: 42645, y: 4971, z: 128, yaw: 1536, pitch: 11, roll: 0 },
+                );
+            }
+            let assets = DayIndexedFrameAssets::load(generated_path(cache)).unwrap();
+            let before = campaign.state_hash();
+            let mut carrier = DayIndexedFrameState::new(campaign.generation());
+            let render = |carrier: &mut DayIndexedFrameState| carrier.render_current(
+                campaign.inspection(), campaign.simulation(), &assets, campaign.generation(),
+            ).unwrap();
+            let full = render(&mut carrier);
+            let map = carrier.render_map_world(campaign.inspection(), campaign.simulation(),
+                &assets, campaign.generation()).unwrap().to_vec();
+            for size in [39, 16] {
+                carrier.set_render_options(WorldRenderOptions { viewport_size: size, ..WorldRenderOptions::default() });
+                let reduced = render(&mut carrier);
+                assert_eq!((reduced.width, reduced.height, reduced.tick), (320, 200, full.tick));
+                let viewport = crate::terrain_frame::source_viewport(size).unwrap();
+                let background = assets.palette_rgb8()[0] >> 2;
+                let mut inside_changed = false;
+                for y in 0..200_usize {
+                    for x in 0..320_usize {
+                        let offset = y * 320 + x;
+                        let inside = x >= viewport.x as usize && x < (viewport.x + viewport.width) as usize
+                            && y >= viewport.y as usize && y < (viewport.y + viewport.height) as usize;
+                        if inside {
+                            inside_changed |= reduced.scene_indices[offset] != full.scene_indices[offset];
+                        } else {
+                            assert_eq!(reduced.scene_indices[offset], background, "{cache} size{size} exterior {x},{y}");
+                            assert_eq!(reduced.cave_terrain_orders.as_ref().unwrap()[offset], 0);
+                        }
+                    }
+                }
+                assert!(inside_changed, "{cache} size{size} changes actual projection, not just the full-frame crop");
+                assert_eq!(render(&mut carrier), reduced, "same-tick query is stable");
+                assert_eq!(carrier.render_map_world(campaign.inspection(), campaign.simulation(),
+                    &assets, campaign.generation()).unwrap(), map, "fixed source map pane ignores GAME viewport");
+                assert_eq!(campaign.state_hash(), before);
+            }
+            carrier.set_render_options(WorldRenderOptions::default());
+            let restored = render(&mut carrier);
+            assert_eq!(restored.scene_indices, full.scene_indices);
+            assert_eq!(restored.indices, full.indices);
+            assert_eq!(restored.primary_visibility, full.primary_visibility);
+            assert_eq!(restored.source_sprite_stats, full.source_sprite_stats);
+            assert_eq!(campaign.state_hash(), before);
+        }
     }
 
     #[test]

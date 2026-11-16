@@ -52,6 +52,7 @@ pub(crate) struct SourceWorldSprites<'a> {
     buckets: BTreeMap<u16, Vec<Sprite>>,
     reflections: bool,
     previous_pixel_mode: u8,
+    viewport: Option<crate::classic_hd::ClassicHdViewport>,
     stats: SourceWorldSpriteStats,
     primary_visibility_completions: Vec<u16>,
     animation_demands: Vec<(u16, u16)>,
@@ -196,6 +197,7 @@ impl<'a> SourceWorldSprites<'a> {
                 && camera.reflections
                 && camera.eye_z < REFLECTION_EYE_Z_LIMIT,
             previous_pixel_mode,
+            viewport: None,
             stats: SourceWorldSpriteStats::default(),
             primary_visibility_completions: Vec::new(),
             animation_demands: Vec::new(),
@@ -205,6 +207,9 @@ impl<'a> SourceWorldSprites<'a> {
 
     pub(crate) fn reflections_enabled(&self) -> bool {
         self.reflections
+    }
+    pub(crate) fn set_viewport(&mut self, viewport: crate::classic_hd::ClassicHdViewport) {
+        self.viewport = Some(viewport);
     }
     pub(crate) fn stats(&self) -> SourceWorldSpriteStats {
         self.stats
@@ -242,6 +247,9 @@ impl<'a> SourceWorldSprites<'a> {
         let Some(bucket) = self.buckets.get(&rank) else {
             return Ok(());
         };
+        let clip = self.viewport.unwrap_or_else(|| crate::classic_hd::ClassicHdViewport::full(
+            width as u32, height as u32,
+        ));
         for sprite in bucket {
             let source = sprite.source;
             let frame = self
@@ -253,6 +261,7 @@ impl<'a> SourceWorldSprites<'a> {
                     indices,
                     width,
                     height,
+                    clip,
                     placement,
                     frame.width,
                     frame.height,

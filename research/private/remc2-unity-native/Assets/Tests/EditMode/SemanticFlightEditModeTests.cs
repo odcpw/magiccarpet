@@ -43,12 +43,14 @@ namespace MagicCarpet.Native.Tests
                 // The old and new forward keys, map key, and confirming mouse
                 // button are down when the draft is committed.
                 keys.UnionWith(new[] { KeyCode.UpArrow, KeyCode.W, KeyCode.Return, KeyCode.LeftShift,
-                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10 });
+                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10,
+                    KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Apply(), Is.True);
                 Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
@@ -61,6 +63,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.False, "held F6 cannot leak the transparency toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.False, "held F7 cannot leak the flat shading toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.False, "held F3 cannot leak the speed action");
+                Assert.That(preferences.KeyPressed(KeyCode.LeftBracket), Is.False, "held enlarge cannot leak through settings");
+                Assert.That(preferences.KeyPressed(KeyCode.RightBracket), Is.False, "held shrink cannot leak through settings");
                 Assert.That(preferences.KeyHeld(KeyCode.F10), Is.True, "reserved recovery controls stay available");
                 Assert.That(preferences.Held(4), Is.False);
                 Assert.That(preferences.Pressed(4), Is.False, "same-frame confirmation cannot open the map");
@@ -86,16 +90,17 @@ namespace MagicCarpet.Native.Tests
                 // Observe release while no flight input is sampled, then a
                 // subsequent press is fresh rather than permanently latched.
                 keys.ExceptWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.LeftShift, KeyCode.RightShift,
-                    KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7 });
+                    KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Clear();
                 buttons.Remove(0);
                 preferences.AdvanceInputReleaseBarrier();
-                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7 });
+                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Held(0), Is.True);
                 Assert.That(preferences.Pressed(4), Is.True);
@@ -111,6 +116,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.True, "release and repress admits the fresh F6 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.True, "release and repress admits the fresh F7 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.True, "release and repress admits the fresh F3 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.LeftBracket), Is.True);
+                Assert.That(preferences.KeyPressed(KeyCode.RightBracket), Is.True);
                 Assert.That(preferences.MouseHeld(0), Is.True);
 
                 // Cancelling another draft preserves the committed mapping

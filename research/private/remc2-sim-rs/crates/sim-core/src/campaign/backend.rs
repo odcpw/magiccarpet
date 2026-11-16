@@ -71,9 +71,8 @@ use crate::{
     native_world::{Level2SharedSpellEvent, Mc2DispatchEvent},
 };
 
-/// The qualified campaign route runs the source single-pass schedule. Speed
-/// selection is not yet a discoverable descriptor, so the adapter pins the
-/// qualified value instead of exposing an unvalidated source knob.
+/// Existing controlled source forecasts explicitly use the ordinary one-pass
+/// schedule. Production takes the current accepted source speed from its owner.
 #[cfg(test)]
 const CAMPAIGN_SPEED_INDEX: u8 = 0;
 
@@ -907,17 +906,28 @@ struct StoredDisplaySettings {
     panels_opaque: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     flat_shading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewport_size: Option<u8>,
 }
 
 impl Default for StoredDisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None, flat_shading: None } }
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None, flat_shading: None, viewport_size: None } }
 }
 
 impl StoredDisplaySettings {
     fn is_default(&self) -> bool { *self == Self::default() }
+    fn validate(&self) -> Result<(), Mc2CampaignReplaySaveError> {
+        if self.viewport_size.is_some_and(|size| !(16..=40).contains(&size)) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source GAME viewport size is outside 16..40".to_owned(),
+            });
+        }
+        Ok(())
+    }
     fn resolve(self, map_default: bool) -> crate::game_runtime::DisplaySettings {
         crate::game_runtime::DisplaySettings { minimap: self.minimap, top_bar: self.top_bar,
-            panels_opaque: self.panels_opaque.unwrap_or(map_default), flat_shading: self.flat_shading.unwrap_or(false) }
+            panels_opaque: self.panels_opaque.unwrap_or(map_default), flat_shading: self.flat_shading.unwrap_or(false),
+            viewport_size: self.viewport_size.unwrap_or(40) }
     }
     fn toggled(self) -> Self { Self { minimap: !self.minimap, top_bar: !self.top_bar, ..self } }
     fn for_map(value: crate::game_runtime::DisplaySettings, map_default: bool) -> Self {
@@ -925,14 +935,16 @@ impl StoredDisplaySettings {
         // resolves to the same admitted map default.
         Self { minimap: value.minimap, top_bar: value.top_bar,
             panels_opaque: (value.panels_opaque != map_default).then_some(value.panels_opaque),
-            flat_shading: value.flat_shading.then_some(true) }
+            flat_shading: value.flat_shading.then_some(true),
+            viewport_size: (value.viewport_size != 40).then_some(value.viewport_size) }
     }
 }
 
 impl From<crate::game_runtime::DisplaySettings> for StoredDisplaySettings {
     fn from(value: crate::game_runtime::DisplaySettings) -> Self {
         Self { minimap: value.minimap, top_bar: value.top_bar, panels_opaque: Some(value.panels_opaque),
-            flat_shading: value.flat_shading.then_some(true) }
+            flat_shading: value.flat_shading.then_some(true),
+            viewport_size: (value.viewport_size != 40).then_some(value.viewport_size) }
     }
 }
 
@@ -2572,6 +2584,7 @@ impl Mc2RuntimePackageResolver {
                     message: "campaign map receipt does not verify".to_owned(),
                 });
             }
+            save.display_settings.validate()?;
             if save.source_hand_selection_flash_ticks.iter().any(|value| *value > 8) {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
                     message: "campaign map hand-selection flash is invalid".to_owned(),
@@ -2932,6 +2945,7 @@ impl Mc2RuntimePackageResolver {
         let expected_effect_head = save.expected_effect_head;
         let expected_effect_journal_sha256 = save.expected_effect_journal_sha256;
         let paused = save.paused;
+        save.initial_display_settings.validate()?;
         let initial_display_settings = save.initial_display_settings.resolve(package.selection.map_type_id == 2);
         if initial_display_settings.panels_opaque != (package.selection.map_type_id == 2) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
@@ -6894,6 +6908,162 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_viewport_preserves_game_header_across_cold_warm_retry_and_mission_entry() {
+        use crate::game_runtime::{CampaignMenuCommand, DisplaySettings, GameRuntime, RuntimeGuard,
+            RuntimeMode, SourceViewportAction, preferences::PreferencesCommand};
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8980).unwrap();
+        let title = runtime.identity();
+        let invalid = sim_session::SessionGuard { session_id: 8980, generation: 0, expected_tick: 0 };
+        assert_eq!(title.display_settings.viewport_size, 40);
+        assert!(runtime.source_viewport(title.guard(), invalid, SourceViewportAction::MenuDecrease).is_err());
+        assert_eq!(runtime.identity(), title);
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert!(runtime.source_viewport(loading.guard(), invalid, SourceViewportAction::MenuDecrease).is_err());
+        assert_eq!(runtime.identity(), loading);
+        resolver.open_pending(&mut runtime, loading.guard(), 8980).unwrap();
+        let request = |runtime: &mut GameRuntime<Mc2CampaignBackend>, action, expected| {
+            let before = runtime.identity();
+            let snapshot = runtime.session().unwrap().snapshot();
+            let operations = runtime.session().unwrap().backend().replay_operation_count();
+            let notices = runtime.session().unwrap().backend().participant_notifications();
+            let guard = runtime.session().unwrap().identity().guard();
+            assert!(runtime.source_viewport(before.guard(), guard, action).unwrap());
+            assert_eq!(runtime.identity().display_settings,
+                DisplaySettings { viewport_size: expected, ..before.display_settings });
+            assert_eq!(runtime.identity().session, before.session);
+            assert_eq!(runtime.identity().generation, before.generation);
+            assert_eq!(runtime.identity().player_preferences, before.player_preferences);
+            assert_eq!(runtime.session().unwrap().snapshot(), snapshot,
+                "viewport does not dispatch gameplay, RNG, objective or presentation clocks");
+            assert_eq!(runtime.session().unwrap().backend().replay_operation_count(), operations);
+            assert_eq!(runtime.session().unwrap().backend().participant_notifications(), notices,
+                "source case8 has no notification");
+        };
+        let original = resolver.save_replay(&runtime).unwrap();
+        let original_json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert!(original_json["initial_display_settings"].get("viewport_size").is_none(),
+            "the historical default40 field remains omitted");
+        let mut old_cold = GameRuntime::<Mc2CampaignBackend>::title(8981).unwrap();
+        let title = old_cold.identity();
+        resolver.load_replay(&mut old_cold, title.guard(), 8981, &original).unwrap();
+        assert_eq!(old_cold.identity().display_settings.viewport_size, 40);
+        assert_eq!(resolver.save_replay(&old_cold).unwrap(), original,
+            "an omitted viewport preserves every original receipt byte");
+        request(&mut runtime, SourceViewportAction::KeyboardEnlarge, 40);
+        request(&mut runtime, SourceViewportAction::MenuIncrease, 40);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), original);
+        request(&mut runtime, SourceViewportAction::MenuDecrease, 39);
+        let paused = runtime.pause(runtime.identity().guard()).unwrap();
+        let nested = runtime.session().unwrap().identity().guard();
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+        assert!(packet.verify());
+        assert_eq!(packet.initial_display_settings.viewport_size, Some(39));
+        for (outer, inner) in [
+            (RuntimeGuard { generation: paused.generation + 1, ..paused.guard() }, nested),
+            (paused.guard(), sim_session::SessionGuard { generation: nested.generation + 1, ..nested }),
+            (paused.guard(), sim_session::SessionGuard { expected_tick: nested.expected_tick + 1, ..nested }),
+        ] {
+            assert!(runtime.source_viewport(outer, inner, SourceViewportAction::MenuDecrease).is_err());
+            assert_eq!(runtime.identity(), paused);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), saved);
+        }
+        // No ordinary or paused frame occurs between the setting and save.
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8982).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8982, &saved).unwrap();
+        assert_eq!(cold.identity().mode, RuntimeMode::Paused);
+        assert_eq!(cold.identity().display_settings, paused.display_settings);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+        for bad_size in [0, 15, 41, 255] {
+            let mut bad = packet.clone();
+            bad.initial_display_settings.viewport_size = Some(bad_size);
+            bad.receipt_sha256 = bad.compute_receipt_sha256();
+            let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(9100 + u64::from(bad_size)).unwrap();
+            let title = rejected.identity();
+            assert!(resolver.load_replay(&mut rejected, title.guard(), title.runtime_id,
+                &serde_json::to_vec(&bad).unwrap()).is_err(), "a rehashed invalid GAME size is refused");
+            assert_eq!(rejected.identity(), title);
+        }
+        for size in (16..39).rev() {
+            request(&mut runtime, SourceViewportAction::MenuDecrease, size);
+        }
+        let smallest = resolver.save_replay(&runtime).unwrap();
+        request(&mut runtime, SourceViewportAction::MenuDecrease, 16);
+        request(&mut runtime, SourceViewportAction::KeyboardShrink, 16);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), smallest);
+        request(&mut runtime, SourceViewportAction::MenuIncrease, 17);
+        let keyboard_limit = resolver.save_replay(&runtime).unwrap();
+        request(&mut runtime, SourceViewportAction::KeyboardShrink, 17);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), keyboard_limit);
+        request(&mut runtime, SourceViewportAction::MenuIncrease, 18);
+        request(&mut runtime, SourceViewportAction::KeyboardShrink, 17);
+        request(&mut runtime, SourceViewportAction::KeyboardEnlarge, 18);
+        for size in 19..=40 { request(&mut runtime, SourceViewportAction::MenuIncrease, size); }
+        request(&mut runtime, SourceViewportAction::MenuDecrease, 39);
+        request(&mut runtime, SourceViewportAction::MenuIncrease, 40);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), {
+            let mut full = packet.clone();
+            full.initial_display_settings.viewport_size = None;
+            full.receipt_sha256 = full.compute_receipt_sha256();
+            serde_json::to_vec(&full).unwrap()
+        }, "returning to40 removes only the optional renderer header field");
+        // Receiver globals are real current source inputs, but GAME viewport
+        // belongs to the loaded file, unlike the nonserialized Speed value.
+        request(&mut runtime, SourceViewportAction::MenuDecrease, 39);
+        request(&mut runtime, SourceViewportAction::MenuDecrease, 38);
+        let receiver = resolver.source_process_context(&runtime).unwrap();
+        let mut warm = GameRuntime::<Mc2CampaignBackend>::title(8983).unwrap();
+        let title = warm.identity();
+        resolver.load_replay_with_source_context(&mut warm, title.guard(), 8983, &saved, receiver).unwrap();
+        assert_eq!(warm.identity().display_settings.viewport_size, 39, "warm restore uses saved GAME size, not receiver38");
+        assert_eq!(resolver.save_replay(&warm).unwrap(), saved);
+        let id = warm.identity(); warm.resume(id.guard()).unwrap();
+        let session = warm.session_mut().unwrap();
+        session.reset(session.identity().guard()).unwrap();
+        warm.reset_panel_transparency_to_level_default();
+        assert_eq!(warm.identity().display_settings.viewport_size, 39, "retry retains viewport GAME byte");
+        let reset_bytes = resolver.save_replay(&warm).unwrap();
+        let mut reset_cold = GameRuntime::<Mc2CampaignBackend>::title(8984).unwrap();
+        let title = reset_cold.identity();
+        resolver.load_replay(&mut reset_cold, title.guard(), 8984, &reset_bytes).unwrap();
+        assert_eq!(reset_cold.identity().display_settings.viewport_size, 39);
+        assert_eq!(resolver.save_replay(&reset_cold).unwrap(), reset_bytes);
+        assert!(warm.preferences_command(warm.identity().guard(), PreferencesCommand::Cancel).is_err(),
+            "viewport control does not relax generic Playing preference gates");
+        let id = warm.identity(); let nested = warm.session().unwrap().identity().guard();
+        resolver.close_to_title(&mut warm, id.guard(), nested).unwrap();
+        let map_bytes = resolver.save_replay(&warm).unwrap();
+        let mut map_cold = GameRuntime::<Mc2CampaignBackend>::title(8985).unwrap();
+        let title = map_cold.identity();
+        resolver.load_replay(&mut map_cold, title.guard(), 8985, &map_bytes).unwrap();
+        assert_eq!(map_cold.identity().display_settings.viewport_size, 39);
+        let map = map_cold.identity();
+        assert!(map_cold.source_viewport(map.guard(), invalid, SourceViewportAction::MenuDecrease).is_err());
+        assert_eq!(map_cold.identity(), map);
+        assert_eq!(resolver.save_replay(&map_cold).unwrap(), map_bytes);
+        for bad_size in [15, 41] {
+            let mut bad: Mc2CampaignMapSave = serde_json::from_slice(&map_bytes).unwrap();
+            bad.display_settings.viewport_size = Some(bad_size);
+            bad.receipt_sha256 = bad.compute_receipt_sha256();
+            let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(9200 + u64::from(bad_size)).unwrap();
+            let title = rejected.identity();
+            assert!(resolver.load_replay(&mut rejected, title.guard(), title.runtime_id,
+                &serde_json::to_vec(&bad).unwrap()).is_err());
+            assert_eq!(rejected.identity(), title);
+        }
+        let loading = resolver.campaign_menu_command(&mut map_cold, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        assert_eq!(loading.display_settings.viewport_size, 39);
+        resolver.open_pending(&mut map_cold, loading.guard(), 8985).unwrap();
+        assert_eq!(map_cold.identity().display_settings.viewport_size, 39, "real mission entry retains viewport");
+    }
+
+    #[test]
     fn source_speed_runs_real_passes_and_orders_process_restore_with_same_tick_actions() {
         use crate::game_runtime::{GameRuntime, RuntimeGuard, RuntimeMode, preferences::PreferencesCommand};
         let resolver = Mc2RuntimePackageResolver::load([
@@ -7315,7 +7485,7 @@ pub(crate) mod tests {
         runtime.toggle_icons_and_map(initial.guard(), session_guard).unwrap();
         assert_eq!(runtime.identity().generation, initial.generation);
         assert_eq!(runtime.identity().session, initial.session);
-        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false, flat_shading: false });
+        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false, flat_shading: false, viewport_size: 40 });
         let notices = runtime.session().unwrap().backend().participant_notifications();
         assert_eq!(notices.len(), 1);
         assert!(notices[0].is_local);
