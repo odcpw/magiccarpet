@@ -803,27 +803,65 @@ acceptance open; a working control panel alone does not finish the environment.
 
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
 the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
-flight assistance and F1 Help Mode are
-implemented, verified, committed, pushed and installed. Do not restart their
-delivered checkpoints below. Next is the connected four-control graphics family:
-Shift+F1/F2/F3/F4 and Options8/9/10/11 reflections/sky/shadows/lights. Renderer
-consumers already exist; missing source actions/notices and wrong profile
-authority must join the actual GAME/save/current world state. Source GAME owns
-these four flags; CONFIG omits them. They retain across retry, mission and same-
-process Title/New Game; fresh process uses startup defaults. Pinned speed5 keeps
-all capabilities available and sky's extra guard is a global allocated buffer,
-not map type or filesystem existence. Preserve strict old-save receipts and
-unrelated legacy profile fields through deliberate read migration; never infer
-old unsaved GAME values from the receiving profile. Existing active lighting
-history already records its actual value; old map packets do not. BoldForge owns
-the integrated capability/shared joins, with independent renderer and client
-owners coordinated before writes. Root serializes checks/push/install. No leaf
-renderer rewrites, availability platform or new planning round.
+flight assistance, F1 Help Mode and Shift+F1/F2/F3/F4 graphics are implemented,
+verified, committed, pushed and installed. Do not restart delivered checkpoints.
+Next is existing mc-5r5.3: source title Exit confirmation/cancel, cursor39 and
+idle help cycling. Current source bypasses Exit's scroll dialog, never consumes
+title cursor39 and only produces immediate hover help. Reuse actual source
+scroll/art/timing and input release ownership. Existing four fire/incense loops
+are source-driven; the pinned table has no separate active dragon loop. New Game
+is the existing map route, not an invented confirmation. BoldForge owns the
+connected frontend capability; root serializes builds/push/install. Keep exact
+shared-file windows and workers responsible through consumer failures.
 Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
 resolution switching remains the explicitly classified separate renderer option,
 not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
 through real consumer failures. Preserve unrelated Modern/browser work and fixed
 ABI extents.
+
+Graphics checkpoint: canonical4b22ef80 is pushed as Original75d4acd4; all18
+owned blobs and627 native inputs match. Original build-ce2k54te/native
+58339e62fc0301f34fce24c5fbb1568c579f94e90f94ac45f2ed365c56db8cff is installed;
+--check-installed passes. Shift+F1/F2/F3/F4 and Options8/9/10/11 now share guarded
+GAME actions and original50-draw notices. CONFIG no longer owns the four flags;
+legacy profile Install validates/removes only their obsolete boolean keys,
+preserves duplicate/unknown-field refusal and never rewrites on read. GAME retains
+across retry, mission and same-process Title/New Game; a fresh process defaults
+ON. Pinned speed5/global sky-buffer admission remains independent of map type.
+Active lighting keeps its existing verified policy history as sole authority;
+only map packets need an optional lighting header. Old unsaved map values are
+not inferred from receiving profiles. No existing lights/projectiles are retired
+by disabling future light production.
+
+Seven focused native core checks pass, including actual Fireball light admission,
+atomic guards, notices, lifecycle/cold replay and the genuine released-writer
+lighting-OFF save with exact byte resave. Actual public-ABI old-save load/resave
+also passes; immutable receipt125cfedc is unchanged. Initial gate failures used
+the wrong package/owner roles, missing FONT1 on a raw cache owner and a sequential
+renderer at restored tick354. Corrections retain all strict guards/expectations.
+The real Nyphur view discriminates reflections35778/shadows11 pixels; the real
+NightSpire tick1 view discriminates sky33642. Every pass reverses exactly without
+camera/actor mutation or gameplay step; the combined check passes31.420s. The
+paused cache/revision check passes5.825s. Managed real keys/save/retry146.041s,
+Options32.424s and held-release barrier0.012s pass. Workspace all-targets43.00s,
+affected test typecheck42.50s, canonical116-source typecheck2.367s and strict Rig
+native build pass. Final test-only changes leave production native identical.
+UBS remains legacy/partial, with no added-line Rust critical found; the C# scan
+does not establish whole-file cleanliness. Independent changed-path/gate reviews
+found no further concrete defect in their bounded coverage.
+
+Root viewed normal canonical map/one portal/NightSpire and physical Shift+F1..F4,
+P and original-font Options all four OFF/ON with matching mapped native, zero
+retries/errors; owned smoke processes stopped. This is not human flight/combat,
+FPS, hardware audio, full missions or general historical-save certification.
+Evidence: generated/graphics-controls-20261116. RCH's first successful8m45 compile
+could not finalize during transient local disk exhaustion; the original completed
+job was recovered without replaying it. Root free space returned to18GB without
+project deletion; cause remains unconfirmed. Automatic approval review rejected
+earlier recursive old-player cleanup; those folders remain intact. Full existing
+beads/dependencies stay OPEN. Digital joystick remains an explicit unsupported
+host path, without a demonstrated current-host producer or hardware-emulation
+expansion; physical-device and distinct unavailable locale coverage stay honest.
 
 Help Mode checkpoint: canonical7cf0fb39 is pushed as Originalcb2058b5; all20
 owned blobs match. Original build-xgpo_q20/native
