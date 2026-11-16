@@ -811,8 +811,8 @@ Finite mc-paj.5 is now CLOSED on its original bounded Night/Day loading,
 recovery and resource-lifecycle acceptance. Canonical1fb4e497 includes
 ac574add/020a9d41; Original302965a9 includes cb53b978. Original build-5a4ygxbx
 with native8c862188 is installed and --check-installed passes. All627 current
-inputs match local/Rig/published source; the only Rust delta after the native
-build is the cfg(test)-only Spider test module, so release native is reused.
+inputs match local/Rig/published source at its recorded receipt. Later Rust
+changes are only the cfg(test) Spider/backend modules; release native is reused.
 Unrelated Modern/browser work is preserved; main was not pushed.
 
 Implemented fixes: retain the real campaign frontier on Title/NewGameMap;
@@ -845,16 +845,35 @@ Declared incoming Day2 progress is not earned campaign proof. Human combat/FPS,
 hardware audio, full missions, general old saves and assembled Cave/secret routes
 are outside these bounded claims; full campaign parents remain OPEN.
 
-mc-oi6.7 is IN_PROGRESS. Its current aggregate already owns the web writer;
+Finite mc-oi6.7 is CLOSED after fresh bounded original-acceptance review at
+canonical16f3a83d and root independent source/evidence inspection. Its current
+installed aggregate already owns the web writer;
 the old presentation_bridge refusal alone is not a current-client defect.
 Actual controlled Level4 Spider contact/damage/natural expiry/reclaim passes
 0.54s. Its emitted authoritative observations feed the matching MWEBC Cave
 aggregate GPU; source pixel, repeated-read purity, expiry/reset pass2.828s.
 Declared pose/cadence/protection and separate producer/renderer owners remain
-explicit; no unstaged live encounter or same-owner replay claim. PearlBay owns
-the next actual admitted Day exit through native GTD2/blur/phase12 and reset/next
-history check in the existing backend test. No fabricated exit phase, new ABI,
-automated player or second receipt bridge. Full .7 stays OPEN.
+explicit; no unstaged live encounter or same-owner replay claim. PearlBay's
+actual admitted Day exit through native GTD2/blur/phase12 and reset history
+passes10.38s on the real Day2 owner table after the focused Rig compile.
+Canonical16f3a83d is pushed as Originala22863b5; only cfg(test) code changed,
+so native8c862188/player5a4ygxbx stay current. No fabricated exit phase, new ABI,
+automated player or second receipt bridge. UBS's whole backend totals are legacy
+scope; none of the130 added test lines has a critical finding. No concrete
+missing producer/current-client consumer remains in that finite inspected scope.
+Prior acquired supported-status timing evidence is reused; native alive/full-map
+gates and world-history -> WEB -> minimap/HUD order were inspected. Native
+controlled-component evidence does not establish live C ABI/Unity Day exit or
+next-mission teardown by itself; the exact GPU LUT and actual installed Day2
+teardown/reopen remain separately identified evidence. These limits and the
+assembled campaign acceptance are preserved rather than claimed from a fixture.
+Next ready capability is existing mc-b9s.2: ordinary pickup/holder authority ->
+advertised semantic spell ID/tier/cost/hand/readiness -> actual select/cast ->
+reset/transition carry and unavailable states. QuietIsland owns it through the
+real consumer; root/Sol implement shared joins as needed. Inspect current source
+and prior acquired-spell evidence before changing code; the bead's old eight-kind
+assessment is not current authority. Use the canonical family descriptor mapping,
+no additional private Unity selector switch, bots or new observation platform.
 Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
 do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
 remain OPEN. Hardware resolution switching remains the explicitly separate
