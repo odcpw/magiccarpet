@@ -1422,6 +1422,11 @@ int32_t mc_game_runtime_presentation_frame_v1(
 int32_t mc_game_runtime_toggle_icons_map_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
     uint64_t expected_tick);
+/* Source Shift+F6 / pause option 13. Playing/Paused only; preserves the
+ * session binding and tick, and records the display setting and notice. */
+int32_t mc_game_runtime_toggle_panel_transparency_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick);
 int32_t mc_game_runtime_participant_notifications_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_runtime_resume_v1(

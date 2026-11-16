@@ -805,6 +805,11 @@ int32_t mc_native_campaign_cave_occlusion_copy(
 int32_t mc_native_campaign_minimap_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);
+/* 64x64 source transparent-terrain admission bytes, each zero or one.
+ * A short buffer receives no bytes; out_length receives the required size. */
+int32_t mc_native_campaign_minimap_terrain_coverage_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 /* Original split map: opaque 320*200 scene, 191*200 map coordinates and a
  * real 128*200 world viewport. Capacities are element counts. */
 int32_t mc_native_campaign_world_map_copy(

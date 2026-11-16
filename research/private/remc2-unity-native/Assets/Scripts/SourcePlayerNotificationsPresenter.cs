@@ -50,6 +50,8 @@ namespace MagicCarpet.Native
                     "participant.banished" => 283,
                     "participant.icons_map_hidden" => 365,
                     "participant.icons_map_visible" => 366,
+                    "participant.panel_transparency_on" => 440,
+                    "participant.panel_transparency_off" => 441,
                     _ => throw new InvalidDataException("unbound participant notification kind: " + notice.kind)
                 };
                 // Presence is authoritative. Zero is the final visible frame;

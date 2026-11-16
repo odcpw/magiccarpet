@@ -356,6 +356,163 @@ namespace MagicCarpet.Native
         private Color32[] gameRuntimeSpellPriorPixels;
         private ulong gameRuntimeSpellPriorGeneration;
         private SourceObjectiveTextboxPresenter gameRuntimeManaHintPresenter;
+        private SourceObjectiveTextboxPresenter gameRuntimeHudPresenter;
+        private Color32[] gameRuntimeHudPixels, gameRuntimeHudScratch;
+        private readonly System.Collections.Generic.Dictionary<Texture2D, Color32[]> gameRuntimeHudTierPixels = new();
+        private Texture gameRuntimeHudIndices;
+        private ulong gameRuntimeHudGeneration, gameRuntimeHudRevision;
+
+        private bool TryGetGameRuntimeHudScene(CampaignPresentationSurface surface,
+            out Texture indices, out ulong generation, out ulong revision)
+        {
+            indices = null; generation = revision = 0;
+            if (surface == null || campaignSession == null || surface.Generation != campaignSession.Generation ||
+                surface.Tick != campaignSession.Tick) return false;
+            if (gameRuntimeHudIndices != null && gameRuntimeHudGeneration == campaignSession.Generation)
+            {
+                indices = gameRuntimeHudIndices; generation = gameRuntimeHudGeneration; revision = gameRuntimeHudRevision;
+                return true;
+            }
+            indices = surface.HudUnderlayIndices;
+            generation = surface.HudUnderlayGeneration; revision = surface.HudUnderlayRevision;
+            return indices != null && generation == campaignSession.Generation;
+        }
+
+        // DrawGameFrame draws the minimap first, then opaque/transparent HUD
+        // panel backgrounds, opaque icons and source-colour glyphs/bars. Keep
+        // the resulting indices for the objective/help consumers that follow.
+        private void DrawGameRuntimeIndexedHud(NativeSim.CampaignDayHudSnapshot hud)
+        {
+            if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
+            var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                level2DayPresentationSurface ?? gameRuntimeNightSurface;
+            if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
+            var underlay = surface.HudUnderlayIndices;
+            if (underlay == null || surface.HudUnderlayGeneration != campaignSession.Generation) return;
+            EnsureGameRuntimeMenu();
+            var profile = campaignSession.Selection.mapType switch {
+                0 => "day", 1 => "night", 2 => "cave",
+                _ => throw new InvalidDataException("source HUD requires its source environment")
+            };
+            var assets = gameRuntimeMenu.ObjectiveForProfile(profile);
+            var opaque = session.ObservedCampaignIdentity().display_settings.panels_opaque;
+            var (castleX, balloonX, playerX) = ComputeLevel2DayHudTopBarLayout(hud);
+            var maxY = 48;
+            foreach (var selector in new[] { hud.minimapPanelSelector, hud.castlePanelSelector,
+                         hud.balloonPanelSelector, hud.playerPanelSelector, hud.playerIconSelector, hud.lifeManaIconSelector })
+                if (hudBitmapDescriptors.TryGetValue(selector, out var row) && row != null)
+                    maxY = Math.Max(maxY, checked(2 + row.runtime_height));
+            foreach (var slot in new[] { hud.left, hud.right })
+                if (slot.holderEntityIndex != 0 && slot.drawAdmitted != 0)
+                {
+                    foreach (var selector in new[] { slot.frameSelector, slot.iconSelector })
+                        if (hudBitmapDescriptors.TryGetValue(selector, out var row) && row != null)
+                            maxY = Math.Max(maxY, checked(2 + row.runtime_height));
+                    if (level2DayHudTierRows.TryGetValue(slot.levelTextSelector, out var tier) && tier != null)
+                        maxY = Math.Max(maxY, checked(2 + tier.runtime_height));
+                }
+            if (maxY > 480) throw new InvalidDataException("source HUD exceeds the indexed viewport");
+            var length = checked(640 * maxY);
+            if (gameRuntimeHudScratch == null || gameRuntimeHudScratch.Length != length)
+                gameRuntimeHudScratch = new Color32[length];
+            else Array.Clear(gameRuntimeHudScratch, 0, length);
+            void Pixel(int x, int y, byte index, bool blend)
+            {
+                if (x < 0 || x >= 640 || y < 0 || y >= maxY) return;
+                var offset = y * 640 + x;
+                var old = gameRuntimeHudScratch[offset];
+                if (!blend) { gameRuntimeHudScratch[offset] = new Color32(index, 0, 0, 5); return; }
+                if ((old.a & 4) != 0)
+                {
+                    gameRuntimeHudScratch[offset] = new Color32(assets.Tables[assets.TableOffset + (old.r << 8) + index], 0, 0, 5);
+                    return;
+                }
+                var count = old.a & 3;
+                if (count == 3) throw new InvalidDataException("source HUD exceeds indexed blend depth");
+                if (count == 0) old.r = index; else if (count == 1) old.g = index; else old.b = index;
+                old.a = (byte)(count + 1);
+                gameRuntimeHudScratch[offset] = old;
+            }
+            void Sprite(int selector, int x, int y, bool blend)
+            {
+                if (!hudBitmapDescriptors.TryGetValue(selector, out var row) || row == null ||
+                    !hudBitmapIndices.TryGetValue(selector, out var indices) || indices == null ||
+                    !hudBitmapMasks.TryGetValue(selector, out var mask) || mask == null ||
+                    row.stored_width <= 0 || row.stored_height <= 0 || row.runtime_width <= 0 || row.runtime_height <= 0 ||
+                    indices.Length != checked(row.stored_width * row.stored_height) || mask.Length != indices.Length)
+                    throw new InvalidDataException("source indexed HUD sprite is missing or malformed");
+                for (var dy = 0; dy < row.runtime_height; dy++)
+                for (var dx = 0; dx < row.runtime_width; dx++)
+                {
+                    var source = dy * row.stored_height / row.runtime_height * row.stored_width +
+                        dx * row.stored_width / row.runtime_width;
+                    if (mask[source] != 0) Pixel(x + dx, y + dy, indices[source], blend);
+                }
+            }
+            void Fill(int x, int y, int width, int height, byte color)
+            {
+                for (var dy = 0; dy < height; dy++)
+                for (var dx = 0; dx < width; dx++) Pixel(x + dx, y + dy, color, false);
+            }
+            void Hand(NativeSim.CampaignDayHudSpellSlot slot, int x)
+            {
+                if (slot.holderEntityIndex == 0 || slot.drawAdmitted == 0) return;
+                Sprite(slot.frameSelector, x, 2, !opaque);
+                Sprite(slot.iconSelector, x, 2, false);
+                var frame = hudBitmapDescriptors[slot.frameSelector];
+                var tier = level2DayHudTierRows[slot.levelTextSelector];
+                var texture = ownerSpellTierTextures[slot.levelTextSelector];
+                if (!gameRuntimeHudTierPixels.TryGetValue(texture, out var tierPixels))
+                {
+                    tierPixels = texture.GetPixels32();
+                    gameRuntimeHudTierPixels.Add(texture, tierPixels);
+                }
+                var tierX = x + frame.runtime_width - tier.runtime_width - 2;
+                for (var dy = 0; dy < tier.runtime_height; dy++)
+                for (var dx = 0; dx < tier.runtime_width; dx++)
+                {
+                    var sx = dx * texture.width / tier.runtime_width;
+                    var sy = dy * texture.height / tier.runtime_height;
+                    if (tierPixels[(texture.height - 1 - sy) * texture.width + sx].a != 0)
+                        Pixel(tierX + dx, 2 + dy, assets.BlendSelector, false);
+                }
+                if (slot.maxMana <= 0) return;
+                Fill(x + 4, 38, (int)(56L * (slot.casterMana % slot.maxMana) / slot.maxMana), 4, hud.manaMaxPaletteIndex);
+                var charges = slot.casterMana / slot.maxMana;
+                for (var column = 0; column < 27 && charges > 0; column++)
+                for (var row = 0; row < 2 && charges > 0; row++, charges--)
+                    Fill(x + 2 * (column + 2), 38 + 2 * row, 2, 2, hud.manaPaletteIndex);
+            }
+            Hand(hud.left, 510); Hand(hud.right, 574);
+            Sprite(hud.minimapPanelSelector, 2, 2, !opaque);
+            Sprite(hud.castlePanelSelector, castleX, 2, !opaque);
+            Sprite(hud.balloonPanelSelector, balloonX, 2, !opaque);
+            Sprite(hud.playerPanelSelector, playerX, 2, !opaque);
+            Sprite(hud.playerIconSelector, playerX + 2, 2, false);
+            Sprite(hud.lifeManaIconSelector, playerX + 38, 2, false);
+            Fill(playerX + 58, 10, SourceHudWidth(hud.localPlayerLife, hud.localPlayerMaxLife), 10, hud.lifePaletteIndex);
+            Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMaxMana, hud.globalManaDenominator), 10, hud.manaMaxPaletteIndex);
+            Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMana, hud.globalManaDenominator), 10, hud.manaPaletteIndex);
+            gameRuntimeHudPresenter ??= new SourceObjectiveTextboxPresenter(assets);
+            var previousPixels = gameRuntimeHudPixels;
+            var changed = previousPixels == null || previousPixels.Length != length;
+            if (previousPixels != null && !changed)
+                for (var i = 0; !changed && i < length; i++) changed = !previousPixels[i].Equals(gameRuntimeHudScratch[i]);
+            if (changed || gameRuntimeHudGeneration != campaignSession.Generation)
+            {
+                gameRuntimeHudPresenter.SetSpellPrior(new RectInt(0, 0, 640, maxY), gameRuntimeHudScratch, campaignSession.Generation);
+                (gameRuntimeHudPixels, gameRuntimeHudScratch) = (gameRuntimeHudScratch, gameRuntimeHudPixels);
+            }
+            gameRuntimeHudIndices = gameRuntimeHudPresenter.RenderPriorIndices(underlay, campaignSession.Generation);
+            gameRuntimeHudGeneration = surface.HudUnderlayGeneration;
+            gameRuntimeHudRevision = surface.HudUnderlayRevision;
+            var palette = surface.FramePaletteRgb8;
+            if (playerPreferences != null) palette = playerPreferences.ApplyBrightnessToPalette(palette, campaignSession.Selection.mapType);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            gameRuntimeHudPresenter.DrawPausePrior(underlay, campaignSession.Generation,
+                new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
+                    640f * scale, 480f * scale), palette);
+        }
 
         private void InitializeGameRuntimeHelpHint(OwnerCampaignMenuCache languageCache)
         {
@@ -409,21 +566,7 @@ namespace MagicCarpet.Native
                 playerPreferences?.IsOpen == true) return;
             var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
                 level2DayPresentationSurface ?? gameRuntimeNightSurface;
-            if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
-            Texture indices;
-            ulong generation, revision;
-            if (gameRuntimeSourceMenus.MapOpen)
-            {
-                indices = surface.WorldIndices; generation = surface.Generation; revision = surface.Tick;
-            }
-            else
-            {
-                if (surface.SceneHistoryGeneration != campaignSession.Generation ||
-                    surface.SceneHistoryRevision != campaignSession.SceneFrameRevision) return;
-                indices = surface.ComposedSceneIndices; generation = surface.SceneHistoryGeneration;
-                revision = surface.SceneHistoryRevision;
-            }
-            if (indices == null) return;
+            if (!TryGetGameRuntimeHudScene(surface, out var indices, out var generation, out var revision)) return;
             EnsureGameRuntimeMenu();
             var profile = campaignSession.Selection.mapType switch {
                 0 => "day", 1 => "night", 2 => "cave",
@@ -462,7 +605,7 @@ namespace MagicCarpet.Native
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeManaHintPresenter.Draw(1, indices, generation, revision,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
-                    640f * scale, 480f * scale), palette, gameRuntimeSourceMenus.MapOpen);
+                    640f * scale, 480f * scale), palette);
         }
 
         private void DrawGameRuntimeSpellMenuPrior(OwnerCampaignMenuCache.ObjectiveAssets assets)
@@ -470,18 +613,7 @@ namespace MagicCarpet.Native
             if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
             var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
                 level2DayPresentationSurface ?? gameRuntimeNightSurface;
-            if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
-            Texture scene;
-            ulong generation;
-            var map = gameRuntimeSourceMenus.MapOpen;
-            if (map) { scene = surface.WorldIndices; generation = surface.Generation; }
-            else
-            {
-                if (surface.SceneHistoryGeneration != campaignSession.Generation ||
-                    surface.SceneHistoryRevision != campaignSession.SceneFrameRevision) return;
-                scene = surface.ComposedSceneIndices; generation = surface.SceneHistoryGeneration;
-            }
-            if (scene == null) return;
+            if (!TryGetGameRuntimeHudScene(surface, out var scene, out var generation, out _)) return;
             var cache = gameRuntimeEnvironmentCache ?? ownerAssetCache;
             ObjectiveTextboxCompositor.Sprite Indexed(int selector)
             {
@@ -506,7 +638,7 @@ namespace MagicCarpet.Native
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             gameRuntimeManaHintPresenter.DrawPausePrior(scene, generation,
                 new Rect((Screen.width - 640f * scale) * .5f, (Screen.height - 480f * scale) * .5f,
-                    640f * scale, 480f * scale), palette, map);
+                    640f * scale, 480f * scale), palette);
             gameRuntimeSourceSpellMenu.DrawCursor();
         }
 
@@ -520,6 +652,12 @@ namespace MagicCarpet.Native
 
         private void ResetGameRuntimeHelpHint()
         {
+            gameRuntimeHudPresenter?.Dispose();
+            gameRuntimeHudPresenter = null;
+            gameRuntimeHudPixels = gameRuntimeHudScratch = null;
+            gameRuntimeHudTierPixels.Clear();
+            gameRuntimeHudIndices = null;
+            gameRuntimeHudGeneration = gameRuntimeHudRevision = 0;
             gameRuntimeSpellPriorPixels = null;
             gameRuntimeSpellPriorGeneration = 0;
             gameRuntimeAbilityNotification = null;

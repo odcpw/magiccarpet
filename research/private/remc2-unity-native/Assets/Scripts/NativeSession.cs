@@ -263,6 +263,12 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal GameRuntimeTransport.Identity GameRuntimeTogglePanelTransparency()
+        {
+            return gameRuntime?.TogglePanelTransparency() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignStep(
             sbyte roll,
             sbyte pitch,

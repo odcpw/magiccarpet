@@ -1092,6 +1092,18 @@ namespace MagicCarpet.Native
             return state;
         }
 
+        private readonly byte[] minimapTerrainCoverage = new byte[64 * 64];
+
+        internal byte[] MinimapTerrainCoverage(ulong expectedTick)
+        {
+            NativeSession.Check(NativeSim.mc_native_campaign_minimap_terrain_coverage_copy(
+                Handle, generation, expectedTick, minimapTerrainCoverage,
+                (uint)minimapTerrainCoverage.Length, out var length), "copy minimap terrain coverage");
+            if (length != minimapTerrainCoverage.Length || minimapTerrainCoverage.Any(value => value > 1))
+                throw new InvalidOperationException("minimap terrain coverage returned invalid bytes");
+            return minimapTerrainCoverage;
+        }
+
         internal NativeSim.CampaignMinimapEntity[] MinimapEntities(
             ulong expectedTick,
             NativeSim.CampaignMinimapState state)

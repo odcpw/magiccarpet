@@ -380,7 +380,7 @@ namespace MagicCarpet.Native
         [Serializable]
         internal sealed class DisplaySettings
         {
-            public bool minimap, top_bar;
+            public bool minimap, top_bar, panels_opaque;
         }
 
         [Serializable]
@@ -1112,8 +1112,28 @@ namespace MagicCarpet.Native
                 !PreservesSessionBinding(before.session, after.session) ||
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
                 after.display_settings.minimap == before.display_settings.minimap ||
-                after.display_settings.top_bar == before.display_settings.top_bar)
+                after.display_settings.top_bar == before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque)
                 throw new InvalidDataException("icons and map toggle changed the wrong source state");
+            return after;
+        }
+
+        internal Identity TogglePanelTransparency()
+        {
+            RequireSessionMode(allowPaused: true, "toggle panel transparency");
+            var before = Current;
+            Check(NativeSim.mc_game_runtime_toggle_panel_transparency_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick")), "toggle panel transparency");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque == before.display_settings.panels_opaque)
+                throw new InvalidDataException("panel transparency toggle changed the wrong source state");
             return after;
         }
 

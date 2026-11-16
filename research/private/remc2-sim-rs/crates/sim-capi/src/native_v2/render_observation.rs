@@ -23,6 +23,7 @@ pub extern "C" fn mc_game_runtime_render_observation_json_v1(
             let session = record.session()?;
             let backend = session.backend();
             let mut value = backend.render_observation();
+            value.spell_menu_panels_opaque = record.runtime.identity().display_settings.panels_opaque;
             record.apply_local_presentation_name(
                 &mut value.source_scoreboard,
                 &mut value.participant_notifications,
@@ -81,6 +82,7 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
             }
             let backend = session.backend();
             let mut value = backend.render_observation();
+            value.spell_menu_panels_opaque = record.runtime.identity().display_settings.panels_opaque;
             let local_slot = backend
                 .campaign_presentation_source()
                 .simulation()
@@ -312,6 +314,36 @@ mod tests {
         out
     }
 
+    // Read just the panel bit from the public MCPO v3 packet. Walk the
+    // variable-sized prefix instead of assuming a particular player name or
+    // notice count, so this exercises the actual encoder and buffer path.
+    fn packet_panels_opaque(packet: &[u8]) -> bool {
+        struct Cursor<'a> { bytes: &'a [u8], at: usize }
+        impl Cursor<'_> {
+            fn skip(&mut self, n: usize) { self.at += n; assert!(self.at <= self.bytes.len()); }
+            fn byte(&mut self) -> u8 { let b = self.bytes[self.at]; self.skip(1); b }
+            fn count(&mut self) -> usize {
+                let n = u32::from_le_bytes(self.bytes[self.at..self.at + 4].try_into().unwrap());
+                self.skip(4); n as usize
+            }
+            fn string(&mut self) { let n = self.count(); self.skip(n); }
+        }
+        let mut c = Cursor { bytes: packet, at: 29 };
+        for _ in 0..3 { c.string(); }
+        c.skip(7 * 8 + 14 + 6 + 16);
+        if c.byte() != 0 { c.skip(13); }
+        c.skip(1); // return-to-title
+        for _ in 0..c.count() {
+            c.skip(1); c.string(); c.skip(2 + 4 + 16);
+        }
+        if c.byte() != 0 { c.string(); }
+        for _ in 0..c.count() {
+            c.skip(8 + 1); c.string(); c.string(); c.skip(2);
+        }
+        c.skip(1 + 2 + 14 + 1 + 2);
+        match c.byte() { 0 => false, 1 => true, value => panic!("invalid MCPO panel bit {value}") }
+    }
+
     #[test]
     fn binary_publication_guards_purity_and_lifecycle() {
         let mut handle = 0;
@@ -327,6 +359,12 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        assert!(!packet_panels_opaque(&packet(handle)));
+        let (_, generation, session_generation, tick, _) = identity(handle);
+        assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(
+            handle, generation, session_generation, tick
+        ), MC_STATUS_OK);
+        assert!(packet_panels_opaque(&packet(handle)));
         let before = snapshot(handle);
         let initial = packet(handle);
         assert_eq!(packet(handle), initial);

@@ -878,13 +878,50 @@ struct Mc2PrimaryVisibilityChange {
     animation_demands: Vec<u16>,
 }
 
+/// Receipt/decode representation only. Missing historical panel state is
+/// resolved against the admitted map after its original receipt verifies;
+/// the live authority remains GameRuntime::display_settings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct StoredDisplaySettings {
+    minimap: bool,
+    top_bar: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panels_opaque: Option<bool>,
+}
+
+impl Default for StoredDisplaySettings {
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None } }
+}
+
+impl StoredDisplaySettings {
+    fn is_default(&self) -> bool { *self == Self::default() }
+    fn resolve(self, map_default: bool) -> crate::game_runtime::DisplaySettings {
+        crate::game_runtime::DisplaySettings { minimap: self.minimap, top_bar: self.top_bar,
+            panels_opaque: self.panels_opaque.unwrap_or(map_default) }
+    }
+    fn toggled(self) -> Self { Self { minimap: !self.minimap, top_bar: !self.top_bar, ..self } }
+    fn for_map(value: crate::game_runtime::DisplaySettings, map_default: bool) -> Self {
+        // Preserve unchanged legacy map bytes only when the omitted value
+        // resolves to the same admitted map default.
+        Self { minimap: value.minimap, top_bar: value.top_bar,
+            panels_opaque: (value.panels_opaque != map_default).then_some(value.panels_opaque) }
+    }
+}
+
+impl From<crate::game_runtime::DisplaySettings> for StoredDisplaySettings {
+    fn from(value: crate::game_runtime::DisplaySettings) -> Self {
+        Self { minimap: value.minimap, top_bar: value.top_bar, panels_opaque: Some(value.panels_opaque) }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Mc2CampaignReplaySave {
     save_contract: String,
     paused: bool,
-    #[serde(default, skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
-    initial_display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(default, skip_serializing_if = "StoredDisplaySettings::is_default")]
+    initial_display_settings: StoredDisplaySettings,
     #[serde(default, skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
     initial_secret_announcement: super::objective_speech::SecretAnnouncementState,
     definition: GameDefinition,
@@ -937,8 +974,8 @@ struct Mc2CampaignReplaySave {
 struct Mc2CampaignReplaySavePayload<'a> {
     save_contract: &'a str,
     paused: bool,
-    #[serde(skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
-    initial_display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(skip_serializing_if = "StoredDisplaySettings::is_default")]
+    initial_display_settings: StoredDisplaySettings,
     #[serde(skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
     initial_secret_announcement: super::objective_speech::SecretAnnouncementState,
     definition: &'a GameDefinition,
@@ -993,7 +1030,7 @@ impl Mc2CampaignReplaySave {
         let mut save = Self {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
             paused,
-            initial_display_settings: crate::game_runtime::DisplaySettings::default(),
+            initial_display_settings: StoredDisplaySettings::default(),
             initial_secret_announcement: super::objective_speech::SecretAnnouncementState::default(),
             definition,
             semantic_spell_carry,
@@ -1111,8 +1148,8 @@ struct Mc2CampaignMapSave {
     source_context: Option<GlobalSpecialState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     played_cutscenes: Option<u8>,
-    #[serde(default, skip_serializing_if = "crate::game_runtime::DisplaySettings::is_default")]
-    display_settings: crate::game_runtime::DisplaySettings,
+    #[serde(default, skip_serializing_if = "StoredDisplaySettings::is_default")]
+    display_settings: StoredDisplaySettings,
     #[serde(default, skip_serializing_if = "source_count_is_zero")]
     source_secret_announcement_count: u8,
     receipt_sha256: String,
@@ -2119,8 +2156,9 @@ impl Mc2RuntimePackageResolver {
         }
         if opened.is_ok() {
             contexts.remove(&guard.runtime_id);
+            runtime.reset_panel_transparency_to_level_default();
         }
-        opened
+        opened.map(|_| runtime.identity())
     }
 
     /// Serialize one Playing or quiescent Paused runtime as a definition-bound
@@ -2163,8 +2201,8 @@ impl Mc2RuntimePackageResolver {
                     .campaign_save_state()
                     .ok_or(Mc2CampaignReplaySaveError::InvalidMode)?
             };
-            self.exact_package_for_definition(&state.definition)
-                .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+            let map_panels_default = self.exact_package_for_definition(&state.definition)
+                .map_err(Mc2CampaignReplaySaveError::Runtime)?.selection.map_type_id == 2;
             let pending = self.pending_spell_carries.lock().map_err(|_| {
                 Mc2CampaignReplaySaveError::InvalidSave {
                     message: "resolver spell-carry state is unavailable".to_owned(),
@@ -2191,7 +2229,7 @@ impl Mc2RuntimePackageResolver {
                 .then(|| runtime.secret_flow_state().clone()),
                 source_context: contexts.get(&runtime.identity().runtime_id).copied(),
                 played_cutscenes: (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes()),
-                display_settings: runtime.identity().display_settings,
+                display_settings: StoredDisplaySettings::for_map(runtime.identity().display_settings, map_panels_default),
                 source_secret_announcement_count: pending.get(&runtime.identity().runtime_id)
                     .map_or(0, |handoff| handoff.source_secret_announcement_count),
                 receipt_sha256: String::new(),
@@ -2273,11 +2311,14 @@ impl Mc2RuntimePackageResolver {
             &snapshot,
         );
         save.level_statistics = runtime.completed_level_statistics().to_vec();
-        save.initial_display_settings = runtime.identity().display_settings;
+        save.initial_display_settings = runtime.identity().display_settings.into();
         // Reverse the recorded source XORs to retain their exact entry state.
         for operation in &save.operations {
             if matches!(operation, crate::game_runtime::ReplayOperation::ToggleIconsMap) {
                 save.initial_display_settings = save.initial_display_settings.toggled();
+            }
+            if matches!(operation, crate::game_runtime::ReplayOperation::TogglePanelTransparency) {
+                save.initial_display_settings.panels_opaque = save.initial_display_settings.panels_opaque.map(|value| !value);
             }
         }
         save.initial_final_reward = session.backend().initial_final_reward.then_some(true);
@@ -2510,6 +2551,8 @@ impl Mc2RuntimePackageResolver {
                     message: "source context owner is unavailable".to_owned(),
                 }
             })?;
+            let panels_default = self.exact_package_for_definition(&save.state.definition)
+                .map_err(Mc2CampaignReplaySaveError::Runtime)?.selection.map_type_id == 2;
             runtime
                 .restore_campaign_resolved(
                     guard,
@@ -2527,7 +2570,7 @@ impl Mc2RuntimePackageResolver {
                     },
                 )
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
-            runtime.restore_display_settings(save.display_settings);
+            runtime.restore_display_settings(save.display_settings.resolve(panels_default));
             if let Some(carry) = save.semantic_spell_carry {
                 pending.insert(
                     guard.runtime_id,
@@ -2742,7 +2785,12 @@ impl Mc2RuntimePackageResolver {
         let expected_effect_head = save.expected_effect_head;
         let expected_effect_journal_sha256 = save.expected_effect_journal_sha256;
         let paused = save.paused;
-        let initial_display_settings = save.initial_display_settings;
+        let initial_display_settings = save.initial_display_settings.resolve(package.selection.map_type_id == 2);
+        if initial_display_settings.panels_opaque != (package.selection.map_type_id == 2) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "initial panel transparency does not match source LevelInit".to_owned(),
+            });
+        }
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             Mc2CampaignReplaySaveError::InvalidSave {
                 message: "resolver spell-carry state is unavailable".to_owned(),
@@ -2858,7 +2906,10 @@ impl Mc2RuntimePackageResolver {
                         .backend_mut()
                         .set_objective_presentation_preferences(enabled, show_foreign_text)
                 },
-                |candidate, minimap| candidate.backend_mut().publish_display_notice(minimap),
+                |candidate, notice| match notice {
+                    crate::game_runtime::DisplayNotice::IconsMap(visible) => candidate.backend_mut().publish_display_notice(visible),
+                    crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => candidate.backend_mut().publish_panel_transparency_notice(opaque),
+                },
                 observe,
             )
             .map_err(Mc2CampaignReplaySaveError::Restore)?;
@@ -3457,6 +3508,15 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_display_notice(minimap)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::ToggleIconsMap);
+        Ok(())
+    }
+
+    pub(crate) fn publish_panel_transparency_notice(&mut self, opaque: bool)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation_mut().publish_panel_transparency_notice(opaque)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::TogglePanelTransparency);
         Ok(())
     }
 
@@ -4242,8 +4302,8 @@ impl Mc2CampaignBackend {
                 ).expect("validated local source wizard palette");
                 [colors[0], colors[1]]
             },
-            // Current supported LevelInit setting. The separate source
-            // Shift+F7 transparency toggle is not implemented by this view.
+            // Standalone sessions expose LevelInit's default. The outer
+            // runtime publication supplies its retained GAME setting.
             spell_menu_panels_opaque: self.campaign.simulation().canonical_terrain().map_type()
                 == crate::native_world::MapType::Cave,
             player_immobilized_ticks: u16::from(flight.immobilize_counter.cast_unsigned()),
@@ -6191,6 +6251,151 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn runtime_panel_transparency_keeps_game_save_and_level_init_lifetimes() {
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode};
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES")
+            .map(PathBuf::from).unwrap_or_else(|| generated.join("mc-bhq6-ordinary-20261025-zclu5fjj"));
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(ordinary.join("level4")),
+        ]).unwrap();
+        let start = |runtime: &mut GameRuntime<Mc2CampaignBackend>, index: usize| {
+            let title = runtime.identity();
+            let loading = if index == 0 {
+                resolver.new_game(runtime, title.guard()).unwrap()
+            } else {
+                // Declared completed frontier only; no earned playthrough.
+                // The real resolver/open/LevelInit uses the unchanged Cave owner.
+                let map = runtime.restore_campaign_resolved(title.guard(), CampaignSaveState {
+                    definition: resolver.package(resolver.flow.entry_level_id()).unwrap().definition.as_ref().clone(),
+                    phase: CampaignMenuPhase::MissionSelect, completed_level_id: None,
+                    selected_level_id: Some(resolver.flow.entries()[index].level_id().clone()),
+                    completed_levels: resolver.flow.entries()[..index].iter().map(|entry| entry.level_id().clone()).collect(),
+                    level_statistics: Vec::new(),
+                }, Default::default(), |definition, selected| {
+                    resolver.exact_package_for_definition(definition)?;
+                    Ok(Arc::clone(&resolver.package(selected).unwrap().definition))
+                }).unwrap();
+                resolver.campaign_menu_command(runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap()
+            };
+            let invalid = sim_session::SessionGuard { session_id: title.runtime_id, generation: 1, expected_tick: 0 };
+            assert!(runtime.toggle_panel_transparency(loading.guard(), invalid).is_err());
+            assert_eq!(runtime.identity(), loading);
+            resolver.open_pending(runtime, loading.guard(), title.runtime_id).unwrap()
+        };
+        for (index, map_default) in [(0, false), (3, true)] {
+            let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8890 + index as u64).unwrap();
+            let title = runtime.identity();
+            let invalid = sim_session::SessionGuard { session_id: title.runtime_id, generation: 1, expected_tick: 0 };
+            assert!(runtime.toggle_panel_transparency(title.guard(), invalid).is_err());
+            assert_eq!(runtime.identity(), title);
+            let playing = start(&mut runtime, index);
+            assert_eq!(playing.display_settings.panels_opaque, map_default);
+            let initial_save = resolver.save_replay(&runtime).unwrap();
+            // Format control for an old omitted panel field: retain all real
+            // owner bytes/receipts except the new optional header field.
+            let mut legacy: Mc2CampaignReplaySave = serde_json::from_slice(&initial_save).unwrap();
+            legacy.initial_display_settings.panels_opaque = None;
+            legacy.receipt_sha256 = legacy.compute_receipt_sha256();
+            let mut old_cold = GameRuntime::<Mc2CampaignBackend>::title(8900 + index as u64).unwrap();
+            let title = old_cold.identity();
+            resolver.load_replay(&mut old_cold, title.guard(), title.runtime_id, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert_eq!(old_cold.identity().display_settings.panels_opaque, map_default);
+            let nested = runtime.session().unwrap().identity().guard();
+            runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
+            let icons = runtime.identity().display_settings;
+            runtime.toggle_panel_transparency(playing.guard(), nested).unwrap();
+            assert_eq!(runtime.identity().session, playing.session);
+            assert_eq!(runtime.identity().display_settings.panels_opaque, !map_default);
+            assert_eq!((runtime.identity().display_settings.minimap, runtime.identity().display_settings.top_bar),
+                (icons.minimap, icons.top_bar));
+            let notice = runtime.session().unwrap().backend().participant_notifications();
+            assert_eq!(notice.len(), 1);
+            assert_eq!(notice[0].kind.as_str(), if map_default { "participant.panel_transparency_on" } else { "participant.panel_transparency_off" });
+            assert_eq!(notice[0].remaining_frames, 50);
+            let simulation = runtime.session().unwrap().backend().campaign.simulation();
+            let color = usize::from(simulation.shared_spells().local_player().player_color_index());
+            assert_eq!(simulation.player_lifecycle_notifications().entries()[color].state, 3);
+            let paused = runtime.pause(playing.guard()).unwrap();
+            let nested = runtime.session().unwrap().identity().guard();
+            runtime.toggle_panel_transparency(paused.guard(), nested).unwrap();
+            runtime.toggle_panel_transparency(paused.guard(), nested).unwrap();
+            let before = runtime.identity();
+            let bytes = resolver.save_replay(&runtime).unwrap();
+            let mut bad: Mc2CampaignReplaySave = serde_json::from_slice(&bytes).unwrap();
+            bad.initial_display_settings.panels_opaque = Some(!map_default);
+            bad.receipt_sha256 = bad.compute_receipt_sha256();
+            let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(8940 + index as u64).unwrap();
+            let title = rejected.identity();
+            let title_bytes = resolver.save_replay(&rejected).unwrap();
+            assert!(resolver.load_replay(&mut rejected, title.guard(), title.runtime_id,
+                &serde_json::to_vec(&bad).unwrap()).is_err(), "rehashed header cannot change LevelInit policy");
+            assert_eq!(rejected.identity(), title);
+            assert_eq!(resolver.save_replay(&rejected).unwrap(), title_bytes);
+            for (outer, inner) in [
+                (crate::game_runtime::RuntimeGuard { generation: before.generation + 1, ..before.guard() }, nested),
+                (before.guard(), sim_session::SessionGuard { generation: nested.generation + 1, ..nested }),
+                (before.guard(), sim_session::SessionGuard { expected_tick: nested.expected_tick + 1, ..nested }),
+            ] {
+                assert!(runtime.toggle_panel_transparency(outer, inner).is_err());
+                assert_eq!(runtime.identity(), before);
+                assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
+            }
+            let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8910 + index as u64).unwrap();
+            let title = cold.identity();
+            resolver.load_replay(&mut cold, title.guard(), title.runtime_id, &bytes).unwrap();
+            assert_eq!(cold.identity().mode, RuntimeMode::Paused);
+            assert_eq!(cold.identity().display_settings, before.display_settings);
+            assert_eq!(cold.session().unwrap().backend().participant_notifications(), runtime.session().unwrap().backend().participant_notifications());
+            assert_eq!(resolver.save_replay(&cold).unwrap(), bytes);
+            let session_guard = cold.session().unwrap().identity().guard();
+            cold.presentation_frame(cold.identity().guard(), session_guard, false).unwrap();
+            assert_eq!(cold.session().unwrap().backend().participant_notifications()[0].remaining_frames, 50);
+            for remaining in (0..50).rev() {
+                cold.presentation_frame(cold.identity().guard(), session_guard, true).unwrap();
+                assert_eq!(cold.session().unwrap().backend().participant_notifications()[0].remaining_frames, remaining);
+            }
+            cold.presentation_frame(cold.identity().guard(), session_guard, true).unwrap();
+            assert!(cold.session().unwrap().backend().participant_notifications().is_empty());
+            let identity = cold.identity();
+            cold.resume(identity.guard()).unwrap();
+            let session = cold.session_mut().unwrap();
+            session.reset(session.identity().guard()).unwrap();
+            cold.reset_panel_transparency_to_level_default();
+            assert_eq!(cold.identity().display_settings.panels_opaque, map_default);
+            assert_eq!((cold.identity().display_settings.minimap, cold.identity().display_settings.top_bar),
+                (icons.minimap, icons.top_bar));
+            assert_eq!(cold.identity().session.as_ref().unwrap().tick, 0);
+            let reset_save = resolver.save_replay(&cold).unwrap();
+            let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8920 + index as u64).unwrap();
+            let title = restored.identity();
+            resolver.load_replay(&mut restored, title.guard(), title.runtime_id, &reset_save).unwrap();
+            assert_eq!(restored.identity().display_settings, cold.identity().display_settings);
+            // A detached GAME map retains the accepted flag. Its next real
+            // entry runs LevelInit and restores that destination's default.
+            let id = cold.identity();
+            let nested = cold.session().unwrap().identity().guard();
+            cold.toggle_panel_transparency(id.guard(), nested).unwrap();
+            cold.close(id.guard(), nested).unwrap();
+            let map_bytes = resolver.save_replay(&cold).unwrap();
+            let mut map_cold = GameRuntime::<Mc2CampaignBackend>::title(8930 + index as u64).unwrap();
+            let title = map_cold.identity();
+            resolver.load_replay(&mut map_cold, title.guard(), title.runtime_id, &map_bytes).unwrap();
+            assert_eq!(map_cold.identity().display_settings.panels_opaque, !map_default);
+            let map = map_cold.identity();
+            assert!(map_cold.toggle_panel_transparency(map.guard(), invalid).is_err());
+            assert_eq!(map_cold.identity(), map);
+            assert_eq!(resolver.save_replay(&map_cold).unwrap(), map_bytes);
+            let loading = resolver.campaign_menu_command(&mut map_cold, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+            resolver.open_pending(&mut map_cold, loading.guard(), map.runtime_id).unwrap();
+            assert_eq!(map_cold.identity().display_settings.panels_opaque, map_default);
+        }
+    }
+
+    #[test]
     fn runtime_display_toggle_replays_same_slot_notice_and_saved_global_flags() {
         use crate::game_runtime::{DisplaySettings, GameRuntime, RuntimeMode};
         let resolver = Mc2RuntimePackageResolver::load([
@@ -6213,12 +6418,13 @@ pub(crate) mod tests {
         resolver.open_pending(&mut runtime, loading.guard(), 8860).unwrap();
         let initial = runtime.identity();
         let initial_save = resolver.save_replay(&runtime).unwrap();
-        assert!(serde_json::from_slice::<serde_json::Value>(&initial_save).unwrap().get("initial_display_settings").is_none());
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&initial_save).unwrap()["initial_display_settings"],
+            serde_json::json!({"minimap": true, "top_bar": true, "panels_opaque": false}));
         let session_guard = runtime.session().unwrap().identity().guard();
         runtime.toggle_icons_and_map(initial.guard(), session_guard).unwrap();
         assert_eq!(runtime.identity().generation, initial.generation);
         assert_eq!(runtime.identity().session, initial.session);
-        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false });
+        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false });
         let notices = runtime.session().unwrap().backend().participant_notifications();
         assert_eq!(notices.len(), 1);
         assert!(notices[0].is_local);
@@ -6272,7 +6478,7 @@ pub(crate) mod tests {
         assert!(!cold.identity().display_settings.minimap, "retry does not run source SetKeysDefault");
         let reset_save = resolver.save_replay(&cold).unwrap();
         let reset_json: serde_json::Value = serde_json::from_slice(&reset_save).unwrap();
-        assert_eq!(reset_json["initial_display_settings"], serde_json::json!({"minimap": false, "top_bar": false}));
+        assert_eq!(reset_json["initial_display_settings"], serde_json::json!({"minimap": false, "top_bar": false, "panels_opaque": false}));
         let mut reset_cold = GameRuntime::<Mc2CampaignBackend>::title(8862).unwrap();
         let title = reset_cold.identity();
         resolver.load_replay(&mut reset_cold, title.guard(), 8862, &reset_save).unwrap();
@@ -7995,7 +8201,7 @@ pub(crate) mod tests {
             secret_flow: None,
             source_context: None,
             played_cutscenes: None,
-            display_settings: crate::game_runtime::DisplaySettings::default(),
+            display_settings: crate::game_runtime::DisplaySettings::default().into(),
             receipt_sha256: String::new(),
             source_secret_announcement_count: 0,
         };
@@ -22300,13 +22506,18 @@ pub(crate) mod tests {
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         current.backend_mut().install_initial_secret_announcement(trace.initial_secret_announcement)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
-        let mut display_settings = trace.initial_display_settings;
+        let mut display_settings = trace.initial_display_settings.resolve(package.selection.map_type_id == 2);
         for (operation_index, operation) in trace.operations.into_iter().enumerate() {
             let guard = current.identity().guard();
             match operation {
                 ReplayOperation::ToggleIconsMap => {
                     display_settings = display_settings.toggled();
                     current.backend_mut().publish_display_notice(display_settings.minimap)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::TogglePanelTransparency => {
+                    display_settings.panels_opaque = !display_settings.panels_opaque;
+                    current.backend_mut().publish_panel_transparency_notice(display_settings.panels_opaque)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {

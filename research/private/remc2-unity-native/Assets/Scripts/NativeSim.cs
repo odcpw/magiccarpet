@@ -2430,6 +2430,11 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_minimap_terrain_coverage_copy(
+            ulong handle, ulong generation, ulong expectedTick,
+            [Out] byte[] buffer, uint capacity, out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_minimap_labels_json(
             ulong handle, ulong generation, ulong expectedTick,
             IntPtr buffer, uint capacity, out uint written);
@@ -2810,6 +2815,10 @@ namespace MagicCarpet.Native
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_toggle_icons_map_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_toggle_panel_transparency_v1(
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]

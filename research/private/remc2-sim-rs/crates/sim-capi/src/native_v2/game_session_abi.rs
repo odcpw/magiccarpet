@@ -119,11 +119,11 @@ impl NeutralSession {
                 .reset(guard)
                 .map(|_| ())
                 .map_err(map_campaign_session_error),
-            Self::Runtime(runtime) => runtime
-                .session_mut()?
-                .reset(guard)
-                .map(|_| ())
-                .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => {
+                runtime.session_mut()?.reset(guard).map_err(map_campaign_session_error)?;
+                runtime.reset_panel_transparency_to_level_default();
+                Ok(())
+            }
         }
     }
 
