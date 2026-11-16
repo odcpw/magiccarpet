@@ -801,18 +801,100 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): Castle/balloon status and Shift+F7/Options15 flat
-shading are implemented, verified, committed, pushed and installed. Continue
-mc-5r5.2 with bare-F7 brightness cycling and the Options brightness control,
-including canonical palette admission, startup/fade lifetime, immediate save/cold
-restore and actual world/HUD/help palette consumers. Source case6 accepts only
-paletteMod>=3/submode0; accepted endpoint clamps still request submode1. Keep
-general Playing preferences restricted; use one guarded typed source action.
-Root owns serialized integration/build/push/install; workers retain their connected
-capability through consumer failure. Do not extend a fixed ABI struct in place. The installed
-spell-menu, Default Keys and secret announcement checkpoints below are delivered;
-do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
-Modern work. Shift+F7 is flat shading, a separate source control.
+Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed
+and the source in-game viewport are implemented, verified, committed, pushed and
+installed. Do not restart their delivered checkpoints below. Continue the actual
+Player Names option through the existing live sorcerer/A4/name/life carrier,
+original selected FONT1, painter-ordered label/health drawing, source notices and
+auxiliary process lifetime. Native settings/carriers and managed controls are
+implemented but not yet qualified or installed; root is integrating the font/frame
+bridge and a valid current Nyphur view. No invisible/synthetic actor or GUI text
+overlay is accepted as glyph-consumer proof. Source case17 defaults names visible;
+byte207 is outside GAME/CONFIG/SLEV, retained on retry/mission/warm receiver load,
+and cold-defaulted only after saved receipts verify. Notice history must still
+reconstruct the actual local type3/50 message. Full mc-5r5.2/mc-oi6.5/.6 acceptance
+and dependencies remain OPEN. Hardware resolution switching remains the explicitly
+classified separate renderer option, not the in-game viewport. Root serializes
+Cargo/RCH/push/install; owners remain through real consumer failures. Preserve
+unrelated Modern/browser work and fixed ABI extents.
+
+Viewport checkpoint: canonical f0e11884 is pushed as Original81233f67; all20
+owned blobs match. Original build-_rry9xbm/native
+74ccbbf0c5260639c6be18c8079ee0281e52d46cb817889d20c9e2c04dd6e3c5 is installed;
+--check-installed passes. Source Options index7 and physical brackets drive a
+guarded GAME viewport16..40: menu clamps, '[' enlarges and ']' shrinks only above17.
+The saved size survives cold/warm load, retry, mission and Default Keys; omitted40
+preserves old save bytes. No CONFIG field, fake gameplay operation, notice or
+fixed ABI enlargement was added. Projection, sky, source sprite clipping and
+destination operations use actual viewport geometry; source palette-derived
+surround clearing precedes full-target HUD/minimap. The fixed map pane retains
+its separate view. The actual GPU exit-history compositor also clears the
+surround before applying its pointwise source LUT; odd-size vertical margins
+retain source truncation. Selected source glyph record13 now labels the enabled
+option correctly as ALTER SCREEN SIZE.
+
+Real Day3/Cave12 projection, clear surround, fixed-map override and full40 reversal
+pass0.665s; source projection/sky, all three sprite-pass clips and the preserved
+internally-clipped visibility boundary pass. GAME lifecycle passes1.19s, genuine
+old-v9 receipt migration13.58s and CABI guards51.62s. Workspace all-targets and
+strict native build pass; all626 source/header/upstream inputs and Rig/returned/
+Editor/installed native bytes match. These626 inputs are provenance, not tests.
+The actual GPU LUT/viewport check passes0.623s. The initial accumulated settings
+test exceeded its existing180s timeout; every new viewport assertion moved into
+the focused real-client SourceViewportChangesRealWorldAndKeepsFullHud, which
+passes107.38s. Its prior SourcePanels body independently matches delivered
+deacbbc5 byte-for-byte. Actual Options row/control and held-bracket checks pass
+42.20s/0.012s. No assertion/timeout gate was weakened or Rust rebuilt for that
+test-only separation. Canonical116-source runtime typecheck passes2.32s. UBS has
+no added critical Rust finding; legacy totals and partial C# analysis are limits.
+Evidence: generated/viewport-20261116.
+
+Root viewed normal canonical map/loading/NightSpire, physical P/bracket shrink,
+actual Options shrink and subsequent enlargement with full-sized HUD and original
+indexed text; matching mapped native, one portal, zero retries/runtime errors,
+owned player/display stopped. The final rapid-key capture remains inset and is
+not exact-count/full40 installed reversal proof; that reversal is established by
+the native and managed checks. This is not human combat, FPS, hardware audio,
+full missions or historical-save proof. All30 resource roles remain available;
+their mission paths were not repeated.
+
+Speed checkpoint: canonical deacbbc5 is pushed as Original7ffcf607; all23 owned
+blobs match. Superseded installed build-ozzihvaw/native4641e38e was qualified before
+the viewport installation. Real F3/Options primary and secondary select source
+0/1/2 with1/4/8 UpdateEntities passes per outer frame; PlayerEvents/presentation
+run once. Actual steering, mouse suppression,50-frame381/382/383 notices,
+recovery/reset, cold0 and warm receiving speed are connected. Speed is auxiliary,
+not GAME/CONFIG/SLEV. Ordered process assignments/actions preserve same-boundary
+save/replay; all saved receipts verify before cold/warm process adjustment.
+Native actual-player cadence/lifecycle passes1.03s, real frame admission0.40s,
+actual revival0.30s, old-v9 migration13.84s and CABI53.19s. The first warm-load
+test incorrectly called a Title-only API from Paused; fresh Title targets corrected
+the fixture without production or receipt changes. Actual8-pass managed execution
+then exposed a real pause/audio join: native retires voices at accepted pause,
+but Unity previously waited to observe Paused on a later drain. All accepted
+pause paths now synchronously use the existing audio rebind/retirement; strict
+ownership remains. SourcePanels passes176.91s after that fix; other two controls
+pass44.18s/0.012s. Native/source closure and canonical116-source compile pass.
+Root viewed installed F3 SPEED FAST and Options SPEED NORMAL/FAST, normal
+map/load/terrain/HUD, matching native, zero retries/errors; owned smoke stopped.
+Evidence: generated/speed-20261116. Human combat/FPS/hardware audio/full missions/
+historical saves were not qualified.
+
+Brightness checkpoint: canonical b5088a64 is pushed as Originalf916f016; all19
+owned blobs match. Superseded installed build-kvk4b54z/native889b4704 was qualified.
+Bare F7 cycles source0..4; Options clamps. Actual paletteMod>=3/submode0 admission,
+endpoint refade, startup/four-step signed RGB6 fade, immediate save/cold restore
+and shared world/HUD/help palette consumers are connected. Optional replay
+palette boundaries preserve the genuine old-v9 prefix; CONFIG writes remain
+atomic and generic Playing preferences restricted. Duplicate managed brightness
+transforms were removed. Focused palette/preferences/receipt/CABI checks, strict
+Rig build, all626 inputs and real managed help129.75s/Options44.70s/SourcePanels
+117.15s pass. A test-only old camera-history assumption was corrected by drawing
+the actual current generation before asserting full unchanged palette equality;
+no production guard or expectation was weakened. Root viewed installed F7 and
+Options brightness, original map/load/NightSpire/HUD, matching native, zero
+retries/errors, owned smoke stopped. Evidence: generated/brightness-20261116;
+the same human/FPS/hardware-audio/mission/historical-save limits apply.
 
 Flat-shading checkpoint: canonical a99893ec is pushed as Original49481c14;
 all26 owned code blobs match. Original build-j89o0ece/native
