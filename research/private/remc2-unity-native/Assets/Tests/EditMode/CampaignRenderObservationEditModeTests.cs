@@ -31,6 +31,10 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo(full.value.player_hand_selection_flash_ticks));
                 Assert.That(jsonRender.value.player_hand_selection_flash_ticks,
                     Is.EqualTo(full.value.player_hand_selection_flash_ticks));
+                Assert.That(JsonUtility.ToJson(render.value.source_top_status),
+                    Is.EqualTo(JsonUtility.ToJson(full.value.source_top_status)));
+                Assert.That(JsonUtility.ToJson(jsonRender.value.source_top_status),
+                    Is.EqualTo(JsonUtility.ToJson(full.value.source_top_status)));
                 Assert.That(render.identity.generation, Is.EqualTo(full.identity.generation));
                 Assert.That(render.identity.tick, Is.EqualTo(full.identity.tick));
                 Assert.That(JsonUtility.ToJson(render.value.player_pose), Is.EqualTo(JsonUtility.ToJson(full.value.player_pose)));
@@ -103,15 +107,38 @@ namespace MagicCarpet.Native.Tests
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
             bad[4] = 3;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
-            bad[4] = 4; bad[28] = 2;
+            bad[4] = 4;
+            Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
+            bad[4] = 5; bad[28] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
             bad[28] = 0;
-            foreach (var index in new[] { (int)length - 2, (int)length - 1 }) {
+            var topLength = publication.Observation.value.source_top_status.castle_rows.Length == 0 ? 59 : 84;
+            var flashIndex = (int)length - topLength - 2;
+            foreach (var index in new[] { flashIndex, flashIndex + 1 }) {
                 var invalidClock = (byte[])bytes.Clone();
                 invalidClock[index] = 9;
                 Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(invalidClock, (int)length));
             }
-            foreach (var removed in new[] { 1, 2 }) {
+            var castleFlag = flashIndex + 2;
+            var invalidPresence = (byte[])bytes.Clone(); invalidPresence[castleFlag] = 2;
+            Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(invalidPresence, (int)length));
+            var withCastle = new byte[(int)length + (topLength == 59 ? 25 : 0)];
+            if (topLength == 59) {
+                Array.Copy(bytes, 0, withCastle, 0, castleFlag + 1);
+                Array.Copy(bytes, castleFlag + 1, withCastle, castleFlag + 26, (int)length - castleFlag - 1);
+                withCastle[castleFlag] = 1;
+                Array.Copy(BitConverter.GetBytes(withCastle.Length), 0, withCastle, 8, 4);
+            } else Array.Copy(bytes, withCastle, (int)length);
+            withCastle[castleFlag + 1] = 0;
+            Assert.That(CampaignRenderTransport.Decode(withCastle, withCastle.Length).Observation.value.source_top_status.castle_rows.Single().stage, Is.Zero);
+            withCastle[castleFlag + 1] = 8;
+            Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(withCastle, withCastle.Length));
+            var firstBalloon = castleFlag + 1 + (topLength == 59 ? 0 : 25) + 4;
+            for (var i = 0; i < 3; i++) {
+                var invalidBalloon = (byte[])bytes.Clone(); invalidBalloon[firstBalloon + i * 17] = 2;
+                Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(invalidBalloon, (int)length));
+            }
+            foreach (var removed in new[] { 1, 2, 3, 20, topLength }) {
                 var shortPacket = new byte[(int)length - removed];
                 Array.Copy(bytes, shortPacket, shortPacket.Length);
                 Array.Copy(BitConverter.GetBytes(shortPacket.Length), 0, shortPacket, 8, 4);
@@ -142,6 +169,12 @@ namespace MagicCarpet.Native.Tests
                     player_vitals = new EngineSessionTransport.PlayerVitals { life = 80, max_life = 100, mana = 60, max_mana = 100 },
                     source_camera_pose = new EngineSessionTransport.CameraPose { x = 11, y = 21 }, source_camera_fov = 128,
                     player_hand_selection_flash_ticks = new byte[] { 8, 1 },
+                    source_top_status = new EngineSessionTransport.SourceTopStatus {
+                        castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus { stage = 0, life = -1, mana = -3 } },
+                        balloons = new[] { new EngineSessionTransport.SourceBalloonStatus { present = true, life = -2 },
+                            new EngineSessionTransport.SourceBalloonStatus(), new EngineSessionTransport.SourceBalloonStatus() },
+                        mana_goal_percent = -11
+                    },
                     player_spells = new[] { new EngineSessionTransport.SpellObservation {
                         id = "spell.fireball", display_name = "Fireball", acquired = true,
                         selected = true, hand = "left", availability = "ready"
@@ -166,6 +199,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(restored.value.source_camera_pose.y, Is.EqualTo(21));
             Assert.That(restored.value.player_spells.Single().selected, Is.True);
             Assert.That(restored.value.player_hand_selection_flash_ticks, Is.EqualTo(new byte[] { 8, 1 }));
+            Assert.That(restored.value.source_top_status.castle_rows.Single().stage, Is.Zero);
+            Assert.That(restored.value.source_top_status.castle_rows.Single().life, Is.EqualTo(-1));
+            Assert.That(restored.value.source_top_status.balloons[0].life, Is.EqualTo(-2));
             Assert.That(restored.value.state_hash, Is.EqualTo(full.value.state_hash));
             Assert.That(restored.value.effect_journal_sha256, Is.EqualTo(full.value.effect_journal_sha256));
         }
@@ -211,6 +247,40 @@ namespace MagicCarpet.Native.Tests
                 Assert.Throws<InvalidOperationException>(() =>
                     EngineSessionTransport.ValidateCampaignSnapshot(full, observation.identity));
             }
+        }
+
+        [Test]
+        public void FullAndRenderJsonRejectIncompleteTopStatus()
+        {
+            var observation = Observation();
+            var full = (EngineSessionTransport.CampaignSnapshotValue)observation.value;
+            var valid = full.source_top_status;
+            foreach (var top in new EngineSessionTransport.SourceTopStatus[] {
+                null, new EngineSessionTransport.SourceTopStatus(),
+                new EngineSessionTransport.SourceTopStatus { castle_rows = Array.Empty<EngineSessionTransport.SourceCastleStatus>(), balloons = new EngineSessionTransport.SourceBalloonStatus[2] },
+                new EngineSessionTransport.SourceTopStatus { castle_rows = Array.Empty<EngineSessionTransport.SourceCastleStatus>(), balloons = new EngineSessionTransport.SourceBalloonStatus[3] },
+                new EngineSessionTransport.SourceTopStatus { castle_rows = new EngineSessionTransport.SourceCastleStatus[] { null }, balloons = valid.balloons },
+                new EngineSessionTransport.SourceTopStatus { castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus(), new EngineSessionTransport.SourceCastleStatus() }, balloons = valid.balloons },
+                new EngineSessionTransport.SourceTopStatus { castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus { stage = 8 } }, balloons = valid.balloons } }) {
+                full.source_top_status = top;
+                Assert.Throws<InvalidOperationException>(() => EngineSessionTransport.ValidateCampaignRenderObservation(observation));
+                Assert.Throws<InvalidOperationException>(() => EngineSessionTransport.ValidateCampaignSnapshot(full, observation.identity));
+            }
+        }
+
+        [Test]
+        public void TopStatusJsonDistinguishesAbsentCastleFromStageZero()
+        {
+            const string balloons = "\"balloons\":[{\"present\":false},{\"present\":false},{\"present\":false}]";
+            var absent = JsonUtility.FromJson<EngineSessionTransport.SourceTopStatus>(
+                "{\"castle_rows\":[]," + balloons + "}");
+            EngineSessionTransport.ValidateSourceTopStatus(absent);
+            Assert.That(absent.castle_rows, Is.Empty);
+            var zero = JsonUtility.FromJson<EngineSessionTransport.SourceTopStatus>(
+                "{\"castle_rows\":[{\"stage\":0,\"life\":-1}]," + balloons + "}");
+            EngineSessionTransport.ValidateSourceTopStatus(zero);
+            Assert.That(zero.castle_rows.Single().stage, Is.Zero);
+            Assert.That(zero.castle_rows.Single().life, Is.EqualTo(-1));
         }
 
         [Test]

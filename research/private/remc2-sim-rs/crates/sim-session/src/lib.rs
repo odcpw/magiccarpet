@@ -128,6 +128,65 @@ pub struct SourceScoreboard {
     pub projection_error: Option<String>,
 }
 
+/// Current source-linked Castle, including its stage-zero construction state.
+/// Panel selectors are the retained pre-decrement draw decision, not timers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SourceCastleStatus {
+    pub stage: u8,
+    pub panel_selector: u16,
+    pub icon_selector: u16,
+    pub life: i32,
+    pub max_life: i32,
+    pub mana: i32,
+    pub max_mana: i32,
+    pub owner_mana_aggregate: i32,
+}
+
+/// One ordered source balloon slot. A missing/reclaimed slot is not compacted
+/// into a different row. Maxima are meaningful only while present is true.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct SourceBalloonStatus {
+    pub present: bool,
+    pub life: i32,
+    pub max_life: i32,
+    pub mana: i32,
+    pub max_mana: i32,
+}
+
+/// Same-boundary source top-status projection. Castle absence and a linked
+/// stage-zero Castle have different balloon-panel admission in the source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SourceTopStatus {
+    // Unity JsonUtility materializes a null class as a zero-valued instance.
+    // A zero/one row relation preserves absence separately from linked stage0.
+    #[serde(rename = "castle_rows", serialize_with = "serialize_castle_rows")]
+    pub castle: Option<SourceCastleStatus>,
+    pub balloon_panel_selector: u16,
+    pub balloon_icon_selector: u16,
+    pub balloons: [SourceBalloonStatus; 3],
+    pub mana_goal_percent: i16,
+    pub goal_palette_index: u8,
+}
+
+fn serialize_castle_rows<S: serde::Serializer>(
+    castle: &Option<SourceCastleStatus>, serializer: S,
+) -> Result<S::Ok, S::Error> {
+    castle.as_slice().serialize(serializer)
+}
+
+impl Default for SourceTopStatus {
+    fn default() -> Self {
+        Self {
+            castle: None,
+            balloon_panel_selector: 54,
+            balloon_icon_selector: 0,
+            balloons: [SourceBalloonStatus::default(); 3],
+            mana_goal_percent: 0,
+            goal_palette_index: 0,
+        }
+    }
+}
+
 /// Current hand assignment; an acquired spell may also be selected without
 /// occupying either hand. This is observed authority, not a client preference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -288,6 +347,7 @@ pub struct CampaignSnapshot {
     /// This is a live result, distinct from completion or a secret return.
     pub return_to_title_requested: bool,
     pub source_scoreboard: SourceScoreboard,
+    pub source_top_status: SourceTopStatus,
     pub participant_notifications: Vec<ParticipantNotification>,
     /// Source player contact counter used by the ordinary wall-help poll.
     pub player_wall_contact_counter: i8,
@@ -718,6 +778,10 @@ pub trait GameSessionBackend {
     }
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
+    /// Prepare the runtime owner's TopBar value for one guarded frame. This
+    /// is a frame argument, not another persisted preference; implementations
+    /// must publish its history/state effects only when that frame is accepted.
+    fn prepare_hud_frame(&mut self, _top_bar: bool) {}
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
     /// Apply package-declared presentation changes at an accepted pause edge.
     /// This cannot advance gameplay or fail after lifecycle publication.

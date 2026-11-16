@@ -363,6 +363,15 @@ namespace MagicCarpet.Native
         private ulong gameRuntimeHudGeneration, gameRuntimeHudRevision;
         private SourcePlayerNotificationsPresenter.Row[] gameRuntimeMapNoticeRows;
 
+        // DrawTopStatusBar passes a wrapped signed source shift through an
+        // int16 argument before DrawBar clamps it to 64 and rejects widths <2.
+        private static int SourceTopStatusBarWidth(int value, int denominator)
+        {
+            if (denominator <= 0) throw new InvalidDataException("source top-status denominator is invalid");
+            var width = unchecked((short)(unchecked(value << 6) / denominator));
+            return width < 2 ? 0 : Math.Min((int)width, 64);
+        }
+
         private bool TryGetGameRuntimeHudScene(CampaignPresentationSurface surface,
             out Texture indices, out ulong generation, out ulong revision)
         {
@@ -533,8 +542,53 @@ namespace MagicCarpet.Native
             {
                 Hand(hud.left, 510); Hand(hud.right, 574);
                 Sprite(hud.minimapPanelSelector, 2, 2, !opaque);
-                Sprite(hud.castlePanelSelector, castleX, 2, !opaque);
-                Sprite(hud.balloonPanelSelector, balloonX, 2, !opaque);
+                var status = gameRuntimeCampaignSnapshot?.value?.source_top_status ??
+                    throw new InvalidDataException("source Castle and balloon status is unbound");
+                if (status.castle_rows == null || status.castle_rows.Length > 1 ||
+                    (status.castle_rows.Length == 1 && status.castle_rows[0] == null))
+                    throw new InvalidDataException("source Castle status rows are invalid");
+                var castle = status.castle_rows.Length == 0 ? null : status.castle_rows[0];
+                Sprite(castle?.panel_selector ?? 54, castleX, 2, !opaque);
+                if (castle != null && castle.stage != 0)
+                {
+                    Sprite(castle.icon_selector, castleX + 2, 2, false);
+                    Sprite(hud.lifeManaIconSelector, castleX + 38, 2, false);
+                    var barX = castleX + 58;
+                    Fill(barX, 10, SourceTopStatusBarWidth(castle.life, castle.max_life), 10, hud.lifePaletteIndex);
+                    var totalMana = unchecked(castle.mana + castle.owner_mana_aggregate);
+                    if (totalMana != castle.max_mana)
+                        Fill(barX, 28, SourceTopStatusBarWidth(castle.max_mana, hud.globalManaDenominator), 10,
+                            hud.manaMaxPaletteIndex);
+                    var fullColor = totalMana == castle.max_mana && hud.colorPhase2 == 1;
+                    Fill(barX, 28, SourceTopStatusBarWidth(fullColor ? castle.max_mana : totalMana,
+                        hud.globalManaDenominator), 10, fullColor ? hud.manaMaxPaletteIndex : hud.manaPaletteIndex);
+                    if (status.mana_goal_percent != 0)
+                    {
+                        var goalX = barX + (status.mana_goal_percent << 6) / 100;
+                        Fill(goalX, 26, 2, 2, status.goal_palette_index);
+                        Fill(goalX, 38, 2, 2, status.goal_palette_index);
+                    }
+                }
+                Sprite(status.balloon_panel_selector, balloonX, 2, !opaque);
+                if (castle != null)
+                {
+                    Sprite(status.balloon_icon_selector, balloonX + 2, 2, false);
+                    Sprite(hud.lifeManaIconSelector, balloonX + 38, 2, false);
+                    var count = castle.stage <= 3 ? (castle.stage == 0 ? 0 : 1) : castle.stage <= 5 ? 2 : 3;
+                    if (status.balloons == null || status.balloons.Length != 3)
+                        throw new InvalidDataException("source balloon rows are incomplete");
+                    for (var index = 0; index < count; index++)
+                    {
+                        var balloon = status.balloons[index];
+                        if (balloon == null) throw new InvalidDataException("source balloon row is unbound");
+                        if (!balloon.present) continue;
+                        if (balloon.life >= 0)
+                            Fill(balloonX + 58, 12 + 2 * index,
+                                SourceTopStatusBarWidth(balloon.life, balloon.max_life), 2, hud.lifePaletteIndex);
+                        Fill(balloonX + 58, 30 + 2 * index,
+                            SourceTopStatusBarWidth(balloon.mana, balloon.max_mana), 2, hud.manaPaletteIndex);
+                    }
+                }
                 Sprite(hud.playerPanelSelector, playerX, 2, !opaque);
                 Sprite(hud.playerIconSelector, playerX + 2, 2, false);
                 Sprite(hud.lifeManaIconSelector, playerX + 38, 2, false);

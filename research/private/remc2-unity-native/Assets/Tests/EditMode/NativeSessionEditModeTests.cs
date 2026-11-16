@@ -16,6 +16,46 @@ namespace MagicCarpet.Native.Tests
 
         private string priorAssetCache;
 
+        [Test]
+        public void SourceTopStatusJsonRetainsAbsentCastleAndLinkedStageZero()
+        {
+            const string rows = "\"balloons\":[{\"present\":false},{\"present\":false},{\"present\":false}]";
+            var absent = EngineSessionTransport.DecodeSourceTopStatusJson(
+                "{\"castle_rows\":[],\"balloon_panel_selector\":54," + rows + "}");
+            EngineSessionTransport.ValidateSourceTopStatus(absent);
+            Assert.That(absent.castle_rows, Is.Empty, "native no-link must not become a linked stage-zero Castle");
+            Assert.That(absent.balloons.Length, Is.EqualTo(3));
+            var stageZero = EngineSessionTransport.DecodeSourceTopStatusJson(
+                "{\"castle_rows\":[{\"stage\":0}],\"balloon_panel_selector\":41,\"balloon_icon_selector\":50," + rows + "}");
+            EngineSessionTransport.ValidateSourceTopStatus(stageZero);
+            Assert.That(stageZero.castle_rows.Length, Is.EqualTo(1));
+            Assert.That(stageZero.castle_rows[0].stage, Is.Zero);
+            Assert.That(stageZero.balloon_panel_selector, Is.EqualTo(41));
+            Assert.That(stageZero.balloon_icon_selector, Is.EqualTo(50));
+            EngineSessionTransport.SourceTopStatus ReadEnvelope(string status)
+            {
+                var bytes = Encoding.UTF8.GetBytes("{\"value\":{\"source_top_status\":" + status + "}}");
+                int Read(IntPtr buffer, uint capacity, out uint length)
+                {
+                    length = checked((uint)bytes.Length);
+                    if (capacity < length) return NativeSim.Bounds;
+                    Assert.That(capacity, Is.GreaterThanOrEqualTo(length));
+                    System.Runtime.InteropServices.Marshal.Copy(bytes, 0, buffer, bytes.Length);
+                    return 0;
+                }
+                return EngineSessionTransport.ReadJson<EngineSessionTransport.CampaignSnapshotObservation>(
+                    Read, "top-status shape control").value.source_top_status;
+            }
+            Assert.That(ReadEnvelope("{\"castle_rows\":[]," + rows + "}").castle_rows, Is.Empty);
+            Assert.That(ReadEnvelope("{\"castle_rows\":[{\"stage\":0}]," + rows + "}").castle_rows.Length, Is.EqualTo(1));
+            foreach (var malformed in new[] { "\"castle_rows\":null,", "\"castle_rows\":[{},{}],", "" })
+            {
+                Assert.Throws<InvalidOperationException>(() => EngineSessionTransport.DecodeSourceTopStatusJson(
+                    "{" + malformed + rows + "}"));
+                Assert.Throws<InvalidOperationException>(() => ReadEnvelope("{" + malformed + rows + "}"));
+            }
+        }
+
         [Serializable] private sealed class ObjectiveOracleManifest { public ObjectiveOracleAssets assets; }
         [Serializable] private sealed class ObjectiveOracleAssets { public ObjectiveOracleFont hfont3; public ObjectiveOracleSprite[] hsprn; }
         [Serializable] private sealed class ObjectiveOracleFont { public ObjectiveOracleGlyph[] glyphs; public string mask_blob_path; }

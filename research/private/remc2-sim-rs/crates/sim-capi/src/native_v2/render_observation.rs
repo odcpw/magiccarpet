@@ -19,6 +19,8 @@ fn map_publication_error(error: sim_session::render_publication::EncodeError) ->
             MC_STATUS_BUFFER_TOO_SMALL, format!("render publication requires {required} bytes")),
         EncodeError::InvalidHandSelectionFlashTicks(ticks) => AbiError::new(
             MC_STATUS_VALIDATION_FAILED, format!("invalid hand selection flash ticks: {ticks:?}")),
+        EncodeError::InvalidTopStatusStage(stage) => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED, format!("invalid Castle status stage: {stage}")),
     }
 }
 
@@ -55,7 +57,7 @@ pub extern "C" fn mc_game_runtime_render_observation_json_v1(
     })
 }
 
-/// Copy a coherent, guarded MCPO v4 packet to a reusable caller-owned buffer.
+/// Copy a coherent, guarded MCPO v5 packet to a reusable caller-owned buffer.
 /// A short buffer receives no bytes and `out_written` receives the exact size.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
@@ -141,6 +143,7 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
                 spell_menu_wizard_colors: value.spell_menu_wizard_colors,
                 spell_menu_panels_opaque: value.spell_menu_panels_opaque,
                 player_hand_selection_flash_ticks: value.player_hand_selection_flash_ticks,
+                source_top_status: &value.source_top_status,
                 player_spells: &value.player_spells,
                 objective_progress: &value.objective_progress,
                 objective_textbox_ticks: value.objective_textbox_ticks,
@@ -199,6 +202,15 @@ mod tests {
         );
         assert_eq!(error.status, MC_STATUS_VALIDATION_FAILED);
         assert!(error.message.contains("hand selection flash ticks"));
+    }
+
+    #[test]
+    fn invalid_castle_stage_maps_to_validation_failure() {
+        let error = map_publication_error(
+            sim_session::render_publication::EncodeError::InvalidTopStatusStage(8),
+        );
+        assert_eq!(error.status, MC_STATUS_VALIDATION_FAILED);
+        assert!(error.message.contains("stage: 8"));
     }
 
     fn package_set() -> Vec<u8> {
@@ -310,7 +322,7 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(&short[..4], b"MCPO");
-        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 5);
         assert_eq!(u32::from_le_bytes(short[8..12].try_into().unwrap()), length);
         assert_eq!(u64::from_le_bytes(short[12..20].try_into().unwrap()), id);
         assert_eq!(
@@ -350,13 +362,44 @@ mod tests {
         assert_eq!(render["value"]["player_hand_selection_flash_ticks"], *clocks);
         let clocks = clocks.as_array().unwrap();
         assert_eq!(clocks.len(), 2);
-        for (actual, expected) in compact[compact.len() - 2..].iter().zip(clocks) {
-            assert_eq!(u64::from(*actual), expected.as_u64().unwrap());
-            assert!(*actual <= 8);
+        let top = &full["value"]["source_top_status"];
+        assert_eq!(render["value"]["source_top_status"], *top);
+        let mut tail = clocks.iter().map(|clock| {
+            let value = u8::try_from(clock.as_u64().unwrap()).unwrap();
+            assert!(value <= 8);
+            value
+        }).collect::<Vec<_>>();
+        let castle_rows = top["castle_rows"].as_array().unwrap();
+        assert!(castle_rows.len() <= 1);
+        tail.push(u8::try_from(castle_rows.len()).unwrap());
+        let add_u16 = |tail: &mut Vec<u8>, value: &serde_json::Value| {
+            tail.extend_from_slice(&u16::try_from(value.as_u64().unwrap()).unwrap().to_le_bytes());
+        };
+        let add_i32 = |tail: &mut Vec<u8>, value: &serde_json::Value| {
+            tail.extend_from_slice(&i32::try_from(value.as_i64().unwrap()).unwrap().to_le_bytes());
+        };
+        if let Some(castle) = castle_rows.first() {
+            let stage = u8::try_from(castle["stage"].as_u64().unwrap()).unwrap();
+            assert!(stage <= 7);
+            tail.push(stage);
+            for key in ["panel_selector", "icon_selector"] { add_u16(&mut tail, &castle[key]); }
+            for key in ["life", "max_life", "mana", "max_mana", "owner_mana_aggregate"] {
+                add_i32(&mut tail, &castle[key]);
+            }
         }
+        for key in ["balloon_panel_selector", "balloon_icon_selector"] { add_u16(&mut tail, &top[key]); }
+        let balloons = top["balloons"].as_array().unwrap();
+        assert_eq!(balloons.len(), 3);
+        for balloon in balloons {
+            tail.push(u8::from(balloon["present"].as_bool().unwrap()));
+            for key in ["life", "max_life", "mana", "max_mana"] { add_i32(&mut tail, &balloon[key]); }
+        }
+        tail.extend_from_slice(&i16::try_from(top["mana_goal_percent"].as_i64().unwrap()).unwrap().to_le_bytes());
+        tail.push(u8::try_from(top["goal_palette_index"].as_u64().unwrap()).unwrap());
+        assert_eq!(&compact[compact.len() - tail.len()..], tail);
     }
 
-    // Read just the panel bit from the public MCPO v4 packet. Walk the
+    // Read just the panel bit from the public MCPO v5 packet. Walk the
     // variable-sized prefix instead of assuming a particular player name or
     // notice count, so this exercises the actual encoder and buffer path.
     fn packet_panels_opaque(packet: &[u8]) -> bool {

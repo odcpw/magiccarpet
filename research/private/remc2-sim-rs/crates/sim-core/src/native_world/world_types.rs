@@ -2081,6 +2081,9 @@ pub struct PlayerSnapshot {
     /// Source A4 PlayerHitFrameTime_406. The compact exporter record's byte
     /// 406 belongs to spell hand eligibility, not this omitted HUD field.
     pub hit_frame_time: u8,
+    /// Source player A4 signed byte197, distinct from NewEvent's shared A4.
+    /// Ordinary Castle collectors retain that shared A4 and never set this.
+    pub balloon_hit_frame_time: i8,
     /// Source A4 byte_0x1BE_446, consulted by GetSpellManaCost after a
     /// level-one Castle is abandoned. It is absent from compact players.bin.
     pub castle_destroyed: u8,
@@ -2096,6 +2099,10 @@ pub struct PlayerSnapshot {
 
 impl PlayerSnapshot {
     pub(crate) fn append_omitted_state_hash(&self, hasher: &mut Sha256) {
+        if self.balloon_hit_frame_time != 0 {
+            hasher.update(b"source-player-balloon-hit-frame-v1");
+            hasher.update(self.balloon_hit_frame_time.to_le_bytes());
+        }
         if let Some(countdown) = self.source_music_countdown {
             hasher.update(b"source-player-a4-music-countdown-v1");
             hasher.update(countdown.to_le_bytes());

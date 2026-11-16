@@ -869,6 +869,13 @@ struct Mc2HelpPreferenceChange {
     enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Mc2HudAdmissionChange {
+    before_operation: usize,
+    top_bar: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Mc2PrimaryVisibilityChange {
@@ -947,6 +954,8 @@ struct Mc2CampaignReplaySave {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     help_preference_changes: Vec<Mc2HelpPreferenceChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hud_admission_changes: Vec<Mc2HudAdmissionChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
@@ -1001,6 +1010,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     dynamic_lighting_changes: &'a [Mc2DynamicLightingChange],
     #[serde(skip_serializing_if = "<[Mc2HelpPreferenceChange]>::is_empty")]
     help_preference_changes: &'a [Mc2HelpPreferenceChange],
+    #[serde(skip_serializing_if = "<[Mc2HudAdmissionChange]>::is_empty")]
+    hud_admission_changes: &'a [Mc2HudAdmissionChange],
     #[serde(skip_serializing_if = "<[Mc2PrimaryVisibilityChange]>::is_empty")]
     primary_visibility_changes: &'a [Mc2PrimaryVisibilityChange],
     #[serde(skip_serializing_if = "<[voxels::VoxelModeChange]>::is_empty")]
@@ -1052,6 +1063,7 @@ impl Mc2CampaignReplaySave {
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
             help_preference_changes: Vec::new(),
+            hud_admission_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             completed_levels: Some(completed_levels),
@@ -1089,6 +1101,7 @@ impl Mc2CampaignReplaySave {
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
             help_preference_changes: &self.help_preference_changes,
+            hud_admission_changes: &self.hud_admission_changes,
             primary_visibility_changes: &self.primary_visibility_changes,
             voxel_mode_changes: &self.voxel_mode_changes,
             completed_levels: self.completed_levels.as_deref(),
@@ -1114,6 +1127,7 @@ impl Mc2CampaignReplaySave {
     fn verify(&self) -> bool {
         let historical_hand_fields_absent = self.initial_hand_selection_flash_ticks == [0; 2]
             && self.hand_selection_flash_start_operation.is_none()
+            && self.hud_admission_changes.is_empty()
             && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none());
         ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
             || (self.save_contract == PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
@@ -2406,6 +2420,7 @@ impl Mc2RuntimePackageResolver {
             .dynamic_lighting_enabled;
         save.dynamic_lighting_changes = session.backend().dynamic_lighting_changes.clone();
         save.help_preference_changes = session.backend().help_preference_changes.clone();
+        save.hud_admission_changes = session.backend().hud_admission_changes.clone();
         save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
         save.voxel_mode_changes = session.backend().voxel_mode_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -2685,6 +2700,16 @@ impl Mc2RuntimePackageResolver {
                 ),
             });
         }
+        if save.hud_admission_changes.len() > save.operations.len()
+            || save.hud_admission_changes.iter().any(|change| !matches!(save.operations.get(change.before_operation),
+                Some(crate::game_runtime::ReplayOperation::Step { .. } | crate::game_runtime::ReplayOperation::PausedFrame { .. })))
+            || save.hud_admission_changes.windows(2).any(|pair|
+                pair[0].before_operation >= pair[1].before_operation || pair[0].top_bar == pair[1].top_bar)
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source HUD admission has an invalid accepted-frame boundary".to_owned(),
+            });
+        }
         if save.global_context_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
             || save
                 .global_context_changes
@@ -2849,6 +2874,7 @@ impl Mc2RuntimePackageResolver {
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
         let mut help_preference_changes = save.help_preference_changes.into_iter().peekable();
+        let mut hud_admission_changes = save.hud_admission_changes.into_iter().peekable();
         let mut primary_visibility_changes = save.primary_visibility_changes.into_iter().peekable();
         let mut voxel_mode_changes = save.voxel_mode_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
@@ -2905,6 +2931,8 @@ impl Mc2RuntimePackageResolver {
                     candidate.backend_mut().hand_selection_flash_start_operation = (hand_flash_start != 0).then_some(hand_flash_start);
                     candidate.backend_mut().campaign.simulation_mut()
                         .set_historical_hand_selection_flash(hand_flash_start != 0);
+                    candidate.backend_mut().hud_admission = None;
+                    candidate.backend_mut().pending_hud_top_bar = None;
                     candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
                     candidate
                         .backend_mut()
@@ -2914,6 +2942,10 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
+                    if hud_admission_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
+                        let change = hud_admission_changes.next().expect("matched HUD admission boundary");
+                        candidate.backend_mut().record_hud_admission(change.top_bar);
+                    }
                     if operation_index == hand_flash_start {
                         candidate.backend_mut().campaign.simulation_mut().set_historical_hand_selection_flash(false);
                     }
@@ -2969,8 +3001,11 @@ impl Mc2RuntimePackageResolver {
                         || actual.effect_journal_sha256 != expected_effect_journal_sha256
                     {
                         return Err(crate::game_runtime::RuntimeTransitionError::InvalidReplay {
-                            message: "replayed campaign state does not match the saved receipts"
-                                .to_owned(),
+                            message: format!(
+                                "replayed campaign state does not match the saved receipts: tick expected={expected_tick} actual={}, state_hash expected={expected_state_hash} actual={}, terrain_hash expected={expected_terrain_hash} actual={}, effect_head expected={expected_effect_head} actual={}, effect_journal_sha256 expected={expected_effect_journal_sha256} actual={}",
+                                actual.tick, actual.state_hash, actual.terrain_hash,
+                                actual.effect_head, actual.effect_journal_sha256,
+                            ),
                         });
                     }
                     // SLEV retains the receiver's nonserialized globals only
@@ -3565,6 +3600,11 @@ pub struct Mc2CampaignBackend {
     // candidates never set this process-local marker.
     fresh_help_profile_pending: bool,
     hand_selection_flash_start_operation: Option<usize>,
+    hud_admission_changes: Vec<Mc2HudAdmissionChange>,
+    // Replay-selected frame policy and one pending guarded frame argument;
+    // neither is another authoritative copy of the runtime's display setting.
+    hud_admission: Option<bool>,
+    pending_hud_top_bar: Option<bool>,
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
     initial_final_reward: bool,
@@ -3585,6 +3625,13 @@ impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
 }
 
 impl Mc2CampaignBackend {
+    fn record_hud_admission(&mut self, top_bar: bool) {
+        self.hud_admission = Some(top_bar);
+        if self.hud_admission_changes.last().is_some_and(|change| change.top_bar == top_bar) { return; }
+        self.hud_admission_changes.push(Mc2HudAdmissionChange {
+            before_operation: self.replay_operations.len(), top_bar,
+        });
+    }
     fn process_context(&self) -> SourceProcessContext {
         SourceProcessContext { shared: self.campaign.source_global_context(),
             hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks() }
@@ -4049,6 +4096,9 @@ impl GameAdapter for Mc2CampaignAdapter {
             help_preference_changes: Vec::new(),
             fresh_help_profile_pending: false,
             hand_selection_flash_start_operation: None,
+            hud_admission_changes: Vec::new(),
+            hud_admission: Some(true),
+            pending_hud_top_bar: None,
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             initial_final_reward: false,
@@ -4209,6 +4259,7 @@ pub struct CampaignRenderObservation {
     pub participant_notifications: Vec<sim_session::ParticipantNotification>,
     pub player_wall_contact_counter: i8,
     pub player_hand_selection_flash_ticks: [u8; 2],
+    pub source_top_status: sim_session::SourceTopStatus,
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: sim_session::CameraPose,
     pub source_camera_fov: i16,
@@ -4394,6 +4445,7 @@ impl Mc2CampaignBackend {
             participant_notifications: self.participant_notifications(),
             player_wall_contact_counter: flight.water_counter,
             player_hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks(),
+            source_top_status: self.campaign.simulation().source_top_status(self.campaign.inspection().source_mana_goal_percent()),
             player_spells: spells::observe(
                 shared_spells,
                 |holder| self.spell_holder_actor(holder),
@@ -4507,6 +4559,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             participant_notifications,
             player_wall_contact_counter,
             player_hand_selection_flash_ticks,
+            source_top_status,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -4533,6 +4586,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             participant_notifications,
             player_wall_contact_counter,
             player_hand_selection_flash_ticks,
+            source_top_status,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -4599,9 +4653,15 @@ impl GameSessionBackend for Mc2CampaignBackend {
         Err(CampaignBackendError::NoAudioSidecar { event_sequence })
     }
 
+    fn prepare_hud_frame(&mut self, top_bar: bool) {
+        self.pending_hud_top_bar = Some(top_bar);
+    }
+
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
+        let hud_admission = self.pending_hud_top_bar.take().or(self.hud_admission);
         let mut player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
+        candidate.simulation_mut().configure_source_hud_tail(hud_admission.is_some(), hud_admission.is_none());
         let show_objective =
             source_objective_input_admitted(candidate.simulation(), command.show_objective);
         candidate
@@ -4629,7 +4689,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         candidate
             .simulation_mut()
             .finish_source_menu_action(command.abandon_action, menu_admitted);
+        if let Some(top_bar) = hud_admission { candidate.simulation_mut().finish_source_hud_frame(top_bar); }
         self.campaign = candidate;
+        if let Some(top_bar) = hud_admission { self.record_hud_admission(top_bar); }
         self.fresh_help_profile_pending = false;
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::Step { command });
@@ -4661,7 +4723,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         elapsed_centiseconds: u32,
         show_objective: bool,
     ) -> Result<(), Self::Error> {
+        let hud_admission = self.pending_hud_top_bar.take().or(self.hud_admission);
         let mut candidate = self.campaign.clone();
+        candidate.simulation_mut().configure_source_hud_tail(hud_admission.is_some(), hud_admission.is_none());
         candidate
             .simulation_mut()
             .advance_elapsed_centiseconds(elapsed_centiseconds);
@@ -4671,7 +4735,15 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .simulation_mut()
             .apply_objective_input(admitted_objective);
         candidate.paused_frame();
+        if let Some(message) = candidate.events().iter().find_map(|event| match event {
+            Mc2DispatchEvent::Error { message, .. } => Some(message.clone()),
+            _ => None,
+        }) {
+            return Err(CampaignBackendError::StepRejected { message });
+        }
+        if let Some(top_bar) = hud_admission { candidate.simulation_mut().finish_source_hud_frame(top_bar); }
         self.campaign = candidate;
+        if let Some(top_bar) = hud_admission { self.record_hud_admission(top_bar); }
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::PausedFrame {
                 elapsed_centiseconds,
@@ -4771,6 +4843,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.global_context_changes.clear();
         self.dynamic_lighting_changes.clear();
         self.help_preference_changes.clear();
+        self.hud_admission_changes.clear();
+        self.hud_admission = Some(true);
         self.fresh_help_profile_pending = false;
         self.hand_selection_flash_start_operation = None;
         self.primary_visibility_changes.clear();
@@ -6377,6 +6451,105 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_top_status_admission_replays_current_frames_after_verified_v9_prefix() {
+        use crate::game_runtime::GameRuntime;
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8917).unwrap();
+        let title = runtime.identity();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8917).unwrap();
+        runtime.advance_player_with_preferences(runtime.session().unwrap().identity().guard(), GameCommand::default()).unwrap();
+        let identity = runtime.identity();
+        let nested = runtime.session().unwrap().identity().guard();
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(packet.hud_admission_changes, vec![Mc2HudAdmissionChange { before_operation: 0, top_bar: true }]);
+        for _ in 0..3 {
+            let backend = runtime.session().unwrap().backend();
+            assert_eq!(backend.snapshot().source_top_status, backend.render_observation().source_top_status);
+        }
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), saved);
+        assert_eq!(runtime.identity(), identity);
+        let mut stale = nested;
+        stale.generation += 1;
+        assert!(runtime.advance_player_with_preferences(stale, GameCommand::default()).is_err());
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), saved,
+            "rejected input cannot prepare or publish a HUD policy boundary");
+        runtime.toggle_icons_and_map(identity.guard(), nested).unwrap();
+        runtime.advance_player_with_preferences(nested, GameCommand::default()).unwrap();
+        let paused = runtime.pause(runtime.identity().guard()).unwrap();
+        let nested = runtime.session().unwrap().identity().guard();
+        runtime.paused_frame(paused.guard(), nested).unwrap();
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(packet.hud_admission_changes.iter().map(|row| row.top_bar).collect::<Vec<_>>(), [true, false]);
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8918).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8918, &saved).unwrap();
+        assert_eq!(cold.session().unwrap().backend().snapshot(), runtime.session().unwrap().backend().snapshot());
+        assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+        for invalid in [
+            Mc2HudAdmissionChange { before_operation: packet.operations.len(), top_bar: true },
+            Mc2HudAdmissionChange { before_operation: 0, top_bar: false },
+        ] {
+            let mut bad = packet.clone();
+            bad.hud_admission_changes.push(invalid);
+            bad.receipt_sha256 = bad.compute_receipt_sha256();
+            let before = cold.identity();
+            assert!(resolver.load_replay(&mut cold, before.guard(), 8918, &serde_json::to_vec(&bad).unwrap()).is_err());
+            assert_eq!(cold.identity(), before);
+            assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+        }
+
+        // Authentic released875c writer: unchanged actual fresh-Pav v8 input,
+        // one real paused frame, then a v9 save. No retagged fixture/history.
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
+        ).join("generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(&fs::read(resources).unwrap()).unwrap();
+        let full = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]))).unwrap();
+        let path = std::env::var_os("MC_TOP_STATUS_V9_SAVE").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("top-status-20261116/released-v9-after-paused-frame.mcs"));
+        let old_bytes = fs::read(path).expect("genuine released v9 receipt");
+        let old: Mc2CampaignReplaySave = serde_json::from_slice(&old_bytes).unwrap();
+        assert_eq!(old.save_contract, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);
+        assert!(old.hud_admission_changes.is_empty() && old.verify());
+        let mut migrated = GameRuntime::<Mc2CampaignBackend>::title(8919).unwrap();
+        let title = migrated.identity();
+        full.load_replay(&mut migrated, title.guard(), 8919, &old_bytes).unwrap();
+        let initial = migrated.session().unwrap().backend().snapshot();
+        let unchanged = full.save_replay(&migrated).unwrap();
+        let verified: Mc2CampaignReplaySave = serde_json::from_slice(&unchanged).unwrap();
+        assert_eq!(verified.expected_state_hash, old.expected_state_hash);
+        assert_eq!(verified.expected_tick, old.expected_tick);
+        assert_eq!(verified.expected_terrain_hash, old.expected_terrain_hash);
+        assert_eq!(verified.expected_effect_head, old.expected_effect_head);
+        assert_eq!(verified.expected_effect_journal_sha256, old.expected_effect_journal_sha256);
+        assert!(verified.hud_admission_changes.is_empty());
+        let outer = migrated.identity();
+        let nested = migrated.session().unwrap().identity().guard();
+        migrated.paused_frame(outer.guard(), nested).unwrap();
+        let updated = full.save_replay(&migrated).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&updated).unwrap();
+        assert_eq!(packet.hud_admission_changes,
+            vec![Mc2HudAdmissionChange { before_operation: old.operations.len(), top_bar: outer.display_settings.top_bar }]);
+        assert_eq!(migrated.session().unwrap().backend().snapshot().tick, initial.tick);
+        let mut replay = GameRuntime::<Mc2CampaignBackend>::title(8920).unwrap();
+        let title = replay.identity();
+        full.load_replay(&mut replay, title.guard(), 8920, &updated).unwrap();
+        assert_eq!(replay.session().unwrap().backend().snapshot(), migrated.session().unwrap().backend().snapshot());
+        assert_eq!(full.save_replay(&replay).unwrap(), updated,
+            "old prefix stays historical; only the recorded accepted boundary uses source HUD admission");
+    }
+
+    #[test]
     fn runtime_hand_selection_flash_follows_source_passes_and_replays_global_lifetime() {
         use crate::game_runtime::{CampaignMenuCommand, GameRuntime};
         use crate::game_session::{SpellAssignment, SpellAssignmentHand, SpellMark, SpellMarkHand};
@@ -6505,6 +6678,7 @@ pub(crate) mod tests {
         resolver.open_pending(&mut historical, loading.guard(), 8902).unwrap();
         historical.session_mut().unwrap().backend_mut().campaign.simulation_mut()
             .set_historical_hand_selection_flash(true);
+        historical.session_mut().unwrap().backend_mut().hud_admission = None;
         step(&mut historical, assignment(SpellAssignmentHand::Left));
         step(&mut historical, GameCommand::default());
         assert_eq!(ticks(&historical), [0, 0]);

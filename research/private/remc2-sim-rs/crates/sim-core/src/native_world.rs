@@ -773,6 +773,24 @@ pub struct Level2DayHudSnapshot {
     pub nyphur_visibility: Level2NyphurVisibility,
 }
 
+impl NativeWorldInspection {
+    /// Type_Level_2FECE.word_0x2FED5 is a signed source header word, not
+    /// the current objective's requested percentage. Admission validates it.
+    #[must_use]
+    pub fn source_mana_goal_percent(&self) -> i16 {
+        i16::from_le_bytes(self.authored_level[7..9].try_into().expect("validated authored level header"))
+    }
+}
+
+impl Level2EconomyState {
+    pub(crate) fn consume_castle_hud_hit_frame(&mut self) -> bool {
+        let remaining = self.player_castle_aux_flags as i8;
+        if remaining <= 0 { return false; }
+        self.player_castle_aux_flags = (remaining - 1) as u8;
+        true
+    }
+}
+
 /// Source/package-owned sprite selection for one live campaign entity.
 ///
 /// The selected TMAP is derived from the entity's live particle-parameter
@@ -3142,6 +3160,10 @@ impl Mc2LiveState {
             level2_day_hud_color_phase_1: color_phase_1,
             level2_day_hud_color_phase_2: color_phase_2,
             level2_day_hud_hit_frame_time_pre_draw: hit_frame_time_pre_draw,
+            source_castle_panel_selector: 0,
+            source_balloon_panel_selector: 0,
+            source_hud_tail_deferred: false,
+            source_hud_tail_legacy: false,
             level2_day_hud_player_panel_selector: level2_day_player_panel_selector(
                 hit_frame_time_pre_draw,
                 color_phase_1,
@@ -7620,6 +7642,7 @@ fn parse_players(
             // Source sub_53160 clears these omitted fields before the
             // frame-zero actor constructors; runtime writes stay typed.
             hit_frame_time: 0,
+            balloon_hit_frame_time: 0,
             castle_destroyed: 0,
             visibility_mode: 0,
             source_music_countdown: None,

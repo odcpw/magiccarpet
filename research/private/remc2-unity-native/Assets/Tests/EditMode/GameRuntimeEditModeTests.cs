@@ -6341,6 +6341,472 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [UnityEngine.TestTools.UnityTest]
+        [Timeout(180000)]
+        public System.Collections.IEnumerator PaidCastleStatusReachesTheActualIndexedHudAfterColdAttach()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var levelOneCache = Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_CACHE") ??
+                Path.Combine(generated, "mc2-level1-night-cache-v2");
+            // The real Level 3 Loading control declares incoming Castle and
+            // other spell carry. Old v5 receipts are not admissible.
+            var entry = Environment.GetEnvironmentVariable("MC_CORRECTED_DAY_REPLAY_OUTPUT") ??
+                Path.Combine(generated, "top-status-20261116/fresh-level3-full-role-entry.mcs");
+            var second = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL2_PACKAGE") ??
+                Path.Combine(generated, "level2-day-block32-campaign-v2");
+            var package = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PACKAGE") ??
+                Path.Combine(generated, "level3-day-block32-campaign-recipe-v2");
+            var environment = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_OWNER") ??
+                Path.Combine(generated, "mc-level3-environment-exit-20261025");
+            var presentation = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PRESENTATION") ??
+                Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4");
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-source-top-status-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var replayPath = Path.Combine(temporary, "paid-castle.mcs");
+            var root = new GameObject("actual paid Castle indexed HUD");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            byte[] paidReplay = null;
+            var previousTarget = RenderTexture.active;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                using (var producer = new GameRuntimeTransport())
+                {
+                    producer.LoadReplay(File.ReadAllBytes(entry),
+                        new GameRuntimeTransport.InstalledPackageResource { package_dir = LevelOnePackage,
+                            presentation_cache_path = levelOneCache }, Package(second),
+                        new GameRuntimeTransport.InstalledPackageResource { package_dir = package,
+                            owner_cache_path = environment, presentation_cache_path = presentation });
+                    var initial = producer.CampaignSnapshot().value;
+                    Assert.That(initial.source_top_status.castle_rows, Is.Empty, "the qualified entry starts without a linked Castle");
+                    Assert.That(initial.player_vitals.mana, Is.EqualTo(1000));
+                    NativeSim.CampaignEntitySnapshot[] CurrentEntities()
+                    {
+                        var rows = new NativeSim.CampaignEntitySnapshot[1000];
+                        Assert.That(NativeSim.mc_native_campaign_entities_copy(producer.Handle, 0, rows, (uint)rows.Length,
+                            (uint)Marshal.SizeOf<NativeSim.CampaignEntitySnapshot>(), out var written), Is.EqualTo(NativeSim.Ok));
+                        Assert.That(written, Is.EqualTo((uint)rows.Length));
+                        return rows;
+                    }
+                    var player = Array.Find(CurrentEntities(), row => row.active != 0 && row.classId == 3 && row.model == 0);
+                    Assert.That(player.entityIndex, Is.Not.Zero, "the current source player has a physical identity");
+                    var trace = new System.Collections.Generic.List<string>();
+                    void Record(string boundary)
+                    {
+                        var current = producer.CampaignSnapshot().value;
+                        var selected = Array.Find(current.player_spells, spell => spell?.id == "spell.castle");
+                        var entities = new NativeSim.CampaignEntitySnapshot[1000];
+                        var code = NativeSim.mc_native_campaign_entities_copy(producer.Handle, 0, entities,
+                            (uint)entities.Length, (uint)Marshal.SizeOf<NativeSim.CampaignEntitySnapshot>(), out var written);
+                        var relevant = code == NativeSim.Ok ? string.Join(",", Array.ConvertAll(
+                            Array.FindAll(entities, row => row.classId == 9 && row.model == 10 ||
+                                row.active != 0 && (row.classId == 3 && row.model == 2 || row.classId == 10 && row.model == 45)),
+                            row => $"{row.entityIndex}/{row.classId}/{row.model}/active{row.active}/source{row.sourceId}/action{row.action}/phase{row.phase}@{row.x},{row.y},{row.z}")) : "unavailable";
+                        trace.Add($"{boundary}: tick={current.tick} spell={(selected == null ? "absent" : JsonUtility.ToJson(selected))} " +
+                            $"vitals={JsonUtility.ToJson(current.player_vitals)} pose={JsonUtility.ToJson(current.player_pose)} " +
+                            $"motion={JsonUtility.ToJson(current.player_motion)} entities_status={code}/{written} [{relevant}]");
+                    }
+                    Record("entry");
+                    byte[] ReadAngles()
+                    {
+                        var angles = new byte[256 * 256];
+                        Assert.That(NativeSim.mc_native_campaign_terrain_plane_copy_u8(producer.Handle,
+                            ulong.Parse(producer.Current.session.generation),
+                            NativeSim.TerrainAngle, angles, (uint)angles.Length, out var written), Is.EqualTo(NativeSim.Ok));
+                        Assert.That(written, Is.EqualTo((uint)angles.Length));
+                        return angles;
+                    }
+                    int BlockedTiles(byte[] angles, int x, int y)
+                    {
+                        var count = 0;
+                        for (var row = 0; row < 8; row++)
+                        for (var column = 0; column < 8; column++)
+                            if ((angles[((y - 8 + row) & 255) * 256 + ((x - 8 + column) & 255)] & 0x80) != 0) count++;
+                        return count;
+                    }
+                    var initialPose = initial.player_pose;
+                    Assert.That(initialPose.yaw, Is.Zero, "the declared source-left launch control uses actual yaw zero");
+                    var startAngles = ReadAngles();
+                    var startLeftX = unchecked((ushort)(initialPose.x - 256)) >> 8;
+                    var startX = initialPose.x >> 8; var startY = initialPose.y >> 8;
+                    Assert.That(BlockedTiles(startAngles, startLeftX, startY), Is.GreaterThan(0),
+                        "the real entry terrain blocks the source-left 8x8 Castle admission scan");
+                    Assert.That(BlockedTiles(startAngles, startX, startY), Is.GreaterThan(0),
+                        "the real entry terrain also blocks strict ground-rollback launch");
+                    // Source speed step16 and reverse limit -80 predict 2880
+                    // units south in 38 reverse frames (16+32+48+64+34*80).
+                    // The reset geometry's clear band is y53888..55168.
+                    // Only public controls are submitted; no state is set.
+                    for (var frame = 0; frame < 38; frame++) producer.CampaignStep(0, 0, 0x02, 0, 0);
+                    Record("after_fixed_travel");
+                    TestContext.Progress.WriteLine(trace[trace.Count - 1]);
+                    producer.CampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                    var arrival = producer.CampaignSnapshot().value;
+                    Record("after_public_full_stop");
+                    TestContext.Progress.WriteLine(trace[trace.Count - 1]);
+                    Assert.That(arrival.player_vitals.life, Is.GreaterThanOrEqualTo(0));
+                    Assert.That(arrival.player_pose.yaw, Is.Zero);
+                    Assert.That(arrival.player_motion.target_speed, Is.Zero);
+                    Assert.That(arrival.player_motion.actual_speed, Is.Zero);
+                    Assert.That(arrival.player_pose.x, Is.EqualTo(initialPose.x), "the actual flight stays on the source-inspected corridor");
+                    Assert.That(arrival.player_pose.y, Is.InRange(53888, 55168), "the actual flight reaches the source-inspected clear band");
+                    var arrivalAngles = ReadAngles();
+                    var leftX = unchecked((ushort)(arrival.player_pose.x - 256)) >> 8;
+                    var parentX = arrival.player_pose.x >> 8; var parentY = arrival.player_pose.y >> 8;
+                    var footprint = $"entry=({initialPose.x},{initialPose.y}) tiles=({startLeftX},{startY})/({startX},{startY}); " +
+                        $"arrival=({arrival.player_pose.x},{arrival.player_pose.y}) tiles=({leftX},{parentY})/({parentX},{parentY})";
+                    string Scan(byte[] angles, int x, int y)
+                    {
+                        var cells = new System.Text.StringBuilder(128);
+                        for (var row = 0; row < 8; row++)
+                        for (var column = 0; column < 8; column++)
+                            cells.Append(angles[((y - 8 + row) & 255) * 256 + ((x - 8 + column) & 255)].ToString("X2"));
+                        return cells.ToString();
+                    }
+                    TestContext.Progress.WriteLine(footprint + " entry-left=" + Scan(startAngles, startLeftX, startY) +
+                        " entry-rollback=" + Scan(startAngles, startX, startY) + " arrival-left=" + Scan(arrivalAngles, leftX, parentY) +
+                        " arrival-rollback=" + Scan(arrivalAngles, parentX, parentY));
+                    Assert.That(BlockedTiles(arrivalAngles, leftX, parentY), Is.Zero, "actual source-left terrain footprint: " + footprint);
+                    Assert.That(BlockedTiles(arrivalAngles, parentX, parentY), Is.Zero, "actual rollback terrain footprint: " + footprint);
+                    producer.CampaignStep(0, 0, 0, 0, 0, "spell.castle");
+                    Record("selected");
+                    producer.CampaignStep(0, 0, 0x40, 0, 0);
+                    Record("cast_selected");
+                    var minimumMana = initial.player_vitals.mana;
+                    EngineSessionTransport.SourceCastleStatus built = null;
+                    for (var turn = 0; turn < 64; turn++)
+                    {
+                        var current = producer.CampaignSnapshot().value;
+                        if (turn == 1 || turn == 3 || turn == 15 || turn == 63) Record($"wait{turn}");
+                        minimumMana = Math.Min(minimumMana, current.player_vitals.mana);
+                        var castles = current.source_top_status.castle_rows;
+                        if (castles.Length == 1 && castles[0].stage > 0)
+                        { built = castles[0]; break; }
+                        producer.CampaignStep(0, 0, 0, 0, 0);
+                    }
+                    Assert.That(built, Is.Not.Null, "public paid Castle input creates the live linked source owner; " + string.Join(" | ", trace));
+                    Assert.That(minimumMana, Is.Zero, "the real 1000-mana Castle cost is consumed");
+                    Assert.That(built.icon_selector, Is.EqualTo(43 + built.stage));
+                    NativeSim.CampaignEntitySnapshot CurrentRoot() => Array.Find(CurrentEntities(), row =>
+                        row.active != 0 && row.classId == 3 && row.model == 2 && row.sourceId == player.entityIndex);
+                    var rootRow = CurrentRoot();
+                    Assert.That(rootRow.entityIndex, Is.Not.Zero, "the paid Castle has a current source root and player binding");
+                    var rootSlot = rootRow.entityIndex;
+                    // Initial 37BC0 counts 19 down to -1 and then zero (20
+                    // visits); one scheduling boundary and one root state2
+                    // visit bound its ordinary transition to action4.
+                    for (var frame = 0; frame < 22 && rootRow.action != 4; frame++)
+                    {
+                        producer.CampaignStep(0, 0, 0, 0, 0);
+                        rootRow = CurrentRoot();
+                        Assert.That(rootRow.entityIndex, Is.EqualTo(rootSlot), "the same live Castle reaches source action4");
+                    }
+                    Assert.That(rootRow.action, Is.EqualTo(4), "the original BUILD callback completes naturally");
+                    // EndOfCastleProjectile runs sub_5FF50 on its next even
+                    // phase: at most two actual root callbacks after action4.
+                    for (var frame = 0; frame < 2 && !producer.CampaignSnapshot().value.source_top_status.balloons[0].present; frame++)
+                    {
+                        producer.CampaignStep(0, 0, 0, 0, 0);
+                        Assert.That(CurrentRoot().entityIndex, Is.EqualTo(rootSlot));
+                    }
+                    var bornStatus = producer.CampaignSnapshot().value.source_top_status;
+                    Assert.That(bornStatus.balloons[0].present, Is.True, "the same real Castle naturally produces its first collector");
+                    var collectorRow = Array.Find(CurrentEntities(), row => row.active != 0 && row.classId == 3 &&
+                        row.model == 3 && row.sourceId == player.entityIndex);
+                    Assert.That(collectorRow.entityIndex, Is.Not.Zero, "the current collector is bound to the same source player");
+                    Assert.That(bornStatus.balloons[0].max_life, Is.GreaterThan(0));
+                    Assert.That(bornStatus.balloons[0].life, Is.InRange(0, bornStatus.balloons[0].max_life));
+                    Assert.That(bornStatus.balloons[0].max_mana, Is.GreaterThan(0));
+                    Assert.That(bornStatus.balloons[0].mana, Is.InRange(0, bornStatus.balloons[0].max_mana));
+                    paidReplay = producer.SaveReplay();
+                    File.WriteAllBytes(replayPath, paidReplay);
+                    // Retain an unqualified diagnostic before cold-load so a
+                    // failed receipt can be examined without rewriting it.
+                    var diagnosticPath = Environment.GetEnvironmentVariable("MC_SOURCE_TOP_STATUS_DIAGNOSTIC_REPLAY_OUTPUT");
+                    if (!string.IsNullOrWhiteSpace(diagnosticPath))
+                    {
+                        using var diagnostic = new FileStream(diagnosticPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                        diagnostic.Write(paidReplay, 0, paidReplay.Length);
+                        diagnostic.Flush(true);
+                    }
+                }
+                var arguments = new[] {
+                    "-mc-game-runtime", "-mc-runtime-loading-cache", levelOneCache,
+                    "-mc-runtime-menu-cache", CampaignMenuCache, "-mc-runtime-speech-cache", CampaignSpeechCache,
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile"),
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-presentation-cache", levelOneCache,
+                    "-mc-runtime-package", second,
+                    "-mc-runtime-package", package, "-mc-runtime-owner-cache", environment,
+                    "-mc-runtime-presentation-cache", presentation,
+                    "-mc-runtime-replay-load", replayPath
+                };
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                var full = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
+                var compact = runtime.GameRuntimeProductionCampaignRenderObservation.value.source_top_status;
+                Assert.That(full.castle_rows, Has.Length.EqualTo(1));
+                Assert.That(JsonUtility.ToJson(compact), Is.EqualTo(JsonUtility.ToJson(full)),
+                    "the actual compact and full native observations carry the same source status");
+                Assert.That(compact.castle_rows, Has.Length.EqualTo(1));
+                var status = compact.castle_rows[0];
+                var actualTopStatus = compact;
+                var actualCollector = actualTopStatus.balloons[0];
+                Assert.That(actualCollector.present, Is.True, "the real first collector survives the cold owner load");
+                Assert.That(actualCollector.life, Is.InRange(0, actualCollector.max_life));
+                Assert.That(actualCollector.mana, Is.InRange(0, actualCollector.max_mana));
+                Assert.That(actualCollector.max_life, Is.GreaterThan(0));
+                Assert.That(actualCollector.max_mana, Is.GreaterThan(0));
+                Assert.That(status.stage, Is.InRange(1, 7));
+                Assert.That(status.icon_selector, Is.EqualTo(43 + status.stage));
+                var sourceWidth = typeof(MagicCarpetRuntime).GetMethod("SourceTopStatusBarWidth", flags | System.Reflection.BindingFlags.Static);
+                Assert.That((int)sourceWidth.Invoke(null, new object[] { 300000000, 300000000 }), Is.EqualTo(6),
+                    "the source int32 shift wraps before division and int16 narrowing");
+                Assert.That((int)sourceWidth.Invoke(null, new object[] { 100, 6400 }), Is.Zero,
+                    "DrawBar suppresses an actual source width of one");
+                var surface = (CampaignPresentationSurface)Field("level3PresentationSurface");
+                Assert.That(surface, Is.Not.Null);
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                var guiEvents = new System.Collections.Generic.List<string>();
+                gui.DrawRuntime = () => {
+                    var kind = Event.current.type;
+                    typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                    guiEvents.Add($"{kind}:{Field("gameRuntimeHudIndices") != null}");
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                var beforeRenderTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var beforeRenderReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                yield return null;
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(beforeRenderTick),
+                    "the normal Editor frame does not advance the inactive runtime");
+                CollectionAssert.AreEqual(beforeRenderReplay, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "the normal Editor frame preserves the real cold owner receipt");
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var output = (RenderTexture)Field("gameRuntimeHudIndices");
+                var directHud = false;
+                var directIndexed = false;
+                var directFailure = "";
+                if (output == null)
+                {
+                    gui.DrawRuntime = () => {
+                        if (Event.current.type != EventType.Repaint) return;
+                        try
+                        {
+                            typeof(MagicCarpetRuntime).GetMethod("DrawLevel2DayHud", flags).Invoke(runtime, null);
+                            directHud = Field("gameRuntimeHudIndices") != null;
+                            typeof(MagicCarpetRuntime).GetField("gameRuntimeHudIndices", flags).SetValue(runtime, null);
+                            typeof(MagicCarpetRuntime).GetMethod("DrawGameRuntimeIndexedHud", flags)
+                                .Invoke(runtime, new object[] { runtime.Level2ProductionDayHud, false });
+                            directIndexed = Field("gameRuntimeHudIndices") != null;
+                        }
+                        catch (Exception exception) { directFailure = exception.ToString(); }
+                        finally { typeof(MagicCarpetRuntime).GetField("gameRuntimeHudIndices", flags).SetValue(runtime, null); }
+                    };
+                    gui.SendEvent(new Event { type = EventType.Repaint });
+                }
+                var currentHud = (NativeSim.CampaignDayHudSnapshot)Field("level2DayHud");
+                var presentedHud = (NativeSim.CampaignDayHudSnapshot)Field("level2PresentedDayHud");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var media = (FrontendMediaPresenter)Field("frontendMedia");
+                var transition = (CampaignTransitionPresenter)Field("gameRuntimeTransitionPresenter");
+                Assert.That(output, Is.Not.Null,
+                    $"GUI draws={gui.DrawCount}, events={string.Join(",", guiEvents)}, active={root.activeInHierarchy}, " +
+                    $"frame/media={Time.frameCount}/{Field("gameRuntimeCampaignMediaFrame")}, " +
+                    $"HUD ready={Field("level2DayHudPresenterReady")}, top bar={runtime.GameRuntimeProductionIdentity.display_settings.top_bar}, " +
+                    $"HUD current={currentHud.generation}/{currentHud.tick}, presented={presentedHud.generation}/{presentedHud.tick}, " +
+                    $"campaign={campaign?.Generation}/{campaign?.Tick}, mode={runtime.GameRuntimeProductionIdentity.mode}, " +
+                    $"menu map/spell/pending={menus?.MapOpen}/{menus?.SpellOpen}/{menus?.HasPendingAction}, " +
+                    $"fatal={Field("fatalError")}, mediaVisible={media?.Visible}, transitionFailure={transition?.HasFailure}, " +
+                    $"runtime/level2/level3/secretPending={Field("gameRuntimeMode")}/{Field("level2Mode")}/{Field("level3Mode")}/{Field("gameRuntimeSecretEntryPending")}, " +
+                    $"nativeFinal={typeof(MagicCarpetRuntime).GetMethod("CurrentNativeFinalPresentationOwns", flags).Invoke(runtime, null)}, " +
+                    $"directHud={directHud}, directIndexed={directIndexed}, directFailure={directFailure}, " +
+                    $"surface gen/tick={surface.Generation}/{surface.Tick}, history gen/revision={surface.SceneHistoryGeneration}/{surface.SceneHistoryRevision}, " +
+                    $"underlay={surface.HudUnderlayIndices != null}, cameras={cameras.Length}");
+                var pixels = new Texture2D(output.width, output.height, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    RenderTexture.active = output;
+                    pixels.ReadPixels(new Rect(0, 0, output.width, output.height), 0, 0); pixels.Apply();
+                    var raw = pixels.GetPixels32();
+                    var hud = runtime.Level2ProductionDayHud;
+                    var descriptors = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                    var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                    var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                    int Extent(int selector, string member) => (int)descriptors[selector].GetType().GetField(member).GetValue(descriptors[selector]);
+                    var castleX = 2 + Extent(hud.minimapPanelSelector, "runtime_width");
+                    var balloonX = castleX + Extent(41, "runtime_width");
+                    void AssertActualIcon(int selector, int x)
+                    {
+                        var sw = Extent(selector, "stored_width"); var sh = Extent(selector, "stored_height");
+                        var rw = Extent(selector, "runtime_width"); var rh = Extent(selector, "runtime_height");
+                        for (var dy = 0; dy < rh; dy++)
+                        for (var dx = 0; dx < rw; dx++)
+                        {
+                            var source = dy * sh / rh * sw + dx * sw / rw;
+                            if (masks[selector][source] == 0) continue;
+                            Assert.That(raw[(479 - (2 + dy)) * output.width + x + 2 + dx].r,
+                                Is.EqualTo(indices[selector][source]), $"actual source icon {selector} reaches the indexed HUD");
+                            return;
+                        }
+                        Assert.Fail($"actual source icon {selector} has no visible pixels");
+                    }
+                    AssertActualIcon(status.icon_selector, castleX);
+                    AssertActualIcon(compact.balloon_icon_selector, balloonX);
+                    var lifeWidth = (int)sourceWidth.Invoke(null, new object[] { status.life, status.max_life });
+                    Assert.That(lifeWidth, Is.GreaterThanOrEqualTo(2), "the real constructed Castle has a visible health bar");
+                    Assert.That(raw[(479 - 10) * output.width + castleX + 58].r, Is.EqualTo(hud.lifePaletteIndex),
+                        "the actual source Castle life reaches its indexed bar");
+                    var realCollectorPixels = raw;
+                    var collectorLifeWidth = (int)sourceWidth.Invoke(null, new object[] { actualCollector.life, actualCollector.max_life });
+                    var collectorManaWidth = (int)sourceWidth.Invoke(null, new object[] { actualCollector.mana, actualCollector.max_mana });
+                    Assert.That(collectorLifeWidth, Is.GreaterThanOrEqualTo(2), "the actual newborn collector has a visible life bar");
+
+                    // Rare stage/row combinations are a detached presentation
+                    // control. They do not mutate or advance the native owner.
+                    var field = typeof(MagicCarpetRuntime).GetField("gameRuntimeCampaignSnapshot", flags);
+                    var observed = (EngineSessionTransport.CampaignRenderObservation)field.GetValue(runtime);
+                    var shallowClone = typeof(object).GetMethod("MemberwiseClone", flags);
+                    var detached = new EngineSessionTransport.CampaignRenderObservation {
+                        identity = observed.identity,
+                        value = (EngineSessionTransport.CampaignRenderValue)shallowClone.Invoke(observed.value, null)
+                    };
+                    var normalDraw = gui.DrawRuntime;
+                    var detachedHud = hud;
+                    Color32[] DrawDetached()
+                    {
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        var target = (RenderTexture)Field("gameRuntimeHudIndices");
+                        Assert.That(target, Is.Not.Null);
+                        RenderTexture.active = target;
+                        pixels.ReadPixels(new Rect(0, 0, target.width, target.height), 0, 0); pixels.Apply();
+                        return pixels.GetPixels32();
+                    }
+                    try
+                    {
+                        field.SetValue(runtime, detached);
+                        gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("DrawGameRuntimeIndexedHud", flags)
+                            .Invoke(runtime, new object[] { detachedHud, false });
+                        // Keep every real owner/scene field and omit only row0
+                        // in this detached baseline to discriminate even a
+                        // genuine zero-width collector mana bar.
+                        var noCollector = (EngineSessionTransport.SourceTopStatus)shallowClone.Invoke(actualTopStatus, null);
+                        noCollector.balloons = (EngineSessionTransport.SourceBalloonStatus[])actualTopStatus.balloons.Clone();
+                        noCollector.balloons[0] = new EngineSessionTransport.SourceBalloonStatus();
+                        detached.value.source_top_status = noCollector;
+                        var noCollectorPixels = DrawDetached();
+                        for (var x = 0; x < 64; x++)
+                        {
+                            var lifePixel = (479 - 12) * output.width + balloonX + 58 + x;
+                            var manaPixel = (479 - 30) * output.width + balloonX + 58 + x;
+                            Assert.That(realCollectorPixels[lifePixel].r,
+                                Is.EqualTo(x < collectorLifeWidth ? hud.lifePaletteIndex : noCollectorPixels[lifePixel].r),
+                                $"actual collector life source pixel {x}");
+                            Assert.That(realCollectorPixels[manaPixel].r,
+                                Is.EqualTo(x < collectorManaWidth ? hud.manaPaletteIndex : noCollectorPixels[manaPixel].r),
+                                $"actual collector mana source pixel {x}");
+                        }
+                        detachedHud.globalManaDenominator = 10000;
+                        detachedHud.colorPhase2 = 0;
+                        detached.value.source_top_status = new EngineSessionTransport.SourceTopStatus {
+                            castle_rows = Array.Empty<EngineSessionTransport.SourceCastleStatus>(),
+                            balloon_panel_selector = 54, balloon_icon_selector = 0,
+                            balloons = new[] { new EngineSessionTransport.SourceBalloonStatus(),
+                                new EngineSessionTransport.SourceBalloonStatus(), new EngineSessionTransport.SourceBalloonStatus() }
+                        };
+                        var absent = DrawDetached();
+                        detached.value.source_top_status = new EngineSessionTransport.SourceTopStatus {
+                            castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus { stage = 0, panel_selector = 54 } },
+                            balloon_panel_selector = 41, balloon_icon_selector = 50,
+                            balloons = new[] { new EngineSessionTransport.SourceBalloonStatus(),
+                                new EngineSessionTransport.SourceBalloonStatus(), new EngineSessionTransport.SourceBalloonStatus() }
+                        };
+                        raw = DrawDetached();
+                        AssertActualIcon(50, balloonX);
+                        var distinct = false;
+                        for (var y = 2; y < 46 && !distinct; y++)
+                        for (var x = balloonX; x < balloonX + 128 && !distinct; x++)
+                            distinct = !raw[(479 - y) * output.width + x].Equals(absent[(479 - y) * output.width + x]);
+                        Assert.That(distinct, Is.True, "linked stage-zero Castle has a different balloon panel from absence");
+                        detached.value.source_top_status = new EngineSessionTransport.SourceTopStatus {
+                            castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus { stage = 7, panel_selector = 41,
+                                icon_selector = 50, life = 10000, max_life = 10000, mana = 10000, max_mana = 10000 } },
+                            balloon_panel_selector = 41, balloon_icon_selector = 53,
+                            balloons = new[] { new EngineSessionTransport.SourceBalloonStatus(),
+                                new EngineSessionTransport.SourceBalloonStatus(), new EngineSessionTransport.SourceBalloonStatus() },
+                            mana_goal_percent = 50, goal_palette_index = hud.manaPaletteIndex
+                        };
+                        var emptyRows = DrawDetached();
+                        raw = emptyRows;
+                        AssertActualIcon(53, balloonX);
+                        var rows = detached.value.source_top_status.balloons;
+                        rows[0] = new EngineSessionTransport.SourceBalloonStatus { present = true, life = 5000,
+                            max_life = 10000, mana = 2500, max_mana = 10000 };
+                        rows[2] = new EngineSessionTransport.SourceBalloonStatus { present = true, life = -1,
+                            max_life = 10000, mana = 5000, max_mana = 10000 };
+                        raw = DrawDetached();
+                        byte At(int x, int y) => raw[(479 - y) * output.width + x].r;
+                        byte Baseline(int x, int y) => emptyRows[(479 - y) * output.width + x].r;
+                        Assert.That(At(balloonX + 58, 12), Is.EqualTo(hud.lifePaletteIndex));
+                        Assert.That(At(balloonX + 58, 30), Is.EqualTo(hud.manaPaletteIndex));
+                        Assert.That(At(balloonX + 58, 14), Is.EqualTo(Baseline(balloonX + 58, 14)), "missing middle slot is not compacted");
+                        Assert.That(At(balloonX + 58, 16), Is.EqualTo(Baseline(balloonX + 58, 16)), "negative life skips only health");
+                        Assert.That(At(balloonX + 58, 34), Is.EqualTo(hud.manaPaletteIndex), "negative-life row still paints mana");
+                        Assert.That(At(castleX + 58 + 32, 26), Is.EqualTo(hud.manaPaletteIndex), "source goal tick retains its raw source position");
+                        Assert.That(At(castleX + 58, 28), Is.EqualTo(hud.manaPaletteIndex), "full mana uses phase-zero colour");
+                        detachedHud.colorPhase2 = 1;
+                        raw = DrawDetached();
+                        Assert.That(At(castleX + 58, 28), Is.EqualTo(hud.manaMaxPaletteIndex), "full mana uses phase-one colour");
+                    }
+                    finally
+                    {
+                        field.SetValue(runtime, observed);
+                        gui.DrawRuntime = normalDraw;
+                    }
+                }
+                finally { UnityEngine.Object.DestroyImmediate(pixels); RenderTexture.active = previousTarget; }
+                var before = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var tick = runtime.GameRuntimeProductionIdentity.session.tick;
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(before, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "repainting the source status does not advance gameplay or draw clocks");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                var receiptPath = Environment.GetEnvironmentVariable("MC_SOURCE_TOP_STATUS_PAID_REPLAY_OUTPUT");
+                if (!string.IsNullOrWhiteSpace(receiptPath))
+                {
+                    using var receipt = new FileStream(receiptPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    receipt.Write(paidReplay, 0, paidReplay.Length);
+                    receipt.Flush(true);
+                }
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [Test]
         [Timeout(180000)]
         public void LevelTwoPublicCastleCreatesRealWorldFeedRootAndSurvivesRuntimeReset()

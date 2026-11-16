@@ -8762,7 +8762,7 @@ impl Level2EconomyState {
             castle.life,
             (castle.pending_damage, castle.pending_attacker_entity_index),
         );
-        if !lethal && castle.owner_entity_index == local_owner {
+        if !lethal && castle.source_id_entity_index == local_owner {
             self.player_castle_aux_flags = 4;
         }
         #[cfg(test)]

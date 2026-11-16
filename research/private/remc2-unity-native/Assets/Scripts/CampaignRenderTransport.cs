@@ -5,7 +5,7 @@ using System.Text;
 
 namespace MagicCarpet.Native
 {
-    // MCPO v4 is shared with sim-session and the browser DataView reader.
+    // MCPO v5 is shared with sim-session and the browser DataView reader.
     // This adapter owns its reusable copy buffer; no native pointer escapes.
     internal sealed class CampaignRenderTransport
     {
@@ -55,7 +55,7 @@ namespace MagicCarpet.Native
         internal static Publication Decode(byte[] bytes, int length)
         {
             var r = new Reader(bytes, length);
-            if (r.U32() != 0x4f50434d || r.U32() != 4 || r.U32() != length)
+            if (r.U32() != 0x4f50434d || r.U32() != 5 || r.U32() != length)
                 throw new InvalidDataException("Unsupported render publication header");
             var result = new Publication { RuntimeId = r.U64(), RuntimeGeneration = r.U64() };
             result.Mode = r.Enum(Modes);
@@ -167,6 +167,26 @@ namespace MagicCarpet.Native
             value.player_hand_selection_flash_ticks = new[] { r.Byte(), r.Byte() };
             if (value.player_hand_selection_flash_ticks[0] > 8 || value.player_hand_selection_flash_ticks[1] > 8)
                 throw new InvalidDataException("Invalid hand selection flash ticks");
+            var top = new EngineSessionTransport.SourceTopStatus();
+            if (r.Bool()) {
+                var stage = r.Byte();
+                if (stage > 7) throw new InvalidDataException("Invalid Castle stage");
+                top.castle_rows = new[] { new EngineSessionTransport.SourceCastleStatus {
+                    stage = stage, panel_selector = r.U16(), icon_selector = r.U16(),
+                    life = r.I32(), max_life = r.I32(), mana = r.I32(), max_mana = r.I32(),
+                    owner_mana_aggregate = r.I32()
+                } };
+            } else top.castle_rows = Array.Empty<EngineSessionTransport.SourceCastleStatus>();
+            top.balloon_panel_selector = r.U16();
+            top.balloon_icon_selector = r.U16();
+            top.balloons = new EngineSessionTransport.SourceBalloonStatus[3];
+            for (var i = 0; i < top.balloons.Length; i++)
+                top.balloons[i] = new EngineSessionTransport.SourceBalloonStatus {
+                    present = r.Bool(), life = r.I32(), max_life = r.I32(), mana = r.I32(), max_mana = r.I32()
+                };
+            top.mana_goal_percent = r.I16();
+            top.goal_palette_index = r.Byte();
+            value.source_top_status = top;
             r.Finish();
             EngineSessionTransport.ValidateCampaignRenderObservation(observation);
             if (result.RuntimeId == 0 || result.RuntimeGeneration == 0)

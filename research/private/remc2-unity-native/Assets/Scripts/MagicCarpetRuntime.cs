@@ -8643,7 +8643,8 @@ namespace MagicCarpet.Native
             ownerHudPaletteRgb8 = ownerAssetCache.ReadOutput(environment.palette.rgb8_path);
             var bank = environment.bitmap_banks.Single(row => row.bank == environment.profile.sprites);
             var requestedBitmaps = bank.bitmaps.Where(row =>
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector) || SourceSpellMenu.UsesBitmap(row.selector)).ToArray();
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector) ||
+                UsesCampaignTopStatusBitmap(row.selector) || SourceSpellMenu.UsesBitmap(row.selector)).ToArray();
             foreach (var row in requestedBitmaps)
             {
                 Require(!row.source_empty, $"environment HUD selector {row.selector} is present");
@@ -8669,6 +8670,8 @@ namespace MagicCarpet.Native
                 hudBitmapTextures.Add(row.selector, CreateTopDownRgbaTexture(
                     $"Owner {bank.bank} selector {row.selector}", rgba, row.width, row.height));
             }
+            for (var selector = 44; selector <= 53; selector++)
+                Require(hudBitmapDescriptors.ContainsKey(selector), $"environment top-status selector {selector} is present");
             // DrawText_7FB90: FONT1 selectors are ASCII+1, opaque glyph
             // coverage uses the environment's CLRx[0] colour, and MSPR UI
             // dimensions double in the 640x480 reference viewport.
@@ -8708,15 +8711,19 @@ namespace MagicCarpet.Native
                 "complete environment HUD materialization");
         }
 
-        // Qualified opening Day HUDs carry only status sprites. Append the
-        // original spell menu bank from the validated destination environment.
+        private static bool UsesCampaignTopStatusBitmap(int selector) => selector >= 44 && selector <= 53;
+
+        // Qualified opening Day HUDs carry only their reset status sprites.
+        // Append the remaining status and spell-menu sprites from the same
+        // validated destination environment.
         private void AppendCampaignSpellMenuBitmaps(OwnerAssetCache environment)
         {
             if (environment?.EnvironmentMaterials == null) return;
             var materials = environment.EnvironmentMaterials;
             var palette = environment.ReadOutput(materials.palette.rgb8_path);
             var bank = materials.bitmap_banks.Single(row => row.bank == materials.profile.sprites);
-            foreach (var row in bank.bitmaps.Where(row => SourceSpellMenu.UsesBitmap(row.selector)))
+            foreach (var row in bank.bitmaps.Where(row =>
+                UsesCampaignTopStatusBitmap(row.selector) || SourceSpellMenu.UsesBitmap(row.selector)))
             {
                 if (row.source_empty || hudBitmapDescriptors.ContainsKey(row.selector)) continue;
                 var indices = environment.ReadOutput(row.indices_path);
@@ -8739,8 +8746,10 @@ namespace MagicCarpet.Native
                 hudBitmapIndices.Add(row.selector, indices);
                 hudBitmapMasks.Add(row.selector, mask);
                 hudBitmapTextures.Add(row.selector, CreateTopDownRgbaTexture(
-                    $"Owner {bank.bank} spell menu selector {row.selector}", rgba, row.width, row.height));
+                    $"Owner {bank.bank} campaign HUD selector {row.selector}", rgba, row.width, row.height));
             }
+            for (var selector = 44; selector <= 53; selector++)
+                Require(hudBitmapDescriptors.ContainsKey(selector), $"campaign top-status selector {selector} is present");
         }
 
         private void MaterializeCampaignNightHud()
@@ -8752,7 +8761,7 @@ namespace MagicCarpet.Native
             foreach (var row in descriptor.bitmap_assets)
             {
                 if (!OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector) &&
-                    !SourceSpellMenu.UsesBitmap(row.selector)) continue;
+                    !UsesCampaignTopStatusBitmap(row.selector) && !SourceSpellMenu.UsesBitmap(row.selector)) continue;
                 var indices = ownerAssetCache.ReadOutput(row.indices_path);
                 var mask = ownerAssetCache.ReadOutput(row.mask_path);
                 Require(indices.Length == checked(row.stored_width * row.stored_height) &&
@@ -8771,6 +8780,8 @@ namespace MagicCarpet.Native
                 hudBitmapTextures.Add(row.selector, CreateTopDownRgbaTexture(
                     $"Owner Night HSPRN selector {row.selector}", rgba, row.stored_width, row.stored_height));
             }
+            for (var selector = 44; selector <= 53; selector++)
+                Require(hudBitmapDescriptors.ContainsKey(selector), $"Night top-status selector {selector} is present");
             foreach (var row in descriptor.spells.tier_rows)
             {
                 level2DayHudTierRows.Add(row.tier, new Level2DayHudTierRowDescriptor {
@@ -10552,7 +10563,22 @@ namespace MagicCarpet.Native
                     level2DayMusic = campaignSession.DayMusicState();
                     ownerAudio.ApplyCampaignMusic(level2DayMusic);
                 }
-                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+                if (campaignSession != null && after.session.generation != before.session.generation)
+                {
+                    // Pause/resume changes the borrowed epoch without stepping
+                    // the world. Rebind the already composed source frame and
+                    // HUD to the accepted owner before the next GUI repaint.
+                    if (level2Mode)
+                        UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+                    else if (level3Mode)
+                        UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+                    else if (gameRuntimeSecretSurface != null)
+                        UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+                    else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                        UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
+                    gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+                }
             }
             gameRuntimeNightSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 1));
             level2DayPresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 0));

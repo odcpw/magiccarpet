@@ -1,4 +1,4 @@
-//! Transport-neutral binary render publication, version 4.
+//! Transport-neutral binary render publication, version 5.
 //!
 //! Integers are little endian with no padding. Strings are UTF-8 prefixed by a
 //! u32 byte length; vectors use a u32 count; options and booleans use one byte.
@@ -8,7 +8,7 @@
 use crate::{
     AbandonAction, CameraPose, ObjectiveProgress, ParticipantNotification, PlayerMotion,
     PlayerPose, PlayerVitals, PresentationEntity, SessionIdentity, SourceMenuAdmission,
-    SourceScoreboard, SpellAvailability, SpellHand, SpellMarkHand, SpellObservation,
+    SourceScoreboard, SourceTopStatus, SpellAvailability, SpellHand, SpellMarkHand, SpellObservation,
 };
 
 /// Borrowed live presentation data. The producer owns the underlying state and
@@ -44,6 +44,7 @@ pub struct RenderPublication<'a> {
     pub presentation_entities: &'a [PresentationEntity],
     /// Source global [left, right] visibility counters, each in 0..=8.
     pub player_hand_selection_flash_ticks: [u8; 2],
+    pub source_top_status: &'a SourceTopStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +55,8 @@ pub enum EncodeError {
     BufferTooSmall(u32),
     /// A producer supplied a counter outside the source eight-update window.
     InvalidHandSelectionFlashTicks([u8; 2]),
+    /// A linked Castle cannot select an icon outside the source stage domain.
+    InvalidTopStatusStage(u8),
 }
 
 struct Writer<'a> {
@@ -148,8 +151,13 @@ impl RenderPublication<'_> {
         if self.player_hand_selection_flash_ticks.iter().any(|&value| value > 8) {
             return Err(EncodeError::InvalidHandSelectionFlashTicks(self.player_hand_selection_flash_ticks));
         }
+        if let Some(castle) = self.source_top_status.castle.as_ref()
+            && castle.stage > 7
+        {
+            return Err(EncodeError::InvalidTopStatusStage(castle.stage));
+        }
         w.raw(b"MCPO")?;
-        w.u32(4)?;
+        w.u32(5)?;
         w.u32(length)?;
         w.u64(self.runtime_id)?;
         w.u64(self.runtime_generation)?;
@@ -321,6 +329,28 @@ impl RenderPublication<'_> {
             w.string(&e.asset.content_address)?;
         }
         w.raw(&self.player_hand_selection_flash_ticks)?;
+        let top = self.source_top_status;
+        w.optional(top.castle.as_ref(), |w, castle| {
+            w.u8(castle.stage)?;
+            w.u16(castle.panel_selector)?;
+            w.u16(castle.icon_selector)?;
+            w.i32(castle.life)?;
+            w.i32(castle.max_life)?;
+            w.i32(castle.mana)?;
+            w.i32(castle.max_mana)?;
+            w.i32(castle.owner_mana_aggregate)
+        })?;
+        w.u16(top.balloon_panel_selector)?;
+        w.u16(top.balloon_icon_selector)?;
+        for balloon in &top.balloons {
+            w.bool(balloon.present)?;
+            w.i32(balloon.life)?;
+            w.i32(balloon.max_life)?;
+            w.i32(balloon.mana)?;
+            w.i32(balloon.max_mana)?;
+        }
+        w.i16(top.mana_goal_percent)?;
+        w.u8(top.goal_palette_index)?;
         Ok(())
     }
 }
