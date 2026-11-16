@@ -76,14 +76,44 @@ function windows(p:Profile):WindowSite[]{
  for(let sector=0;sector<4;sector++)select(sector);while(result.length<6&&select(-1)){}return result;
 }
 
-export function buildingMesh(p:Profile, night:number):THREE.Group{
+function buildingSurface(material:THREE.MeshStandardMaterial, kind:number, rock:THREE.Texture){
+ material.color.setRGB(1,1,1);
+ material.onBeforeCompile=shader=>{
+  shader.uniforms.buildingRock={value:rock};
+  shader.vertexShader='varying vec3 buildingPos,buildingNormal;\n'+shader.vertexShader;
+  shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nbuildingPos=position; buildingNormal=normal;');
+  shader.fragmentShader=`uniform sampler2D buildingRock; varying vec3 buildingPos,buildingNormal;
+   float buildingHash(vec2 cell){return fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);}\n`+shader.fragmentShader;
+  const albedo=kind===0?`
+   vec2 surface=abs(bn.x)>abs(bn.z)?buildingPos.zy:buildingPos.xy;
+   float row=floor(surface.y/1.05);vec2 bond=vec2(surface.x/2.15+fract(row*.5),surface.y/1.05);
+   vec2 edge=min(fract(bond),1.-fract(bond))*vec2(2.15,1.05);float dist=min(edge.x,edge.y);
+   float aa=max(fwidth(dist),.008),mortar=1.-smoothstep(.018-aa,.06+aa,dist);
+   vec3 stone=mix(vec3(.075,.12,.14),vec3(.20,.285,.355),smoothstep(4.6,5.5,buildingPos.y));
+   stone*=mix(.82,1.14,buildingHash(floor(bond)))*mix(.8,1.13,grain);stone=mix(stone,vec3(.035,.048,.054),mortar*.65);
+  `:`
+   vec2 tile=buildingPos.xz/vec2(.9,1.1);tile.x+=fract(floor(tile.y)*.5);
+   vec2 edges=min(fract(tile),1.-fract(tile));float seam=1.-smoothstep(.015,.055+max(fwidth(tile.x),fwidth(tile.y)),min(edges.x,edges.y));
+   vec3 stone=vec3(.13,.105,.075)*mix(.75,1.2,buildingHash(floor(tile)))*mix(.85,1.1,grain);stone*=1.-seam*.5;
+  `;
+  shader.fragmentShader=shader.fragmentShader.replace('#include <map_fragment>',`
+   vec3 bn=normalize(buildingNormal),bw=pow(abs(bn),vec3(4.));bw/=max(.001,dot(bw,vec3(1.)));
+   vec3 bp=buildingPos*.36;vec3 texel=texture2D(buildingRock,bp.yz).rgb*bw.x+texture2D(buildingRock,bp.xz).rgb*bw.y+texture2D(buildingRock,bp.xy).rgb*bw.z;
+   float grain=clamp(dot(texel,vec3(.3,.5,.2))*1.7,0.,1.);${albedo}
+   float damp=(1.-smoothstep(-.1,1.3,buildingPos.y))*(.10+.13*grain);diffuseColor.rgb*=stone*(1.-damp);
+  `);
+ };
+ material.customProgramCacheKey=()=>`modern-building-${kind}-v1`;
+}
+
+export function buildingMesh(p:Profile, night:number,rock?:THREE.Texture):THREE.Group{
  const vertices:number[][]=[[],[],[],[],[],[],[]];
  const tri=(a:THREE.Vector3,b:THREE.Vector3,c:THREE.Vector3,kind:number)=>vertices[kind]!.push(...a.toArray(),...b.toArray(),...c.toArray());
  facets(p,(a,b,c)=>{const n=new THREE.Vector3().subVectors(b,a).cross(new THREE.Vector3().subVectors(c,a)).normalize();tri(a,b,c,n.y<.76||Math.max(a.y,b.y,c.y)<.1?0:2);});
  const rect=(s:WindowSite,x0:number,y0:number,x1:number,y1:number,depth:number,k:number)=>{const point=(x:number,y:number)=>s.center.clone().addScaledVector(s.across,x).addScaledVector(s.up,y).addScaledVector(s.normal,depth);const a=point(x0,y0),b=point(x1,y0),c=point(x1,y1),d=point(x0,y1);tri(a,b,c,k);tri(a,c,d,k);};
  for(const s of windows(p)){const w=s.w,h=s.h,t=Math.min(w,h)*.18;rect(s,-w,-h,w,h,.012,6);rect(s,-w*.78,-h*.82,w*.78,h*.82,.025,5);rect(s,-w,-h,-w+t,h,.035,3);rect(s,w-t,-h,w,h,.035,3);rect(s,-w,-h,w,-h+t,.035,3);rect(s,-w,h-t,w,h,.035,3);rect(s,-w*.045,-h*.8,w*.045,h*.8,.04,4);rect(s,-w*.75,-h*.035,w*.75,h*.035,.04,4);rect(s,-w,-h,w,-h+t*.55,.045,0);}
  const colors=[0x304453,0x304453,0x211b13,0x1b0c06,0x12110d,0x161006,0x070504];const group=new THREE.Group();
- for(let k=0;k<vertices.length;k++){if(!vertices[k]!.length)continue;const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(vertices[k]!,3));g.computeVertexNormals();const m=new THREE.MeshStandardMaterial({color:colors[k],roughness:.85,side:THREE.DoubleSide,...(k===5?{emissive:0xffad56,emissiveIntensity:THREE.MathUtils.clamp(night,0,1)}:{})});group.add(new THREE.Mesh(g,m));}
+ for(let k=0;k<vertices.length;k++){if(!vertices[k]!.length)continue;const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(vertices[k]!,3));g.computeVertexNormals();const m=new THREE.MeshStandardMaterial({color:colors[k],roughness:.85,side:THREE.DoubleSide,...(k===5?{emissive:0xffad56,emissiveIntensity:THREE.MathUtils.clamp(night,0,1)}:{})});if(rock&&(k===0||k===2))buildingSurface(m,k,rock);const mesh=new THREE.Mesh(g,m);mesh.receiveShadow=true;mesh.castShadow=k===0||k===2;group.add(mesh);}
  return group;
 }
 
@@ -142,6 +172,7 @@ export class ModernWorldObjects {
  readonly manifest:Manifest;
  private readonly library:Library;
  private readonly templates:Map<string,THREE.Group>;
+ private readonly buildingRock?:THREE.Texture;
  private readonly buildings=new Map<number,THREE.Group>();
  private readonly buildingTemplates=new Map<number,THREE.Group>();
  private readonly props=new Map<number,PropInstance>();
@@ -150,13 +181,13 @@ export class ModernWorldObjects {
  private readonly nature=new THREE.Group();
  private natureKey=''; private acceptedKey='';
  private night=0; private lastTerrain:Uint8Array|null=null; private epoch:bigint|null=null;
- private constructor(layout:BuildingLayout,library:Library,templates:Map<string,THREE.Group>,manifest:Manifest){this.layout=layout;this.library=library;this.templates=templates;this.manifest=manifest;this.root.add(this.nature);}
+ private constructor(layout:BuildingLayout,library:Library,templates:Map<string,THREE.Group>,manifest:Manifest,buildingRock?:THREE.Texture){this.layout=layout;this.library=library;this.templates=templates;this.manifest=manifest;this.buildingRock=buildingRock;this.root.add(this.nature);}
  static async load(scene:THREE.Scene,base=BASE):Promise<ModernWorldObjects>{
   if(!base.endsWith('/'))base+='/';
   const response=await fetch(base+'manifest.json',{signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('world manifest unavailable');const manifest=await response.json() as Manifest;if(manifest.schema!=='mc-browser-modern-world/v1')throw Error('unsupported world manifest');
   const get=(name:string)=>{const entry=manifest.files[name];if(!entry)throw Error(`world manifest missing ${name}`);return fetchChecked(base,name,entry);};
   const names=['spell-jar','experience-scroll','exit-portal','stone-statue','dolmen','castle-head','authored-tree','nature'];
-  const [layoutBytes,libraryBytes,colorBytes,...glbs]=await Promise.all([get('layout.json'),get('building-library.json'),get('mana-colors.json'),...names.map(n=>get(n+'.glb'))]);
+  const [layoutBytes,libraryBytes,colorBytes,rockBytes,...glbs]=await Promise.all([get('layout.json'),get('building-library.json'),get('mana-colors.json'),get('rockalbedo.jpg'),...names.map(n=>get(n+'.glb'))]);
   const loader=new GLTFLoader(),templates=new Map<string,THREE.Group>();
   for(let i=0;i<names.length;i++){
    const gltf=await loader.parseAsync(glbs[i]!,base),root=gltf.scene,box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3());
@@ -170,7 +201,10 @@ export class ModernWorldObjects {
   const manaColors=decode<{schema:string;colors:Record<string,number[]>}>(colorBytes!);if(manaColors.schema!=='mc-modern-mana-colors/v1')throw Error('invalid mana palette');
   for(const [selector,rgb] of Object.entries(manaColors.colors)){if(rgb.length!==3||rgb.some(v=>!Number.isFinite(v)||v<0||v>1))throw Error('invalid mana colour');const color=new THREE.Color().setRGB(rgb[0]!,rgb[1]!,rgb[2]!,THREE.SRGBColorSpace),group=new THREE.Group();group.add(new THREE.Mesh(orb,new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:1,roughness:.3})));templates.set('mana-'+selector,group);}
   const layout=decode<BuildingLayout>(layoutBytes!),library=decode<Library>(libraryBytes!);if(library.profiles.length!==17||library.castle_profiles.length!==7)throw Error('incomplete building library');
-  const result=new ModernWorldObjects(layout,library,templates,manifest);scene.add(result.root);return result;
+  const rockUrl=URL.createObjectURL(new Blob([rockBytes!],{type:'image/jpeg'}));let buildingRock:THREE.Texture;
+  try{buildingRock=await new THREE.TextureLoader().loadAsync(rockUrl);}finally{URL.revokeObjectURL(rockUrl);}
+  buildingRock.colorSpace=THREE.SRGBColorSpace;buildingRock.wrapS=buildingRock.wrapT=THREE.RepeatWrapping;buildingRock.needsUpdate=true;
+  const result=new ModernWorldObjects(layout,library,templates,manifest,buildingRock);scene.add(result.root);return result;
  }
  // Only the returned copy belongs to visual terrain. Always pass the original
  // native plane on subsequent reconciliations, including after terrain edits.
@@ -179,7 +213,7 @@ export class ModernWorldObjects {
   const result=reconcileBuildingTerrain(this.layout,original,rows);
   this.acceptedKey=[...result.accepted].sort((a,b)=>a-b).join(',');
   for(const b of this.layout.buildings){let node=this.buildings.get(b.source_slot);if(result.accepted.has(b.source_slot)){
-   if(!node){let template=this.buildingTemplates.get(b.build_index);if(!template){const p=this.library.profiles.find(q=>q.build_index===b.build_index);if(!p)throw Error('missing opening profile');template=buildingMesh(p,this.night);this.buildingTemplates.set(b.build_index,template);}node=template.clone(true);node.position.set(b.x,b.base_height+.025,b.z);this.buildings.set(b.source_slot,node);this.root.add(node);}
+   if(!node){let template=this.buildingTemplates.get(b.build_index);if(!template){const p=this.library.profiles.find(q=>q.build_index===b.build_index);if(!p)throw Error('missing opening profile');template=buildingMesh(p,this.night,this.buildingRock);this.buildingTemplates.set(b.build_index,template);}node=template.clone(true);node.position.set(b.x,b.base_height+.025,b.z);this.buildings.set(b.source_slot,node);this.root.add(node);}
   }else if(node){this.root.remove(node);this.buildings.delete(b.source_slot);}}
   const changed=this.lastTerrain===null||result.visual.some((v,i)=>v!==this.lastTerrain![i]);this.lastTerrain=result.visual.slice();return {...result,changed};
  }
@@ -250,5 +284,5 @@ export class ModernWorldObjects {
  get metrics(){return {buildings:this.buildings.size,props:this.props.size,trees:this.trees.size,mana:this.mana.size};}
  dispose(){for(const node of this.buildingTemplates.values())this.disposeBuilding(node);const geometries=new Set<THREE.BufferGeometry>(),materials=new Set<THREE.Material>(),textures=new Set<THREE.Texture>();
   for(const template of this.templates.values())template.traverse(o=>{if(!(o instanceof THREE.Mesh))return;geometries.add(o.geometry);for(const material of Array.isArray(o.material)?o.material:[o.material]){materials.add(material);if(material instanceof THREE.MeshStandardMaterial&&material.map)textures.add(material.map);}});
-  for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();this.templates.clear();this.buildingTemplates.clear();this.buildings.clear();this.props.clear();this.trees.clear();this.mana.clear();this.root.removeFromParent();}
+  for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();this.buildingRock?.dispose();this.templates.clear();this.buildingTemplates.clear();this.buildings.clear();this.props.clear();this.trees.clear();this.mana.clear();this.root.removeFromParent();}
 }
