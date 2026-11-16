@@ -801,15 +801,59 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): the Castle/balloon top-status batch below is
-implemented, verified, committed, pushed and installed. Continue the existing
-shared display/settings acceptance with the actual Shift+F7/Options15 flat-shading
-producer and Original renderer consumers, then the next concrete unmet path.
+Current capability (2026-11-16): Castle/balloon status and Shift+F7/Options15 flat
+shading are implemented, verified, committed, pushed and installed. Continue
+mc-5r5.2 with bare-F7 brightness cycling and the Options brightness control,
+including canonical palette admission, startup/fade lifetime, immediate save/cold
+restore and actual world/HUD/help palette consumers. Source case6 accepts only
+paletteMod>=3/submode0; accepted endpoint clamps still request submode1. Keep
+general Playing preferences restricted; use one guarded typed source action.
 Root owns serialized integration/build/push/install; workers retain their connected
 capability through consumer failure. Do not extend a fixed ABI struct in place. The installed
 spell-menu, Default Keys and secret announcement checkpoints below are delivered;
 do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
 Modern work. Shift+F7 is flat shading, a separate source control.
+
+Flat-shading checkpoint: canonical a99893ec is pushed as Original49481c14;
+all26 owned code blobs match. Original build-j89o0ece/native
+6451e447039315dfb3c1fd4f4a1b3dc0c3bfdf77a71927f0334505602f9db6bc is installed;
+--check-installed passes. Actual Shift+F7 and Options row14 share a guarded
+source GAME setting and original442/443 notices. It defaults off and survives
+save/cold restore, retry and mission entry, independently of CONFIG. Optional
+stored false remains omitted so existing receipt bytes stay unchanged. No fixed
+ABI or MCPO struct was enlarged.
+
+The actual indexed world consumes source mode7 on outdoor primary terrain and
+both Cave floor/ceiling. Four-corner signed wrapping intensity sum>>18 selects
+one palette row for both cell triangles; existing scan conversion/UV coverage
+is reused. Reflections retain mode5 and reflective primary material retains26.
+Same-tick setting changes invalidate scene/map caches without stepping gameplay.
+The connected outdoor check found the old5/26-only preflight refusal; admitting
+exactly5/7/26 preserves primary-only7/26 and every other refusal. That correction
+was verified through the final matching native's real managed outdoor consumer,
+without recompiling the large unit-test binary for that narrow gate change.
+
+Focused kernel, GAME lifetime/legacy replay, real Cave floor/ceiling and CABI
+guard/cold checks pass (1.84s/0.54s/0.54s/51.36s for the latter four). Workspace
+all-targets passes before the narrow selector correction; the final strict Rig
+native build passes with all626 input hashes and returned/installed bytes
+matching. These are source/header/data inputs, not tests. The actual Original
+managed outdoor flat/reversal/popup/cold/retry check passes112.62s; Options
+row/442/443 passes42.81s and held-key release passes. The first managed setup
+correctly rejected symlink cache aliases; only the two affected checks were
+rerun with their existing regular cache directories. No gate was weakened.
+Canonical Editor runtime offline typecheck passes on116 actual sources. Final
+raster UBS reports zero critical; broader legacy warnings and partial C#
+analysis are retained as limitations. Evidence: generated/flat-shading-20261116.
+
+Root viewed normal canonical map/loading/NightSpire, physical P, both Shift+F7
+variants and the actual Options flat entry in the installed Original client;
+matching mapped native, one portal, zero retries/runtime errors, owned smoke
+stopped. This proves the installed display control and launch/load, not human
+combat, FPS, hardware audio, full missions or historical saves. All30 resource
+roles remain present; their mission paths were not repeated. Full mc-5r5.2,
+mc-oi6.5/mc-oi6.6 acceptance/dependencies remain OPEN. The three current owners
+are now implementing the connected brightness capability above.
 
 Castle/balloon checkpoint: canonical0c081394 is pushed as Original2572257b;
 all22 owned code blobs match. Original build-fsmin12b/native
