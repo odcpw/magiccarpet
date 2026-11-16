@@ -39,9 +39,25 @@ def worker(name, destination):
     metadata = json.loads((folder / (name + '.clips.json')).read_text())
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=str(folder / (name + '.fbx')), use_anim=True)
+    if name == 'Archer':
+        # The selected baked master has the original cone's object transform
+        # reset to identity, leaving its tip beside the fletching. Restore the
+        # authored shaft-tip placement from archer_bow.py on the existing mesh;
+        # ArrowControl animation remains the authority for its motion.
+        from mathutils import Matrix, Vector
+        head = bpy.data.objects.get('Arrowhead')
+        if head is None or head.type != 'MESH' or head.parent is None or head.parent.name != 'ArrowControl':
+            raise RuntimeError('Archer arrowhead does not match the reviewed hierarchy')
+        head.data.transform(Matrix.Translation(Vector((0, .918, .008))) @ Matrix.Rotation(-math.pi / 2, 4, 'X'))
     # The FBX carries its own sampling rate (human packages use 120 Hz).
     fps = bpy.context.scene.render.fps / bpy.context.scene.render.fps_base
     animated = [o for o in bpy.context.scene.objects if o.animation_data and o.animation_data.action]
+    # FBX stores shape-key animation on the Key datablock, independently of
+    # object transforms. Bow limbs and string require these tracks to remain
+    # joined to the accepted Archer prop geometry during the drawn shot.
+    animated.extend(o.data.shape_keys for o in bpy.context.scene.objects
+                    if o.type == 'MESH' and o.data.shape_keys and
+                    o.data.shape_keys.animation_data and o.data.shape_keys.animation_data.action)
     if not animated:
         raise RuntimeError(f'{name}: imported FBX has no action')
     # FBX is a single accepted baked timeline; Unity splits that timeline using

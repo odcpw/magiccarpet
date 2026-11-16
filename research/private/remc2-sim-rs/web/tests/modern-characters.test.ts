@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { characterResource, sourceDeath, ModernCharacters } from '../src/modern-characters.ts';
 import type { ModernCharacter, ModernFrame } from '../src/modern-runtime.ts';
 import * as THREE from 'three';
+import { existsSync, readFileSync } from 'node:fs';
 
 function row(patch: Partial<ModernCharacter> = {}): ModernCharacter {
   return {slotGeneration:0,parentGeneration:0,entityIndex:7,sourceId:9,parentIndex:0,parentId:0,classId:5,model:1,
@@ -48,6 +49,16 @@ test('native incarnations, removal and epoch reset reclaim models', () => {
   presenter.observe(frame(1n,[],2n)); assert.equal(scene.children.length,0);
   presenter.dispose();
 });
+test('grounded goats follow a slope with the source presenter tilt limit', () => {
+  const {presenter,scene,camera} = fixture();
+  presenter.observe(frame(1n,[row()])); presenter.render(camera,1/30,(x) => x);
+  const up = new THREE.Vector3(0,1,0).applyQuaternion(scene.children[0]!.quaternion);
+  assert.ok(Math.abs(up.x + Math.SQRT1_2) < 1e-6); assert.ok(Math.abs(up.y - Math.SQRT1_2) < 1e-6);
+  presenter.render(camera,1/30,(x) => 100*x);
+  up.set(0,1,0).applyQuaternion(scene.children[0]!.quaternion);
+  assert.ok(Math.abs(Math.acos(up.y) - 65 * Math.PI / 180) < 1e-6);
+  presenter.dispose();
+});
 test('death tail is bounded and living entry is hidden rather than dying', () => {
   const {presenter,scene,camera} = fixture();
   presenter.observe(frame(1n,[row({life:-1})])); presenter.render(camera,.5); assert.equal(scene.children.length,1);
@@ -71,4 +82,21 @@ test('only live native arrows allocate a visual and a reused slot replaces it', 
   assert.equal(scene.children.length,2); assert.notEqual(scene.children[1],original);
   presenter.observe(frame(3n,[row({model:4})])); assert.equal(scene.children.length,1);
   presenter.dispose(); assert.equal(scene.children.length,0);
+});
+
+const archerExport = new URL('../../../generated/browser-level1-assets/characters/Archer.glb', import.meta.url);
+test('owner-local Archer export retains bow morphs and the authored shaft tip', {skip:!existsSync(archerExport)}, () => {
+  const buffer = readFileSync(archerExport), size = buffer.readUInt32LE(12);
+  const gltf = JSON.parse(buffer.subarray(20,20 + size).toString('utf8'));
+  assert.equal(gltf.animations.length,8);
+  for (const clip of gltf.animations) {
+    const animated = new Set(clip.channels.filter((c: any) => c.target.path === 'weights')
+      .map((c: any) => gltf.nodes[c.target.node].name));
+    assert.deepEqual(animated,new Set(['Bow limb lower','Bow limb upper','Bowstring']));
+  }
+  const head = gltf.nodes.find((node: any) => node.name === 'Arrowhead');
+  const position = gltf.accessors[gltf.meshes[head.mesh].primitives[0].attributes.POSITION];
+  // glTF's Y-up conversion maps the reviewed Blender +Y shaft tip to -Z.
+  assert.ok(Math.abs(position.min[2] - (-.9395)) < .0001);
+  assert.ok(Math.abs(position.max[2] - (-.8965)) < .0001);
 });

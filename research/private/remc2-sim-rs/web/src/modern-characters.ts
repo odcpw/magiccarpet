@@ -79,6 +79,11 @@ export class ModernCharacters {
   private epoch: bigint | undefined;
   private tick: bigint | undefined;
   private readonly cameraPosition = new THREE.Vector3();
+  private readonly up = new THREE.Vector3(0, 1, 0);
+  private readonly terrainNormal = new THREE.Vector3();
+  private readonly terrainRotation = new THREE.Quaternion();
+  private readonly yawRotation = new THREE.Quaternion();
+  private readonly identityRotation = new THREE.Quaternion();
   private readonly parent: THREE.Object3D;
   private readonly assets: Map<string, Art>;
   private constructor(parent: THREE.Object3D, assets: Map<string, Art>) { this.parent = parent; this.assets = assets; }
@@ -112,11 +117,16 @@ export class ModernCharacters {
         if (!control || !(string instanceof THREE.Mesh)) throw new Error('Archer is missing bow or arrow geometry');
         idle.stop(); const shot = probeMixer.clipAction(clips.get('StandingShot')!); shot.play();
         const sample = (time: number) => { shot.time = time; probeMixer.update(0); probe.updateMatrixWorld(true); };
-        sample(3.20); const start = control.getWorldPosition(new THREE.Vector3());
-        sample(3.35); const direction = control.getWorldPosition(new THREE.Vector3()).sub(start).normalize();
-        if (direction.lengthSq() < .99) throw new Error('Archer shot has no measurable arrow flight');
-        attackYaw = Math.atan2(direction.x, direction.z);
+        // Use the visible shaft's actual tip-to-fletching direction. The FBX
+        // control's sampled translation can point the opposite way and is not
+        // a reliable proxy for the axis of the authored arrow geometry.
         sample(2.35);
+        const tip = control.getObjectByName('Arrowhead'), tail = control.getObjectByName('Arrow_fletching');
+        if (!tip || !tail) throw new Error('Archer arrow lacks its tip or fletching');
+        const direction = new THREE.Box3().setFromObject(tip, true).getCenter(new THREE.Vector3())
+          .sub(new THREE.Box3().setFromObject(tail, true).getCenter(new THREE.Vector3())).normalize();
+        if (direction.lengthSq() < .99) throw new Error('Archer shot has no measurable shaft direction');
+        attackYaw = Math.atan2(direction.x, direction.z);
         const positions = string.geometry.getAttribute('position');
         string.geometry.computeBoundingBox();
         const size = string.geometry.boundingBox!.getSize(new THREE.Vector3());
@@ -328,10 +338,23 @@ export class ModernCharacters {
       const grounded = a.resource !== 'Firefly' && a.resource !== 'Collector' && !a.resource.startsWith('Worm');
       const y = grounded && terrainHeight ? terrainHeight(x, z) : a.interpolated.y;
       a.root.position.set(x, y - a.bottom, z);
-      a.root.rotation.y = a.fromYaw + yawDelta(a.fromYaw, a.toYaw) * t;
+      const yaw = a.fromYaw + yawDelta(a.fromYaw, a.toYaw) * t;
       const dx = x - this.cameraPosition.x, dz = z - this.cameraPosition.z;
       a.root.visible = dx * dx + dz * dz < 350 * 350 && (a.dying || !!a.state.active &&
         (a.resource === 'Collector' || !(a.state.controlFlags & 0x421)));
+      if (grounded && terrainHeight && a.root.visible) {
+        // Mirror ModernCharacterActors.Place: fit the local ground normal,
+        // retaining its separate Goat and human maximum terrain slopes.
+        const e = .65;
+        this.terrainNormal.set(terrainHeight(x - e, z) - terrainHeight(x + e, z), 2 * e,
+          terrainHeight(x, z - e) - terrainHeight(x, z + e)).normalize();
+        const angle = Math.acos(THREE.MathUtils.clamp(this.terrainNormal.y, -1, 1));
+        const limit = (a.resource === 'Goat' ? 65 : 35) * Math.PI / 180;
+        this.terrainRotation.setFromUnitVectors(this.up, this.terrainNormal);
+        if (angle > limit) this.terrainRotation.slerp(this.identityRotation, 1 - limit / angle);
+        this.yawRotation.setFromAxisAngle(this.up, yaw);
+        a.root.quaternion.copy(this.terrainRotation).multiply(this.yawRotation);
+      } else a.root.rotation.set(0, yaw, 0);
       if (a.dying) {
         a.deathTime += dt;
         if (!a.seen && a.deathTime > (a.actions.get('Death')?.getClip().duration ?? 0) + .5) {
@@ -366,7 +389,7 @@ export class ModernCharacters {
           const heading = Math.PI - (a.release > 0 ? a.releaseYaw : a.state.yaw) * Math.PI * 2 / 2048;
           const tx = a.state.hasTarget && !a.release ? delta(a.interpolated.x, a.state.targetX / 64) : Math.sin(heading);
           const tz = a.state.hasTarget && !a.release ? delta(a.interpolated.z, a.state.targetY / 64) : Math.cos(heading);
-          if (tx * tx + tz * tz > .000001) a.model.rotation.y = Math.atan2(tx, tz) - a.root.rotation.y - art.attackYaw;
+          if (tx * tx + tz * tz > .000001) a.model.rotation.y = Math.atan2(tx, tz) - yaw - art.attackYaw;
         }
         if (a.heldArrow) a.heldArrow.visible = a.release <= 0;
       } else if (moving && ['Walk', 'Run', 'Sprint'].includes(name)) {
