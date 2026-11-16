@@ -361,6 +361,7 @@ namespace MagicCarpet.Native
         private readonly System.Collections.Generic.Dictionary<Texture2D, Color32[]> gameRuntimeHudTierPixels = new();
         private Texture gameRuntimeHudIndices;
         private ulong gameRuntimeHudGeneration, gameRuntimeHudRevision;
+        private SourcePlayerNotificationsPresenter.Row[] gameRuntimeMapNoticeRows;
 
         private bool TryGetGameRuntimeHudScene(CampaignPresentationSurface surface,
             out Texture indices, out ulong generation, out ulong revision)
@@ -381,9 +382,13 @@ namespace MagicCarpet.Native
         // DrawGameFrame draws the minimap first, then opaque/transparent HUD
         // panel backgrounds, opaque icons and source-colour glyphs/bars. Keep
         // the resulting indices for the objective/help consumers that follow.
-        private void DrawGameRuntimeIndexedHud(NativeSim.CampaignDayHudSnapshot hud)
+        private void DrawGameRuntimeIndexedHud(NativeSim.CampaignDayHudSnapshot hud, bool mapHandsOnly = false)
         {
             if (Event.current == null || Event.current.type != EventType.Repaint || campaignSession == null) return;
+            var flashes = gameRuntimeCampaignSnapshot?.value?.player_hand_selection_flash_ticks;
+            if (mapHandsOnly && (flashes == null || flashes.Length != 2 || flashes[0] > 8 || flashes[1] > 8))
+                throw new InvalidDataException("source map-hand flash counters are invalid");
+            if (mapHandsOnly && flashes[0] == 0 && flashes[1] == 0) return;
             var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
                 level2DayPresentationSurface ?? gameRuntimeNightSurface;
             if (surface == null || surface.Generation != campaignSession.Generation || surface.Tick != campaignSession.Tick) return;
@@ -483,16 +488,60 @@ namespace MagicCarpet.Native
                 for (var row = 0; row < 2 && charges > 0; row++, charges--)
                     Fill(x + 2 * (column + 2), 38 + 2 * row, 2, 2, hud.manaPaletteIndex);
             }
-            Hand(hud.left, 510); Hand(hud.right, 574);
-            Sprite(hud.minimapPanelSelector, 2, 2, !opaque);
-            Sprite(hud.castlePanelSelector, castleX, 2, !opaque);
-            Sprite(hud.balloonPanelSelector, balloonX, 2, !opaque);
-            Sprite(hud.playerPanelSelector, playerX, 2, !opaque);
-            Sprite(hud.playerIconSelector, playerX + 2, 2, false);
-            Sprite(hud.lifeManaIconSelector, playerX + 38, 2, false);
-            Fill(playerX + 58, 10, SourceHudWidth(hud.localPlayerLife, hud.localPlayerMaxLife), 10, hud.lifePaletteIndex);
-            Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMaxMana, hud.globalManaDenominator), 10, hud.manaMaxPaletteIndex);
-            Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMana, hud.globalManaDenominator), 10, hud.manaPaletteIndex);
+            if (mapHandsOnly)
+            {
+                bool InsideHand(NativeSim.CampaignDayHudSpellSlot slot, int x, int px, int py, byte ticks)
+                {
+                    if (ticks == 0 || slot.holderEntityIndex == 0 || slot.drawAdmitted == 0 ||
+                        !hudBitmapDescriptors.TryGetValue(slot.frameSelector, out var frame) || frame == null) return false;
+                    return px >= x && px < x + frame.runtime_width && py >= 2 && py < 2 + frame.runtime_height;
+                }
+                if (gameRuntimeMapNoticeRows != null)
+                {
+                    var level = session.ObservedCampaignIdentity().active_runtime_flow.bound_level_id;
+                    var pausedColor = gameRuntimeMenu.GameplayPausedColorIndex(level);
+                    var lineHeight = gameRuntimeMenu.GameplayText(level).LineAdvance;
+                    foreach (var textRow in gameRuntimeMapNoticeRows)
+                    {
+                        var x = textRow.X; var y = textRow.Y;
+                        var color = textRow.PausedLabel ? pausedColor : assets.TextColor;
+                        foreach (var value in textRow.Text)
+                        {
+                            if (value == 0 || x >= 640) break;
+                            if (value == 13) continue;
+                            if (value == '\n') { x = textRow.X; y += lineHeight; continue; }
+                            if (value > byte.MaxValue) throw new InvalidDataException("source notice is not byte text");
+                            var glyph = assets.Glyphs[value + 1];
+                            if (value != 9 && value != 32)
+                                for (var gy = 0; gy < glyph.Height; gy++)
+                                for (var gx = 0; gx < glyph.Width; gx++)
+                                {
+                                    var px = x + gx; var py = y + gy;
+                                    if (assets.GlyphMasks[glyph.Offset + gy * glyph.Width + gx] != 0 &&
+                                        (InsideHand(hud.left, 510, px, py, flashes[0]) ||
+                                         InsideHand(hud.right, 574, px, py, flashes[1])))
+                                        Pixel(px, py, color, false);
+                                }
+                            x += value == 9 || value == 32 ? assets.Glyphs[33].Width : glyph.Width;
+                        }
+                    }
+                }
+                if (flashes[0] != 0) Hand(hud.left, 510);
+                if (flashes[1] != 0) Hand(hud.right, 574);
+            }
+            else
+            {
+                Hand(hud.left, 510); Hand(hud.right, 574);
+                Sprite(hud.minimapPanelSelector, 2, 2, !opaque);
+                Sprite(hud.castlePanelSelector, castleX, 2, !opaque);
+                Sprite(hud.balloonPanelSelector, balloonX, 2, !opaque);
+                Sprite(hud.playerPanelSelector, playerX, 2, !opaque);
+                Sprite(hud.playerIconSelector, playerX + 2, 2, false);
+                Sprite(hud.lifeManaIconSelector, playerX + 38, 2, false);
+                Fill(playerX + 58, 10, SourceHudWidth(hud.localPlayerLife, hud.localPlayerMaxLife), 10, hud.lifePaletteIndex);
+                Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMaxMana, hud.globalManaDenominator), 10, hud.manaMaxPaletteIndex);
+                Fill(playerX + 58, 28, SourceHudWidth(hud.localPlayerMana, hud.globalManaDenominator), 10, hud.manaPaletteIndex);
+            }
             gameRuntimeHudPresenter ??= new SourceObjectiveTextboxPresenter(assets);
             var previousPixels = gameRuntimeHudPixels;
             var changed = previousPixels == null || previousPixels.Length != length;

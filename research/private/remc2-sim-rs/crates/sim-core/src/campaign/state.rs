@@ -326,7 +326,11 @@ impl CampaignSession {
     pub fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         let source_global = self.state.live.shared_spells.global_special_state();
+        let hand_selection_flash_ticks = self.state.live.core.context.hand_selection_flash_ticks;
+        let historical_hand_selection_flash = self.state.live.core.context.historical_hand_selection_flash;
         self.state.live.clone_from(&self.baseline);
+        self.state.live.core.context.hand_selection_flash_ticks = hand_selection_flash_ticks;
+        self.state.live.core.context.historical_hand_selection_flash = historical_hand_selection_flash;
         self.state
             .live
             .shared_spells
@@ -1037,6 +1041,10 @@ fn digest_flight_context(context: &FlightContext) -> CanonicalDigest {
             append_flight_event(hasher, *event);
         }
         hasher.update([u8::from(context.chat_clear_requested)]);
+        if context.hand_selection_flash_ticks != [0; 2] {
+            hasher.update(b"source-hand-selection-flash-v1");
+            hasher.update(context.hand_selection_flash_ticks);
+        }
     })
 }
 

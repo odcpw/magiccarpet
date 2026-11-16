@@ -1,4 +1,4 @@
-//! Transport-neutral binary render publication, version 3.
+//! Transport-neutral binary render publication, version 4.
 //!
 //! Integers are little endian with no padding. Strings are UTF-8 prefixed by a
 //! u32 byte length; vectors use a u32 count; options and booleans use one byte.
@@ -42,6 +42,8 @@ pub struct RenderPublication<'a> {
     pub objective_secret_announcement_record: Option<u16>,
     pub exit_sequence_active: bool,
     pub presentation_entities: &'a [PresentationEntity],
+    /// Source global [left, right] visibility counters, each in 0..=8.
+    pub player_hand_selection_flash_ticks: [u8; 2],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +52,8 @@ pub enum EncodeError {
     LengthOverflow,
     /// No bytes were written; the argument is the required packet length.
     BufferTooSmall(u32),
+    /// A producer supplied a counter outside the source eight-update window.
+    InvalidHandSelectionFlashTicks([u8; 2]),
 }
 
 struct Writer<'a> {
@@ -141,8 +145,11 @@ impl RenderPublication<'_> {
     }
 
     fn write(&self, w: &mut Writer<'_>, length: u32) -> Result<(), EncodeError> {
+        if self.player_hand_selection_flash_ticks.iter().any(|&value| value > 8) {
+            return Err(EncodeError::InvalidHandSelectionFlashTicks(self.player_hand_selection_flash_ticks));
+        }
         w.raw(b"MCPO")?;
-        w.u32(3)?;
+        w.u32(4)?;
         w.u32(length)?;
         w.u64(self.runtime_id)?;
         w.u64(self.runtime_generation)?;
@@ -313,6 +320,7 @@ impl RenderPublication<'_> {
             w.string(&e.asset.id)?;
             w.string(&e.asset.content_address)?;
         }
+        w.raw(&self.player_hand_selection_flash_ticks)?;
         Ok(())
     }
 }

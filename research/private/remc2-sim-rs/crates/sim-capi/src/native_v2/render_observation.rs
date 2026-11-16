@@ -11,6 +11,17 @@ struct RenderObservation {
     value: sim_core::campaign::backend::CampaignRenderObservation,
 }
 
+fn map_publication_error(error: sim_session::render_publication::EncodeError) -> AbiError {
+    use sim_session::render_publication::EncodeError;
+    match error {
+        EncodeError::LengthOverflow => AbiError::new(MC_STATUS_BOUNDS, "render publication exceeds u32"),
+        EncodeError::BufferTooSmall(required) => AbiError::new(
+            MC_STATUS_BUFFER_TOO_SMALL, format!("render publication requires {required} bytes")),
+        EncodeError::InvalidHandSelectionFlashTicks(ticks) => AbiError::new(
+            MC_STATUS_VALIDATION_FAILED, format!("invalid hand selection flash ticks: {ticks:?}")),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_render_observation_json_v1(
     handle: u64,
@@ -44,7 +55,7 @@ pub extern "C" fn mc_game_runtime_render_observation_json_v1(
     })
 }
 
-/// Copy a coherent, guarded MCPO v3 packet to a reusable caller-owned buffer.
+/// Copy a coherent, guarded MCPO v4 packet to a reusable caller-owned buffer.
 /// A short buffer receives no bytes and `out_written` receives the exact size.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
@@ -129,6 +140,7 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
                 spell_menu_has_any_spell: value.spell_menu_has_any_spell,
                 spell_menu_wizard_colors: value.spell_menu_wizard_colors,
                 spell_menu_panels_opaque: value.spell_menu_panels_opaque,
+                player_hand_selection_flash_ticks: value.player_hand_selection_flash_ticks,
                 player_spells: &value.player_spells,
                 objective_progress: &value.objective_progress,
                 objective_textbox_ticks: value.objective_textbox_ticks,
@@ -138,7 +150,7 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
             };
             let length = packet
                 .encoded_len()
-                .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "render publication exceeds u32"))?;
+                .map_err(map_publication_error)?;
             write_output(out_written, length);
             if capacity < length {
                 return Err(AbiError::new(
@@ -166,7 +178,7 @@ pub extern "C" fn mc_game_runtime_render_observation_copy_v1(
             let bytes = unsafe { std::slice::from_raw_parts_mut(buffer, slice_length) };
             packet
                 .encode_into(bytes)
-                .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "cannot encode render publication"))?;
+                .map_err(map_publication_error)?;
             Ok(())
         })
     })
@@ -179,6 +191,15 @@ mod tests {
         mc_game_session_snapshot_json_v1, mc_game_session_step_json_v1,
     };
     use std::path::PathBuf;
+
+    #[test]
+    fn invalid_flash_clock_maps_to_validation_failure() {
+        let error = map_publication_error(
+            sim_session::render_publication::EncodeError::InvalidHandSelectionFlashTicks([9, 0]),
+        );
+        assert_eq!(error.status, MC_STATUS_VALIDATION_FAILED);
+        assert!(error.message.contains("hand selection flash ticks"));
+    }
 
     fn package_set() -> Vec<u8> {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
@@ -289,7 +310,7 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(&short[..4], b"MCPO");
-        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(short[4..8].try_into().unwrap()), 4);
         assert_eq!(u32::from_le_bytes(short[8..12].try_into().unwrap()), length);
         assert_eq!(u64::from_le_bytes(short[12..20].try_into().unwrap()), id);
         assert_eq!(
@@ -314,7 +335,28 @@ mod tests {
         out
     }
 
-    // Read just the panel bit from the public MCPO v3 packet. Walk the
+    fn assert_flash_parity(handle: u64, compact: &[u8]) {
+        let full: serde_json::Value = serde_json::from_slice(&snapshot(handle)).unwrap();
+        let mut length = 0;
+        assert_eq!(mc_game_runtime_render_observation_json_v1(
+            handle, std::ptr::null_mut(), 0, &raw mut length,
+        ), MC_STATUS_BOUNDS);
+        let mut bytes = vec![0; length as usize];
+        assert_eq!(mc_game_runtime_render_observation_json_v1(
+            handle, bytes.as_mut_ptr(), length, &raw mut length,
+        ), MC_STATUS_OK);
+        let render: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let clocks = &full["value"]["player_hand_selection_flash_ticks"];
+        assert_eq!(render["value"]["player_hand_selection_flash_ticks"], *clocks);
+        let clocks = clocks.as_array().unwrap();
+        assert_eq!(clocks.len(), 2);
+        for (actual, expected) in compact[compact.len() - 2..].iter().zip(clocks) {
+            assert_eq!(u64::from(*actual), expected.as_u64().unwrap());
+            assert!(*actual <= 8);
+        }
+    }
+
+    // Read just the panel bit from the public MCPO v4 packet. Walk the
     // variable-sized prefix instead of assuming a particular player name or
     // notice count, so this exercises the actual encoder and buffer path.
     fn packet_panels_opaque(packet: &[u8]) -> bool {
@@ -367,6 +409,7 @@ mod tests {
         assert!(packet_panels_opaque(&packet(handle)));
         let before = snapshot(handle);
         let initial = packet(handle);
+        assert_flash_parity(handle, &initial);
         assert_eq!(packet(handle), initial);
         assert_eq!(snapshot(handle), before);
         let (_, generation, session_generation, tick, _) = identity(handle);
@@ -467,10 +510,12 @@ mod tests {
             MC_STATUS_OK
         );
         let stepped = packet(handle);
+        assert_flash_parity(handle, &stepped);
         assert_ne!(initial, stepped);
         assert_eq!(mc_game_runtime_pause_v1(handle, generation), MC_STATUS_OK);
         let (_, paused_generation, paused_session, paused_tick, _) = identity(handle);
         let paused = packet(handle);
+        assert_flash_parity(handle, &paused);
         assert_ne!(paused, stepped);
         assert_eq!(
             mc_game_runtime_paused_frame_v1(handle, paused_generation, paused_session, paused_tick),
@@ -500,7 +545,8 @@ mod tests {
             identity(restored);
         assert_eq!(restored_mode, RuntimeMode::Paused);
         assert_eq!(restored_tick, paused_tick);
-        packet(restored);
+        let restored_packet = packet(restored);
+        assert_flash_parity(restored, &restored_packet);
         assert_eq!(
             mc_game_runtime_render_observation_copy_v1(
                 restored,

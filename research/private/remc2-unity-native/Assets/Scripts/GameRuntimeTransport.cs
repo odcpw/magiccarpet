@@ -35,7 +35,7 @@ namespace MagicCarpet.Native
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
-            "carpet-flight-mc2-campaign-replay-save/v8";
+            "carpet-flight-mc2-campaign-replay-save/v9";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string CampaignMode = "campaign";

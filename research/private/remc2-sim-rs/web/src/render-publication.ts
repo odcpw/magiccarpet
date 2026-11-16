@@ -1,5 +1,5 @@
 /**
- * MCPO v3 is one copied, coherent native publication. Decode before retaining
+ * MCPO v4 is one copied, coherent native publication. Decode before retaining
  * the result: a WebAssembly memory view can be overwritten or detached on growth.
  * No references to the supplied bytes survive this call.
  */
@@ -87,7 +87,7 @@ const availability = ['ready', 'not_acquired', 'invalid_holder', 'invalid_caster
 export function decodeRenderPublication(bytes: Uint8Array) {
   const r = new Reader(bytes);
   if (r.u8() !== 0x4d || r.u8() !== 0x43 || r.u8() !== 0x50 || r.u8() !== 0x4f) throw new Error('invalid render publication magic');
-  if (r.u32() !== 3) throw new Error('unsupported render publication version');
+  if (r.u32() !== 4) throw new Error('unsupported render publication version');
   if (r.u32() !== bytes.byteLength) throw new Error('render publication length mismatch');
   const runtime_id = r.u64();
   const runtime_generation = r.u64();
@@ -155,6 +155,9 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   const presentation_entities = r.array(32, () => ({ actor: r.u64(), kind: r.string(),
     pose: { x: r.u16(), y: r.u16(), z: r.i16(), yaw: r.i16(), pitch: r.i16() },
     logical_height: r.u16(), asset: { id: r.string(), content_address: r.string() } }));
+  const player_hand_selection_flash_ticks = [r.u8(), r.u8()];
+  if (player_hand_selection_flash_ticks.some(ticks => ticks > 8))
+    throw new Error('invalid hand selection flash ticks');
   r.end();
   return freeze({ runtime_id, runtime_generation, runtime_mode, identity, terrain_mutation_sequence,
     value: { tick, effect_head, player_pose, player_motion, player_vitals,
@@ -163,7 +166,7 @@ export function decodeRenderPublication(bytes: Uint8Array) {
       player_immobilized_ticks, source_camera_pose,
       source_camera_fov, spell_menu_has_any_spell, spell_menu_wizard_colors, spell_menu_panels_opaque,
       player_spells, objective_progress, objective_textbox_ticks,
-      objective_secret_announcement_record, exit_sequence_active,
+      objective_secret_announcement_record, exit_sequence_active, player_hand_selection_flash_ticks,
       presentation_entities } });
 }
 

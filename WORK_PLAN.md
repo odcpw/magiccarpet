@@ -859,6 +859,54 @@ distinct predicates; do not invent a GUI timer or derive flash from holder
 validity. Detailed Castle/balloon HUD parity also remains incomplete. Full
 mc-oi6.5, mc-oi6.6 and mc-5r5.2 acceptance stays open.
 
+Hand-selection visibility is now implemented and verified, pending installation.
+Real accepted31/32 retriggers its global byte8 after the PlayerEvents prologue
+decrements both. Source local-player startup ApplyEvents does not dispatch that
+prologue; reset/ordinary/secret owner transitions retain the actual global pair.
+Cold replay reconstructs saved state; real warm load retains the receiver pair
+only after all saved receipts verify, recording the existing context-change
+boundary. Newv9 saves verify oldv8/v7 under their historical producer prefix and
+enable new assignments only at the explicit migration boundary; old receipts
+are neither weakened nor rewritten. Actual full/JSON/strict MCPOv4 carry the
+pair. World HUD remains TopBar-controlled; full map draws only each nonzero
+hand after source menus/notices, independently of TopBar, with real indexed
+notice-glyph overlap before transparent frame shading. No GUI clock or RGB
+index inference is used.
+
+The full real owner selection/expiry/query/invalid/preview/mark/reset/new-owner/
+cold/warm/oldv8 check passes14.21s; actual CAPI cold/warm/rejection boundary
+passes0.89s. Source hand/help and independent-hand checks, F6 lifetime1.84s,
+MCPO purity/lifecycle0.416s and range-error mapping pass. Actual managed map
+selection/TopBar/F6/expiry/pixel/repaint check passes58.11s; existing Ctrl/help
+passes62.75s. Long notice/CR overlap is an explicitly detached component
+control using actual glyphs/LUT, not a claimed native-produced long notice.
+All five browser codec tests pass, including real native parity; a separate
+actual accepted Fireball assignment gives full/render/TS and exact canonical
+C# decoder parity at[8,0]. The latter compiles the real codec/DTO sources with
+unused external dependencies stubbed; it is not Unity JSON/native integration
+proof. The qualified Original managed checks supply that separate live path.
+
+Strict Rig test compile/native/workspace checks pass; all626 inputs and native
+875cb19902ed9dc136538f86b8719bb841fca82ff79c941d5376eae25ecdfa41 match.
+One compile failure was an old test's retained-context type assertion; its fix
+preserves production bytes. The build command then hit its configured300s
+deadline, not OOM; the proper test --no-run command completed6m44s with the same
+cache and configured1800s limit. The separate legacy global-context runtime
+check fails before construction on a hardcoded Rig generated path; no candidate
+behavior was exercised or qualification claimed for it. The new real owner
+and CAPI checks cover the changed warm/cold boundary. UBS whole-file legacy
+totals are not candidate defects: no added-line critical finding; new warnings
+are bounded indexing/validated invariants and test assertions. C# analysis
+remains partial. No scanner suppression or assertion weakening. Evidence:
+generated/hand-selection-20261116. Full HUD/settings acceptance remains open.
+
+Next connected gap: Castle and balloon state exists but day_hud_for still
+projects empty54/54 panels. Bind actual owner relation/stage, ordered live
+balloon slots, life/mana/owner aggregate and source bars/icons through one
+typed same-boundary projection and indexed consumer. Preserve the distinct
+stage-zero predicates, real hit-clock/goal carriers and removal/reclaim; no
+client timer or invented Castle/balloon state.
+
 The spell-menu trace exposed14 genuine Castle-mana threshold errors across
 Fireball, Possession, Speed, Morph, Shield, Invisibility and Beyond Sight. Loaded
 SPELLS.DAT maxManaLimit_A is copied directly by LevelInit; it is not divided by64.

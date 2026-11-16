@@ -26,6 +26,11 @@ namespace MagicCarpet.Native.Tests
                     "metadata must already reflect the completed operation before the explicit fresh read");
                 var full = session.GameRuntimeCampaignSnapshot();
                 var render = session.GameRuntimeCampaignRenderObservation();
+                var jsonRender = EngineSessionTransport.CampaignRenderObservationForHandle(session.Handle);
+                Assert.That(render.value.player_hand_selection_flash_ticks,
+                    Is.EqualTo(full.value.player_hand_selection_flash_ticks));
+                Assert.That(jsonRender.value.player_hand_selection_flash_ticks,
+                    Is.EqualTo(full.value.player_hand_selection_flash_ticks));
                 Assert.That(render.identity.generation, Is.EqualTo(full.identity.generation));
                 Assert.That(render.identity.tick, Is.EqualTo(full.identity.tick));
                 Assert.That(JsonUtility.ToJson(render.value.player_pose), Is.EqualTo(JsonUtility.ToJson(full.value.player_pose)));
@@ -96,9 +101,22 @@ namespace MagicCarpet.Native.Tests
             var bad = (byte[])bytes.Clone();
             bad[4] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
-            bad[4] = 3; bad[28] = 2;
+            bad[4] = 3;
+            Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
+            bad[4] = 4; bad[28] = 2;
             Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(bad, (int)length));
             bad[28] = 0;
+            foreach (var index in new[] { (int)length - 2, (int)length - 1 }) {
+                var invalidClock = (byte[])bytes.Clone();
+                invalidClock[index] = 9;
+                Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(invalidClock, (int)length));
+            }
+            foreach (var removed in new[] { 1, 2 }) {
+                var shortPacket = new byte[(int)length - removed];
+                Array.Copy(bytes, shortPacket, shortPacket.Length);
+                Array.Copy(BitConverter.GetBytes(shortPacket.Length), 0, shortPacket, 8, 4);
+                Assert.Throws<InvalidDataException>(() => CampaignRenderTransport.Decode(shortPacket, shortPacket.Length));
+            }
             for (var i = 12; i < 20; i++) bad[i] = 255;
             Assert.That(CampaignRenderTransport.Decode(bad, (int)length).RuntimeId, Is.EqualTo(ulong.MaxValue));
             Assert.That(session.GameRuntimeCampaignSnapshot().value.state_hash, Is.EqualTo(originalHash),
@@ -123,6 +141,7 @@ namespace MagicCarpet.Native.Tests
                     player_motion = new EngineSessionTransport.Motion { actual_speed = 80 },
                     player_vitals = new EngineSessionTransport.PlayerVitals { life = 80, max_life = 100, mana = 60, max_mana = 100 },
                     source_camera_pose = new EngineSessionTransport.CameraPose { x = 11, y = 21 }, source_camera_fov = 128,
+                    player_hand_selection_flash_ticks = new byte[] { 8, 1 },
                     player_spells = new[] { new EngineSessionTransport.SpellObservation {
                         id = "spell.fireball", display_name = "Fireball", acquired = true,
                         selected = true, hand = "left", availability = "ready"
@@ -146,6 +165,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(restored.value.player_pose.x, Is.EqualTo(10));
             Assert.That(restored.value.source_camera_pose.y, Is.EqualTo(21));
             Assert.That(restored.value.player_spells.Single().selected, Is.True);
+            Assert.That(restored.value.player_hand_selection_flash_ticks, Is.EqualTo(new byte[] { 8, 1 }));
             Assert.That(restored.value.state_hash, Is.EqualTo(full.value.state_hash));
             Assert.That(restored.value.effect_journal_sha256, Is.EqualTo(full.value.effect_journal_sha256));
         }
@@ -160,6 +180,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(restored.terrain_mutation_sequence, Is.EqualTo("18446744073709551615"));
             Assert.That(restored.value.player_vitals.mana, Is.EqualTo(60));
             Assert.That(restored.value.player_motion.actual_speed, Is.EqualTo(80));
+            Assert.That(restored.value.player_hand_selection_flash_ticks, Is.EqualTo(new byte[] { 8, 1 }));
             Assert.That(typeof(EngineSessionTransport.CampaignRenderValue).GetField("state_hash"), Is.Null);
         }
 
@@ -175,6 +196,21 @@ namespace MagicCarpet.Native.Tests
             observation.value.tick = "42";
             observation.terrain_mutation_sequence = "18446744073709551616";
             Assert.Throws<InvalidOperationException>(() => EngineSessionTransport.ValidateCampaignRenderObservation(observation));
+        }
+
+        [Test]
+        public void FullAndRenderJsonRejectInvalidHandSelectionClocks()
+        {
+            var observation = Observation();
+            var full = (EngineSessionTransport.CampaignSnapshotValue)observation.value;
+            foreach (var clocks in new byte[][] { null, Array.Empty<byte>(), new byte[] { 1 },
+                new byte[] { 1, 2, 3 }, new byte[] { 9, 0 }, new byte[] { 0, 9 } }) {
+                full.player_hand_selection_flash_ticks = clocks;
+                Assert.Throws<InvalidOperationException>(() =>
+                    EngineSessionTransport.ValidateCampaignRenderObservation(observation));
+                Assert.Throws<InvalidOperationException>(() =>
+                    EngineSessionTransport.ValidateCampaignSnapshot(full, observation.identity));
+            }
         }
 
         [Test]

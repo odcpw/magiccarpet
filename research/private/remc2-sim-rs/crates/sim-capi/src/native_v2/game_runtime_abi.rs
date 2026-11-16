@@ -611,7 +611,7 @@ impl RuntimeRecord {
         package_set_json: String,
         package_set_json_len: u32,
         save_json: &[u8],
-        source_context: Option<sim_core::native_world::GlobalSpecialState>,
+        source_context: Option<sim_core::campaign::backend::SourceProcessContext>,
     ) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Title)?;
         if self.resolver.is_some() {
@@ -1883,7 +1883,7 @@ fn load_runtime_replay_input(
                             "warm replay source has no installed MC2 resolver",
                         )
                     })?
-                    .source_global_context(&record.runtime)
+                    .source_process_context(&record.runtime)
                     .map_err(map_transition_error)
             })
         })
@@ -3033,7 +3033,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v8",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v9",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "warm_load_transport": "mc_game_runtime_load_replay_from_runtime_json_v1",
@@ -4131,6 +4131,79 @@ mod tests {
     }
 
     #[test]
+    fn runtime_hand_selection_flash_warm_load_keeps_receiver_after_saved_receipts_verify() {
+        fn flash(handle: u64) -> Value {
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })["value"]["player_hand_selection_flash_ticks"].clone()
+        }
+        fn save(handle: u64) -> Vec<u8> {
+            let id = identity(handle);
+            let outer = id["generation"].as_str().unwrap().parse().unwrap();
+            let nested = id["session"]["generation"].as_str().unwrap().parse().unwrap();
+            let tick = id["session"]["tick"].as_str().unwrap().parse().unwrap();
+            read_bytes(|buffer, capacity, length| {
+                mc_game_runtime_save_replay_json_v1(handle, outer, nested, tick, buffer, capacity, length)
+            })
+        }
+        fn assign(handle: u64, hand: &str) {
+            let id = identity(handle);
+            let nested = id["session"]["generation"].as_str().unwrap().parse().unwrap();
+            let tick = id["session"]["tick"].as_str().unwrap().parse().unwrap();
+            let command = serde_json::to_vec(&serde_json::json!({
+                "assign_spell": { "spell_id": "spell.fireball", "tier": 0, "hand": hand }
+            })).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle, nested, tick,
+                command.as_ptr(), command.len() as u32), MC_STATUS_OK,
+                "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        }
+        let paths = [level_one_package(), level_two_package(), level_three_package()];
+        let packages = installed_package_set_json(&paths);
+        let mut source = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut source), MC_STATUS_OK);
+        assert_eq!(bootstrap_package_set(source, 1, &paths), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(source, 2), MC_STATUS_OK);
+        assign(source, "left");
+        assert_eq!(flash(source), serde_json::json!([8, 0]));
+        let saved = save(source);
+        assign(source, "right");
+        assert_eq!(flash(source), serde_json::json!([7, 8]));
+        let source_before = save(source);
+        let source_generation = identity(source)["generation"].as_str().unwrap().parse().unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1,
+            packages.as_ptr(), packages.len() as u32, saved.as_ptr(), saved.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        assert_eq!(flash(cold), serde_json::json!([8, 0]), "cold replay retains the saved source pair");
+        let mut warm = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut warm), MC_STATUS_OK);
+        let title = identity(warm);
+        let mut invalid: Value = serde_json::from_slice(&saved).unwrap();
+        invalid["expected_state_hash"] = serde_json::json!("0000000000000000");
+        let invalid = serde_json::to_vec(&invalid).unwrap();
+        assert_ne!(mc_game_runtime_load_replay_from_runtime_json_v1(warm, 1, source, source_generation,
+            packages.as_ptr(), packages.len() as u32, invalid.as_ptr(), invalid.len() as u32), MC_STATUS_OK);
+        assert_eq!(identity(warm), title, "invalid receipt cannot publish receiver state");
+        assert_eq!(save(source), source_before, "invalid warm restore cannot mutate its source");
+        assert_eq!(mc_game_runtime_load_replay_from_runtime_json_v1(warm, 1, source, source_generation,
+            packages.as_ptr(), packages.len() as u32, saved.as_ptr(), saved.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        assert_eq!(flash(warm), serde_json::json!([7, 8]), "warm restore keeps receiver globals after receipt verification");
+        assert_eq!(save(source), source_before);
+        let warm_saved = save(warm);
+        let mut warm_cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut warm_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(warm_cold, 1,
+            packages.as_ptr(), packages.len() as u32, warm_saved.as_ptr(), warm_saved.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        assert_eq!(flash(warm_cold), serde_json::json!([7, 8]), "the real warm-load boundary survives later cold replay");
+        for handle in [warm_cold, warm, cold, source] {
+            assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+        }
+    }
+
+    #[test]
     fn runtime_paused_frames_round_trip_real_level_one_across_fresh_handle() {
         let package_paths = [
             level_three_package(),
@@ -4251,7 +4324,7 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v8"
+            "carpet-flight-mc2-campaign-replay-save/v9"
         );
         assert_eq!(save_json["completed_levels"], serde_json::json!([]));
         let operations = save_json["operations"].as_array().unwrap();

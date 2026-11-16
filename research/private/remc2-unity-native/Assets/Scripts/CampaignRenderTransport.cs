@@ -5,7 +5,7 @@ using System.Text;
 
 namespace MagicCarpet.Native
 {
-    // MCPO v3 is shared with sim-session and the browser DataView reader.
+    // MCPO v4 is shared with sim-session and the browser DataView reader.
     // This adapter owns its reusable copy buffer; no native pointer escapes.
     internal sealed class CampaignRenderTransport
     {
@@ -55,7 +55,7 @@ namespace MagicCarpet.Native
         internal static Publication Decode(byte[] bytes, int length)
         {
             var r = new Reader(bytes, length);
-            if (r.U32() != 0x4f50434d || r.U32() != 3 || r.U32() != length)
+            if (r.U32() != 0x4f50434d || r.U32() != 4 || r.U32() != length)
                 throw new InvalidDataException("Unsupported render publication header");
             var result = new Publication { RuntimeId = r.U64(), RuntimeGeneration = r.U64() };
             result.Mode = r.Enum(Modes);
@@ -164,6 +164,9 @@ namespace MagicCarpet.Native
                     logical_height = r.U16(),
                     asset = new EngineSessionTransport.AssetReference { id = r.Text(), content_address = r.Text() }
                 };
+            value.player_hand_selection_flash_ticks = new[] { r.Byte(), r.Byte() };
+            if (value.player_hand_selection_flash_ticks[0] > 8 || value.player_hand_selection_flash_ticks[1] > 8)
+                throw new InvalidDataException("Invalid hand selection flash ticks");
             r.Finish();
             EngineSessionTransport.ValidateCampaignRenderObservation(observation);
             if (result.RuntimeId == 0 || result.RuntimeGeneration == 0)

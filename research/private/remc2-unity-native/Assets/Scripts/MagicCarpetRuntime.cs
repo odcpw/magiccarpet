@@ -14060,6 +14060,9 @@ namespace MagicCarpet.Native
 
         private void DrawLevel2DayHud()
         {
+            // Full-map hands are source-ordered after map menus and notices;
+            // they are drawn separately from the world-only top status bar.
+            if (gameRuntimeMode && gameRuntimeSourceMenus.MapOpen) return;
             if (gameRuntimeMode && session?.ObservedCampaignIdentity().display_settings.top_bar == false) return;
             if (!level2DayHudPresenterReady ||
                 level2DayHud.generation != level2PresentedDayHud.generation ||
@@ -14757,11 +14760,17 @@ namespace MagicCarpet.Native
         private void OnGUI()
         {
             gameRuntimeHudIndices = null;
+            gameRuntimeMapNoticeRows = null;
             var measuredStart = modernEnvironment?.Ready == true ? ModernCapture.BeginMeasurement() : 0;
             try
             {
                 DrawRuntimeGui(out var guiIdentity, out var drawObjective);
                 DrawGameRuntimeParticipantNotifications(guiIdentity);
+                if (drawObjective && gameRuntimeMode && gameRuntimeSourceMenus.MapOpen &&
+                    playerPreferences?.IsOpen != true && level2DayHudPresenterReady &&
+                    level2DayHud.generation == level2PresentedDayHud.generation &&
+                    level2DayHud.tick == level2PresentedDayHud.tick)
+                    DrawGameRuntimeIndexedHud(level2PresentedDayHud, mapHandsOnly: true);
                 if (drawObjective) DrawGameRuntimeObjectiveTextbox();
                 if (drawObjective) DrawGameRuntimeHelpHint();
                 DrawGameRuntimePauseHoverHelp(guiIdentity);
@@ -14864,6 +14873,9 @@ namespace MagicCarpet.Native
             var completed = gameRuntimeCampaignSnapshot.value.objective_progress?.all_objectives_satisfied == true;
             if (notices.Length == 0 && !paused && !completed) return;
             var level = identity.active_runtime_flow.bound_level_id;
+            if (gameRuntimeSourceMenus.MapOpen)
+                gameRuntimeMapNoticeRows = SourcePlayerNotificationsPresenter.Rows(notices, paused, true, completed,
+                    gameRuntimeMenu.GameplayText(level).LineAdvance, gameRuntimeMenu.GameplayLanguageText);
             SourcePlayerNotificationsPresenter.Draw(notices,
                 paused,
                 gameRuntimeSourceMenus.MapOpen || gameRuntimeCampaignSnapshot.value.player_vitals.life < 0,

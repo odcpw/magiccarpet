@@ -840,7 +840,8 @@ pub(crate) fn load_configured_mc2_campaign_for_test(
 // Earlier contracts did not retain ordered animation demands. Replaying them
 // cannot reconstruct source animation allocation order; reject instead of
 // inventing historical draw inputs.
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v8";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v9";
+const PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v8";
 const PRE_HELP_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v7";
 const LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
@@ -928,6 +929,12 @@ struct Mc2CampaignReplaySave {
     semantic_spell_carry: Mc2SemanticSpellCarry,
     #[serde(default, skip_serializing_if = "GlobalSpecialState::is_default")]
     initial_global_context: GlobalSpecialState,
+    #[serde(default, skip_serializing_if = "hand_flash_is_zero")]
+    initial_hand_selection_flash_ticks: [u8; 2],
+    /// Historical v8/v7 operations had no flash producer. New live operations
+    /// start at this verified boundary; no historical command is reinterpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hand_selection_flash_start_operation: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     global_context_changes: Vec<Mc2GlobalContextChange>,
     #[serde(
@@ -982,6 +989,10 @@ struct Mc2CampaignReplaySavePayload<'a> {
     semantic_spell_carry: &'a Mc2SemanticSpellCarry,
     #[serde(skip_serializing_if = "GlobalSpecialState::is_default")]
     initial_global_context: &'a GlobalSpecialState,
+    #[serde(skip_serializing_if = "hand_flash_is_zero")]
+    initial_hand_selection_flash_ticks: [u8; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hand_selection_flash_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "<[Mc2GlobalContextChange]>::is_empty")]
     global_context_changes: &'a [Mc2GlobalContextChange],
     #[serde(skip_serializing_if = "dynamic_lighting_is_default")]
@@ -1035,6 +1046,8 @@ impl Mc2CampaignReplaySave {
             definition,
             semantic_spell_carry,
             initial_global_context: GlobalSpecialState::default(),
+            initial_hand_selection_flash_ticks: [0; 2],
+            hand_selection_flash_start_operation: None,
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
@@ -1070,6 +1083,8 @@ impl Mc2CampaignReplaySave {
             definition: &self.definition,
             semantic_spell_carry: &self.semantic_spell_carry,
             initial_global_context: &self.initial_global_context,
+            initial_hand_selection_flash_ticks: self.initial_hand_selection_flash_ticks,
+            hand_selection_flash_start_operation: self.hand_selection_flash_start_operation,
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
@@ -1097,9 +1112,15 @@ impl Mc2CampaignReplaySave {
     }
 
     fn verify(&self) -> bool {
+        let historical_hand_fields_absent = self.initial_hand_selection_flash_ticks == [0; 2]
+            && self.hand_selection_flash_start_operation.is_none()
+            && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none());
         ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+            || (self.save_contract == PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+                && historical_hand_fields_absent)
             || (self.save_contract == PRE_HELP_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
-                && self.help_preference_changes.is_empty()))
+                && self.help_preference_changes.is_empty()
+                && historical_hand_fields_absent))
             && self.completed_levels.is_some())
             && self.receipt_sha256 == self.compute_receipt_sha256()
     }
@@ -1146,6 +1167,8 @@ struct Mc2CampaignMapSave {
     secret_flow: Option<crate::game_runtime::secret_flow::SecretFlowState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_context: Option<GlobalSpecialState>,
+    #[serde(default, skip_serializing_if = "hand_flash_is_zero")]
+    source_hand_selection_flash_ticks: [u8; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     played_cutscenes: Option<u8>,
     #[serde(default, skip_serializing_if = "StoredDisplaySettings::is_default")]
@@ -1187,6 +1210,10 @@ impl Mc2CampaignMapSave {
         let bytes = if self.source_secret_announcement_count == 0 { bytes } else {
             serde_json::to_vec(&(bytes, "source-secret-statistics-byte-v1", self.source_secret_announcement_count))
                 .expect("source secret statistics byte is serializable")
+        };
+        let bytes = if hand_flash_is_zero(&self.source_hand_selection_flash_ticks) { bytes } else {
+            serde_json::to_vec(&(bytes, "source-hand-selection-flash-v1", self.source_hand_selection_flash_ticks))
+                .expect("source hand-selection flash is serializable")
         };
         hex_digest(Sha256::digest(bytes).into())
     }
@@ -1252,7 +1279,15 @@ pub struct Mc2RuntimePackageResolver {
     by_level: BTreeMap<SemanticLevelId, ResolvedMc2RuntimePackage>,
     pending_spell_carries: Arc<Mutex<BTreeMap<u64, Mc2PendingSpellCarry>>>,
     /// Occupied only while this runtime has no attached gameplay authority.
-    detached_source_contexts: Arc<Mutex<BTreeMap<u64, GlobalSpecialState>>>,
+    detached_source_contexts: Arc<Mutex<BTreeMap<u64, SourceProcessContext>>>,
+}
+
+fn hand_flash_is_zero(value: &[u8; 2]) -> bool { *value == [0; 2] }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SourceProcessContext {
+    pub shared: GlobalSpecialState,
+    pub hand_selection_flash_ticks: [u8; 2],
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1260,6 +1295,8 @@ pub struct Mc2RuntimePackageResolver {
 struct Mc2GlobalContextChange {
     before_operation: usize,
     context: GlobalSpecialState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hand_selection_flash_ticks: Option<[u8; 2]>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1332,12 +1369,12 @@ struct Mc2PendingSpellCarry {
 impl Mc2RuntimePackageResolver {
     /// The attached campaign is authoritative. Only detached runtimes consult
     /// the retained process context; resolver clones never share live globals.
-    pub fn source_global_context(
+    pub fn source_process_context(
         &self,
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
-    ) -> Result<GlobalSpecialState, crate::game_runtime::RuntimeTransitionError> {
+    ) -> Result<SourceProcessContext, crate::game_runtime::RuntimeTransitionError> {
         if let Some(session) = runtime.session() {
-            return Ok(session.backend().campaign.source_global_context());
+            return Ok(session.backend().process_context());
         }
         let contexts = self.detached_source_contexts.lock().map_err(|_| {
             crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
@@ -1890,7 +1927,7 @@ impl Mc2RuntimePackageResolver {
             .map_err(RuntimeTransitionError::SessionGuard)?;
         self.exact_package_for_definition(session.definition())?;
         let carry = session.backend().initial_semantic_spell_carry()?;
-        let source_context = session.backend().campaign.source_global_context();
+        let source_context = session.backend().process_context();
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let destination_level = session
             .definition()
@@ -2121,7 +2158,7 @@ impl Mc2RuntimePackageResolver {
                 if let Some(context) = source_context {
                     candidate
                         .backend_mut()
-                        .install_initial_source_context(context)?;
+                        .install_initial_process_context(context)?;
                 }
                 // Spell-carry installation can rebuild the unpublished
                 // simulation. Bind the route only after that replacement.
@@ -2227,7 +2264,9 @@ impl Mc2RuntimePackageResolver {
                     .discovered_secret_levels()
                     .is_empty())
                 .then(|| runtime.secret_flow_state().clone()),
-                source_context: contexts.get(&runtime.identity().runtime_id).copied(),
+                source_context: contexts.get(&runtime.identity().runtime_id).map(|value| value.shared),
+                source_hand_selection_flash_ticks: contexts.get(&runtime.identity().runtime_id)
+                    .map_or([0; 2], |value| value.hand_selection_flash_ticks),
                 played_cutscenes: (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes()),
                 display_settings: StoredDisplaySettings::for_map(runtime.identity().display_settings, map_panels_default),
                 source_secret_announcement_count: pending.get(&runtime.identity().runtime_id)
@@ -2355,6 +2394,8 @@ impl Mc2RuntimePackageResolver {
             save.initial_secret_continuation = Some(entry);
         }
         save.initial_global_context = session.backend().package_campaign.source_global_context();
+        save.initial_hand_selection_flash_ticks = session.backend().package_campaign.simulation().hand_selection_flash_ticks();
+        save.hand_selection_flash_start_operation = session.backend().hand_selection_flash_start_operation;
         save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
         save.global_context_changes = session.backend().global_context_changes.clone();
         save.initial_dynamic_lighting = session
@@ -2404,7 +2445,7 @@ impl Mc2RuntimePackageResolver {
         guard: crate::game_runtime::RuntimeGuard,
         session_id: u64,
         bytes: &[u8],
-        context: GlobalSpecialState,
+        context: SourceProcessContext,
     ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
         self.load_replay_observed_with_context(
             runtime,
@@ -2441,12 +2482,20 @@ impl Mc2RuntimePackageResolver {
         guard: crate::game_runtime::RuntimeGuard,
         session_id: u64,
         bytes: &[u8],
-        warm_context: Option<GlobalSpecialState>,
+        warm_context: Option<SourceProcessContext>,
         observe: impl FnMut(&crate::game_session::GameSession<Mc2CampaignBackend>),
     ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
         runtime
             .preflight_title_transition(guard)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        // SLEV preserves the receiver's process globals only after the saved
+        // authority verifies. Capture them now, before replacing any owner.
+        let warm_process_context = warm_context;
+        if warm_process_context.is_some_and(|context| context.hand_selection_flash_ticks.iter().any(|value| *value > 8)) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "receiving source hand-selection flash is invalid".to_owned(),
+            });
+        }
         if bytes.len() > MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: format!(
@@ -2473,6 +2522,11 @@ impl Mc2RuntimePackageResolver {
             if save.receipt_sha256 != save.compute_receipt_sha256() {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
                     message: "campaign map receipt does not verify".to_owned(),
+                });
+            }
+            if save.source_hand_selection_flash_ticks.iter().any(|value| *value > 8) {
+                return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                    message: "campaign map hand-selection flash is invalid".to_owned(),
                 });
             }
             if save.source_secret_announcement_count != 0 && save.semantic_spell_carry.is_none() {
@@ -2586,8 +2640,16 @@ impl Mc2RuntimePackageResolver {
             } else {
                 pending.remove(&guard.runtime_id);
             }
-            if let Some(context) = warm_context.or(save.source_context) {
+            if let Some(context) = warm_process_context {
                 contexts.insert(guard.runtime_id, context);
+            } else if let Some(shared) = save.source_context {
+                contexts.insert(guard.runtime_id, SourceProcessContext {
+                    shared, hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
+                });
+            } else if save.source_hand_selection_flash_ticks != [0; 2] {
+                contexts.insert(guard.runtime_id, SourceProcessContext {
+                    shared: GlobalSpecialState::default(), hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
+                });
             } else {
                 contexts.remove(&guard.runtime_id);
             }
@@ -2602,6 +2664,14 @@ impl Mc2RuntimePackageResolver {
         if !save.verify() {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: "save contract or receipt digest does not verify".to_owned(),
+            });
+        }
+        if save.initial_hand_selection_flash_ticks.iter().any(|value| *value > 8)
+            || save.hand_selection_flash_start_operation.is_some_and(|start|
+                start > save.operations.len() || save.initial_hand_selection_flash_ticks != [0; 2])
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source hand-selection flash has an invalid replay boundary".to_owned(),
             });
         }
         if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 || save.initial_final_reward == Some(false) {
@@ -2619,7 +2689,8 @@ impl Mc2RuntimePackageResolver {
             || save
                 .global_context_changes
                 .iter()
-                .any(|change| change.before_operation > save.operations.len())
+                .any(|change| change.before_operation > save.operations.len()
+                    || change.hand_selection_flash_ticks.is_some_and(|ticks| ticks.iter().any(|value| *value > 8)))
             || save
                 .global_context_changes
                 .windows(2)
@@ -2769,6 +2840,10 @@ impl Mc2RuntimePackageResolver {
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
         let initial_global_context = save.initial_global_context;
+        let initial_hand_selection_flash_ticks = save.initial_hand_selection_flash_ticks;
+        let hand_flash_start = if save.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT {
+            save.hand_selection_flash_start_operation.unwrap_or(0)
+        } else { save.operations.len() };
         let initial_secret_announcement = save.initial_secret_announcement;
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
@@ -2826,6 +2901,10 @@ impl Mc2RuntimePackageResolver {
                     candidate
                         .backend_mut()
                         .install_initial_source_context(initial_global_context)?;
+                    candidate.backend_mut().install_initial_hand_selection_flash(initial_hand_selection_flash_ticks)?;
+                    candidate.backend_mut().hand_selection_flash_start_operation = (hand_flash_start != 0).then_some(hand_flash_start);
+                    candidate.backend_mut().campaign.simulation_mut()
+                        .set_historical_hand_selection_flash(hand_flash_start != 0);
                     candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
                     candidate
                         .backend_mut()
@@ -2835,6 +2914,9 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
+                    if operation_index == hand_flash_start {
+                        candidate.backend_mut().campaign.simulation_mut().set_historical_hand_selection_flash(false);
+                    }
                     if voxel_mode_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
                         let change = voxel_mode_changes.next().expect("matched voxel replay boundary");
                         let generation = candidate.identity().generation;
@@ -2874,7 +2956,7 @@ impl Mc2RuntimePackageResolver {
                             .expect("matched replay context boundary");
                         candidate
                             .backend_mut()
-                            .apply_source_context_change(change.context);
+                            .apply_process_context_change(change.context, change.hand_selection_flash_ticks);
                     }
                     Ok(())
                 },
@@ -2896,8 +2978,8 @@ impl Mc2RuntimePackageResolver {
                     // private candidate before publishing either Playing or
                     // Paused; the public mutable session gate remains closed
                     // while paused.
-                    if let Some(context) = warm_context {
-                        candidate.backend_mut().apply_source_context_change(context);
+                    if let Some(context) = warm_process_context {
+                        candidate.backend_mut().apply_process_context_change(context.shared, Some(context.hand_selection_flash_ticks));
                     }
                     Ok(())
                 },
@@ -3099,7 +3181,7 @@ impl Mc2RuntimePackageResolver {
             }
             let secret_id = entry.secret_level_id().clone();
             let carry = session.backend().transition_spell_carry()?;
-            let context = session.backend().campaign.source_global_context();
+            let context = session.backend().process_context();
             let secret_announcement = session.backend().secret_announcement_after_statistics().after_level_init();
             let rewards = simulation.mission_rewards();
             let show_help = runtime.identity().player_preferences.preferences.show_help;
@@ -3129,7 +3211,7 @@ impl Mc2RuntimePackageResolver {
                     candidate.backend_mut().install_initial_secret_announcement(secret_announcement)?;
                     candidate
                         .backend_mut()
-                        .install_initial_source_context(context)?;
+                        .install_initial_process_context(context)?;
                     candidate
                         .backend_mut()
                         .install_initial_mission_rewards(rewards)?;
@@ -3150,7 +3232,7 @@ impl Mc2RuntimePackageResolver {
         }
         let carry = session.backend().transition_spell_carry()?;
         let source_secret_announcement_count = session.backend().secret_announcement_after_statistics().collected_count;
-        let context = session.backend().campaign.source_global_context();
+        let context = session.backend().process_context();
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "resolver spell-carry state is unavailable".to_owned(),
@@ -3239,7 +3321,7 @@ impl Mc2RuntimePackageResolver {
         }
 
         let carry = session.backend().initial_semantic_spell_carry()?;
-        let context = session.backend().campaign.source_global_context();
+        let context = session.backend().process_context();
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
@@ -3382,7 +3464,7 @@ impl Mc2RuntimePackageResolver {
                 } else {
                     session.backend().initial_semantic_spell_carry()
                 })
-                    .map(|carry| (carry, session.backend().campaign.source_global_context()))
+                    .map(|carry| (carry, session.backend().process_context()))
             },
             campaign_return,
             if reward_enabled { crate::game_runtime::CompletionDisposition::Results }
@@ -3482,6 +3564,7 @@ pub struct Mc2CampaignBackend {
     // Fresh direct entry may install its profile after opening tick0. Replay
     // candidates never set this process-local marker.
     fresh_help_profile_pending: bool,
+    hand_selection_flash_start_operation: Option<usize>,
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     voxel_mode_changes: Vec<voxels::VoxelModeChange>,
     initial_final_reward: bool,
@@ -3502,6 +3585,28 @@ impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
 }
 
 impl Mc2CampaignBackend {
+    fn process_context(&self) -> SourceProcessContext {
+        SourceProcessContext { shared: self.campaign.source_global_context(),
+            hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks() }
+    }
+
+    fn install_initial_hand_selection_flash(&mut self, ticks: [u8; 2])
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        for campaign in [&mut self.campaign, &mut self.package_campaign] {
+            campaign.simulation_mut().install_initial_hand_selection_flash(ticks)
+                .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        }
+        Ok(())
+    }
+
+    fn install_initial_process_context(&mut self, context: SourceProcessContext)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        self.install_initial_source_context(context.shared)?;
+        self.install_initial_hand_selection_flash(context.hand_selection_flash_ticks)
+    }
+
     pub(crate) fn publish_display_notice(&mut self, minimap: bool)
         -> Result<(), crate::game_runtime::RuntimeTransitionError>
     {
@@ -3703,23 +3808,33 @@ impl Mc2CampaignBackend {
     }
 
     fn apply_source_context_change(&mut self, context: GlobalSpecialState) {
-        if self.campaign.source_global_context() == context {
+        self.apply_process_context_change(context, None);
+    }
+
+    fn apply_process_context_change(&mut self, context: GlobalSpecialState, hand_selection_flash_ticks: Option<[u8; 2]>) {
+        if self.campaign.source_global_context() == context && hand_selection_flash_ticks
+            .is_none_or(|ticks| self.campaign.simulation().hand_selection_flash_ticks() == ticks) {
             return;
         }
         self.campaign.apply_warm_source_global_context(context);
-        let change = Mc2GlobalContextChange {
+        if let Some(ticks) = hand_selection_flash_ticks {
+            self.campaign.simulation_mut().apply_warm_hand_selection_flash(ticks);
+        }
+        let mut change = Mc2GlobalContextChange {
             before_operation: self.replay_operations.len(),
             context,
+            hand_selection_flash_ticks,
         };
         if self
             .global_context_changes
             .last()
             .is_some_and(|previous| previous.before_operation == change.before_operation)
         {
-            *self
-                .global_context_changes
-                .last_mut()
-                .expect("matched context boundary") = change;
+            let previous = self.global_context_changes.last_mut().expect("matched context boundary");
+            if change.hand_selection_flash_ticks.is_none() {
+                change.hand_selection_flash_ticks = previous.hand_selection_flash_ticks;
+            }
+            *previous = change;
         } else {
             self.global_context_changes.push(change);
         }
@@ -3933,6 +4048,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             dynamic_lighting_changes: Vec::new(),
             help_preference_changes: Vec::new(),
             fresh_help_profile_pending: false,
+            hand_selection_flash_start_operation: None,
             primary_visibility_changes: Vec::new(),
             voxel_mode_changes: Vec::new(),
             initial_final_reward: false,
@@ -4092,6 +4208,7 @@ pub struct CampaignRenderObservation {
     pub source_scoreboard: sim_session::SourceScoreboard,
     pub participant_notifications: Vec<sim_session::ParticipantNotification>,
     pub player_wall_contact_counter: i8,
+    pub player_hand_selection_flash_ticks: [u8; 2],
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: sim_session::CameraPose,
     pub source_camera_fov: i16,
@@ -4276,6 +4393,7 @@ impl Mc2CampaignBackend {
             }),
             participant_notifications: self.participant_notifications(),
             player_wall_contact_counter: flight.water_counter,
+            player_hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks(),
             player_spells: spells::observe(
                 shared_spells,
                 |holder| self.spell_holder_actor(holder),
@@ -4388,6 +4506,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             source_scoreboard,
             participant_notifications,
             player_wall_contact_counter,
+            player_hand_selection_flash_ticks,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -4413,6 +4532,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             source_scoreboard,
             participant_notifications,
             player_wall_contact_counter,
+            player_hand_selection_flash_ticks,
             player_immobilized_ticks,
             source_camera_pose,
             source_camera_fov,
@@ -4592,6 +4712,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             selected_fireball_launch_sound(definition, &self.fireball_launch_sound_choices)?;
         let next_generation = self.campaign.generation().wrapping_add(1);
         let source_context = self.campaign.source_global_context();
+        let hand_selection_flash_ticks = self.campaign.simulation().hand_selection_flash_ticks();
         let dynamic_lighting_enabled = self.dynamic_lighting_enabled();
         let help_enabled = self.help_enabled();
         let secret_announcement = self.campaign.simulation().secret_announcement().after_level_init();
@@ -4632,6 +4753,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(|error| {
                 CampaignBackendError::Open(CampaignOpenError::Materialization(error))
             })?;
+        for owner in [&mut campaign, &mut self.package_campaign] {
+            owner.simulation_mut().install_initial_hand_selection_flash(hand_selection_flash_ticks)
+                .map_err(|message| CampaignBackendError::StepRejected { message })?;
+        }
         campaign.simulation_mut().install_initial_secret_announcement(secret_announcement)
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
         self.package_campaign.simulation_mut().install_initial_secret_announcement(secret_announcement)
@@ -4647,6 +4772,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.dynamic_lighting_changes.clear();
         self.help_preference_changes.clear();
         self.fresh_help_profile_pending = false;
+        self.hand_selection_flash_start_operation = None;
         self.primary_visibility_changes.clear();
         self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
@@ -6251,6 +6377,201 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn runtime_hand_selection_flash_follows_source_passes_and_replays_global_lifetime() {
+        use crate::game_runtime::{CampaignMenuCommand, GameRuntime};
+        use crate::game_session::{SpellAssignment, SpellAssignmentHand, SpellMark, SpellMarkHand};
+        fn assignment(hand: SpellAssignmentHand) -> GameCommand {
+            GameCommand { assign_spell: Some(SpellAssignment {
+                spell_id: SemanticId::parse("spell.fireball").unwrap(), tier: 0,
+                hand, holder_actor: None,
+            }), ..Default::default() }
+        }
+        fn step(runtime: &mut GameRuntime<Mc2CampaignBackend>, command: GameCommand) {
+            let session = runtime.session_mut().unwrap();
+            session.step(guard(session), command).unwrap();
+        }
+        fn ticks(runtime: &GameRuntime<Mc2CampaignBackend>) -> [u8; 2] {
+            let backend = runtime.session().unwrap().backend();
+            let full = backend.snapshot();
+            let render = backend.render_observation();
+            assert_eq!(full.player_hand_selection_flash_ticks, render.player_hand_selection_flash_ticks);
+            assert_eq!(serde_json::to_value(render).unwrap()["player_hand_selection_flash_ticks"],
+                serde_json::json!(full.player_hand_selection_flash_ticks));
+            full.player_hand_selection_flash_ticks
+        }
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8897).unwrap();
+        let title = runtime.identity();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8897).unwrap();
+        assert_eq!(ticks(&runtime), [0, 0]);
+        assert!(runtime.session().unwrap().backend().snapshot().player_spells.iter()
+            .any(|row| row.id.as_str() == "spell.fireball" && row.acquired));
+        step(&mut runtime, assignment(SpellAssignmentHand::Left));
+        assert_eq!(ticks(&runtime), [8, 0], "assignment follows this pass's decrement");
+        step(&mut runtime, GameCommand::default());
+        assert_eq!(ticks(&runtime), [7, 0]);
+        step(&mut runtime, assignment(SpellAssignmentHand::Left));
+        assert_eq!(ticks(&runtime), [8, 0], "accepted same-value assignment retriggers");
+        step(&mut runtime, assignment(SpellAssignmentHand::Right));
+        assert_eq!(ticks(&runtime), [7, 8]);
+        step(&mut runtime, GameCommand { select_spell: Some(SemanticId::parse("spell.fireball").unwrap()), ..Default::default() });
+        assert_eq!(ticks(&runtime), [6, 7], "selection preview does not assign a hand");
+        step(&mut runtime, GameCommand { mark_spell: Some(SpellMark {
+            spell_id: SemanticId::parse("spell.fireball").unwrap(), hand: SpellMarkHand::Left, holder_actor: None,
+        }), ..Default::default() });
+        assert_eq!(ticks(&runtime), [5, 6], "mark sound14 does not retrigger");
+        let before = resolver.save_replay(&runtime).unwrap();
+        let session = runtime.session_mut().unwrap();
+        let mut invalid = assignment(SpellAssignmentHand::Left);
+        invalid.assign_spell.as_mut().unwrap().spell_id = SemanticId::parse("spell.volcano").unwrap();
+        assert!(session.step(guard(session), invalid).is_err());
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), before, "rejected assignment is atomic");
+        for _ in 0..3 { assert_eq!(ticks(&runtime), [5, 6]); }
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), before, "queries do not clock source globals");
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8898).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8898, &before).unwrap();
+        assert_eq!(ticks(&cold), [5, 6]);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), before);
+        let paused = cold.pause(cold.identity().guard()).unwrap();
+        let nested = cold.session().unwrap().identity().guard();
+        for pass in 1u8..=8 {
+            cold.paused_frame(paused.guard(), nested).unwrap();
+            assert_eq!(ticks(&cold), [5u8.saturating_sub(pass), 6u8.saturating_sub(pass)]);
+            assert_eq!(cold.identity(), paused, "paused PlayerEvents does not advance flight tick");
+        }
+        cold.resume(cold.identity().guard()).unwrap();
+        step(&mut cold, assignment(SpellAssignmentHand::Left));
+        for remaining in (0..8).rev() {
+            step(&mut cold, GameCommand::default());
+            assert_eq!(ticks(&cold), [remaining, 0]);
+        }
+        step(&mut cold, assignment(SpellAssignmentHand::Right));
+        let session = cold.session_mut().unwrap();
+        session.reset(session.identity().guard()).unwrap();
+        assert_eq!(ticks(&cold), [0, 8], "retry retains source process globals");
+        let reset_bytes = resolver.save_replay(&cold).unwrap();
+        let mut reset_cold = GameRuntime::<Mc2CampaignBackend>::title(8899).unwrap();
+        let title = reset_cold.identity();
+        resolver.load_replay(&mut reset_cold, title.guard(), 8899, &reset_bytes).unwrap();
+        assert_eq!(ticks(&reset_cold), [0, 8]);
+        assert_eq!(resolver.save_replay(&reset_cold).unwrap(), reset_bytes);
+        let outer = cold.identity().guard();
+        let nested = cold.session().unwrap().identity().guard();
+        resolver.close_to_title(&mut cold, outer, nested).unwrap();
+        let map_bytes = resolver.save_replay(&cold).unwrap();
+        let receiver = cold.identity();
+        let shared = resolver.source_process_context(&cold).unwrap();
+        let mut bad: Mc2CampaignReplaySave = serde_json::from_slice(&before).unwrap();
+        bad.expected_state_hash ^= 1;
+        bad.receipt_sha256 = bad.compute_receipt_sha256();
+        assert!(resolver.load_replay_with_source_context(&mut cold, receiver.guard(), 8898,
+            &serde_json::to_vec(&bad).unwrap(), shared).is_err());
+        assert_eq!(cold.identity(), receiver);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), map_bytes,
+            "failed saved receipt cannot replace warm receiver globals");
+        resolver.load_replay_with_source_context(&mut cold, receiver.guard(), 8898, &before, shared).unwrap();
+        assert_eq!(ticks(&cold), [0, 8], "warm SLEV retains receiver pair after verifying saved[5,6]");
+        let warm_bytes = resolver.save_replay(&cold).unwrap();
+        let warm: Mc2CampaignReplaySave = serde_json::from_slice(&warm_bytes).unwrap();
+        assert_eq!(warm.global_context_changes.last().unwrap().hand_selection_flash_ticks, Some([0, 8]));
+        let mut warm_cold = GameRuntime::<Mc2CampaignBackend>::title(8901).unwrap();
+        let title = warm_cold.identity();
+        resolver.load_replay(&mut warm_cold, title.guard(), 8901, &warm_bytes).unwrap();
+        assert_eq!(ticks(&warm_cold), [0, 8]);
+        assert_eq!(resolver.save_replay(&warm_cold).unwrap(), warm_bytes,
+            "the accepted warm change is replayed at its actual operation boundary");
+        let mut map_cold = GameRuntime::<Mc2CampaignBackend>::title(8900).unwrap();
+        let title = map_cold.identity();
+        let map = resolver.load_replay(&mut map_cold, title.guard(), 8900, &map_bytes).unwrap();
+        assert_eq!(resolver.save_replay(&map_cold).unwrap(), map_bytes);
+        let loading = resolver.campaign_menu_command(&mut map_cold, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut map_cold, loading.guard(), 8900).unwrap();
+        assert_eq!(ticks(&map_cold), [0, 8], "new mission owner retains process globals");
+        step(&mut map_cold, GameCommand::default());
+        assert_eq!(ticks(&map_cold), [0, 7]);
+
+        // Explicit historical-engine control, not a captured old save: run
+        // real assignments with the published v8 producer policy, then encode
+        // its unchanged receipt. Migration cannot reinterpret those commands.
+        let mut historical = GameRuntime::<Mc2CampaignBackend>::title(8902).unwrap();
+        let title = historical.identity();
+        let loading = resolver.new_game(&mut historical, title.guard()).unwrap();
+        resolver.open_pending(&mut historical, loading.guard(), 8902).unwrap();
+        historical.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .set_historical_hand_selection_flash(true);
+        step(&mut historical, assignment(SpellAssignmentHand::Left));
+        step(&mut historical, GameCommand::default());
+        assert_eq!(ticks(&historical), [0, 0]);
+        let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&resolver.save_replay(&historical).unwrap()).unwrap();
+        old.save_contract = PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned();
+        old.receipt_sha256 = old.compute_receipt_sha256();
+        assert!(old.verify());
+        let old_bytes = serde_json::to_vec(&old).unwrap();
+        let mut injected = old.clone();
+        injected.global_context_changes.push(Mc2GlobalContextChange {
+            before_operation: injected.operations.len(), context: GlobalSpecialState::default(),
+            hand_selection_flash_ticks: Some([8, 0]),
+        });
+        injected.receipt_sha256 = injected.compute_receipt_sha256();
+        assert!(!injected.verify(), "a rehashed v8 envelope cannot invent a new hand-flash history");
+        let mut migrated = GameRuntime::<Mc2CampaignBackend>::title(8903).unwrap();
+        let title = migrated.identity();
+        resolver.load_replay(&mut migrated, title.guard(), 8903, &old_bytes).unwrap();
+        assert_eq!(migrated.session().unwrap().backend().snapshot(), historical.session().unwrap().backend().snapshot());
+        let migrated_bytes = resolver.save_replay(&migrated).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&migrated_bytes).unwrap();
+        assert_eq!(packet.save_contract, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);
+        assert_eq!(packet.operations, old.operations);
+        assert_eq!(packet.expected_state_hash, old.expected_state_hash);
+        assert_eq!(packet.hand_selection_flash_start_operation, Some(old.operations.len()));
+        step(&mut migrated, assignment(SpellAssignmentHand::Left));
+        assert_eq!(ticks(&migrated), [8, 0], "only new accepted input activates new source behavior");
+        let current = resolver.save_replay(&migrated).unwrap();
+        let mut replay = GameRuntime::<Mc2CampaignBackend>::title(8904).unwrap();
+        let title = replay.identity();
+        resolver.load_replay(&mut replay, title.guard(), 8904, &current).unwrap();
+        assert_eq!(ticks(&replay), [8, 0]);
+        assert_eq!(resolver.save_replay(&replay).unwrap(), current);
+        let mut bad: Mc2CampaignReplaySave = serde_json::from_slice(&current).unwrap();
+        bad.hand_selection_flash_start_operation = Some(bad.operations.len() + 1);
+        bad.receipt_sha256 = bad.compute_receipt_sha256();
+        let mut refused = GameRuntime::<Mc2CampaignBackend>::title(8905).unwrap();
+        let title = refused.identity();
+        assert!(resolver.load_replay(&mut refused, title.guard(), 8905, &serde_json::to_vec(&bad).unwrap()).is_err());
+        assert_eq!(refused.identity(), title);
+
+        // Authentic pre-feature v8 input, retained byte-for-byte from the
+        // real controlled Jaleen constructor/return path (not earned gameplay).
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(&fs::read(resources).unwrap()).unwrap();
+        let full_resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]))).unwrap();
+        let path = std::env::var_os("MC_HAND_FLASH_V8_SAVE").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("secret-announcement-20261115/fresh-pav-3.mcs"));
+        let actual_bytes = fs::read(&path).unwrap();
+        let actual: Mc2CampaignReplaySave = serde_json::from_slice(&actual_bytes).unwrap();
+        assert_eq!(actual.save_contract, PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);
+        assert!(actual.verify());
+        let mut actual_cold = GameRuntime::<Mc2CampaignBackend>::title(8906).unwrap();
+        let title = actual_cold.identity();
+        full_resolver.load_replay(&mut actual_cold, title.guard(), 8906, &actual_bytes).unwrap();
+        let snapshot = actual_cold.session().unwrap().backend().snapshot();
+        assert_eq!((snapshot.tick, snapshot.state_hash, snapshot.terrain_hash, snapshot.effect_head,
+            &snapshot.effect_journal_sha256), (actual.expected_tick, actual.expected_state_hash,
+            actual.expected_terrain_hash, actual.expected_effect_head, &actual.expected_effect_journal_sha256));
+        assert_eq!(ticks(&actual_cold), [0, 0]);
+        assert_eq!(fs::read(path).unwrap(), actual_bytes, "historical input is never rewritten");
+    }
+
+    #[test]
     fn runtime_panel_transparency_keeps_game_save_and_level_init_lifetimes() {
         use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode};
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
@@ -7391,6 +7712,7 @@ pub(crate) mod tests {
         let paused = runtime.pause(secret_playing.guard()).unwrap();
         assert_eq!(paused.mode, RuntimeMode::Paused);
         let paused_session_guard = paused.session.as_ref().unwrap().guard();
+        let paused_hand_flash = runtime.session().unwrap().backend().campaign.simulation().hand_selection_flash_ticks();
         let paused_context = runtime
             .session()
             .unwrap()
@@ -7444,7 +7766,7 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .get(&paused.runtime_id),
-            Some(&paused_context)
+            Some(&SourceProcessContext { shared: paused_context, hand_selection_flash_ticks: paused_hand_flash })
         );
         assert_ne!(mission_carry, pending.carry);
         assert_eq!(source_context, paused_context);
@@ -8093,7 +8415,7 @@ pub(crate) mod tests {
                 before.guard(),
                 7124,
                 &corrupt_bytes,
-                warm_context,
+                SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2] },
             ),
             Err(Mc2CampaignReplaySaveError::Restore(
                 crate::game_runtime::RestorePlayingError::Transition(
@@ -8106,7 +8428,7 @@ pub(crate) mod tests {
         let mut warm = GameRuntime::<Mc2CampaignBackend>::title(7122).unwrap();
         let guard = warm.identity().guard();
         let loaded = resolver
-            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, warm_context)
+            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2] })
             .unwrap();
         assert_eq!(loaded.mode, crate::game_runtime::RuntimeMode::Paused);
         assert!(
@@ -8200,6 +8522,7 @@ pub(crate) mod tests {
             carry_destination_level: Some(destination),
             secret_flow: None,
             source_context: None,
+            source_hand_selection_flash_ticks: [0; 2],
             played_cutscenes: None,
             display_settings: crate::game_runtime::DisplaySettings::default().into(),
             receipt_sha256: String::new(),

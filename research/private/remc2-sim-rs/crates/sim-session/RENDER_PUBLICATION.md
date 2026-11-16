@@ -1,4 +1,4 @@
-# Render publication v1
+# Render publication v4
 
 `sim_session::render_publication::RenderPublication` encodes a complete live
 presentation observation as MCPO. The native entry point
@@ -33,7 +33,7 @@ contract. Do not convert 64-bit counters to JavaScript `number`.
 | Offset | Field |
 | --- | --- |
 | 0 | Four literal bytes `MCPO` |
-| 4 | Version `u32` = 1 |
+| 4 | Version `u32` = 4 |
 | 8 | Total packet byte length `u32` |
 | 12 | Runtime ID `u64` |
 | 20 | Runtime generation `u64` |
@@ -59,20 +59,35 @@ The variable portion is:
    Follow with optional projection-error string. Notifications vector: each
    participant `u64`, `is_local` boolean, display name and kind strings,
    `remaining_frames i16`.
-5. `player_immobilized_ticks u16`; camera `x,y u16`, `z,yaw,pitch,roll i16`,
-   FOV `i16`.
+5. `player_wall_contact_counter i8`, `player_immobilized_ticks u16`; camera
+   `x,y u16`, `z,yaw,pitch,roll i16`, FOV `i16`; `spell_menu_has_any_spell`
+   boolean, two wizard colour `u8` values, `spell_menu_panels_opaque` boolean.
 6. Spells vector: each ID and display-name strings; acquired boolean; optional
    holder actor `u64`; selected boolean; tier `i8`; unlocked tier and menu slot
    `u8`; optional artwork (grid icon and three tier icons, all `u16`); mana cost
-   `i32`; hand, marked hand and availability `u8`. Hand values 0–3 are `none`,
+   `i32`; hand, marked hand and availability `u8`. Before mana cost, optional
+   source menu help contains standard boolean, selected tier `i8`, three title
+   records `u16`, three Castle-blocked booleans, mana-unavailable, enabled,
+   blink-hidden and discovered booleans, three mana costs `i32`, experience
+   `i32` and three experience thresholds `i32`. Hand values 0–3 are `none`,
    `left`, `right`, `both`; marked hand 0–2 are `none`, `left`, `right`;
    availability 0–5 is `ready`, `not_acquired`, `invalid_holder`,
    `invalid_caster`, `active`, `insufficient_mana`.
 7. Objective: optional current-objective string, completed and total counts
-   `u32`, all-satisfied boolean; textbox ticks `u8`; exit-active boolean.
+   `u32`, all-satisfied boolean; textbox ticks `u8`; special announcement record
+   `u16` (zero means absent); exit-active boolean.
 8. Presentation entities vector: each actor `u64`, kind string, pose `x,y u16`
    and `z,yaw,pitch i16`, logical height `u16`, asset ID and content-address
-   strings. End of packet must immediately follow the final entity.
+   strings.
+9. Two `u8` source hand-selection visibility counters, left then right, each
+   in `0..=8`. End of packet immediately follows these bytes. These are an
+   eight-PlayerEvents-update visibility window, not an alternating blink or
+   client timer; pure reads never decrement them. A same-hand accepted source
+   assignment retriggers eight. The encoder rejects out-of-range counters
+   before writing any destination bytes.
+
+Version4 extends the previous v3 packet by these final two bytes. Decoders
+reject earlier versions; native and client artifacts must be installed together.
 
 A native caller owns its destination buffer. For WASM, a JS view into linear
 memory is valid only while its allocation is retained and the memory has not

@@ -29297,6 +29297,11 @@ impl Mc2Simulation {
             hasher.update(b"level2-source-frame-timing-index-v1");
             hasher.update([self.session.state.live.source_frame_timing_index]);
         }
+        let hand_flash = self.session.state.live.core.context.hand_selection_flash_ticks;
+        if hand_flash != [0; 2] {
+            hasher.update(b"source-hand-selection-flash-v1");
+            hasher.update(hand_flash);
+        }
         let rebuilt_model45 = self
             .session
             .state
@@ -29457,7 +29462,35 @@ impl Mc2Simulation {
         }
     }
 
+    #[must_use]
+    pub fn hand_selection_flash_ticks(&self) -> [u8; 2] {
+        self.session.state.live.core.context.hand_selection_flash_ticks
+    }
+
+    pub(crate) fn install_initial_hand_selection_flash(&mut self, ticks: [u8; 2]) -> std::result::Result<(), String> {
+        if self.session.state.live.core.state.tick != 0 || ticks.iter().any(|value| *value > 8) {
+            return Err("initial source hand-selection flash is invalid".to_owned());
+        }
+        self.session.state.live.core.context.hand_selection_flash_ticks = ticks;
+        self.session.rebase();
+        Ok(())
+    }
+
+    pub(crate) fn set_historical_hand_selection_flash(&mut self, historical: bool) {
+        self.session.state.live.core.context.historical_hand_selection_flash = historical;
+    }
+
+    pub(crate) fn apply_warm_hand_selection_flash(&mut self, ticks: [u8; 2]) {
+        assert!(ticks.iter().all(|value| *value <= 8), "validated source flash range");
+        self.session.state.live.core.context.hand_selection_flash_ticks = ticks;
+    }
+
     fn advance_source_player_events_phase(&mut self) {
+        // PlayerEvents_51BB0 decrements both global bytes before dispatch;
+        // an accepted31/32 in this pass subsequently publishes eight again.
+        for remaining in &mut self.session.state.live.core.context.hand_selection_flash_ticks {
+            *remaining = remaining.saturating_sub(1);
+        }
         let (color_phase_1, color_phase_2) = self
             .session
             .state
