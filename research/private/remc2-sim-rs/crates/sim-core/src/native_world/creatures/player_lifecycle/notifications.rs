@@ -13,6 +13,8 @@ pub(crate) enum PlayerLifeNoticeKind {
     IconsMapVisible,
     PanelTransparencyOn,
     PanelTransparencyOff,
+    FlatShadingOn,
+    FlatShadingOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -24,6 +26,8 @@ impl PlayerLifeNoticeKind {
             Self::IconsMapVisible => "participant.icons_map_visible",
             Self::PanelTransparencyOn => "participant.panel_transparency_on",
             Self::PanelTransparencyOff => "participant.panel_transparency_off",
+            Self::FlatShadingOn => "participant.flat_shading_on",
+            Self::FlatShadingOff => "participant.flat_shading_off",
         }
     }
 }
@@ -70,7 +74,8 @@ impl PlayerLifecycleNotifications {
             source_owner,
             state: match kind {
                 PlayerLifeNoticeKind::IconsMapHidden | PlayerLifeNoticeKind::IconsMapVisible
-                    | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff => 3,
+                    | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff
+                    | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -125,6 +130,8 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::IconsMapVisible) => 4,
                 Some(PlayerLifeNoticeKind::PanelTransparencyOn) => 5,
                 Some(PlayerLifeNoticeKind::PanelTransparencyOff) => 6,
+                Some(PlayerLifeNoticeKind::FlatShadingOn) => 7,
+                Some(PlayerLifeNoticeKind::FlatShadingOff) => 8,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());

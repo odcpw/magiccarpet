@@ -70,6 +70,39 @@ pub struct Mode5FramePixel {
     pub sample: Mode5Pixel,
 }
 
+/// DrawTerrainAndParticles selects the shade once for the four cell corners:
+/// signed wrapping sum >> 18, narrowed to x_BYTE_E126C. Both constituent
+/// triangles (floor or ceiling) use this same row, before any clipping.
+#[must_use]
+pub fn source_flat_terrain_shade(corners: [i32; 4]) -> u8 {
+    (corners.into_iter().fold(0_i32, i32::wrapping_add) >> 18) as u8
+}
+
+/// Mode7 has the same XY/UV traversal as mode5 but reads one constant TABLES
+/// high byte; no per-pixel intensity gradient is advanced. Constant pnt5
+/// makes that exact shared scan-conversion path explicit without copying it.
+#[doc(hidden)]
+pub fn visit_mode7_triangle_from_tile_atlas(
+    mut vertices: [Mode5Vertex; 3], viewport_width: i32, viewport_height: i32,
+    texture_atlas: &[u8], texture_base: usize, tablesn: &[u8], shade: u8,
+    visitor: impl FnMut(Mode5FramePixel),
+) {
+    for vertex in &mut vertices { vertex.pnt5 = i32::from(shade) << 16; }
+    visit_mode5_triangle_from_tile_atlas(vertices, viewport_width, viewport_height,
+        texture_atlas, texture_base, tablesn, visitor);
+}
+
+#[doc(hidden)]
+pub fn rasterize_mode7_triangle_from_tile_atlas(
+    vertices: [Mode5Vertex; 3], viewport_width: i32, viewport_height: i32,
+    texture_atlas: &[u8], texture_base: usize, tablesn: &[u8], shade: u8,
+) -> Vec<Mode5FramePixel> {
+    let mut pixels = Vec::new();
+    visit_mode7_triangle_from_tile_atlas(vertices, viewport_width, viewport_height,
+        texture_atlas, texture_base, tablesn, shade, |pixel| pixels.push(pixel));
+    pixels
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Mode5TextureAddressing {
     Full256,
@@ -886,6 +919,35 @@ const fn fixed_byte(value: i32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_mode7_uses_wrapped_four_corner_average_and_constant_palette_row() {
+        assert_eq!(source_flat_terrain_shade([1 << 16, 5 << 16, 9 << 16, 13 << 16]), 7);
+        assert_eq!(source_flat_terrain_shade([i32::MAX; 4]), 255,
+            "source sum wraps as signed32 before arithmetic shift and byte narrowing");
+        let mut tables = vec![0; 65_536];
+        for (address, byte) in tables.iter_mut().enumerate() {
+            *byte = (address >> 8) as u8;
+        }
+        let atlas = vec![23; 32 * 256];
+        let vertices = [
+            vertex(-2, 0, 0, 0, 1 << 16),
+            vertex(8, 0, 8 << 16, 0, 9 << 16),
+            vertex(0, 8, 0, 8 << 16, 13 << 16),
+        ];
+        let pixels = rasterize_mode7_triangle_from_tile_atlas(vertices, 8, 8, &atlas, 0, &tables, 7);
+        assert!(!pixels.is_empty());
+        for pixel in &pixels {
+            assert_eq!(pixel.sample.source_index, 23);
+            assert_eq!(pixel.sample.tablesn_address, 7 * 256 + 23);
+            assert_eq!(pixel.sample.output_index, 7);
+        }
+        let smooth = rasterize_mode5_triangle_from_tile_atlas(vertices, 8, 8, &atlas, 0, &tables);
+        assert!(smooth.iter().any(|pixel| pixel.sample.output_index != 7));
+        assert_eq!(pixels.iter().map(|p| (p.sample.x, p.y, p.sample.texture_address)).collect::<Vec<_>>(),
+            smooth.iter().map(|p| (p.sample.x, p.y, p.sample.texture_address)).collect::<Vec<_>>(),
+            "flat shading preserves clipping, coverage and exact source UV traversal");
+    }
 
     fn banks() -> (Vec<u8>, Vec<u8>) {
         let mut texture = vec![0; 256 * 256];

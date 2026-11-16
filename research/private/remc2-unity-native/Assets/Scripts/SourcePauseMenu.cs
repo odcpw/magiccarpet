@@ -206,7 +206,7 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
-            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque)
+            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading)
         {
             HoverHelpRow = 0;
             HoverHelpAnchor = default;
@@ -241,7 +241,7 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque);
+                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
@@ -382,7 +382,7 @@ namespace MagicCarpet.Native
         }
 
         private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
-            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque)
+            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading)
         {
             var prefs = preferences.Current.preferences;
             var longest = OnText.Concat(OffText).Max(index => language(index).Length) * 8;
@@ -398,12 +398,12 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 5 || index is 8 or 9 or 10 or 11 or 12 or 13;
+                var supported = index <= 5 || index is 8 or 9 or 10 or 11 or 12 or 13 or 14;
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance,
                     8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
-                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, _ => false
+                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading, _ => false
                 };
                 var text = language(enabled ? OnText[index] : OffText[index]);
                 var y = 67 + index * 18;
@@ -423,6 +423,11 @@ namespace MagicCarpet.Native
                     {
                         Event.current.Use();
                         return CampaignMenuPresenter.Action.TogglePanelTransparency;
+                    }
+                    if (index == 14)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.ToggleFlatShading;
                     }
                     var option = index;
                     var brightnessStep = Event.current.button == 1 ? -1 : 1;

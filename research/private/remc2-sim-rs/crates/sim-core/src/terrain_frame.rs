@@ -65,7 +65,7 @@ use crate::{
         TREE_RENDER_MODE, WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT,
         WATER_SPLASH_RENDER_INDEX, ground_fire_presentation, impact_is_presentational,
     },
-    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas},
+    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas, source_flat_terrain_shade},
     mode26_raster::{
         NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
     },
@@ -77,7 +77,7 @@ use crate::{
     static_world_tmap::StaticWorldTmapBank,
     terrain_grid::{OutdoorGridInput, OutdoorGridVertex, outdoor_grid},
     terrain_reflection::{
-        MODE5_TERRAIN_SELECTOR, MODE26_REFLECTIVE_TERRAIN_SELECTOR, OutdoorProjection,
+        MODE5_TERRAIN_SELECTOR, MODE7_FLAT_TERRAIN_SELECTOR, MODE26_REFLECTIVE_TERRAIN_SELECTOR, OutdoorProjection,
         OutdoorReflectionVertex, TERRAIN_FEATURE_REFLECTIVE_MATERIAL, TerrainPass,
         TerrainTriangleSubmission, project_outdoor_reflection_vertex, reflection_texture_cell,
         submit_outdoor_grid, terrain_material_blocks_shadow, terrain_row_anchor_order,
@@ -186,6 +186,7 @@ pub struct Level1CastleRootRender {
 pub struct TerrainFrameStats {
     pub reflected_triangles: u32,
     pub primary_mode5_triangles: u32,
+    pub primary_mode7_triangles: u32,
     pub primary_mode26_triangles: u32,
     pub terrain_pixel_writes: u64,
 }
@@ -3145,10 +3146,16 @@ fn raster_submission(
     coverage: &mut [u8],
     stats: &mut TerrainFrameStats,
 ) -> Result<(), TerrainFrameError> {
-    let vertices = triangle_vertices(submission, lattice, projected)?;
+    let mut vertices = triangle_vertices(submission, lattice, projected)?;
     let texture_base = terrain_texture_base(submission.texture_index)?;
     match submission.raster_selector {
-        MODE5_TERRAIN_SELECTOR => {
+        MODE5_TERRAIN_SELECTOR | MODE7_FLAT_TERRAIN_SELECTOR => {
+            if submission.raster_selector == MODE7_FLAT_TERRAIN_SELECTOR {
+                let owner = submission.owner_index;
+                let shade = source_flat_terrain_shade([owner, owner + 1, owner - 39, owner - 40]
+                    .map(|index| lattice[index].pnt5.expect("submitted cell has four source shades")));
+                for vertex in &mut vertices { vertex.pnt5 = i32::from(shade) << 16; }
+            }
             let pixels = rasterize_mode5_triangle_from_tile_atlas(
                 vertices,
                 LEVEL1_VIEW_WIDTH as i32,
@@ -3170,7 +3177,11 @@ fn raster_submission(
                     stats.reflected_triangles = stats.reflected_triangles.wrapping_add(1);
                 }
                 TerrainPass::Primary => {
-                    stats.primary_mode5_triangles = stats.primary_mode5_triangles.wrapping_add(1);
+                    if submission.raster_selector == MODE7_FLAT_TERRAIN_SELECTOR {
+                        stats.primary_mode7_triangles = stats.primary_mode7_triangles.wrapping_add(1);
+                    } else {
+                        stats.primary_mode5_triangles = stats.primary_mode5_triangles.wrapping_add(1);
+                    }
                 }
             }
         }

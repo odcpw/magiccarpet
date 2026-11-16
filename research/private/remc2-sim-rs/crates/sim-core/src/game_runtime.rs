@@ -103,6 +103,7 @@ pub(crate) enum ReplayOperation<C> {
     Pause,
     ToggleIconsMap,
     TogglePanelTransparency,
+    ToggleFlatShading,
     Step {
         command: C,
     },
@@ -182,10 +183,12 @@ pub struct DisplaySettings {
     pub minimap: bool,
     pub top_bar: bool,
     pub panels_opaque: bool,
+    /// Source GAME byte 15; process default off, retained across LevelInit.
+    pub flat_shading: bool,
 }
 
 impl Default for DisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false } }
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false, flat_shading: false } }
 }
 
 impl DisplaySettings {
@@ -198,6 +201,7 @@ impl DisplaySettings {
 pub(crate) enum DisplayNotice {
     IconsMap(bool),
     PanelTransparency(bool),
+    FlatShading(bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1347,6 +1351,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::PanelTransparency(display_settings.panels_opaque))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::ToggleFlatShading => {
+                    display_settings.flat_shading = !display_settings.flat_shading;
+                    display_notice(&mut candidate, DisplayNotice::FlatShading(display_settings.flat_shading))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -1983,6 +1992,24 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// ChangeSettings case15: supported cflat is initialized to one. Neither
+    /// LevelInit nor SetKeysDefault clears the source GAME flat byte.
+    pub fn toggle_flat_shading(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard)
+            .map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let enabled = !self.display_settings.flat_shading;
+        session.backend_mut().publish_flat_shading_notice(enabled)?;
+        self.display_settings.flat_shading = enabled;
+        Ok(self.identity())
+    }
+
     /// Source ChangeSettings case14, independent of CONFIG preferences and
     /// the help-popup close performed only by case13.
     pub fn toggle_panel_transparency(

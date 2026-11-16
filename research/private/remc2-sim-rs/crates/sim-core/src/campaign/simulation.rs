@@ -9178,6 +9178,15 @@ impl Mc2Simulation {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn publish_flat_shading_notice(&mut self, enabled: bool) -> std::result::Result<(), String> {
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live = &mut self.session.state.live;
+        let color = live.shared_spells.local_player().player_color_index();
+        live.player_lifecycle_notifications.publish(color, live.core.state.entity_index,
+            if enabled { PlayerLifeNoticeKind::FlatShadingOn } else { PlayerLifeNoticeKind::FlatShadingOff }, 50)
+            .map_err(|error| error.to_string())
+    }
+
     /// Move one imported source entity through the lossless Level 2 seam.
     /// Callers cannot create an entity or alter its class/model identity. The
     /// local player's flight state and entity projection are one public input

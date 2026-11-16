@@ -1412,6 +1412,22 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.TogglePanelTransparency));
                 Assert.That(native.GameRuntimeTogglePanelTransparency().display_settings.panels_opaque, Is.False,
                     "the Options submenu remains live and toggles the real owner back");
+                Send(EventType.MouseDown, new Vector2(320, 67 + 14 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleFlatShading),
+                    "source Options row14 requests the same native flat shading action");
+                var flat = native.GameRuntimeToggleFlatShading();
+                Assert.That(flat.display_settings.flat_shading, Is.True);
+                var flatNotice = native.GameRuntimeParticipantNotifications().value;
+                Assert.That((flatNotice[0].kind, flatNotice[0].remaining_frames),
+                    Is.EqualTo(("participant.flat_shading_on", (short)50)));
+                var flatRows = SourcePlayerNotificationsPresenter.Rows(flatNotice, false, false, false, 14, menu.GameplayLanguageText);
+                Assert.That(flatRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(442)));
+                Send(EventType.MouseDown, new Vector2(320, 67 + 14 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleFlatShading));
+                Assert.That(native.GameRuntimeToggleFlatShading().display_settings.flat_shading, Is.False);
+                var plainRows = SourcePlayerNotificationsPresenter.Rows(native.GameRuntimeParticipantNotifications().value,
+                    false, false, false, 14, menu.GameplayLanguageText);
+                Assert.That(plainRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(443)));
                 stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
                 menu.ResetPauseHoverHelp();
                 Hover(SourcePauseMenu.IconRect(174).center);
@@ -3264,9 +3280,42 @@ namespace MagicCarpet.Native.Tests
                 Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its independent save edge");
                 typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
                 CollectionAssert.AreEqual(bytes, File.ReadAllBytes(save));
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var unshaded = (byte[])campaign.SceneFrameIndices.Clone();
+                var beforeFlat = runtime.GameRuntimeProductionIdentity;
+                Assert.That(beforeFlat.display_settings.flat_shading, Is.False);
+                var f7 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF7Input", flags);
+                void F7(bool pressed, bool physical, bool admitted, bool alt) => f7.Invoke(runtime, new object[] { pressed, physical, admitted, alt });
+                F7(true, false, false, false); F7(true, true, false, false); F7(true, true, true, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.False,
+                    "unshifted, held-through-dialog and Alt chords do not toggle flat shading");
+                F7(true, true, true, false);
+                var flat = runtime.GameRuntimeProductionIdentity;
+                Assert.That(flat.display_settings.flat_shading, Is.True);
+                Assert.That((flat.generation, flat.session.generation, flat.session.tick),
+                    Is.EqualTo((beforeFlat.generation, beforeFlat.session.generation, beforeFlat.session.tick)),
+                    "Shift+F7 re-renders without a gameplay step");
+                Assert.That(System.Linq.Enumerable.SequenceEqual(campaign.SceneFrameIndices, unshaded), Is.False,
+                    "the actual source indexed scene changes at the same pose and tick");
+                Assert.That((int)remainingField.GetValue(hint), Is.EqualTo(remaining), "flat shading does not close help");
+                var flatNotice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((flatNotice[0].kind, flatNotice[0].remaining_frames), Is.EqualTo(("participant.flat_shading_on", (short)50)));
+                var flatSave = runtime.QualificationSaveGameRuntimeProductionReplay();
+                using (var cold = NativeSession.OpenGameRuntimeReplayFrom(owner, flatSave,
+                    (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages")))
+                    Assert.That(cold.GameRuntimeIdentity().display_settings.flat_shading, Is.True,
+                        "the accepted source setting survives normal cold replay");
+                F7(true, true, true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.False);
+                CollectionAssert.AreEqual(unshaded, campaign.SceneFrameIndices,
+                    "toggling back restores the same actual indexed scene");
+                F7(true, true, true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.True);
                 runtime.QualificationResetGameRuntimeProduction();
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False,
                     "a real Day retry re-applies source LevelInit default");
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.flat_shading, Is.True,
+                    "a real retry preserves the global source flat-shading setting");
             }
             finally
             {

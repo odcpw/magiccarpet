@@ -9,10 +9,12 @@ use crate::{
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
     classic_hd_raster::{
         CLASSIC_HD_TABLESN_BYTES, CLASSIC_HD_TERRAIN_ATLAS_BYTES, ClassicHdRasterError,
-        rasterize_classic_hd_mode5_triangle, source_uv_row, terrain_texture_base,
+        rasterize_classic_hd_mode5_triangle, rasterize_classic_hd_mode7_triangle,
+        source_uv_row, terrain_texture_base,
     },
     classic_hd_terrain::ClassicHdProjection,
-    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas},
+    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas,
+        rasterize_mode7_triangle_from_tile_atlas, source_flat_terrain_shade},
     render_camera::terrain_projection_divisor,
     terrain_frame::Level1TerrainFrameCamera,
     terrain_grid::{
@@ -53,12 +55,14 @@ struct Triangle {
     texture: u8,
     ceiling: bool,
     cell_order: u16,
+    flat_shade: u8,
 }
 
 #[derive(Clone)]
 pub struct CaveTerrainPlan {
     profile_revision: u64,
     clear_index: u8,
+    flat_shading: bool,
     triangles: Vec<Triangle>,
     cell_orders: Vec<u16>,
     cell_textures: Vec<u8>,
@@ -73,10 +77,31 @@ pub struct CaveRasterReceipt {
 }
 
 impl CaveTerrainPlan {
+    pub(crate) fn apply_flat_shading(&mut self, enabled: bool) {
+        if !enabled { return; }
+        self.flat_shading = true;
+        for triangle in &mut self.triangles {
+            for vertex in &mut triangle.vertices {
+                vertex.pnt5 = i32::from(triangle.flat_shade) << 16;
+            }
+        }
+        let mut input = self.input_hash.to_le_bytes().to_vec();
+        input.extend_from_slice(b"source-flat-terrain-mode7");
+        self.input_hash = byte_hash(&input);
+        self.command_hash = hash_commands(&self.triangles);
+    }
     #[cfg(test)]
     pub(crate) fn without_ceiling_submissions_for_test(&self) -> Self {
         let mut plan = self.clone();
         plan.triangles.retain(|triangle| !triangle.ceiling);
+        plan.command_hash = hash_commands(&plan.triangles);
+        plan
+    }
+
+    #[cfg(test)]
+    pub(crate) fn without_floor_submissions_for_test(&self) -> Self {
+        let mut plan = self.clone();
+        plan.triangles.retain(|triangle| triangle.ceiling);
         plan.command_hash = hash_commands(&plan.triangles);
         plan
     }
@@ -201,14 +226,14 @@ impl CaveTerrainPlan {
             let provenance = provenance | if triangle.ceiling { 4 } else { 2 };
             let written_pixels = if let Some(orders) = orders.as_deref_mut() {
                 let width = writer.width();
-                let pixels = rasterize_mode5_triangle_from_tile_atlas(
-                    triangle.vertices,
-                    width as i32,
-                    writer.height() as i32,
-                    atlas,
-                    terrain_texture_base(triangle.texture)?,
-                    &tables[..CLASSIC_HD_TABLESN_BYTES],
-                );
+                let base = terrain_texture_base(triangle.texture)?;
+                let pixels = if self.flat_shading {
+                    rasterize_mode7_triangle_from_tile_atlas(triangle.vertices, width as i32,
+                        writer.height() as i32, atlas, base, &tables[..CLASSIC_HD_TABLESN_BYTES], triangle.flat_shade)
+                } else {
+                    rasterize_mode5_triangle_from_tile_atlas(triangle.vertices, width as i32,
+                        writer.height() as i32, atlas, base, &tables[..CLASSIC_HD_TABLESN_BYTES])
+                };
                 let mut written = 0;
                 for pixel in pixels {
                     if writer.set_pixel(
@@ -223,6 +248,10 @@ impl CaveTerrainPlan {
                     }
                 }
                 written
+            } else if self.flat_shading {
+                rasterize_classic_hd_mode7_triangle(writer, triangle.vertices, atlas,
+                    terrain_texture_base(triangle.texture)?, &tables[..CLASSIC_HD_TABLESN_BYTES],
+                    provenance, triangle.flat_shade)?.written_pixels
             } else {
                 rasterize_classic_hd_mode5_triangle(
                     writer,
@@ -400,6 +429,7 @@ pub(crate) fn build_cave_terrain_projected(
     Ok(CaveTerrainPlan {
         profile_revision: profile.profile_revision,
         clear_index: resources.clear_index,
+        flat_shading: false,
         triangles,
         cell_orders,
         cell_textures,
@@ -435,6 +465,7 @@ fn append_triangles(
             texture,
             ceiling,
             cell_order,
+            flat_shade: source_flat_terrain_shade(std::array::from_fn(|index| cell[index].floor.pnt5)),
             vertices: corners.map(|corner| {
                 let mut vertex = if ceiling {
                     cell[corner].ceiling
@@ -564,6 +595,7 @@ mod tests {
         let plan = CaveTerrainPlan {
             profile_revision: profile.profile_revision,
             clear_index: 254,
+            flat_shading: false,
             cell_textures: vec![0, 0, 0],
             triangles: vec![
                 Triangle {
@@ -571,12 +603,14 @@ mod tests {
                     texture: 0,
                     ceiling: true,
                     cell_order: 1,
+                    flat_shade: 3,
                 },
                 Triangle {
                     vertices: [point(8, 0), point(20, 0), point(8, 12)],
                     texture: 0,
                     ceiling: false,
                     cell_order: 2,
+                    flat_shade: 3,
                 },
             ],
             cell_orders: vec![0; 65_536],

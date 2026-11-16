@@ -380,7 +380,7 @@ namespace MagicCarpet.Native
         [Serializable]
         internal sealed class DisplaySettings
         {
-            public bool minimap, top_bar, panels_opaque;
+            public bool minimap, top_bar, panels_opaque, flat_shading;
         }
 
         [Serializable]
@@ -1113,7 +1113,8 @@ namespace MagicCarpet.Native
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
                 after.display_settings.minimap == before.display_settings.minimap ||
                 after.display_settings.top_bar == before.display_settings.top_bar ||
-                after.display_settings.panels_opaque != before.display_settings.panels_opaque)
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading)
                 throw new InvalidDataException("icons and map toggle changed the wrong source state");
             return after;
         }
@@ -1132,8 +1133,29 @@ namespace MagicCarpet.Native
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
-                after.display_settings.panels_opaque == before.display_settings.panels_opaque)
+                after.display_settings.panels_opaque == before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading)
                 throw new InvalidDataException("panel transparency toggle changed the wrong source state");
+            return after;
+        }
+
+        internal Identity ToggleFlatShading()
+        {
+            RequireSessionMode(allowPaused: true, "toggle flat shading");
+            var before = Current;
+            Check(NativeSim.mc_game_runtime_toggle_flat_shading_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick")), "toggle flat shading");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading == before.display_settings.flat_shading)
+                throw new InvalidDataException("flat shading toggle changed the wrong source state");
             return after;
         }
 
