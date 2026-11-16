@@ -128,6 +128,13 @@ function treeTemplate(source:THREE.Group, burned:boolean):THREE.Group {
  }
  const lod=new THREE.LOD();lod.addLevel(level(10),0);lod.addLevel(level(2),130);const root=new THREE.Group();root.scale.setScalar(1/height);root.add(lod);return root;
 }
+export function applySourceTints(root:THREE.Group){
+ const tints:Record<string,[number,number,number]>={'Scroll parchment':[.97,.87,.72], 'Scroll parchment overlay':[1,.96,.86], 'Scroll parchment lip':[1,.98,.88],
+  'Blue grey weathered stone':[.42,.51,.57], 'Weathered brown grey stone':[.84,.86,.91], 'Wrap':[.09,.28,.26]};
+ root.traverse(object=>{if(!(object instanceof THREE.Mesh))return;for(const material of Array.isArray(object.material)?object.material:[object.material]){
+  if(!(material instanceof THREE.MeshStandardMaterial)||!material.map)continue;const tint=tints[material.name];if(tint)material.color.setRGB(...tint);
+ }});
+}
 export class ModernWorldObjects {
  readonly root=new THREE.Group();
  readonly layout:BuildingLayout;
@@ -153,6 +160,7 @@ export class ModernWorldObjects {
   for(let i=0;i<names.length;i++){
    const gltf=await loader.parseAsync(glbs[i]!,base),root=gltf.scene,box=new THREE.Box3().setFromObject(root),size=box.getSize(new THREE.Vector3());
    if(!Number.isFinite(size.y)||size.y<=0)throw Error(`world model ${names[i]} has invalid bounds`);
+   applySourceTints(root);
    if(names[i]==='authored-tree'){templates.set('tree-alive',treeTemplate(root,false));templates.set('tree-burned',treeTemplate(root,true));}
    else if(names[i]==='exit-portal'||names[i]==='castle-head'){const geometry=new THREE.Group();geometry.add(root);root.scale.multiplyScalar(1/size.y);root.position.y-=box.min.y/size.y;if(names[i]==='castle-head'){root.position.x-=box.getCenter(new THREE.Vector3()).x/size.y;root.position.z-=box.getCenter(new THREE.Vector3()).z/size.y;}templates.set(names[i]!,geometry);}else templates.set(names[i]!,root);
   }

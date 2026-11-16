@@ -2,12 +2,17 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import * as THREE from 'three';
-import {ModernWorldObjects,buildingMesh,reconcileBuildingTerrain,type BuildingLayout,type LiveBuilding} from '../src/modern-world-objects.ts';
+import {ModernWorldObjects,applySourceTints,buildingMesh,reconcileBuildingTerrain,type BuildingLayout,type LiveBuilding} from '../src/modern-world-objects.ts';
 const generated=new URL('../../../generated/',import.meta.url);
 const layout=JSON.parse(readFileSync(new URL('browser-level1-assets/world/layout.json',generated),'utf8')) as BuildingLayout;
 const source=readFileSync(new URL('level1-export-m/terrain.bin',generated)).subarray(65536,131072);
 const original=Uint8Array.from(source);
 const live:LiveBuilding[]=layout.buildings.map(b=>({slot:b.source_slot,slotGeneration:0,buildingIndex:b.build_index,action:52,drawing:true,...b.source_entity_position}));
+
+test('textured imported stone retains its Modern presenter tint',()=>{
+ const material=new THREE.MeshStandardMaterial({map:new THREE.Texture()});material.name='Blue grey weathered stone';const root=new THREE.Group();root.add(new THREE.Mesh(new THREE.BoxGeometry(),material));applySourceTints(root);
+ assert.deepEqual(material.color.toArray(),[.42,.51,.57]);
+});
 
 test('opening native records and intact source stamps flatten all 41 without mutating authority',()=>{
  const snapshot=original.slice();const result=reconcileBuildingTerrain(layout,original,live);
