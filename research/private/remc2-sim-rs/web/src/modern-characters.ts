@@ -6,8 +6,8 @@ import type { ModernCharacter, ModernFrame } from './modern-runtime';
 interface ClipInfo { name: string; duration: number; loop: boolean }
 interface CharacterAsset { url: string; sha256: string; bytes: number; height: number; forward_yaw: number; walk_speed: number; run_speed: number; clips: ClipInfo[] }
 interface CharacterManifest { schema: string; assets: Record<string, CharacterAsset> }
-interface Art { definition: CharacterAsset; scene: THREE.Group; clips: Map<string, THREE.AnimationClip>; bounds: THREE.Box3; attackYaw?: number; arrow?: THREE.Group }
-interface Arrow { root: THREE.Group; generation: number; sourceId: number; from: THREE.Vector3; to: THREE.Vector3; elapsed: number; interval: number; yaw: number; pitch: number; seen: boolean; active: boolean }
+interface Art { definition: CharacterAsset; scene: THREE.Group; clips: Map<string, THREE.AnimationClip>; bounds: THREE.Box3; attackYaw?: number; arrow?: THREE.Group; nockIndices?: number[] }
+interface Arrow { root: THREE.Group; generation: number; sourceId: number; from: THREE.Vector3; to: THREE.Vector3; offset: THREE.Vector3; birthElapsed: number; elapsed: number; interval: number; yaw: number; pitch: number; seen: boolean; active: boolean }
 interface Actor {
   slot: number; generation: number; sourceId: number; resource: string; state: ModernCharacter;
   root: THREE.Group; model: THREE.Object3D; mixer: THREE.AnimationMixer; actions: Map<string, THREE.AnimationAction>;
@@ -15,7 +15,8 @@ interface Actor {
   fromYaw: number; toYaw: number; elapsed: number; interval: number; scale: number; bottom: number;
   observed: boolean; dying: boolean; deathTime: number; hit: number; attack: number; release: number;
   lastAction: number; seen: boolean; tickTravel: number; animationTravel: number; animationTime: number;
-  ownerColor: number; heldArrow?: THREE.Object3D;
+  ownerColor: number; heldArrow?: THREE.Object3D; bowstring?: THREE.Mesh; rendered: boolean;
+  movingGrace: number; recentSpeed: number; releaseYaw: number;
 }
 const appearances = new Map<number, [number, string, number]>([
   [221, [12, 'Builder', 250]], [219, [14, 'Trader', 250]], [239, [13, 'VillagerBrown', 200]],
@@ -97,7 +98,7 @@ export class ModernCharacters {
       const bounds = new THREE.Box3().setFromObject(probe, true);
       if (bounds.isEmpty() || !Number.isFinite(bounds.max.y - bounds.min.y) || bounds.max.y <= bounds.min.y)
         throw new Error(`${name}: invalid imported bounds`);
-      let attackYaw: number | undefined, arrow: THREE.Group | undefined;
+      let attackYaw: number | undefined, arrow: THREE.Group | undefined, nockIndices: number[] | undefined;
       if (name === 'Archer') {
         const control = probe.getObjectByName('ArrowControl');
         const string = probe.getObjectByName('Bowstring');
@@ -116,9 +117,9 @@ export class ModernCharacters {
         const middle = (string.geometry.boundingBox!.min.getComponent(axis) + string.geometry.boundingBox!.max.getComponent(axis)) / 2;
         let nearest = Infinity;
         for (let i = 0; i < positions.count; i++) nearest = Math.min(nearest, Math.abs(positions.getComponent(i, axis) - middle));
-        const nock = new THREE.Vector3(), vertex = new THREE.Vector3(); let count = 0;
+        const nock = new THREE.Vector3(), vertex = new THREE.Vector3(); let count = 0; nockIndices = [];
         for (let i = 0; i < positions.count; i++) if (Math.abs(positions.getComponent(i, axis) - middle) < nearest + .0001) {
-          string.getVertexPosition(i, vertex); string.localToWorld(vertex); nock.add(vertex); count++;
+          string.getVertexPosition(i, vertex); string.localToWorld(vertex); nock.add(vertex); count++; nockIndices.push(i);
         }
         if (!count) throw new Error('Archer bowstring has no nock vertices');
         nock.divideScalar(count);
@@ -131,7 +132,7 @@ export class ModernCharacters {
         arrow.add(geometry);
       }
       probeMixer.stopAllAction(); probeMixer.uncacheRoot(probe);
-      return [name, { definition, scene:gltf.scene, clips, bounds, attackYaw, arrow }] as const;
+      return [name, { definition, scene:gltf.scene, clips, bounds, attackYaw, arrow, nockIndices }] as const;
     }));
     return new ModernCharacters(parent, new Map(entries));
   }
@@ -158,7 +159,9 @@ export class ModernCharacters {
       fromYaw:yaw, toYaw:yaw, elapsed:0, interval:1/30, scale, bottom:art.bounds.min.y * scale,
       observed:false, dying:false, deathTime:0, hit:0, attack:0, release:0, lastAction:state.action,
       seen:true, tickTravel:0, animationTravel:0, animationTime:0, ownerColor:-1,
-      heldArrow:resource === 'Archer' ? model.getObjectByName('ArrowControl') : undefined};
+      heldArrow:resource === 'Archer' ? model.getObjectByName('ArrowControl') : undefined,
+      bowstring:resource === 'Archer' ? model.getObjectByName('Bowstring') as THREE.Mesh : undefined,
+      rendered:false, movingGrace:0, recentSpeed:0, releaseYaw:0};
   }
 
   private setCollectorColor(actor: Actor, owner: number): void {
@@ -269,7 +272,7 @@ export class ModernCharacters {
         this.parent.add(root);
         const position = new THREE.Vector3(s.x / 64, s.z / 64, s.y / 64);
         arrow = {root, generation:s.slotGeneration, sourceId:s.sourceId, from:position.clone(), to:position,
-          elapsed:0, interval, yaw:s.yaw, pitch:s.pitch, seen:true, active:!!s.active};
+          offset:new THREE.Vector3(), birthElapsed:0, elapsed:0, interval, yaw:s.yaw, pitch:s.pitch, seen:true, active:!!s.active};
         this.arrows.set(s.entityIndex, arrow);
       }
       arrow.seen = true;
@@ -280,7 +283,17 @@ export class ModernCharacters {
       arrow.yaw = s.yaw; arrow.pitch = s.pitch; arrow.active = !!s.active;
       if (fresh && s.hasParent && s.ageTicks <= 1) {
         const parent = this.actors.get(s.parentIndex);
-        if (parent?.resource === 'Archer' && parent.generation === s.parentGeneration && parent.sourceId === s.parentId) parent.release = .2;
+        if (parent?.resource === 'Archer' && parent.generation === s.parentGeneration && parent.sourceId === s.parentId) {
+          parent.release = .2; parent.releaseYaw = s.yaw;
+          const indices = this.assets.get('Archer')?.nockIndices;
+          if (parent.rendered && parent.bowstring && indices?.length) {
+            const nock = new THREE.Vector3(), vertex = new THREE.Vector3();
+            parent.model.updateWorldMatrix(true, true);
+            for (const index of indices) { parent.bowstring.getVertexPosition(index, vertex); parent.bowstring.localToWorld(vertex); nock.add(vertex); }
+            nock.divideScalar(indices.length);
+            arrow.offset.set(delta(arrow.from.x, nock.x), nock.y - arrow.from.y, delta(arrow.from.z, nock.z));
+          }
+        }
       }
     }
     for (const [slot, arrow] of this.arrows) if (!arrow.seen) { arrow.root.removeFromParent(); this.arrows.delete(slot); }
@@ -295,7 +308,10 @@ export class ModernCharacters {
       const previous = Math.min(1, a.elapsed / a.interval);
       a.elapsed += dt;
       const t = Math.min(1, a.elapsed / a.interval);
-      a.animationTravel += a.tickTravel * (t - previous); a.animationTime += dt;
+      const frameTravel = a.tickTravel * (t - previous);
+      a.animationTravel += frameTravel; a.animationTime += dt;
+      if (frameTravel > .00001) { a.movingGrace = .08; if (dt > .000001) a.recentSpeed = frameTravel / dt / a.scale; }
+      else a.movingGrace = Math.max(0, a.movingGrace - dt);
       a.interpolated.set(a.from.x + delta(a.from.x, a.to.x) * t, THREE.MathUtils.lerp(a.from.y, a.to.y, t),
         a.from.z + delta(a.from.z, a.to.z) * t);
       const x = this.cameraPosition.x + delta(this.cameraPosition.x, a.interpolated.x);
@@ -318,12 +334,13 @@ export class ModernCharacters {
       if (dx * dx + dz * dz > 120 * 120 && a.animationTime < .12) continue;
       const animationTime = a.animationTime, animationTravel = a.animationTravel;
       a.animationTime = 0; a.animationTravel = 0;
-      const moving = animationTravel > .001;
+      a.rendered = true;
+      const moving = a.movingGrace > 0;
       let name = a.dying ? 'Death' : a.hit > 0 && !moving ? 'Hit' : a.attack > 0 ? 'Attack' :
         a.resource === 'Firefly' ? (moving ? 'Flight' : 'Idle') :
         a.resource === 'Archer' && a.state.action === 34 ? (a.state.stance === 1 ? 'KneelingShot' : 'StandingShot') :
         moving ? (a.resource === 'Goat' && a.state.action === 14 ? 'Sprint' :
-          a.actions.has('Run') && a.tickTravel / a.interval / a.scale > (this.assets.get(a.resource)!.definition.walk_speed * 1.35) ? 'Run' : 'Walk') : 'Idle';
+          a.actions.has('Run') && a.recentSpeed > (this.assets.get(a.resource)!.definition.walk_speed * 1.35) ? 'Run' : 'Walk') : 'Idle';
       if (!a.actions.has(name)) name = 'Idle';
       if (name !== a.clip) { if (a.clip) a.actions.get(a.clip)?.stop(); a.actions.get(name)?.reset().play(); a.clip = name; }
       const action = a.actions.get(name);
@@ -337,9 +354,9 @@ export class ModernCharacters {
         action.time = a.release > 0 ? Math.min(action.getClip().duration, release + (.2 - a.release) * 3) : Math.min(release - 1/96, release * progress);
         a.mixer.update(0);
         if (art.attackYaw !== undefined) {
-          const heading = Math.PI - a.state.yaw * Math.PI * 2 / 2048;
-          const tx = a.state.hasTarget ? delta(a.interpolated.x, a.state.targetX / 64) : Math.sin(heading);
-          const tz = a.state.hasTarget ? delta(a.interpolated.z, a.state.targetY / 64) : Math.cos(heading);
+          const heading = Math.PI - (a.release > 0 ? a.releaseYaw : a.state.yaw) * Math.PI * 2 / 2048;
+          const tx = a.state.hasTarget && !a.release ? delta(a.interpolated.x, a.state.targetX / 64) : Math.sin(heading);
+          const tz = a.state.hasTarget && !a.release ? delta(a.interpolated.z, a.state.targetY / 64) : Math.cos(heading);
           if (tx * tx + tz * tz > .000001) a.model.rotation.y = Math.atan2(tx, tz) - a.root.rotation.y - art.attackYaw;
         }
         if (a.heldArrow) a.heldArrow.visible = a.release <= 0;
@@ -356,11 +373,13 @@ export class ModernCharacters {
       }
     }
     for (const arrow of this.arrows.values()) {
-      arrow.elapsed += dt; const t = Math.min(1, arrow.elapsed / arrow.interval);
+      arrow.elapsed += dt; arrow.birthElapsed += dt; const t = Math.min(1, arrow.elapsed / arrow.interval);
       const x = arrow.from.x + delta(arrow.from.x, arrow.to.x) * t;
       const z = arrow.from.z + delta(arrow.from.z, arrow.to.z) * t;
-      arrow.root.position.set(this.cameraPosition.x + delta(this.cameraPosition.x, x),
-        THREE.MathUtils.lerp(arrow.from.y, arrow.to.y, t), this.cameraPosition.z + delta(this.cameraPosition.z, z));
+      const offset = Math.max(0, 1 - arrow.birthElapsed * 30);
+      arrow.root.position.set(this.cameraPosition.x + delta(this.cameraPosition.x, x) + arrow.offset.x * offset,
+        THREE.MathUtils.lerp(arrow.from.y, arrow.to.y, t) + arrow.offset.y * offset,
+        this.cameraPosition.z + delta(this.cameraPosition.z, z) + arrow.offset.z * offset);
       arrow.root.rotation.set(arrow.pitch * Math.PI * 2 / 2048, Math.PI - arrow.yaw * Math.PI * 2 / 2048, 0, 'YXZ');
       arrow.root.visible = arrow.active;
     }
