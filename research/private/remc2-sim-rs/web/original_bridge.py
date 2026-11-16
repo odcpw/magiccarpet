@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import secrets
 import struct
 import tempfile
@@ -434,18 +435,31 @@ class Bridge:
         self.stop.set(); self.thread.join(timeout=30)
 
 
+def host_alias(value):
+    """Accept one explicit DNS/IPv4 host and port, never a pattern or URL."""
+    match = re.fullmatch(r"([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):([0-9]{1,5})", value)
+    if not match or not 1 <= int(match.group(2)) <= 65535:
+        raise argparse.ArgumentTypeError("host alias must be an explicit hostname:port")
+    hostname = match.group(1)
+    if any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+           for label in hostname.split(".")) or len(hostname) > 253:
+        raise argparse.ArgumentTypeError("host alias has an invalid hostname")
+    return hostname.lower() + ":" + str(int(match.group(2)))
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, bridge, web_root):
+    def __init__(self, address, bridge, web_root, allowed_hosts=()):
         super().__init__(address, Handler)
         self.bridge, self.web_root = bridge, web_root.resolve() if web_root else None
         self.secret = secrets.token_bytes(32)
         self.controller = None
         self.controller_seen = 0.0
         self.controller_lock = threading.Lock()
-        host, port = address
-        self.allowed_hosts = {f"{host}:{port}"}
+        host, _ = address
+        port = self.server_port
+        self.allowed_hosts = {f"{host}:{port}", *(host_alias(alias) for alias in allowed_hosts)}
         if host in ("127.0.0.1", "localhost"):
             self.allowed_hosts.update({f"127.0.0.1:{port}", f"localhost:{port}",
                                        "127.0.0.1:8878", "localhost:8878"})
@@ -562,6 +576,8 @@ def main():
     parser.add_argument("--probe-frame", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8881)
+    parser.add_argument("--allow-host", type=host_alias, action="append", default=[],
+                        help="allow an additional exact hostname:port (repeatable)")
     parser.add_argument("--web-root", type=Path)
     parser.add_argument("--save", type=Path, default=PRIVATE / "generated/original-web-20261116/save.json")
     args = parser.parse_args()
@@ -577,7 +593,7 @@ def main():
         finally: runtime.close()
         return
     bridge = Bridge(args.library, packages, args.save)
-    server = Server((args.host, args.port), bridge, args.web_root)
+    server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)
     except KeyboardInterrupt: pass

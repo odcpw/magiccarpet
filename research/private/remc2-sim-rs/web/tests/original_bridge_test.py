@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Real local Rust runtime -> HTTP scene -> controls/save/load regression."""
+import argparse
 import http.cookiejar
+import http.client
 import importlib.util
 import json
 import struct
@@ -21,6 +23,36 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_explicit_host_alias_preserves_same_origin_guard(self):
+        m = bridge_module
+        class LocalBridge:
+            running = False
+            def status(self): return {"ready": True, "next_sequence": 0}
+            def request(self, value): return {"ok": True, "received": value}
+
+        server = m.Server(("127.0.0.1", 0), LocalBridge(), None, ["3090.bumblebee-hue.ts.net:8882"])
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        alias = "3090.bumblebee-hue.ts.net:8882"
+        try:
+            conn.request("GET", "/original-api/status", headers={"Host": "unlisted.example:8882"})
+            response = conn.getresponse(); self.assertEqual(response.status, 403); response.read()
+            conn.request("GET", "/original-api/status", headers={"Host": alias})
+            response = conn.getresponse(); self.assertEqual(response.status, 200)
+            controller = response.getheader("Set-Cookie").split(";", 1)[0]; response.read()
+            payload = json.dumps({"sequence": 0, "action": "start"})
+            conn.request("POST", "/original-api/control", body=payload,
+                         headers={"Host": alias, "Origin": "http://evil.example", "Cookie": controller})
+            response = conn.getresponse(); self.assertEqual(response.status, 403); response.read()
+            conn.request("POST", "/original-api/control", body=payload,
+                         headers={"Host": alias, "Origin": "http://" + alias, "Cookie": controller})
+            response = conn.getresponse(); self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["received"]["action"], "start")
+            for invalid in ("*.example:8882", "example", "example:0", "example:65536", "user@example:8882", "example:8882/path"):
+                with self.assertRaises(argparse.ArgumentTypeError): m.host_alias(invalid)
+        finally:
+            conn.close(); server.shutdown(); server.server_close(); thread.join(timeout=5)
+
     def test_native_frame_controls_and_replay(self):
         m = bridge_module
         temporary = tempfile.TemporaryDirectory()
