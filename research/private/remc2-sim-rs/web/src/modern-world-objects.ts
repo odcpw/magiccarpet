@@ -19,6 +19,7 @@ const delta = (a:number,b:number) => mod(a-b+512,1024)-512;
 function hash(x:number,z:number){let h=(Math.imul(x,0x8da6b343)^Math.imul(z,0xd8163841)^0xcb1ab31f)>>>0;h^=h>>>16;h=Math.imul(h,0x7feb352d);h^=h>>>15;h=Math.imul(h,0x846ca68b);return (h^(h>>>16))>>>0;}
 function random01(value:number){value^=value>>>16;value=Math.imul(value,0x7feb352d);value^=value>>>15;value=Math.imul(value,0x846ca68b);value^=value>>>16;return (value&0xffffff)/16777216;}
 function patchDensity(x:number,z:number){const px=x/16,pz=z/16,ix=Math.floor(px),iz=Math.floor(pz),smooth=(v:number)=>v*v*(3-2*v),fx=smooth(px-ix),fz=smooth(pz-iz),lerp=THREE.MathUtils.lerp;return lerp(lerp(random01(hash(ix&63,iz&63)),random01(hash((ix+1)&63,iz&63)),fx),lerp(random01(hash(ix&63,(iz+1)&63)),random01(hash((ix+1)&63,(iz+1)&63)),fx),fz);}
+export function dolmenBaseHeight(x:number,z:number,scale:number,height:(x:number,z:number)=>number){let low=Infinity,high=-Infinity;for(const [cx,cz] of [[-.5,-.08],[.48,-.05],[.02,.23]])for(const [dx,dz] of [[0,0],[-.1,0],[.1,0],[0,-.1],[0,.1]]){const h=height(x+(cx!+dx!)*scale,z+(cz!+dz!)*scale);low=Math.min(low,h);high=Math.max(high,h);}return Math.max(low,high-.25*scale);}
 
 // Validate complete geometry/stamp correspondence before changing even one
 // visual byte. Like ModernBuildings.Reconcile, changed terrain invalidates
@@ -237,7 +238,11 @@ export class ModernWorldObjects {
    const x=camera.position.x+delta(row.x/64,camera.position.x),z=camera.position.z+delta(row.y/64,camera.position.z);item.root.position.set(x,Math.max(row.z/64,terrainHeight(x,z))+row.logicalHeight/128,z);item.root.scale.setScalar(row.logicalHeight/64);
   }
   for(const [slot,item] of this.mana)if(!manaSeen.has(slot)){this.root.remove(item.root);this.mana.delete(slot);}
-  for(const item of this.props.values()){const p=item.row,x=camera.position.x+delta(p.x/64,camera.position.x),z=camera.position.z+delta(p.y/64,camera.position.z);let y=p.z/64;if(item.kind==='spell-jar')y=Math.max(y,terrainHeight(x,z));else if(item.kind==='stone-statue'||item.kind==='dolmen')y=terrainHeight(x,z);else if(item.kind==='fireball'||item.kind==='possession')y+=p.height/128;item.root.position.set(x,y,z);item.root.scale.setScalar(p.height/64);if(item.kind==='spell-jar'||item.kind==='experience-scroll'||item.kind==='exit-portal'||item.kind==='castle-head')item.root.rotation.y=camera.rotation.y;}
+  for(const item of this.props.values()){const p=item.row,x=camera.position.x+delta(p.x/64,camera.position.x),z=camera.position.z+delta(p.y/64,camera.position.z),scale=p.height/64;let y=p.z/64;
+   if(item.kind==='spell-jar')y=Math.max(y,terrainHeight(x,z));else if(item.kind==='stone-statue')y=terrainHeight(x,z);
+   else if(item.kind==='dolmen')y=dolmenBaseHeight(x,z,scale,terrainHeight);
+   else if(item.kind==='fireball'||item.kind==='possession')y+=p.height/128;
+   item.root.position.set(x,y,z);item.root.scale.setScalar(scale);if(item.kind==='spell-jar'||item.kind==='experience-scroll'||item.kind==='exit-portal'||item.kind==='castle-head')item.root.rotation.y=camera.rotation.y+(item.kind==='experience-scroll'?38*Math.PI/180:0);}
   for(const b of this.layout.buildings){const node=this.buildings.get(b.source_slot);if(node)node.position.set(camera.position.x+delta(b.x,camera.position.x),b.base_height+.025,camera.position.z+delta(b.z,camera.position.z));}
  }
  private disposeBuilding(node:THREE.Group){node.traverse(o=>{if(o instanceof THREE.Mesh){o.geometry.dispose();if(o.material instanceof THREE.Material)o.material.dispose();}});}

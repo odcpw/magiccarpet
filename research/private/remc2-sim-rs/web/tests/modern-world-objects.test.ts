@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import * as THREE from 'three';
-import {ModernWorldObjects,applySourceTints,buildingMesh,reconcileBuildingTerrain,type BuildingLayout,type LiveBuilding} from '../src/modern-world-objects.ts';
+import {ModernWorldObjects,applySourceTints,buildingMesh,dolmenBaseHeight,reconcileBuildingTerrain,type BuildingLayout,type LiveBuilding} from '../src/modern-world-objects.ts';
 const generated=new URL('../../../generated/',import.meta.url);
 const layout=JSON.parse(readFileSync(new URL('browser-level1-assets/world/layout.json',generated),'utf8')) as BuildingLayout;
 const source=readFileSync(new URL('level1-export-m/terrain.bin',generated)).subarray(65536,131072);
@@ -12,6 +12,10 @@ const live:LiveBuilding[]=layout.buildings.map(b=>({slot:b.source_slot,slotGener
 test('textured imported stone retains its Modern presenter tint',()=>{
  const material=new THREE.MeshStandardMaterial({map:new THREE.Texture()});material.name='Blue grey weathered stone';const root=new THREE.Group();root.add(new THREE.Mesh(new THREE.BoxGeometry(),material));applySourceTints(root);
  assert.deepEqual(material.color.toArray(),[.42,.51,.57]);
+});
+test('dolmen supports use the source terrain sampling and bounded slope sink',()=>{
+ assert.equal(dolmenBaseHeight(0,0,2,()=>7),7);
+ assert.ok(Math.abs(dolmenBaseHeight(0,0,2,(x)=>x)-.66)<1e-9);
 });
 
 test('opening native records and intact source stamps flatten all 41 without mutating authority',()=>{
