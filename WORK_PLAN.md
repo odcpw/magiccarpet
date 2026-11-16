@@ -802,27 +802,71 @@ acceptance open; a working control panel alone does not finish the environment.
 ## Current Original mission delivery — 2026-11-14
 
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
-the source in-game viewport, Player Names and F4/F5/F6 speech/sound/music are
+the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music and F2
+flight assistance are
 implemented, verified, committed, pushed and installed. Do not restart their
-delivered checkpoints below. Next is source F2 flight assistance through its real
-idle-recenter consumer, Options4 and398/399 notices. Bare F2 is absent; Options4
-uses generic Apply without source notice. The current assistance helper also
-incorrectly resets retained mouse/counter state in disabled/menu-suppressed lanes
-and substitutes an immediately centered sample when source only queues opcode39.
-BoldForge owns the native capability; PearlBay owns managed consumers; root
-serializes verification and installation. Preserve actual source update order,
-current profile persistence and strict guards; do not infer multiplayer from AI.
+delivered checkpoints below. Next is source bare F1/Options0 Help Mode through
+the existing real popup, source400/401 notices, selector clear and ON row/age
+reinitialization. F1 is absent; Options0 uses generic Apply. Pinned source
+sub_871E0 returns1 unconditionally, making its No Help Data branch unreachable;
+do not invent an ordinary missing-data producer or a filesystem-derived host
+capability. Use the actual retained validated help rows/glyph owner and preserve
+its current recoverable asset-binding failure. BoldForge owns native integration,
+PearlBay the input/transport joins and QuietIsland the focused popup owner; root
+serializes checks and installation. Keep full existing acceptance and source
+update order, rather than extending the scope into a new availability platform.
 Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
 resolution switching remains the explicitly classified separate renderer option,
 not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
 through real consumer failures. Preserve unrelated Modern/browser work and fixed
 ABI extents.
 
+Flight-assistance checkpoint: canonical cdcc8498 is pushed as Original235baa78;
+all22 owned blobs match. Original build-a75ffnon/native
+f327d31480c075c2aae3086265bee96e3a93be1d934998d329a9ea2317ce4fa8 is installed;
+--check-installed passes. Real bare F2 and Options4 share the guarded atomic
+profile/398..399 type3/50 notice action. Current supported campaign is explicitly
+offline; AI rows and replay are not multiplayer admission. Suppressed states
+retain the source mouse/counter; accepted pause/resume remaps only the exact
+same input owner, rejected calls mutate nothing, actual reset starts a fresh run.
+The source queues recenter before its later handler, retaining the observed
+sample instead of manufacturing an immediately centered sample.
+
+Fresh bounded review exposed a real precision gap: at sensitivity10, actual
+sampler0/.45 values both round to physics byte0. The real-client49-turn regression
+failed35.167s with sequence1 instead of0. A validated finite exact steering
+observation now reaches Rust before quantization, is consumed before recording
+the derived gameplay command, and leaves physics bytes/fixed ABI unchanged.
+Legacy omission retains exact old command bytes; signed zero is canonical.
+Native real changing/stationary samples, rejection, profile/cold replay,
+48->pause/resume->49 recenter and real reset controls pass. Nine focused checks
+select and pass; workspace all-targets passes44.23s and strict Rig build passes.
+All627 native inputs match published source/Rig/returned/Editor/installed.
+These627 are provenance inputs, not a test target.
+
+All five real managed controls pass: key/consumer93.337s, Options/cold32.059s,
+the formerly failing precision path plus stationary positive37.670s, all encoder
+shapes/negative bits/legacy bytes0.014s, held-key barrier0.010s. Canonical116-source
+typecheck passes2.380s. The encoder gate initially mistook two XML representations
+of the identical empty JSON object for data loss; diagnostic input/encoded/XML
+evidence justifies normalizing only empty-object text, retaining all member/bit/
+legacy assertions. UBS remains partial/legacy, with no critical added Rust line
+or added managed finding; fresh bounded source review found no further concrete
+defect. Canonical compact identity refresh is source/typecheck coverage only;
+actual managed/installed coverage uses the qualified full-identity cohort.
+
+Root viewed normal canonical map/one portal/NightSpire scene/HUD, physical F2/P,
+original Options FLIGHT ASSISTANCE ON/OFF and both original notices; matching
+mapped native, zero retries/errors, owned player/display stopped. Controlled
+native/managed recenter checks are not installed human steering/FPS/hardware
+audio/full missions/historical-save proof. Evidence: generated/flight-assistance-
+20261116. No Unity art/owner data change; full existing beads remain OPEN.
+
 Audio checkpoint: canonical b8b44284 plus Loading-contract fix124f58f7 are pushed
 as Original8ef5e2b0/6ca36e0d; all22 original owned blobs and both fix blobs match
 their published commits. Original build-h_lrtfo6/native
-fee7453b25fd53d84f5fe119bf3f72a8f881b470ed74eeabca4053ee478aca1a is installed;
---check-installed passes. Actual guarded F4/Options3 gates future speech without
+fee7453b25fd53d84f5fe119bf3f72a8f881b470ed74eeabca4053ee478aca1a was installed;
+--check-installed passed. Actual guarded F4/Options3 gates future speech without
 stopping current CD; F5/Options1 retires native/managed samples and CD on BOTH
 edges; F6/Options2 stops/restarts actual current-map music without a fake step or
 fade advance. Source notices390..393/469..470 type3/50 replay through the existing
