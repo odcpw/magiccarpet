@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFrameInfo,
                              read_hud, read_minimap, read_objective, read_world_map)
+from original_world import OriginalWorld
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -30,6 +31,8 @@ LIBRARY = PRIVATE / "remc2-unity-native/Builds/Original/Builds/Linux/MagicCarpet
 PACKAGES = PRIVATE / "generated/mc-voxel-combat-20261107/native-mana-scenario-01.json"
 PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
+WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
+SOURCE_PALETTE = PRIVATE / "generated/settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1/palette/source.rgb8"
 
 
 class FrameInfo(c.Structure):
@@ -261,9 +264,43 @@ def menu_from_observation(packet):
             "spells_open": bool(spells_open), "player_information_open": bool(info_open)}
 
 
+def camera_from_observation(packet):
+    """Walk MCPO v5's variable scoreboard and notifications to its source camera."""
+    if struct.unpack_from('<I', packet, 4)[0] != 5: raise RuntimeError('unsupported native MCPO version')
+    offset = 29
+    def string_end(position):
+        length = struct.unpack_from('<I', packet, position)[0]
+        end = position + 4 + length
+        if end > len(packet): raise RuntimeError('truncated MCPO string')
+        return end
+    for _ in range(3): offset = string_end(offset)
+    offset += 7 * 8 + 14 + 6 + 16
+    present = packet[offset]; offset += 1
+    if present == 1: offset += 13
+    elif present != 0: raise RuntimeError('invalid MCPO menu option')
+    offset += 1  # return-to-title
+    count = struct.unpack_from('<I', packet, offset)[0]; offset += 4
+    if count > len(packet) // 27: raise RuntimeError('invalid MCPO scoreboard count')
+    for _ in range(count):
+        offset = string_end(offset + 1) + 2 + 4 + 16
+    present = packet[offset]; offset += 1
+    if present == 1: offset = string_end(offset)
+    elif present != 0: raise RuntimeError('invalid MCPO scoreboard option')
+    count = struct.unpack_from('<I', packet, offset)[0]; offset += 4
+    if count > len(packet) // 19: raise RuntimeError('invalid MCPO notification count')
+    for _ in range(count):
+        offset = string_end(offset + 9)
+        offset = string_end(offset) + 2
+    offset += 3  # wall contact and immobilization
+    x, y, z, yaw, pitch, roll, fov = struct.unpack_from('<HHhhhhh', packet, offset)
+    return {'x': x, 'y': y, 'z': z, 'yaw': yaw, 'pitch': pitch, 'roll': roll, 'fov': fov}
+
+
 class Bridge:
-    def __init__(self, library, packages, save_path=None):
+    def __init__(self, library, packages, save_path=None, renderer="indexed"):
         self.library, self.packages = library, packages
+        if renderer not in ("indexed", "geometry"): raise ValueError("invalid renderer")
+        self.renderer = renderer
         self.save_path = save_path
         self.has_save = bool(save_path and save_path.is_file())
         self.items = queue.Queue(maxsize=128)
@@ -279,7 +316,8 @@ class Bridge:
     def status(self):
         with self.lock:
             return {"ready": self.ready, "error": self.error, "running": self.running,
-                    "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence}
+                    "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
+                    "renderer": self.renderer}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -305,33 +343,52 @@ class Bridge:
         try:
             native = Native(self.library, self.packages)
             self.assets = OriginalAssets()
+            world = OriginalWorld(native) if self.renderer == "geometry" else None
+            if world:
+                from original_world_assets import OriginalWorldAssets
+                self.world_assets = OriginalWorldAssets()
+                palette = SOURCE_PALETTE.read_bytes()
+                if len(palette) != 768: raise RuntimeError("invalid source palette")
             command, saved, sequence = dict(NEUTRAL), None, 0
+            epoch = 0
             menu_state = None
             def publish():
                 nonlocal sequence, menu_state
                 native.presentation_frame()
                 sequence += 1
-                packet = native.frame(sequence)
+                packet = None if world else native.frame(sequence)
                 observation = native.observe()
                 outer, gen, tick = native.counters()
+                pose = pose_from_observation(observation)
+                terrain = None
+                if world:
+                    camera = camera_from_observation(observation)
+                    revision, terrain, rows, row_count = world.read(gen, tick, camera["yaw"], epoch)
+                    packet = WORLD_HEADER.pack(b"MCW1", 1, WORLD_HEADER.size, outer, gen, tick,
+                                               sequence, revision, row_count, 64, 1, 0) + palette + rows
                 menu = menu_from_observation(observation)
                 if menu is not None: menu_state = menu
                 minimap = read_minimap(native.lib, native.handle.value, gen, tick)
-                minimap["terrain"] = list(native.minimap_terrain)
+                minimap["terrain"] = None if world else list(native.minimap_terrain)
                 minimap["coverage"] = list(minimap["coverage"])
                 state = {"sequence": sequence, "runtime_generation": outer, "session_generation": gen,
-                         "tick": tick, "player_pose": pose_from_observation(observation),
+                         "tick": tick, "player_pose": pose,
                          "source_menu_admission": menu_state,
                          "hud": read_hud(native.lib, native.handle.value, gen, tick),
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
                          "paused": self.paused}
+                if world:
+                    state["terrain_revision"] = revision
+                    state["palette_source"] = "static-owner-source-rgb8"
+                    state["source_camera"] = camera
                 world_map = None
-                if menu_state and menu_state["map_open"]:
-                    indices, palette, map_rows = read_world_map(native.lib, native.handle.value, gen, tick)
+                if not world and menu_state and menu_state["map_open"]:
+                    indices, map_palette, map_rows = read_world_map(native.lib, native.handle.value, gen, tick)
                     world_map = HEADER.pack(b"MCM1", 1, HEADER.size, 320, 200, 0,
-                                            outer, gen, tick, sequence, sequence) + indices + palette
+                                            outer, gen, tick, sequence, sequence) + indices + map_palette
                     state["world_map"] = map_rows
-                with self.lock: self.publications.append((sequence, packet, state, observation, world_map))
+                with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
+                                                          world.terrain_gzip if world else None))
             publish()
             with self.lock: self.ready = True
             deadline = time.monotonic()
@@ -404,6 +461,7 @@ class Bridge:
                                     os.replace(temporary, self.save_path)
                                 if action == "save": self.has_save = True
                                 if action in ("reset", "load"):
+                                    epoch += 1
                                     self.paused = native.identity_value["mode"] == "paused"
                                     self.running = self.running and not self.paused
                                     command = dict(NEUTRAL)
@@ -472,12 +530,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args): pass
 
-    def send_data(self, status, data, content_type="application/json", cookie=None):
+    def send_data(self, status, data, content_type="application/json", cookie=None, content_encoding=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if content_encoding: self.send_header("Content-Encoding", content_encoding)
         if cookie: self.send_header("Set-Cookie", f"mc_original={cookie}; HttpOnly; SameSite=Strict; Path=/")
         self.end_headers()
         try: self.wfile.write(data)
@@ -515,7 +574,12 @@ class Handler(BaseHTTPRequestHandler):
         if target.path == "/original-api/assets/blob":
             if not bridge.assets: return self.send_json(503, {"error": "loading"})
             return self.send_data(200, bridge.assets.blob, "application/octet-stream")
-        if target.path in ("/original-api/frame", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
+        if target.path in ("/original-api/world-assets/manifest", "/original-api/world-assets/blob"):
+            assets = getattr(bridge, "world_assets", None)
+            if not assets: return self.send_json(503, {"error": "world assets unavailable"})
+            if target.path.endswith("/manifest"): return self.send_json(200, assets.manifest)
+            return self.send_data(200, assets.blob, "application/octet-stream")
+        if target.path in ("/original-api/frame", "/original-api/world-frame", "/original-api/terrain", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
             params = parse_qs(target.query)
             try:
                 requested = int(params["sequence"][0]) if "sequence" in params else None
@@ -524,7 +588,15 @@ class Handler(BaseHTTPRequestHandler):
             publication = bridge.publication(requested)
             if publication is None:
                 return self.send_json(410 if requested is not None else 503, {"error": "publication unavailable"})
-            if target.path.endswith("/frame"): return self.send_data(200, publication[1], "application/octet-stream")
+            if target.path in ("/original-api/frame", "/original-api/world-frame"):
+                expected = "geometry" if target.path.endswith("/world-frame") else "indexed"
+                if bridge.renderer != expected: return self.send_json(404, {"error": "renderer unavailable"})
+                return self.send_data(200, publication[1], "application/octet-stream")
+            if target.path.endswith("/terrain"):
+                if publication[5] is None: return self.send_json(404, {"error": "terrain unavailable"})
+                if any(part.strip().lower() == 'gzip' for part in self.headers.get('Accept-Encoding', '').split(',')):
+                    return self.send_data(200, publication[6], "application/octet-stream", content_encoding="gzip")
+                return self.send_data(200, publication[5], "application/octet-stream")
             if target.path.endswith("/observation"): return self.send_data(200, publication[3], "application/octet-stream")
             if target.path.endswith("/world-map"):
                 if publication[4] is None: return self.send_json(404, {"error": "world map is closed"})
@@ -576,6 +648,7 @@ def main():
     parser.add_argument("--library", type=Path, default=LIBRARY)
     parser.add_argument("--packages", type=Path, default=PACKAGES)
     parser.add_argument("--probe-frame", type=Path)
+    parser.add_argument("--renderer", choices=("indexed", "geometry"), default="indexed")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8881)
     parser.add_argument("--allow-host", type=host_alias, action="append", default=[],
@@ -594,7 +667,7 @@ def main():
                               "frame_sha256": hashlib.sha256(frame).hexdigest(), "file": str(args.probe_frame)}))
         finally: runtime.close()
         return
-    bridge = Bridge(args.library, packages, args.save)
+    bridge = Bridge(args.library, packages, args.save, args.renderer)
     server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)

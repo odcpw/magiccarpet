@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real local Rust runtime -> HTTP scene -> controls/save/load regression."""
 import argparse
+import gzip
 import http.cookiejar
 import http.client
 import importlib.util
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -23,6 +25,88 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_native_geometry_publication_and_replay(self):
+        m = bridge_module
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(m.Native, 'frame', side_effect=AssertionError('geometry rasterized world')):
+            bridge = m.Bridge(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'], Path(temporary) / 'save.json', 'geometry')
+            server = m.Server(('127.0.0.1', 0), bridge, None)
+            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+            base = f'http://127.0.0.1:{server.server_port}'
+            client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            def get(path):
+                with client.open(base + path, timeout=30) as response: return response.read()
+            def post(sequence, action):
+                req = urllib.request.Request(base + '/original-api/control', json.dumps({'sequence': sequence, 'action': action}).encode(),
+                                             headers={'Origin': base, 'Content-Type': 'application/json'}, method='POST')
+                with client.open(req, timeout=30) as response: return json.loads(response.read())
+            def publication():
+                packet = get('/original-api/world-frame')
+                magic, version, size, outer, generation, tick, sequence, revision, count, row_size, flags, reserved = m.WORLD_HEADER.unpack_from(packet)
+                self.assertEqual((magic, version, size, row_size, flags, reserved), (b'MCW1', 1, 64, 64, 1, 0))
+                self.assertGreater(count, 0)
+                self.assertEqual(len(packet), 64 + 768 + 64 * count)
+                state = json.loads(get(f'/original-api/state?sequence={sequence}'))
+                observation = get(f'/original-api/observation?sequence={sequence}')
+                self.assertEqual((outer, generation, tick), (state['runtime_generation'], state['session_generation'], state['tick']))
+                self.assertEqual(outer, struct.unpack_from('<Q', observation, 20)[0])
+                offset = 29
+                for _ in range(3):
+                    length = struct.unpack_from('<I', observation, offset)[0]
+                    offset += 4 + length
+                self.assertEqual((generation, tick), struct.unpack_from('<QQ', observation, offset + 16))
+                self.assertIsNone(state['minimap']['terrain'])
+                terrain = get(f'/original-api/terrain?sequence={sequence}')
+                self.assertEqual(len(terrain), 5 * 65536)
+                req = urllib.request.Request(base + f'/original-api/terrain?sequence={sequence}', headers={'Accept-Encoding': 'gzip'})
+                with client.open(req, timeout=30) as response:
+                    self.assertEqual(response.headers['Content-Encoding'], 'gzip')
+                    self.assertEqual(gzip.decompress(response.read()), terrain)
+                self.assertEqual(state['source_camera'], m.camera_from_observation(observation))
+                for offset in range(64 + 768, len(packet), 64):
+                    self.assertEqual(struct.unpack_from('<IIQQ', packet, offset), (2, 64, generation, tick))
+                return state, revision, terrain
+            try:
+                deadline = time.monotonic() + 60
+                while True:
+                    status = json.loads(get('/original-api/status'))
+                    if status['error']: self.fail(status['error'])
+                    if status['ready']: break
+                    if time.monotonic() > deadline: self.fail('native startup timed out')
+                    time.sleep(.1)
+                self.assertEqual(status['renderer'], 'geometry')
+                self.assertEqual(json.loads(get('/original-api/world-assets/manifest'))['schema'], 'mc-original-world-assets/v1')
+                self.assertGreater(len(get('/original-api/world-assets/blob')), 1000)
+                first, revision, terrain = publication()
+                post(0, 'start')
+                move = dict(m.NEUTRAL, longitudinal='accelerate', roll_axis=28, cast_left=True)
+                req = urllib.request.Request(base + '/original-api/input', json.dumps({'sequence': 1, 'command': move}).encode(),
+                                             headers={'Origin': base, 'Content-Type': 'application/json'}, method='POST')
+                with client.open(req, timeout=30): pass
+                time.sleep(.25)
+                post(2, 'map')
+                self.assertTrue(publication()[0]['source_menu_admission']['map_open'])
+                post(3, 'map')
+                self.assertFalse(publication()[0]['source_menu_admission']['map_open'])
+                post(4, 'pause')
+                stopped, rev2, same_terrain = publication()
+                self.assertGreater(stopped['tick'], first['tick'])
+                self.assertNotEqual(stopped['player_pose'], first['player_pose'])
+                self.assertGreaterEqual(rev2, revision)
+                if rev2 == revision: self.assertEqual(terrain, same_terrain)
+                post(5, 'save'); post(6, 'resume'); time.sleep(.15); post(7, 'pause')
+                post(8, 'load')
+                loaded, rev3, _ = publication()
+                self.assertEqual((loaded['tick'], loaded['player_pose']), (stopped['tick'], stopped['player_pose']))
+                self.assertGreater(rev3, rev2)
+                post(9, 'reset')
+                reset, rev4, _ = publication()
+                self.assertEqual(reset['tick'], 0)
+                self.assertGreater(rev4, rev3)
+                with self.assertRaises(urllib.error.HTTPError) as rejected: get('/original-api/frame')
+                self.assertEqual(rejected.exception.code, 404); rejected.exception.close()
+            finally:
+                server.shutdown(); server.server_close(); bridge.close(); thread.join(timeout=5)
+
     def test_explicit_host_alias_preserves_same_origin_guard(self):
         m = bridge_module
         class LocalBridge:
