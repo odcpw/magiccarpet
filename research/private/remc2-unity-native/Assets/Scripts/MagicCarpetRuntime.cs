@@ -10720,6 +10720,18 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.ToggleHelpMode:
                         ApplyGameRuntimeSourceHelpMode();
                         break;
+                    case CampaignMenuPresenter.Action.ToggleReflections:
+                        ApplyGameRuntimeSourceGraphics(GameRuntimeTransport.SourceGraphicsAction.Reflections);
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleSky:
+                        ApplyGameRuntimeSourceGraphics(GameRuntimeTransport.SourceGraphicsAction.Sky);
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleShadows:
+                        ApplyGameRuntimeSourceGraphics(GameRuntimeTransport.SourceGraphicsAction.Shadows);
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleDynamicLighting:
+                        ApplyGameRuntimeSourceGraphics(GameRuntimeTransport.SourceGraphicsAction.DynamicLighting);
+                        break;
                     case CampaignMenuPresenter.Action.ToggleFlightAssistance:
                         ApplyGameRuntimeSourceFlightAssistance();
                         break;
@@ -11604,7 +11616,8 @@ namespace MagicCarpet.Native
             var pressed = playerPreferences?.KeyPressed(KeyCode.F1) ?? Input.GetKeyDown(KeyCode.F1);
             var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-            ApplyGameRuntimeF1Input(pressed, shift, alt);
+            if (shift) DispatchGameRuntimeGraphicsShortcut(pressed, alt, KeyCode.F1);
+            else ApplyGameRuntimeF1Input(pressed, false, alt);
         }
 
         private void ApplyGameRuntimeF1Input(bool pressed, bool shift, bool alt)
@@ -11618,7 +11631,8 @@ namespace MagicCarpet.Native
             var pressed = playerPreferences?.KeyPressed(KeyCode.F2) ?? Input.GetKeyDown(KeyCode.F2);
             var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-            ApplyGameRuntimeF2Input(pressed, shift, alt);
+            if (shift) DispatchGameRuntimeGraphicsShortcut(pressed, alt, KeyCode.F2);
+            else ApplyGameRuntimeF2Input(pressed, false, alt);
         }
 
         private void ApplyGameRuntimeF2Input(bool pressed, bool shift, bool alt)
@@ -11632,7 +11646,8 @@ namespace MagicCarpet.Native
             var pressed = playerPreferences?.KeyPressed(KeyCode.F4) ?? Input.GetKeyDown(KeyCode.F4);
             var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-            ApplyGameRuntimeF4Input(pressed, shift, alt);
+            if (shift) DispatchGameRuntimeGraphicsShortcut(pressed, alt, KeyCode.F4);
+            else ApplyGameRuntimeF4Input(pressed, false, alt);
         }
 
         private void ApplyGameRuntimeF4Input(bool pressed, bool shift, bool alt)
@@ -11656,7 +11671,28 @@ namespace MagicCarpet.Native
             var pressed = playerPreferences?.KeyPressed(KeyCode.F3) ?? Input.GetKeyDown(KeyCode.F3);
             var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
             var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-            ApplyGameRuntimeF3Input(pressed, shift, alt);
+            if (shift) DispatchGameRuntimeGraphicsShortcut(pressed, alt, KeyCode.F3);
+            else ApplyGameRuntimeF3Input(pressed, false, alt);
+        }
+
+        private void DispatchGameRuntimeGraphicsShortcut(bool pressed, bool alt, KeyCode key)
+        {
+            var admittedShift = (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
+                (playerPreferences?.KeyHeld(KeyCode.RightShift) ?? Input.GetKey(KeyCode.RightShift));
+            ApplyGameRuntimeGraphicsShortcut(pressed, admittedShift, alt, key);
+        }
+
+        private void ApplyGameRuntimeGraphicsShortcut(bool pressed, bool admittedShift, bool alt, KeyCode key)
+        {
+            if (!pressed || !admittedShift || alt || !CanToggleGameRuntimeIconsAndMap()) return;
+            var action = key switch {
+                KeyCode.F1 => GameRuntimeTransport.SourceGraphicsAction.Reflections,
+                KeyCode.F2 => GameRuntimeTransport.SourceGraphicsAction.Sky,
+                KeyCode.F3 => GameRuntimeTransport.SourceGraphicsAction.Shadows,
+                KeyCode.F4 => GameRuntimeTransport.SourceGraphicsAction.DynamicLighting,
+                _ => throw new ArgumentOutOfRangeException(nameof(key))
+            };
+            ApplyGameRuntimeSourceGraphics(action);
         }
 
         private void DispatchGameRuntimeViewportInput()
@@ -11805,6 +11841,24 @@ namespace MagicCarpet.Native
             else if (gameRuntimeNightSurface != null || modernEnvironment != null)
                 UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+        }
+
+        private void ApplyGameRuntimeSourceGraphics(GameRuntimeTransport.SourceGraphicsAction action)
+        {
+            if (!session.GameRuntimeSourceGraphics(action, out var after)) return;
+            campaignSession?.SynchronizeGameRuntimeIdentity(after);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            if (level2Mode)
+                UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (level3Mode)
+                UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeSecretSurface != null)
+                UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
         }
 
         private void ApplyGameRuntimeSourceHelpMode()

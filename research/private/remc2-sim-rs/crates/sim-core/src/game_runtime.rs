@@ -110,6 +110,7 @@ pub(crate) enum ReplayOperation<C> {
     SourceAudioNotice { action: preferences::SourceAudioAction, enabled: bool },
     FlightAssistanceNotice { enabled: bool },
     HelpModeNotice { enabled: bool },
+    GraphicsNotice { action: SourceGraphicsAction, enabled: bool },
     Step {
         command: C,
     },
@@ -183,9 +184,15 @@ pub struct RuntimeGuard {
 
 /// Source GAME settings, distinct from CONFIG/profile preferences. Both
 /// icon/map bytes survive mission/retry; LevelInit resets panel opacity.
+/// The four graphics flags also retain across same-process Title/New Game;
+/// only process startup applies their default values.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DisplaySettings {
+    pub reflections: bool,
+    pub shadows: bool,
+    pub sky: bool,
+    pub dynamic_lighting: bool,
     pub minimap: bool,
     pub top_bar: bool,
     pub panels_opaque: bool,
@@ -196,8 +203,13 @@ pub struct DisplaySettings {
 }
 
 impl Default for DisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false, flat_shading: false, viewport_size: 40 } }
+    fn default() -> Self { Self { reflections:true,shadows:true,sky:true,dynamic_lighting:true,
+        minimap: true, top_bar: true, panels_opaque: false, flat_shading: false, viewport_size: 40 } }
 }
+
+#[derive(Clone,Copy,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[serde(rename_all="snake_case")]
+pub enum SourceGraphicsAction { Reflections, Shadows, Sky, DynamicLighting }
 
 /// Source case8 menu controls and the two ordinary bracket-key branches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,6 +248,7 @@ pub(crate) enum DisplayNotice {
     SourceAudio(preferences::SourceAudioAction, bool),
     FlightAssistance(bool),
     HelpMode(bool),
+    Graphics(SourceGraphicsAction,bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1413,6 +1426,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::HelpMode(enabled))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::GraphicsNotice { action, enabled } => {
+                    display_notice(&mut candidate,DisplayNotice::Graphics(action,enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -2054,6 +2071,29 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source cases9..12. Startup speed5 admits all four capabilities and
+    /// the source sky buffer is process-global, independent of map assets.
+    pub fn source_graphics(&mut self,guard:RuntimeGuard,session_guard:SessionGuard,action:SourceGraphicsAction)
+        -> Result<bool,RuntimeTransitionError>
+    {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual=self.identity().mode;
+        let RuntimeState::Playing {session,..}=&mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode {expected:RuntimeMode::Playing,actual});
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let mut next=self.display_settings;
+        let field=match action {SourceGraphicsAction::Reflections=>&mut next.reflections,
+            SourceGraphicsAction::Shadows=>&mut next.shadows,SourceGraphicsAction::Sky=>&mut next.sky,
+            SourceGraphicsAction::DynamicLighting=>&mut next.dynamic_lighting};
+        *field=!*field; let enabled=*field;
+        let notice=session.backend().prepare_graphics_notice(action,enabled)?;
+        if action==SourceGraphicsAction::DynamicLighting {session.backend_mut().set_dynamic_lighting_enabled(enabled);}
+        session.backend_mut().commit_graphics_notice(action,enabled,notice);
+        self.display_settings=next;
+        Ok(true)
+    }
+
     /// SwitchHelpMode_18AA0: source Help data is unconditionally admitted by
     /// sub_871E0. The presentation owner clears its selector and reinitializes
     /// row ages on ON only after this complete transaction succeeds.
@@ -2260,26 +2300,6 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         self.display_settings = settings;
     }
 
-    /// Apply a successfully committed source-global preference without exposing
-    /// paused gameplay mutation. The backend records its exact replay boundary.
-    pub fn apply_current_dynamic_lighting_preference(
-        &mut self,
-        guard: RuntimeGuard,
-    ) -> Result<(), RuntimeTransitionError> {
-        self.validate_guard(guard)
-            .map_err(Box::new)
-            .map_err(RuntimeTransitionError::Guard)?;
-        let enabled = self
-            .identity()
-            .player_preferences
-            .preferences
-            .dynamic_lighting;
-        if let RuntimeState::Playing { session, .. } = &mut self.state {
-            session.backend_mut().set_dynamic_lighting_enabled(enabled);
-        }
-        Ok(())
-    }
-
     /// Apply current source options at the same guarded pre-gate boundary
     /// as a paused frame, without exposing paused gameplay mutation.
     pub fn paused_campaign_frame(
@@ -2324,8 +2344,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         let show_foreign_text = self.show_foreign_objective_text();
         let dynamic_lighting = self
             .identity()
-            .player_preferences
-            .preferences
+            .display_settings
             .dynamic_lighting;
         let RuntimeState::Playing {
             session,

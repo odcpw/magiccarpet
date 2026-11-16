@@ -277,8 +277,7 @@ namespace MagicCarpet.Native.Tests
                 assistance_sequence = ulong.MaxValue,
                 preferences = new PlayerPreferences {
                     player_name = "Oliver 🌙 \"\\\n\t ä",
-                    brightness = new[] { int.MinValue, 0, int.MaxValue },
-                    reflections = false, sky = false, shadows = false, dynamic_lighting = false
+                    brightness = new[] { int.MinValue, 0, int.MaxValue }
                 }
             };
             var json = Encoding.UTF8.GetBytes(JObject.Parse(SerializeDataContractJson(value)).ToString(Formatting.None));
@@ -315,13 +314,13 @@ namespace MagicCarpet.Native.Tests
                 Compare(name, Encoding.UTF8.GetBytes(json.ToString(Formatting.None)));
             }
             Mutate("required string", json => json.Remove("mode"));
-            Mutate("required boolean", json => ((JObject)json["player_preferences"]["preferences"]).Remove("reflections"));
+            Mutate("required boolean", json => ((JObject)json["display_settings"]).Remove("reflections"));
             Mutate("required numeric", json => ((JObject)json["player_preferences"]["preferences"]).Remove("mouse_sensitivity"));
             Mutate("wrong case", json => { json["MODE"] = json["mode"]; json.Remove("mode"); });
             Mutate("optional wrong case", json => json["FRONTEND_MEDIA"] = new JObject { ["active"] = true });
-            Mutate("null boolean", json => json["player_preferences"]["preferences"]["reflections"] = null);
+            Mutate("null boolean", json => json["display_settings"]["reflections"] = null);
             Mutate("null numeric", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = null);
-            Mutate("legacy boolean coercion", json => json["player_preferences"]["preferences"]["reflections"] = "1");
+            Mutate("legacy boolean coercion", json => json["display_settings"]["reflections"] = "1");
             Mutate("legacy numeric coercion", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = 100.0);
             Mutate("ignored metadata", json => json["$ref"] = "missing");
             Mutate("DCS metadata", json => json["__type"] = "unknown");
@@ -4055,6 +4054,47 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(prefs.Current.assistance_sequence, Is.EqualTo(assistanceBefore + 1),
                     "the accepted F2 preference reaches the actual idle recenter producer");
                 Assert.That(prefs.SteeringRoll, Is.Zero, "the retained sequence reaches the real recenter consumer");
+                var shortcut = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeGraphicsShortcut", flags);
+                var profilePath = Path.Combine(temporary, "profile", "player-preferences.json");
+                var profileBeforeGraphics = File.ReadAllBytes(profilePath);
+                var displayBefore = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((displayBefore.reflections, displayBefore.sky, displayBefore.shadows, displayBefore.dynamic_lighting),
+                    Is.EqualTo((true, true, true, true)), "ordinary source startup enables all four GAME flags");
+                foreach (var graphics in new[] {
+                    (KeyCode.F1, "participant.reflections_off", 360),
+                    (KeyCode.F2, "participant.sky_off", 364),
+                    (KeyCode.F3, "participant.shadows_off", 358),
+                    (KeyCode.F4, "participant.dynamic_lighting_off", 396) })
+                {
+                    var beforeGraphics = runtime.GameRuntimeProductionIdentity;
+                    shortcut.Invoke(runtime, new object[] { true, false, false, graphics.Item1 });
+                    shortcut.Invoke(runtime, new object[] { true, true, true, graphics.Item1 });
+                    Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.display_settings),
+                        Is.EqualTo(JsonUtility.ToJson(beforeGraphics.display_settings)), "held Shift and Alt cannot admit the shortcut");
+                    shortcut.Invoke(runtime, new object[] { true, true, false, graphics.Item1 });
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(beforeGraphics.session.tick));
+                    Notice(graphics.Item2, graphics.Item3);
+                }
+                var changed = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((changed.reflections, changed.sky, changed.shadows, changed.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)));
+                CollectionAssert.AreEqual(profileBeforeGraphics, File.ReadAllBytes(profilePath),
+                    "GAME graphics actions do not write CONFIG preferences");
+                var profileJson = File.ReadAllText(profilePath);
+                foreach (var key in new[] { "\"reflections\"", "\"sky\"", "\"shadows\"", "\"dynamic_lighting\"" })
+                    Assert.That(profileJson, Does.Not.Contain(key), "CONFIG does not serialize source GAME flags");
+                var graphicsReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(graphicsReplay, resources))
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, graphicsReplay, resources))
+                    foreach (var restored in new[] { cold.GameRuntimeIdentity(), warm.GameRuntimeIdentity() })
+                        Assert.That((restored.display_settings.reflections, restored.display_settings.sky,
+                            restored.display_settings.shadows, restored.display_settings.dynamic_lighting),
+                            Is.EqualTo((false, false, false, false)), "real cold and warm GAME replay retain all four flags");
+                runtime.QualificationResetGameRuntimeProduction();
+                changed = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((changed.reflections, changed.sky, changed.shadows, changed.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)), "retry retains the accepted GAME graphics flags");
             }
             finally
             {
@@ -4160,6 +4200,40 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
                 Notice("participant.help_mode_on", 400);
+                var graphicsProfilePath = Path.Combine(temporary, "profile", "player-preferences.json");
+                var profileBeforeGraphics = File.ReadAllBytes(graphicsProfilePath);
+                foreach (var graphics in new[] {
+                    (8, CampaignMenuPresenter.Action.ToggleReflections, "participant.reflections_off", 360),
+                    (9, CampaignMenuPresenter.Action.ToggleSky, "participant.sky_off", 364),
+                    (10, CampaignMenuPresenter.Action.ToggleShadows, "participant.shadows_off", 358),
+                    (11, CampaignMenuPresenter.Action.ToggleDynamicLighting, "participant.dynamic_lighting_off", 396) })
+                {
+                    Send(new Vector2(320, 67 + graphics.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(graphics.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(graphics.Item3, graphics.Item4);
+                }
+                var graphicsState = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((graphicsState.reflections, graphicsState.sky, graphicsState.shadows, graphicsState.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)), "all real Options rows reach GAME authority");
+                foreach (var graphics in new[] {
+                    (8, CampaignMenuPresenter.Action.ToggleReflections, "participant.reflections_on", 359),
+                    (9, CampaignMenuPresenter.Action.ToggleSky, "participant.sky_on", 363),
+                    (10, CampaignMenuPresenter.Action.ToggleShadows, "participant.shadows_on", 357),
+                    (11, CampaignMenuPresenter.Action.ToggleDynamicLighting, "participant.dynamic_lighting_on", 395) })
+                {
+                    Send(new Vector2(320, 67 + graphics.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(graphics.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(graphics.Item3, graphics.Item4);
+                }
+                graphicsState = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((graphicsState.reflections, graphicsState.sky, graphicsState.shadows, graphicsState.dynamic_lighting),
+                    Is.EqualTo((true, true, true, true)), "the same Options rows restore the GAME flags");
+                CollectionAssert.AreEqual(profileBeforeGraphics, File.ReadAllBytes(graphicsProfilePath),
+                    "the paused Options consumer does not write CONFIG for GAME flags");
                 Assert.That(initial.session.session_id, Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
             }
             finally

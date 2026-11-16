@@ -900,6 +900,15 @@ struct Mc2PrimaryVisibilityChange {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct StoredDisplaySettings {
+    #[serde(skip_serializing_if="Option::is_none")]
+    reflections:Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    shadows:Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    sky:Option<bool>,
+    /// Map-only: active saves already carry complete native light history.
+    #[serde(skip_serializing_if="Option::is_none")]
+    dynamic_lighting:Option<bool>,
     minimap: bool,
     top_bar: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -911,7 +920,8 @@ struct StoredDisplaySettings {
 }
 
 impl Default for StoredDisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None, flat_shading: None, viewport_size: None } }
+    fn default() -> Self { Self { reflections:None,shadows:None,sky:None,dynamic_lighting:None,
+        minimap: true, top_bar: true, panels_opaque: None, flat_shading: None, viewport_size: None } }
 }
 
 impl StoredDisplaySettings {
@@ -926,6 +936,8 @@ impl StoredDisplaySettings {
     }
     fn resolve(self, map_default: bool) -> crate::game_runtime::DisplaySettings {
         crate::game_runtime::DisplaySettings { minimap: self.minimap, top_bar: self.top_bar,
+            reflections:self.reflections.unwrap_or(true),shadows:self.shadows.unwrap_or(true),
+            sky:self.sky.unwrap_or(true),dynamic_lighting:self.dynamic_lighting.unwrap_or(true),
             panels_opaque: self.panels_opaque.unwrap_or(map_default), flat_shading: self.flat_shading.unwrap_or(false),
             viewport_size: self.viewport_size.unwrap_or(40) }
     }
@@ -934,6 +946,8 @@ impl StoredDisplaySettings {
         // Preserve unchanged legacy map bytes only when the omitted value
         // resolves to the same admitted map default.
         Self { minimap: value.minimap, top_bar: value.top_bar,
+            reflections:(!value.reflections).then_some(false),shadows:(!value.shadows).then_some(false),
+            sky:(!value.sky).then_some(false),dynamic_lighting:(!value.dynamic_lighting).then_some(false),
             panels_opaque: (value.panels_opaque != map_default).then_some(value.panels_opaque),
             flat_shading: value.flat_shading.then_some(true),
             viewport_size: (value.viewport_size != 40).then_some(value.viewport_size) }
@@ -943,6 +957,8 @@ impl StoredDisplaySettings {
 impl From<crate::game_runtime::DisplaySettings> for StoredDisplaySettings {
     fn from(value: crate::game_runtime::DisplaySettings) -> Self {
         Self { minimap: value.minimap, top_bar: value.top_bar, panels_opaque: Some(value.panels_opaque),
+            reflections:(!value.reflections).then_some(false),shadows:(!value.shadows).then_some(false),
+            sky:(!value.sky).then_some(false),dynamic_lighting:None,
             flat_shading: value.flat_shading.then_some(true),
             viewport_size: (value.viewport_size != 40).then_some(value.viewport_size) }
     }
@@ -2164,8 +2180,7 @@ impl Mc2RuntimePackageResolver {
         let from_campaign_map = runtime.loading_from_campaign();
         let dynamic_lighting_enabled = runtime
             .identity()
-            .player_preferences
-            .preferences
+            .display_settings
             .dynamic_lighting;
         let show_help = runtime.identity().player_preferences.preferences.show_help;
         let opened = runtime.open_level_resolved_with_candidate(
@@ -2956,6 +2971,10 @@ impl Mc2RuntimePackageResolver {
         let expected_effect_journal_sha256 = save.expected_effect_journal_sha256;
         let paused = save.paused;
         save.initial_display_settings.validate()?;
+        if save.initial_display_settings.dynamic_lighting.is_some() {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {message:
+                "active GAME lighting must use its canonical policy history, not a duplicate map header".into()});
+        }
         let initial_display_settings = save.initial_display_settings.resolve(package.selection.map_type_id == 2);
         if initial_display_settings.panels_opaque != (package.selection.map_type_id == 2) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
@@ -3113,6 +3132,7 @@ impl Mc2RuntimePackageResolver {
                     crate::game_runtime::DisplayNotice::SourceAudio(action, enabled) => candidate.backend_mut().publish_source_audio_notice(action, enabled),
                     crate::game_runtime::DisplayNotice::FlightAssistance(enabled) => candidate.backend_mut().publish_flight_assistance_notice(enabled),
                     crate::game_runtime::DisplayNotice::HelpMode(enabled) => candidate.backend_mut().publish_help_mode_notice(enabled),
+                    crate::game_runtime::DisplayNotice::Graphics(action,enabled)=>candidate.backend_mut().publish_graphics_notice(action,enabled),
                 },
                 observe,
             )
@@ -3122,6 +3142,11 @@ impl Mc2RuntimePackageResolver {
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         runtime.restore_played_cutscenes(played_cutscenes).map_err(Mc2CampaignReplaySaveError::Runtime)?;
         runtime.restore_player_names_visibility(warm_process_context.map_or(true, |context| context.source_player_names_visible));
+        // Active GAME light authority was already replayed and verified in
+        // its native policy history. Never infer it from a receiving profile
+        // or introduce a redundant header that changes old resave bytes.
+        let lighting=runtime.session().expect("verified active replay owns its session").backend().dynamic_lighting_enabled();
+        runtime.restore_display_settings(crate::game_runtime::DisplaySettings {dynamic_lighting:lighting,..runtime.identity().display_settings});
         pending.remove(&guard.runtime_id);
         contexts.remove(&guard.runtime_id);
         Ok(runtime.identity())
@@ -3827,6 +3852,26 @@ impl Mc2CampaignBackend {
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::PlayerNamesNotice { visible });
         Ok(())
+    }
+
+    pub(crate) fn prepare_graphics_notice(&self,action:crate::game_runtime::SourceGraphicsAction,enabled:bool)
+        -> Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+            crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation().prepare_graphics_notice(action,enabled)
+            .map_err(|message|crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {message})
+    }
+    pub(crate) fn commit_graphics_notice(&mut self,action:crate::game_runtime::SourceGraphicsAction,enabled:bool,
+        notices:crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications)
+    {
+        self.campaign.simulation_mut().commit_graphics_notice(notices);
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::GraphicsNotice {action,enabled});
+    }
+    pub(crate) fn publish_graphics_notice(&mut self,action:crate::game_runtime::SourceGraphicsAction,enabled:bool)
+        -> Result<(),crate::game_runtime::RuntimeTransitionError>
+    {
+        let notices=self.prepare_graphics_notice(action,enabled)?;
+        self.commit_graphics_notice(action,enabled,notices);Ok(())
     }
 
     pub(crate) fn prepare_help_mode_notice(&self, enabled: bool)
@@ -7004,6 +7049,129 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn source_graphics_game_authority_notices_and_lifetime_roundtrip() {
+        use crate::game_runtime::{GameRuntime,SourceGraphicsAction,DisplaySettings,RuntimeGuard,preferences::PreferencesCommand};
+        let resolver=Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path())]).unwrap();
+        let profile=std::env::temp_dir().join(format!("mc-game-graphics-{}-{}",std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let mut runtime=GameRuntime::<Mc2CampaignBackend>::title(8980).unwrap();
+        runtime.preferences_command(runtime.identity().guard(),PreferencesCommand::Install {
+            profile_dir:profile.to_string_lossy().into_owned()}).unwrap();
+        let mut preferences=runtime.identity().player_preferences.preferences;preferences.player_name="OLIVER".into();
+        runtime.preferences_command(runtime.identity().guard(),PreferencesCommand::Apply {preferences}).unwrap();
+        let bytes=fs::read(profile.join("player-preferences.json")).unwrap();
+        let title=runtime.identity();let invalid=sim_session::SessionGuard {session_id:8980,generation:0,expected_tick:0};
+        assert!(runtime.source_graphics(title.guard(),invalid,SourceGraphicsAction::Sky).is_err());assert_eq!(runtime.identity(),title);
+        let loading=resolver.new_game(&mut runtime,title.guard()).unwrap();
+        resolver.open_pending(&mut runtime,loading.guard(),8980).unwrap();
+        let before=runtime.identity();let nested=runtime.session().unwrap().identity().guard();let original=resolver.save_replay(&runtime).unwrap();
+        for (outer,inner) in [(RuntimeGuard {generation:before.generation+1,..before.guard()},nested),
+            (before.guard(),sim_session::SessionGuard {generation:nested.generation+1,..nested}),
+            (before.guard(),sim_session::SessionGuard {expected_tick:nested.expected_tick+1,..nested})] {
+            assert!(runtime.source_graphics(outer,inner,SourceGraphicsAction::Reflections).is_err());
+            assert_eq!(runtime.identity(),before);assert_eq!(resolver.save_replay(&runtime).unwrap(),original);
+        }
+        assert!(runtime.preferences_command(before.guard(),PreferencesCommand::Apply {
+            preferences:before.player_preferences.preferences.clone()}).is_err());
+        for (action,name) in [(SourceGraphicsAction::Reflections,"participant.reflections_off"),
+            (SourceGraphicsAction::Shadows,"participant.shadows_off"),(SourceGraphicsAction::Sky,"participant.sky_off"),
+            (SourceGraphicsAction::DynamicLighting,"participant.dynamic_lighting_off")] {
+            assert!(runtime.source_graphics(before.guard(),nested,action).unwrap());
+            assert_eq!(runtime.identity().session,before.session);
+            assert_eq!(runtime.identity().player_preferences,before.player_preferences);
+            assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(),bytes);
+            let notices=runtime.session().unwrap().backend().participant_notifications();
+            assert_eq!(notices.len(),1);assert_eq!((notices[0].kind.as_str(),notices[0].remaining_frames),(name,50));
+        }
+        let off=DisplaySettings {reflections:false,shadows:false,sky:false,dynamic_lighting:false,..before.display_settings};
+        assert_eq!(runtime.identity().display_settings,off);assert!(!runtime.session().unwrap().backend().dynamic_lighting_enabled());
+        let saved=resolver.save_replay(&runtime).unwrap();let packet:Mc2CampaignReplaySave=serde_json::from_slice(&saved).unwrap();
+        assert!(packet.initial_display_settings.dynamic_lighting.is_none());
+        assert_eq!(packet.initial_display_settings.reflections,Some(false));
+        let mut cold=GameRuntime::<Mc2CampaignBackend>::title(8981).unwrap();let title=cold.identity();
+        resolver.load_replay(&mut cold,title.guard(),8981,&saved).unwrap();
+        assert_eq!(cold.identity().display_settings,off);assert_eq!(resolver.save_replay(&cold).unwrap(),saved);
+        let mut duplicate=packet.clone();duplicate.initial_display_settings.dynamic_lighting=Some(false);
+        duplicate.receipt_sha256=duplicate.compute_receipt_sha256();
+        let mut rejected=GameRuntime::<Mc2CampaignBackend>::title(8982).unwrap();let title=rejected.identity();
+        assert!(resolver.load_replay(&mut rejected,title.guard(),8982,&serde_json::to_vec(&duplicate).unwrap()).is_err());assert_eq!(rejected.identity(),title);
+        let paused=runtime.pause(before.guard()).unwrap();let nested=runtime.session().unwrap().identity().guard();
+        runtime.paused_campaign_frame_timed(paused.guard(),nested,0,false).unwrap();
+        assert_eq!(runtime.identity().display_settings,off);assert!(!runtime.session().unwrap().backend().dynamic_lighting_enabled());
+        runtime.resume(paused.guard()).unwrap();let session=runtime.session_mut().unwrap();session.reset(session.identity().guard()).unwrap();
+        assert_eq!(runtime.identity().display_settings,off);assert!(!runtime.session().unwrap().backend().dynamic_lighting_enabled());
+        let nested=runtime.session().unwrap().identity().guard();
+        runtime.close(runtime.identity().guard(),nested).unwrap();let title=runtime.identity();
+        assert_eq!(title.display_settings,off,"same-process Title retains all four GAME flags");
+        let loading=resolver.new_game(&mut runtime,title.guard()).unwrap();resolver.open_pending(&mut runtime,loading.guard(),8980).unwrap();
+        assert_eq!(runtime.identity().display_settings,off);assert!(!runtime.session().unwrap().backend().dynamic_lighting_enabled());
+        let current=runtime.identity();let nested=runtime.session().unwrap().identity().guard();
+        resolver.close_to_title(&mut runtime,current.guard(),nested).unwrap();
+        let map=resolver.save_replay(&runtime).unwrap();let json:serde_json::Value=serde_json::from_slice(&map).unwrap();
+        assert_eq!(json["display_settings"]["dynamic_lighting"],false);
+        let mut map_cold=GameRuntime::<Mc2CampaignBackend>::title(8983).unwrap();let title=map_cold.identity();
+        resolver.load_replay(&mut map_cold,title.guard(),8983,&map).unwrap();assert_eq!(map_cold.identity().display_settings,off);
+        assert_eq!(resolver.save_replay(&map_cold).unwrap(),map);
+        let title=map_cold.identity();let loading=resolver.campaign_menu_command(&mut map_cold,title.guard(),crate::game_runtime::CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut map_cold,loading.guard(),8983).unwrap();assert_eq!(map_cold.identity().display_settings,off);
+        assert!(!map_cold.session().unwrap().backend().dynamic_lighting_enabled());
+        assert_eq!(GameRuntime::<Mc2CampaignBackend>::title(8984).unwrap().identity().display_settings,DisplaySettings::default());
+        if let Some(path)=std::env::var_os("MC_GRAPHICS_OLD_ACTIVE_SAVE") {
+            let old_bytes=fs::read(&path).unwrap();let old:Mc2CampaignReplaySave=serde_json::from_slice(&old_bytes).unwrap();
+            assert_eq!(old.save_contract,MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT);assert!(old.verify());
+            assert!(old.initial_display_settings.dynamic_lighting.is_none());
+            // The immutable released writer bootstrapped the first three
+            // installed resources WITH their authoritative owner caches.
+            // Generic no-owner fixtures are a different animation/hash role.
+            #[derive(Deserialize)]
+            struct RecordedResource {package_dir:PathBuf,owner_cache_path:Option<PathBuf>}
+            let resource_path=std::env::var_os("MC_CAMPAIGN_SAVE_RESOURCES")
+                .expect("old writer proof requires its installed resource catalog");
+            let rows:Vec<RecordedResource>=serde_json::from_slice(&fs::read(resource_path).unwrap()).unwrap();
+            assert!(rows.len()>=3);
+            assert_eq!(old.definition.runtime_flow().unwrap().entries().len(),3);
+            let old_resolver=Mc2RuntimePackageResolver::load(rows.iter().take(3).map(|row|
+                row.owner_cache_path.as_ref().map_or_else(||Mc2CampaignInputs::new(&row.package_dir),
+                    |owner|Mc2CampaignInputs::with_owner_cache(&row.package_dir,owner)))).unwrap();
+            let mut receiver=GameRuntime::<Mc2CampaignBackend>::title(8985).unwrap();let title=receiver.identity();
+            old_resolver.load_replay(&mut receiver,title.guard(),8985,&old_bytes).unwrap();
+            assert!(!receiver.identity().display_settings.dynamic_lighting);assert!(!receiver.session().unwrap().backend().dynamic_lighting_enabled());
+            assert!(receiver.identity().display_settings.reflections&&receiver.identity().display_settings.shadows&&receiver.identity().display_settings.sky);
+            assert_eq!(old_resolver.save_replay(&receiver).unwrap(),old_bytes,"verified old false policy adds no redundant header");
+            assert_eq!(fs::read(path).unwrap(),old_bytes);
+        }
+        fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn source_graphics_light_toggle_gates_real_fireball_admission_without_retirement() {
+        use crate::game_runtime::{GameRuntime,SourceGraphicsAction};
+        let night=std::env::var_os("MC_FLIGHT_ASSISTANCE_PACKAGE").map(PathBuf::from).unwrap_or_else(||
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq8-level1-collision-v5-night"));
+        let resolver=Mc2RuntimePackageResolver::load([Mc2CampaignInputs::new(&night),Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path())]).unwrap();
+        for enabled in [false,true] {
+            let mut runtime=GameRuntime::<Mc2CampaignBackend>::title(8986+u64::from(enabled)).unwrap();let title=runtime.identity();
+            let loading=resolver.new_game(&mut runtime,title.guard()).unwrap();resolver.open_pending(&mut runtime,loading.guard(),8986+u64::from(enabled)).unwrap();
+            let outer=runtime.identity().guard();let nested=runtime.session().unwrap().identity().guard();
+            runtime.source_graphics(outer,nested,SourceGraphicsAction::DynamicLighting).unwrap();
+            if enabled {runtime.source_graphics(outer,nested,SourceGraphicsAction::DynamicLighting).unwrap();}
+            runtime.advance_player_with_preferences(nested,GameCommand {cast_left:true,..GameCommand::default()}).unwrap();
+            let session=runtime.session().unwrap();assert!(player_spell_projectile_count(session)>0);
+            let count=session.backend().campaign.simulation().source_arena().dynamic_lighting.active_count();
+            assert_eq!(count>0,enabled,"actual ordinary Fireball constructor obeys accepted source GAME policy");
+            if enabled {
+                let nested=session.identity().guard();let projectile_count=player_spell_projectile_count(session);
+                runtime.source_graphics(outer,nested,SourceGraphicsAction::DynamicLighting).unwrap();
+                assert_eq!(runtime.session().unwrap().backend().campaign.simulation().source_arena().dynamic_lighting.active_count(),count);
+                assert_eq!(player_spell_projectile_count(runtime.session().unwrap()),projectile_count);
+            }
+        }
+    }
+
+    #[test]
     fn source_help_mode_commits_policy_notice_and_immediate_cold_replay() {
         use crate::game_runtime::{GameRuntime,RuntimeGuard,preferences::PreferencesCommand};
         let resolver=Mc2RuntimePackageResolver::load([
@@ -8165,7 +8333,7 @@ pub(crate) mod tests {
         runtime.toggle_icons_and_map(initial.guard(), session_guard).unwrap();
         assert_eq!(runtime.identity().generation, initial.generation);
         assert_eq!(runtime.identity().session, initial.session);
-        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false, flat_shading: false, viewport_size: 40 });
+        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false, flat_shading: false, viewport_size: 40,..DisplaySettings::default() });
         let notices = runtime.session().unwrap().backend().participant_notifications();
         assert_eq!(notices.len(), 1);
         assert!(notices[0].is_local);
@@ -9456,8 +9624,8 @@ pub(crate) mod tests {
     fn dynamic_light_constructor_option_and_live_changes_survive_replay_and_reset() {
         use crate::game_runtime::{GameRuntime, preferences::PreferencesCommand};
 
-        let night = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let night=std::env::var_os("MC_FLIGHT_ASSISTANCE_PACKAGE").map(PathBuf::from).unwrap_or_else(||
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq8-level1-collision-v5-night"));
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(&night),
             Mc2CampaignInputs::new(descriptor_fixture_path()),
@@ -9481,14 +9649,12 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        let mut preferences = runtime.identity().player_preferences.preferences;
-        preferences.dynamic_lighting = false;
-        runtime
-            .preferences_command(
-                runtime.identity().guard(),
-                PreferencesCommand::Apply { preferences },
-            )
-            .unwrap();
+        runtime.preferences_command(runtime.identity().guard(),PreferencesCommand::Apply {
+            preferences:runtime.identity().player_preferences.preferences }).unwrap();
+        // Declared incoming GAME option, preserving this constructor-input
+        // check. The connected graphics test exercises the real source action.
+        runtime.restore_display_settings(crate::game_runtime::DisplaySettings {
+            dynamic_lighting:false,..runtime.identity().display_settings });
         let title_guard = runtime.identity().guard();
         let loading = resolver.new_game(&mut runtime, title_guard).unwrap();
         resolver
@@ -9557,19 +9723,10 @@ pub(crate) mod tests {
         );
 
         let paused = runtime.pause(runtime.identity().guard()).unwrap();
-        // Paused frames consume the persistent option too. Keep the real
-        // preference in sync with the live changes exercised above.
-        let mut preferences = runtime.identity().player_preferences.preferences;
-        preferences.dynamic_lighting = true;
-        runtime
-            .preferences_command(
-                runtime.identity().guard(),
-                PreferencesCommand::Apply { preferences },
-            )
-            .unwrap();
-        runtime
-            .apply_current_dynamic_lighting_preference(runtime.identity().guard())
-            .unwrap();
+        // The guarded GAME action now aligns the retained flag with the
+        // actual native policy changes exercised above, without CONFIG.
+        runtime.source_graphics(runtime.identity().guard(),runtime.session().unwrap().identity().guard(),
+            crate::game_runtime::SourceGraphicsAction::DynamicLighting).unwrap();
         let session_guard = runtime.session().unwrap().identity().guard();
         runtime
             .paused_campaign_frame_timed(paused.guard(), session_guard, 13, false)
@@ -24283,6 +24440,9 @@ pub(crate) mod tests {
                 ReplayOperation::HelpModeNotice { enabled } => {
                     current.backend_mut().publish_help_mode_notice(enabled)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::GraphicsNotice {action,enabled}=>{
+                    current.backend_mut().publish_graphics_notice(action,enabled).map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {
                     current.presentation_frame(guard, notifications_visible).map_err(|error| {

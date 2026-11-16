@@ -30,6 +30,14 @@ pub(crate) enum PlayerLifeNoticeKind {
     FlightAssistanceOff,
     HelpModeOn,
     HelpModeOff,
+    ReflectionsOn,
+    ReflectionsOff,
+    ShadowsOn,
+    ShadowsOff,
+    SkyOn,
+    SkyOff,
+    DynamicLightingOn,
+    DynamicLightingOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -58,6 +66,14 @@ impl PlayerLifeNoticeKind {
             Self::FlightAssistanceOff => "participant.flight_assistance_off",
             Self::HelpModeOn => "participant.help_mode_on",
             Self::HelpModeOff => "participant.help_mode_off",
+            Self::ReflectionsOn=>"participant.reflections_on",
+            Self::ReflectionsOff=>"participant.reflections_off",
+            Self::ShadowsOn=>"participant.shadows_on",
+            Self::ShadowsOff=>"participant.shadows_off",
+            Self::SkyOn=>"participant.sky_on",
+            Self::SkyOff=>"participant.sky_off",
+            Self::DynamicLightingOn=>"participant.dynamic_lighting_on",
+            Self::DynamicLightingOff=>"participant.dynamic_lighting_off",
         }
     }
 }
@@ -113,7 +129,11 @@ impl PlayerLifecycleNotifications {
                     | PlayerLifeNoticeKind::MusicOn | PlayerLifeNoticeKind::MusicOff
                     | PlayerLifeNoticeKind::SpeechOn | PlayerLifeNoticeKind::SpeechOff
                     | PlayerLifeNoticeKind::FlightAssistanceOn | PlayerLifeNoticeKind::FlightAssistanceOff
-                    | PlayerLifeNoticeKind::HelpModeOn | PlayerLifeNoticeKind::HelpModeOff => 3,
+                    | PlayerLifeNoticeKind::HelpModeOn | PlayerLifeNoticeKind::HelpModeOff
+                    | PlayerLifeNoticeKind::ReflectionsOn | PlayerLifeNoticeKind::ReflectionsOff
+                    | PlayerLifeNoticeKind::ShadowsOn | PlayerLifeNoticeKind::ShadowsOff
+                    | PlayerLifeNoticeKind::SkyOn | PlayerLifeNoticeKind::SkyOff
+                    | PlayerLifeNoticeKind::DynamicLightingOn | PlayerLifeNoticeKind::DynamicLightingOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -185,6 +205,14 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::FlightAssistanceOff) => 21,
                 Some(PlayerLifeNoticeKind::HelpModeOn) => 22,
                 Some(PlayerLifeNoticeKind::HelpModeOff) => 23,
+                Some(PlayerLifeNoticeKind::ReflectionsOn)=>24,
+                Some(PlayerLifeNoticeKind::ReflectionsOff)=>25,
+                Some(PlayerLifeNoticeKind::ShadowsOn)=>26,
+                Some(PlayerLifeNoticeKind::ShadowsOff)=>27,
+                Some(PlayerLifeNoticeKind::SkyOn)=>28,
+                Some(PlayerLifeNoticeKind::SkyOff)=>29,
+                Some(PlayerLifeNoticeKind::DynamicLightingOn)=>30,
+                Some(PlayerLifeNoticeKind::DynamicLightingOff)=>31,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -225,7 +253,11 @@ mod tests {
             PlayerLifeNoticeKind::MusicOn, PlayerLifeNoticeKind::MusicOff,
             PlayerLifeNoticeKind::SpeechOn, PlayerLifeNoticeKind::SpeechOff,
             PlayerLifeNoticeKind::FlightAssistanceOn, PlayerLifeNoticeKind::FlightAssistanceOff,
-            PlayerLifeNoticeKind::HelpModeOn, PlayerLifeNoticeKind::HelpModeOff] {
+            PlayerLifeNoticeKind::HelpModeOn, PlayerLifeNoticeKind::HelpModeOff,
+            PlayerLifeNoticeKind::ReflectionsOn,PlayerLifeNoticeKind::ReflectionsOff,
+            PlayerLifeNoticeKind::ShadowsOn,PlayerLifeNoticeKind::ShadowsOff,
+            PlayerLifeNoticeKind::SkyOn,PlayerLifeNoticeKind::SkyOff,
+            PlayerLifeNoticeKind::DynamicLightingOn,PlayerLifeNoticeKind::DynamicLightingOff] {
             notices.publish(0, 111, kind, 50).unwrap();
             assert_eq!(notices.entries()[0].kind, Some(kind));
             assert_eq!(notices.entries()[0].state, 3);

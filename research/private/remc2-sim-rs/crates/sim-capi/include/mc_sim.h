@@ -1472,7 +1472,10 @@ int32_t mc_game_runtime_campaign_menu_command_json_v1(
 int32_t mc_game_runtime_media_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
-/* source_help_mode uses the same exact decimal-string session_guard and
+/* source_graphics accepts action reflections/shadows/sky/dynamic_lighting
+ * with decimal-string session_guard. It changes GAME display_settings and
+ * the local source notice, never CONFIG/profile or the gameplay tick.
+ * source_help_mode uses the same exact decimal-string session_guard and
  * atomically toggles help preference/native policy/local notice. Help data is
  * admitted by the pinned source; there is no host-availability argument.
  * source_brightness/source_audio/source_flight_assistance use the exact

@@ -372,6 +372,7 @@ impl RuntimeRecord {
             )
         })?;
         let preferences = self.runtime.identity().player_preferences.preferences;
+        let dynamic_lighting=self.runtime.identity().display_settings.dynamic_lighting;
         let show_foreign_text = self.runtime.show_foreign_objective_text();
         let backend = self.session_mut()?.backend_mut();
         let previous = CampaignPreferenceRollback {
@@ -385,7 +386,7 @@ impl RuntimeRecord {
         };
         backend
             .set_objective_presentation_preferences(preferences.speech_enabled, show_foreign_text);
-        backend.set_dynamic_lighting_enabled(preferences.dynamic_lighting);
+        backend.set_dynamic_lighting_enabled(dynamic_lighting);
         backend.set_help_enabled(preferences.show_help);
         Ok(previous)
     }
@@ -746,9 +747,9 @@ impl RuntimeRecord {
         let player_label_locale = self.runtime.selected_locale_binding();
         let player_label_name = preferences.player_name.clone();
         let render_options = sim_core::day_indexed_frame::WorldRenderOptions {
-            reflections: preferences.reflections,
-            sky: preferences.sky,
-            shadows: preferences.shadows,
+            reflections: identity.display_settings.reflections,
+            sky: identity.display_settings.sky,
+            shadows: identity.display_settings.shadows,
             flat_shading: identity.display_settings.flat_shading,
             viewport_size: identity.display_settings.viewport_size,
         };
@@ -2448,6 +2449,18 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceGraphics {session_guard,action}=>{
+                let entry=runtime_arc(handle)?;
+                let mut guard=entry.lock().map_err(|_|AbiError::new(MC_STATUS_LOCK_FAILED,"game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record)=&mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE,"handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                if record.runtime.source_graphics(RuntimeGuard {runtime_id:handle,generation},session_guard,action).map_err(map_transition_error)? {
+                    record.campaign_presentation_dirty=true;return Ok(());
+                }
+                return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,"source graphics action is unavailable"));
+            }
             sim_core::game_runtime::preferences::PreferencesCommand::SourceHelpMode { session_guard } => {
                 let entry = runtime_arc(handle)?;
                 let mut guard = entry.lock().map_err(|_| AbiError::new(
@@ -2543,13 +2556,6 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                     command,
                 )
                 .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))?;
-            record
-                .runtime
-                .apply_current_dynamic_lighting_preference(RuntimeGuard {
-                    runtime_id: handle,
-                    generation,
-                })
-                .map_err(map_transition_error)?;
             let after = record.runtime.identity().player_preferences.preferences;
             if initial_profile && record.runtime.identity().mode == RuntimeMode::Playing {
                 record.session_mut()?.backend_mut().hydrate_fresh_help_preference(after.show_help);
@@ -6130,6 +6136,13 @@ mod tests {
         assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
 
+        // This raw cache owner intentionally excludes locale/glyph setup.
+        // Use the actual Names action before composing its first world frame;
+        // ordinary clients bind selected FONT1 before composing visible names.
+        let opened = identity(handle);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 3,
+            opened["session"]["generation"].as_str().unwrap().parse().unwrap(),
+            opened["session"]["tick"].as_str().unwrap().parse().unwrap()), MC_STATUS_OK);
         let make_query = || {
             let state = identity(handle);
             let generation = state["session"]["generation"].as_str().unwrap().parse().unwrap();
@@ -6181,9 +6194,8 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let install = serde_json::to_vec(&serde_json::json!({"operation": "install", "profile_dir": profile})).unwrap();
         assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
-        let mut prefs = with_runtime(handle, |record| Ok(record.runtime.identity().player_preferences.preferences)).unwrap();
-        prefs.reflections = !prefs.reflections;
-        let apply = serde_json::to_vec(&serde_json::json!({"operation": "apply", "preferences": prefs})).unwrap();
+        let apply = serde_json::to_vec(&serde_json::json!({"operation":"source_graphics","action":"reflections",
+            "session_guard":{"session_id":handle.to_string(),"generation":query.generation.to_string(),"expected_tick":query.tick.to_string()}})).unwrap();
         assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, apply.as_ptr(), apply.len() as u32), MC_STATUS_OK);
         let previous_revision = with_runtime(handle, |record| {
             let super::super::campaign_abi::CampaignSessionKind::Campaign { day_frame_state, .. } = &record.campaign_presentation.as_ref().unwrap().kind else { unreachable!() };

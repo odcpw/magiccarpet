@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames, ToggleSound, ToggleMusic, ToggleSpeech, ToggleFlightAssistance, ToggleHelpMode }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames, ToggleSound, ToggleMusic, ToggleSpeech, ToggleFlightAssistance, ToggleHelpMode, ToggleReflections, ToggleSky, ToggleShadows, ToggleDynamicLighting }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -260,7 +260,8 @@ namespace MagicCarpet.Native
                 Action.SpeedPrimary or Action.SpeedSecondary => mode == GameRuntimeTransport.PausedMode,
                 Action.ViewportDecrease or Action.ViewportIncrease => mode == GameRuntimeTransport.PausedMode,
                 Action.TogglePlayerNames => mode == GameRuntimeTransport.PausedMode,
-                Action.ToggleSound or Action.ToggleMusic or Action.ToggleSpeech or Action.ToggleFlightAssistance or Action.ToggleHelpMode => mode == GameRuntimeTransport.PausedMode,
+                Action.ToggleSound or Action.ToggleMusic or Action.ToggleSpeech or Action.ToggleFlightAssistance or Action.ToggleHelpMode or
+                    Action.ToggleReflections or Action.ToggleSky or Action.ToggleShadows or Action.ToggleDynamicLighting => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
                     mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,
@@ -345,7 +346,7 @@ namespace MagicCarpet.Native
                     GUI.enabled = true;
                     sourcePauseMenuDrawn = true;
                     return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
-                        preferences, canSave, canLoad, identity.display_settings.minimap, identity.display_settings.panels_opaque,
+                        preferences, identity.display_settings, canSave, canLoad, identity.display_settings.minimap, identity.display_settings.panels_opaque,
                         identity.display_settings.flat_shading, identity.source_speed_index, identity.source_player_names_visible,
                         identity.source_audio_capabilities?.sound_available == true,
                         identity.source_audio_capabilities?.music_available == true, speechAvailable);

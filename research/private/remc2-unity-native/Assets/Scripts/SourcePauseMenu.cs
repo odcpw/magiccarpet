@@ -211,6 +211,7 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
+            GameRuntimeTransport.DisplaySettings displaySettings,
             bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
             bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
@@ -247,7 +248,7 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible,
+                return DrawOptions(profile, preferences, displaySettings, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible,
                     soundAvailable, musicAvailable, speechAvailable);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
@@ -388,7 +389,7 @@ namespace MagicCarpet.Native
             else if (Event.current.type == EventType.MouseDown) { volume = 0; Event.current.Use(); }
         }
 
-        private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
+        private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, GameRuntimeTransport.DisplaySettings displaySettings, Rect view,
             Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
             bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
@@ -413,8 +414,8 @@ namespace MagicCarpet.Native
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance, 7 => true,
-                    8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
-                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading,
+                    8 => displaySettings.reflections, 9 => displaySettings.sky, 10 => displaySettings.shadows,
+                    11 => displaySettings.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading,
                     16 => playerNamesVisible, _ => false
                 };
                 var text = language(index == 6 ? SpeedTextRecord(speedIndex) : enabled ? OnText[index] : OffText[index]);
@@ -444,6 +445,16 @@ namespace MagicCarpet.Native
                     {
                         Event.current.Use();
                         return CampaignMenuPresenter.Action.ToggleFlightAssistance;
+                    }
+                    if (index is >= 8 and <= 11)
+                    {
+                        Event.current.Use();
+                        return index switch {
+                            8 => CampaignMenuPresenter.Action.ToggleReflections,
+                            9 => CampaignMenuPresenter.Action.ToggleSky,
+                            10 => CampaignMenuPresenter.Action.ToggleShadows,
+                            _ => CampaignMenuPresenter.Action.ToggleDynamicLighting
+                        };
                     }
                     if (index == 16)
                     {
@@ -486,16 +497,6 @@ namespace MagicCarpet.Native
                         Event.current.Use();
                         return CampaignMenuPresenter.Action.ToggleFlatShading;
                     }
-                    var option = index;
-                    preferences.ApplySource(draft => {
-                        switch (option) {
-                            case 8: draft.reflections = !draft.reflections; break;
-                            case 9: draft.sky = !draft.sky; break;
-                            case 10: draft.shadows = !draft.shadows; break;
-                            case 11: draft.dynamic_lighting = !draft.dynamic_lighting; break;
-                        }
-                    });
-                    Event.current.Use();
                 }
             }
             var okayX = (width - 84) / 2 + (640 - width) / 2;

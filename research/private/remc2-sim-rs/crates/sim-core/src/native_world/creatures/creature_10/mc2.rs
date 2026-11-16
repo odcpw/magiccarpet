@@ -2980,6 +2980,7 @@ mod tests {
                 crate::game_runtime::DisplayNotice::SourceAudio(action, enabled) => session.backend_mut().publish_source_audio_notice(action, enabled),
                 crate::game_runtime::DisplayNotice::FlightAssistance(enabled) => session.backend_mut().publish_flight_assistance_notice(enabled),
                 crate::game_runtime::DisplayNotice::HelpMode(enabled) => session.backend_mut().publish_help_mode_notice(enabled),
+                crate::game_runtime::DisplayNotice::Graphics(action,enabled)=>session.backend_mut().publish_graphics_notice(action,enabled),
             },
             |_| {},
         ).expect("controlled admission of the unchanged completed session");

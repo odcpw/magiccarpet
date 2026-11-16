@@ -9277,6 +9277,31 @@ impl Mc2Simulation {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn prepare_graphics_notice(&self,action:crate::game_runtime::SourceGraphicsAction,enabled:bool)
+        -> std::result::Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,String>
+    {
+        use crate::game_runtime::SourceGraphicsAction;
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live=&self.session.state.live;
+        let kind=match (action,enabled) {
+            (SourceGraphicsAction::Reflections,true)=>PlayerLifeNoticeKind::ReflectionsOn,
+            (SourceGraphicsAction::Reflections,false)=>PlayerLifeNoticeKind::ReflectionsOff,
+            (SourceGraphicsAction::Shadows,true)=>PlayerLifeNoticeKind::ShadowsOn,
+            (SourceGraphicsAction::Shadows,false)=>PlayerLifeNoticeKind::ShadowsOff,
+            (SourceGraphicsAction::Sky,true)=>PlayerLifeNoticeKind::SkyOn,
+            (SourceGraphicsAction::Sky,false)=>PlayerLifeNoticeKind::SkyOff,
+            (SourceGraphicsAction::DynamicLighting,true)=>PlayerLifeNoticeKind::DynamicLightingOn,
+            (SourceGraphicsAction::DynamicLighting,false)=>PlayerLifeNoticeKind::DynamicLightingOff,
+        };
+        let mut notices=live.player_lifecycle_notifications.clone();
+        notices.publish(live.shared_spells.local_player().player_color_index(),live.core.state.entity_index,kind,50)
+            .map_err(|error|error.to_string())?;
+        Ok(notices)
+    }
+    pub(crate) fn commit_graphics_notice(&mut self,
+        notices:crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications)
+    {self.session.state.live.player_lifecycle_notifications=notices;}
+
     pub(crate) fn prepare_help_mode_notice(&self, enabled: bool)
         -> std::result::Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications, String>
     {

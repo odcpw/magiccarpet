@@ -100,16 +100,6 @@ pub struct PlayerPreferences {
     pub sound_volume: u8,
     pub music_volume: u8,
     pub show_help: bool,
-    /// Original graphics options; old profiles retain source enabled defaults.
-    #[serde(default = "source_graphics_enabled")]
-    pub reflections: bool,
-    #[serde(default = "source_graphics_enabled")]
-    pub sky: bool,
-    #[serde(default = "source_graphics_enabled")]
-    pub shadows: bool,
-    /// Source `m_wDynamicLighting`; old profiles retain the enabled default.
-    #[serde(default = "source_graphics_enabled")]
-    pub dynamic_lighting: bool,
     pub brightness: [u8; 3],
     pub flight_assistance: bool,
     pub fullscreen: bool,
@@ -145,19 +135,11 @@ impl Default for PlayerPreferences {
             sound_volume: 127,
             music_volume: 127,
             show_help: true,
-            reflections: true,
-            sky: true,
-            shadows: true,
-            dynamic_lighting: true,
             brightness: [0; 3],
             flight_assistance: false,
             fullscreen: false,
         }
     }
-}
-
-const fn source_graphics_enabled() -> bool {
-    true
 }
 
 impl PlayerPreferences {
@@ -216,6 +198,11 @@ fn optional_locale<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreferencesCommand {
+    SourceGraphics {
+        #[serde(deserialize_with="deserialize_brightness_guard")]
+        session_guard:sim_session::SessionGuard,
+        action:super::SourceGraphicsAction,
+    },
     SourceHelpMode {
         #[serde(deserialize_with = "deserialize_brightness_guard")]
         session_guard: sim_session::SessionGuard,
@@ -465,6 +452,7 @@ impl PreferenceStore {
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
+            PreferencesCommand::SourceGraphics {..}=>return Err("source graphics requires a guarded active campaign".into()),
             PreferencesCommand::SourceHelpMode { .. } => return Err("source help mode requires a guarded active campaign".into()),
             PreferencesCommand::SourceFlightAssistance { .. } => return Err("source flight assistance requires a guarded active campaign".into()),
             PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
@@ -486,8 +474,38 @@ impl PreferenceStore {
                     if bytes.len() as u64 > MAX_PREFERENCES_BYTES {
                         return Err("preferences file is too large".into());
                     }
-                    let value: PlayerPreferences =
-                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                    // Only stored legacy profiles may contain these obsolete
+                    // GAME flags. Validate their original types, discard their
+                    // authority, and preserve every unrelated strict field.
+                    // Preserve serde's original duplicate-field refusal while
+                    // decoding the one historical top-level profile shape.
+                    struct ProfileFields(serde_json::Map<String,serde_json::Value>);
+                    impl<'de> Deserialize<'de> for ProfileFields {
+                        fn deserialize<D:serde::Deserializer<'de>>(decoder:D)->Result<Self,D::Error> {
+                            struct FieldsVisitor;
+                            impl<'input> serde::de::Visitor<'input> for FieldsVisitor {
+                                type Value=ProfileFields;
+                                fn expecting(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str("a preferences object")}
+                                fn visit_map<A:serde::de::MapAccess<'input>>(self,mut input:A)->Result<Self::Value,A::Error> {
+                                    let mut fields=serde_json::Map::new();
+                                    while let Some((key,value))=input.next_entry::<String,serde_json::Value>()? {
+                                        if fields.insert(key.clone(),value).is_some() {
+                                            return Err(serde::de::Error::custom(format!("duplicate preferences field {key}")));
+                                        }
+                                    }
+                                    Ok(ProfileFields(fields))
+                                }
+                            }
+                            decoder.deserialize_map(FieldsVisitor)
+                        }
+                    }
+                    let ProfileFields(mut fields)=serde_json::from_slice::<ProfileFields>(&bytes).map_err(|e|e.to_string())?;
+                    for name in ["reflections","shadows","sky","dynamic_lighting"] {
+                        if let Some(value)=fields.remove(name) {
+                            if !value.is_boolean() {return Err(format!("legacy graphics field {name} must be boolean"));}
+                        }
+                    }
+                    let value:PlayerPreferences=serde_json::from_value(serde_json::Value::Object(fields)).map_err(|e|e.to_string())?;
                     value.validate()?;
                     Ok(value)
                 })();
@@ -1179,10 +1197,6 @@ mod tests {
         customized.invert_mouse = true;
         customized.mouse_sensitivity = 137;
         customized.joystick_dead_zone = 27;
-        customized.reflections = false;
-        customized.sky = false;
-        customized.shadows = false;
-        customized.dynamic_lighting = false;
         customized.flight_assistance = true;
         customized.fullscreen = true;
         runtime.preferences_command(outer, PreferencesCommand::ApplyChecked {
@@ -1278,6 +1292,10 @@ mod tests {
         let nested = runtime.session().unwrap().identity().guard();
         runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
         runtime.toggle_player_names(playing.guard(), nested).unwrap();
+        for action in [super::super::SourceGraphicsAction::Reflections,super::super::SourceGraphicsAction::Shadows,
+            super::super::SourceGraphicsAction::Sky,super::super::SourceGraphicsAction::DynamicLighting] {
+            runtime.source_graphics(playing.guard(),nested,action).unwrap();
+        }
         let paused = runtime.pause(playing.guard()).unwrap();
         let snapshot = runtime.session().unwrap().snapshot();
         let operations = runtime.session().unwrap().backend().replay_operation_count();
@@ -1296,15 +1314,33 @@ mod tests {
     }
 
     #[test]
-    fn original_render_options_default_enabled_for_existing_profiles() {
-        let mut old = serde_json::to_value(PlayerPreferences::default()).unwrap();
-        for field in ["reflections", "sky", "shadows", "dynamic_lighting"] {
-            old.as_object_mut().unwrap().remove(field);
-        }
-        let restored: PlayerPreferences = serde_json::from_value(old).unwrap();
-        assert!(
-            restored.reflections && restored.sky && restored.shadows && restored.dynamic_lighting
-        );
+    fn legacy_profile_graphics_migrate_without_becoming_game_authority() {
+        let profile=std::env::temp_dir().join(format!("mc-legacy-graphics-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap(); let path=profile.join("player-preferences.json");
+        let mut expected=PlayerPreferences::default(); expected.player_name="OLIVER".into();
+        expected.keys[0]=InputKey::W; expected.sound_volume=61; expected.show_help=false;
+        let mut old=serde_json::to_value(&expected).unwrap();
+        for field in ["reflections","sky","shadows","dynamic_lighting"] {old[field]=false.into();}
+        let bytes=serde_json::to_vec(&old).unwrap(); fs::write(&path,&bytes).unwrap();
+        let install=||PreferencesCommand::Install {profile_dir:profile.to_string_lossy().into_owned()};
+        let mut store=PreferenceStore::default(); assert_eq!(store.command(install()).unwrap().preferences,expected);
+        assert_eq!(fs::read(&path).unwrap(),bytes,"legacy migration never rewrites on read");
+        assert!(serde_json::from_value::<PlayerPreferences>(old.clone()).is_err(),"live Apply rejects obsolete GAME fields");
+        let graphics=crate::game_runtime::DisplaySettings::default();
+        assert!(graphics.reflections&&graphics.shadows&&graphics.sky&&graphics.dynamic_lighting);
+        store.command(PreferencesCommand::Apply {preferences:expected.clone()}).unwrap();
+        let current:serde_json::Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in ["reflections","sky","shadows","dynamic_lighting"] {assert!(current.get(field).is_none());}
+        assert_eq!(serde_json::from_value::<PlayerPreferences>(current).unwrap(),expected);
+        old["sky"]="not a boolean".into(); let bad=serde_json::to_vec(&old).unwrap();fs::write(&path,&bad).unwrap();
+        let mut invalid=PreferenceStore::default();assert!(invalid.command(install()).unwrap().load_status.starts_with("defaults:"));
+        assert_eq!(fs::read(&path).unwrap(),bad);
+        let duplicated=String::from_utf8(bytes).unwrap().replacen('{',"{\"player_name\":\"SECOND\",",1);
+        fs::write(&path,duplicated.as_bytes()).unwrap();let mut duplicate=PreferenceStore::default();
+        assert!(duplicate.command(install()).unwrap().load_status.contains("duplicate preferences field"));
+        assert_eq!(fs::read(&path).unwrap(),duplicated.as_bytes());
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -1862,10 +1898,6 @@ mod tests {
         ];
         prefs.sound_volume = 63;
         prefs.show_help = false;
-        prefs.reflections = false;
-        prefs.sky = false;
-        prefs.shadows = false;
-        prefs.dynamic_lighting = false;
         prefs.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences: prefs })
@@ -1908,7 +1940,7 @@ mod tests {
             store.snapshot().preferences.keys,
             "source punctuation bindings survive a cold profile load"
         );
-        assert!(!cold.snapshot().preferences.dynamic_lighting);
+        assert!(serde_json::to_value(cold.snapshot()).unwrap()["preferences"].get("dynamic_lighting").is_none());
         let audio_command = serde_json::json!({
             "operation": "source_audio",
             "session_guard": { "session_id": "1", "generation": "2", "expected_tick": "3" },

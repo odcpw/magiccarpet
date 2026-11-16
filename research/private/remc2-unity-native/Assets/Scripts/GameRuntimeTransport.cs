@@ -408,6 +408,7 @@ namespace MagicCarpet.Native
         internal sealed class DisplaySettings
         {
             public bool minimap, top_bar, panels_opaque, flat_shading;
+            public bool reflections, shadows, sky, dynamic_lighting;
             public byte viewport_size;
         }
 
@@ -498,6 +499,7 @@ namespace MagicCarpet.Native
         private const int SourceActionBlocked = 16;
         internal enum SourceBrightnessAction { Cycle, Increment, Decrement }
         internal enum SourceAudioAction { Sound, Music, Speech }
+        internal enum SourceGraphicsAction { Reflections, Shadows, Sky, DynamicLighting }
 
         [Serializable]
         private sealed class SourceBrightnessGuard
@@ -542,6 +544,14 @@ namespace MagicCarpet.Native
         {
             public string operation = "source_help_mode";
             public SourceBrightnessGuard session_guard;
+        }
+
+        [Serializable]
+        private sealed class SourceGraphicsCommand
+        {
+            public string operation = "source_graphics";
+            public SourceBrightnessGuard session_guard;
+            public string action;
         }
 
         internal static PlayerPreferencesSnapshot PreferencesCommand(
@@ -1368,6 +1378,54 @@ namespace MagicCarpet.Native
             if (ParseCounter(after.session.tick, "tick") != expectedTick)
                 throw new InvalidDataException("campaign step did not advance its source speed passes");
             return expectedTick;
+        }
+
+        internal bool SourceGraphics(SourceGraphicsAction action, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source graphics");
+            var before = Current;
+            var actionName = action switch {
+                SourceGraphicsAction.Reflections => "reflections",
+                SourceGraphicsAction.Shadows => "shadows",
+                SourceGraphicsAction.Sky => "sky",
+                SourceGraphicsAction.DynamicLighting => "dynamic_lighting",
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var request = new SourceGraphicsCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                },
+                action = actionName
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source graphics");
+            var after = IdentitySnapshot();
+            var oldDisplay = before.display_settings;
+            var newDisplay = after.display_settings;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                newDisplay.minimap != oldDisplay.minimap || newDisplay.top_bar != oldDisplay.top_bar ||
+                newDisplay.panels_opaque != oldDisplay.panels_opaque || newDisplay.flat_shading != oldDisplay.flat_shading ||
+                newDisplay.viewport_size != oldDisplay.viewport_size ||
+                newDisplay.reflections != (action == SourceGraphicsAction.Reflections ? !oldDisplay.reflections : oldDisplay.reflections) ||
+                newDisplay.shadows != (action == SourceGraphicsAction.Shadows ? !oldDisplay.shadows : oldDisplay.shadows) ||
+                newDisplay.sky != (action == SourceGraphicsAction.Sky ? !oldDisplay.sky : oldDisplay.sky) ||
+                newDisplay.dynamic_lighting != (action == SourceGraphicsAction.DynamicLighting ? !oldDisplay.dynamic_lighting : oldDisplay.dynamic_lighting) ||
+                JsonUtility.ToJson(after.player_preferences) != JsonUtility.ToJson(before.player_preferences) ||
+                (before.source_audio_capabilities != null &&
+                 (after.source_audio_capabilities == null ||
+                  after.source_audio_capabilities.sound_available != before.source_audio_capabilities.sound_available ||
+                  after.source_audio_capabilities.music_available != before.source_audio_capabilities.music_available)))
+                throw new InvalidDataException("source graphics changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceHelpMode(out Identity identity)

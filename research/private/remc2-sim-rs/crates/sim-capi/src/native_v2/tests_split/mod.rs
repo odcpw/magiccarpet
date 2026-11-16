@@ -3930,6 +3930,171 @@ fn campaign_authored_group_events(handle: u64) -> Vec<McCampaignAuthoredGroupEve
     events[..event_count as usize].to_vec()
 }
 
+#[test]
+fn source_graphics_actions_reach_real_retained_world_pixels() {
+    use super::game_runtime_abi::{
+        mc_game_runtime_create_v1, mc_game_runtime_destroy_v1,
+        mc_game_runtime_identity_json_v1, mc_game_runtime_load_replay_json_v1,
+        mc_game_runtime_participant_notifications_json_v1,
+        mc_game_runtime_preferences_command_json_v1, mc_game_runtime_toggle_player_names_v1,
+    };
+
+    let private = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
+    );
+    let generated = private.join("generated");
+    // This replay was obtained through the ordinary Level2 entry and public
+    // flight/look commands; its real Nyphur and camera are not staged here.
+    let replay = fs::read(std::env::var_os("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT")
+        .map_or_else(|| generated.join("player-names-20261116/real-nyphur-view.mcs"), PathBuf::from))
+        .expect("real public-flight Nyphur replay");
+    let resources: serde_json::Value = serde_json::from_slice(&fs::read(
+        std::env::var_os("MC_CAMPAIGN_SAVE_RESOURCES").map_or_else(
+            || generated.join("continuity-20261115/installed-full-resources.json"), PathBuf::from,
+        )).expect("actual installed package roles")).unwrap();
+    let packages = serde_json::to_vec(&serde_json::json!({
+        "request_contract":"carpet-flight-installed-package-set-bootstrap/v1",
+        "packages":resources,
+    })).unwrap();
+    let read = |f: &dyn Fn(*mut u8, u32, *mut u32) -> i32| {
+        let mut len = 0;
+        assert_eq!(f(std::ptr::null_mut(), 0, &raw mut len), MC_STATUS_BOUNDS);
+        let mut bytes = vec![0; len as usize];
+        assert_eq!(f(bytes.as_mut_ptr(), len, &raw mut len), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+    };
+    let mut handle = 0;
+    assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+    assert_eq!(mc_game_runtime_load_replay_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32,
+        replay.as_ptr(), replay.len() as u32), MC_STATUS_OK,
+        "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+    let identity = || read(&|buffer, capacity, length|
+        mc_game_runtime_identity_json_v1(handle, buffer, capacity, length));
+    let first = identity();
+    assert_eq!(first["active_runtime_flow"]["bound_level_id"], "level.magic_carpet_2.payahandra_ruins");
+    let outer = first["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    let generation = first["session"]["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    let tick = first["session"]["tick"].as_str().unwrap().parse::<u64>().unwrap();
+    // The source names control is turned off on this actual owner so no
+    // separate selected-font install is needed to inspect its world pixels.
+    assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, outer, generation, tick), MC_STATUS_OK);
+    let scene = |handle: u64, generation: u64, tick: u64, require_sprites: bool| {
+        // A restored runtime may already be at tick354. The normal runtime
+        // presentation consumer admits its current frame without pretending
+        // that this is the first sequential tick of a new frame owner.
+        let query = McPresentationFrameQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameQueryV2>(),
+            generation, tick, presentation_revision: tick,
+            viewport_width: 320, viewport_height: 200, screen_stride: 320, vga_resolution: 1,
+            ..McPresentationFrameQueryV2::default()
+        };
+        let mut info = McPresentationFrameInfoV2::default();
+        let mut final_pixels = vec![0_u8; 320 * 200];
+        assert_eq!(mc_native_campaign_presentation_frame_copy(handle, &raw const query,
+            final_pixels.as_mut_ptr(), final_pixels.len() as u32, std::ptr::null_mut(), 0,
+            &raw mut info, struct_size::<McPresentationFrameInfoV2>()), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+        let mut pixels = vec![0_u8; 320 * 200];
+        let (mut written, mut revision, mut blur, mut tables, mut sprites) = (0, 0, 0, 0, 0);
+        assert_eq!(mc_native_campaign_scene_frame_copy(handle, generation, tick, pixels.as_mut_ptr(),
+            pixels.len() as u32, &raw mut written, &raw mut revision, &raw mut blur,
+            &raw mut tables, &raw mut sprites), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+        assert_eq!(written, pixels.len() as u32);
+        if require_sprites {
+            assert_ne!(sprites, 0, "the real Nyphur view composes source sprites");
+        }
+        pixels
+    };
+    let toggle = |action: &str, enabled: bool| {
+        let request = serde_json::to_vec(&serde_json::json!({
+            "operation":"source_graphics", "action":action,
+            "session_guard":{"session_id":handle.to_string(),"generation":generation.to_string(),"expected_tick":tick.to_string()},
+        })).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, outer,
+            request.as_ptr(), request.len() as u32), MC_STATUS_OK,
+            "{action}: {}", LAST_ERROR.with(|error| error.borrow().clone()));
+        let after = identity();
+        assert_eq!(after["session"]["generation"], generation.to_string());
+        assert_eq!(after["session"]["tick"], tick.to_string());
+        assert_eq!(after["display_settings"][action], enabled);
+        let notices = read(&|buffer, capacity, length|
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length));
+        assert_eq!(notices["value"][0]["kind"], format!("participant.{action}_{}", if enabled { "on" } else { "off" }));
+        assert_eq!(notices["value"][0]["remaining_frames"], 50);
+    };
+    let before = scene(handle, generation, tick, true);
+    let mut changes = Vec::new();
+    for action in ["reflections", "shadows"] {
+        assert_eq!(identity()["display_settings"][action], true);
+        toggle(action, false);
+        let off = scene(handle, generation, tick, true);
+        let changed = before.iter().zip(&off).filter(|(a,b)| a != b).count();
+        eprintln!("actual Nyphur source scene {action} changed {changed} pixels at tick {tick}");
+        changes.push((action, changed));
+        toggle(action, true);
+        assert_eq!(scene(handle, generation, tick, true), before,
+            "{action} returns the same actual same-tick indexed scene");
+    }
+    assert!(changes.iter().all(|(_, count)| *count != 0),
+        "each source graphics control needs a discriminating actual scene: {changes:?}");
+    assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+
+    // The Nyphur camera faces below its skyline. This separately retained
+    // NightSpire save is a genuine paused owner captured with normal camera;
+    // it exposes the source sky without changing any pose or gameplay state.
+    let night_replay = fs::read(std::env::var_os("MC_GRAPHICS_OLD_ACTIVE_SAVE").map_or_else(
+        || generated.join("graphics-controls-20261116/old-active-light-off.mcs"), PathBuf::from,
+    )).expect("actual retained NightSpire replay");
+    let mut night_request: serde_json::Value = serde_json::from_slice(&packages).unwrap();
+    night_request["packages"].as_array_mut().unwrap().truncate(3);
+    let night_packages = serde_json::to_vec(&night_request).unwrap();
+    let mut night = 0;
+    assert_eq!(mc_game_runtime_create_v1(&raw mut night), MC_STATUS_OK);
+    assert_eq!(mc_game_runtime_load_replay_json_v1(night, 1, night_packages.as_ptr(), night_packages.len() as u32,
+        night_replay.as_ptr(), night_replay.len() as u32), MC_STATUS_OK,
+        "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+    let night_identity = || read(&|buffer, capacity, length|
+        mc_game_runtime_identity_json_v1(night, buffer, capacity, length));
+    let state = night_identity();
+    assert_eq!(state["active_runtime_flow"]["bound_level_id"], "level.magic_carpet_2.night_spire");
+    assert_eq!(state["mode"], "paused");
+    assert_eq!(state["display_settings"]["sky"], true);
+    let night_outer = state["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    let night_generation = state["session"]["generation"].as_str().unwrap().parse::<u64>().unwrap();
+    let night_tick = state["session"]["tick"].as_str().unwrap().parse::<u64>().unwrap();
+    assert_eq!(mc_game_runtime_toggle_player_names_v1(night, night_outer, night_generation, night_tick), MC_STATUS_OK);
+    let night_before = scene(night, night_generation, night_tick, false);
+    for enabled in [false, true] {
+        let request = serde_json::to_vec(&serde_json::json!({
+            "operation":"source_graphics", "action":"sky",
+            "session_guard":{"session_id":night.to_string(),"generation":night_generation.to_string(),"expected_tick":night_tick.to_string()},
+        })).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(night, night_outer,
+            request.as_ptr(), request.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|error| error.borrow().clone()));
+        let after = night_identity();
+        assert_eq!(after["session"]["generation"], night_generation.to_string());
+        assert_eq!(after["session"]["tick"], night_tick.to_string());
+        assert_eq!(after["display_settings"]["sky"], enabled);
+        let notices = read(&|buffer, capacity, length|
+            mc_game_runtime_participant_notifications_json_v1(night, buffer, capacity, length));
+        assert_eq!(notices["value"][0]["kind"], if enabled { "participant.sky_on" } else { "participant.sky_off" });
+        assert_eq!(notices["value"][0]["remaining_frames"], 50);
+        let current = scene(night, night_generation, night_tick, false);
+        if enabled {
+            assert_eq!(current, night_before, "sky ON restores the exact real NightSpire scene");
+        } else {
+            let count = night_before.iter().zip(&current).filter(|(a,b)| a != b).count();
+            eprintln!("actual NightSpire source scene sky changed {count} pixels at tick {night_tick}");
+            assert!(count > 0, "the actual retained NightSpire view discriminates sky pixels");
+        }
+    }
+    assert_eq!(mc_game_runtime_destroy_v1(night), MC_STATUS_OK);
+}
+
 include!("abi_campaign_contracts.rs");
 include!("campaign_runtime.rs");
 include!("campaign_spells.rs");
