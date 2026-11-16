@@ -2612,7 +2612,8 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
-        private static System.Collections.IEnumerator StartReturnedParentFromNormalMap(MagicCarpetRuntime runtime)
+        private static System.Collections.IEnumerator StartReturnedParentFromNormalMap(MagicCarpetRuntime runtime,
+            bool verifyLoadingAndAudioBinding = false)
         {
             var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
             var identity = runtime.GameRuntimeProductionIdentity;
@@ -2661,6 +2662,9 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True);
             Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+            if (verifyLoadingAndAudioBinding)
+                Assert.That(GameRuntimeTransport.ReadLoadingPresentation(runtime.GameRuntimeProductionIdentity).level_id,
+                    Is.EqualTo("level.magic_carpet_2.ammyridia"), "the real Loading response has its own contract");
             runtime.QualificationDriveGameRuntimeFrames(1);
             Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
             runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
@@ -2669,6 +2673,20 @@ namespace MagicCarpet.Native.Tests
             Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
                 Is.EqualTo("level.magic_carpet_2.ammyridia"));
             Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("0"));
+            if (verifyLoadingAndAudioBinding)
+            {
+                var active = runtime.GameRuntimeProductionIdentity;
+                var session = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                Assert.That(session.BindGameRuntimeActiveEntryPresentation(active).level_id,
+                    Is.EqualTo("level.magic_carpet_2.ammyridia"));
+                var qualified = session.GameRuntimeIdentity();
+                Assert.That((qualified.session.generation, qualified.session.tick),
+                    Is.EqualTo((active.session.generation, active.session.tick)));
+                Assert.That(qualified.source_audio_capabilities, Is.Not.Null,
+                    "the active-entry response must bind qualified audio capabilities");
+                Assert.That((qualified.source_audio_capabilities.sound_available,
+                    qualified.source_audio_capabilities.music_available), Is.EqualTo((true, true)));
+            }
         }
 
         private static void AssertReturnedParentCarry(byte[] mapBytes, byte[] liveBytes)
@@ -3808,7 +3826,7 @@ namespace MagicCarpet.Native.Tests
                         Path.Combine(temporary, "surface-save.mcs"));
                     surfaceRuntime.QualificationInitializeGameRuntimeProductionFromArguments(surfaceArguments);
                     typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(surfaceRuntime, new object[] { surfaceArguments });
-                    yield return StartReturnedParentFromNormalMap(surfaceRuntime);
+                    yield return StartReturnedParentFromNormalMap(surfaceRuntime, true);
                     var surfaceCampaign = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(surfaceRuntime);
                     Assert.That((surfaceCampaign.Selection.externalLevel, surfaceCampaign.Selection.internalLevel, surfaceCampaign.Selection.mapType),
                         Is.EqualTo(((ushort)20, (ushort)19, (byte)0)), "the real returned parent uses its Day source profile");

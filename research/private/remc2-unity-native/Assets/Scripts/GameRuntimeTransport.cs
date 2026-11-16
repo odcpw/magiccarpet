@@ -198,6 +198,13 @@ namespace MagicCarpet.Native
         {
             public Identity identity;
             public LoadingPresentationBinding value;
+        }
+
+        [Serializable]
+        private sealed class ActiveEntryPresentationObservation
+        {
+            public Identity identity;
+            public LoadingPresentationBinding value;
             public SourceAudioCapabilities source_audio_capabilities;
         }
 
@@ -231,7 +238,7 @@ namespace MagicCarpet.Native
             return ReadActiveEntryObservation(playing).value;
         }
 
-        private static LoadingPresentationObservation ReadActiveEntryObservation(Identity playing)
+        private static ActiveEntryPresentationObservation ReadActiveEntryObservation(Identity playing)
         {
             ValidateIdentityPresentation(playing);
             if (playing.mode is not (PlayingMode or PausedMode) || playing.active_runtime_flow == null ||
@@ -242,7 +249,7 @@ namespace MagicCarpet.Native
             }
             var handle = ParseCounter(playing.runtime_id, "runtime_id");
             var generation = ParseCounter(playing.generation, "generation");
-            var observation = ReadJson<LoadingPresentationObservation>(
+            var observation = ReadJson<ActiveEntryPresentationObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_active_entry_presentation_json_v1(
                         handle, generation, buffer, capacity, out length),
