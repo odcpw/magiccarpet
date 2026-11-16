@@ -2124,6 +2124,40 @@ pub extern "C" fn mc_game_runtime_toggle_flat_shading_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_source_speed_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    secondary: u8,
+) -> i32 {
+    boundary(|| {
+        if secondary > 1 {
+            return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "source speed secondary must be 0 or 1"));
+        }
+        // A refused source action must not invalidate the retained view.
+        let entry = runtime_arc(handle)?;
+        let mut guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned")
+        })?;
+        let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+            return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+        };
+        record.ensure_open()?;
+        let admitted = record.runtime.source_speed(
+            RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+            SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+            secondary != 0,
+        ).map_err(map_transition_error)?;
+        if !admitted {
+            return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED, "source speed is blocked by game state"));
+        }
+        record.campaign_presentation_dirty = true;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     handle: u64,
     runtime_generation: u64,
@@ -3980,9 +4014,11 @@ mod tests {
         assert_eq!(title["display_settings"]["top_bar"], true);
         assert_eq!(title["display_settings"]["panels_opaque"], false);
         assert_eq!(title["display_settings"]["flat_shading"], false);
+        assert_eq!(title["source_speed_index"], 0);
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(mc_game_runtime_toggle_flat_shading_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 1, 1, 0, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(identity(handle), title);
         assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
             handle, 1, packages.as_ptr(), packages.len() as u32,
@@ -3993,6 +4029,7 @@ mod tests {
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
         let before = identity(handle);
         assert_eq!(before["display_settings"]["panels_opaque"], false, "Night default");
+        assert_eq!(before["source_speed_index"], 0);
         let before_snapshot = read_json(|buffer, capacity, length| {
             mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
         });
@@ -4007,6 +4044,7 @@ mod tests {
             assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, outer, nested, tick), expected);
             assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, outer, nested, tick), expected);
             assert_eq!(mc_game_runtime_toggle_flat_shading_v1(handle, outer, nested, tick), expected);
+            assert_eq!(mc_game_runtime_source_speed_v1(handle, outer, nested, tick, 0), expected);
             assert_eq!(identity(handle), before);
             assert_eq!(read_json(|buffer, capacity, length| {
                 mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
@@ -4015,6 +4053,30 @@ mod tests {
                 mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
             }), before_save);
         }
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 2), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle), before);
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 0), MC_STATUS_OK);
+        let fast = identity(handle);
+        assert_eq!(fast["source_speed_index"], 1);
+        assert_eq!(fast["session"], before["session"]);
+        assert_eq!(fast["display_settings"], before["display_settings"]);
+        assert_eq!(fast["player_preferences"], before["player_preferences"]);
+        let speed_notice = || read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
+        });
+        let notice = speed_notice();
+        assert_eq!(notice["value"].as_array().unwrap().len(), 1);
+        assert_eq!(notice["value"][0]["kind"], "participant.game_speed_fast");
+        assert_eq!(notice["value"][0]["is_local"], true);
+        assert_eq!(notice["value"][0]["remaining_frames"], 50);
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_speed_index"], 0);
+        assert_eq!(speed_notice()["value"][0]["kind"], "participant.game_speed_normal");
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 1), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_speed_index"], 2);
+        assert_eq!(speed_notice()["value"][0]["kind"], "participant.game_speed_super_fast");
+        assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 1), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_speed_index"], 0);
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 3, 1, 0), MC_STATUS_OK);
         assert_eq!(identity(handle)["session"], before["session"]);
         assert_eq!(identity(handle)["display_settings"]["minimap"], false);

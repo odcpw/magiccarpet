@@ -74,6 +74,7 @@ use crate::{
 /// The qualified campaign route runs the source single-pass schedule. Speed
 /// selection is not yet a discoverable descriptor, so the adapter pins the
 /// qualified value instead of exposing an unvalidated source knob.
+#[cfg(test)]
 const CAMPAIGN_SPEED_INDEX: u8 = 0;
 
 /// Typed failure surface for the campaign adapter and backend.
@@ -1147,7 +1148,8 @@ impl Mc2CampaignReplaySave {
             && self.hand_selection_flash_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
             && self.palette_changes.is_empty()
-            && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none());
+            && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none()
+                && change.source_speed_index.is_none() && change.speed_action.is_none());
         ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
             || (self.save_contract == PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
                 && historical_hand_fields_absent)
@@ -1321,6 +1323,7 @@ fn hand_flash_is_zero(value: &[u8; 2]) -> bool { *value == [0; 2] }
 pub struct SourceProcessContext {
     pub shared: GlobalSpecialState,
     pub hand_selection_flash_ticks: [u8; 2],
+    pub source_speed_index: u8,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1330,6 +1333,10 @@ struct Mc2GlobalContextChange {
     context: GlobalSpecialState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hand_selection_flash_ticks: Option<[u8; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_speed_index: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speed_action: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2532,7 +2539,7 @@ impl Mc2RuntimePackageResolver {
         // SLEV preserves the receiver's process globals only after the saved
         // authority verifies. Capture them now, before replacing any owner.
         let warm_process_context = warm_context;
-        if warm_process_context.is_some_and(|context| context.hand_selection_flash_ticks.iter().any(|value| *value > 8)) {
+        if warm_process_context.is_some_and(|context| context.source_speed_index > 2 || context.hand_selection_flash_ticks.iter().any(|value| *value > 8)) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: "receiving source hand-selection flash is invalid".to_owned(),
             });
@@ -2686,10 +2693,12 @@ impl Mc2RuntimePackageResolver {
             } else if let Some(shared) = save.source_context {
                 contexts.insert(guard.runtime_id, SourceProcessContext {
                     shared, hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
+                    source_speed_index: 0,
                 });
             } else if save.source_hand_selection_flash_ticks != [0; 2] {
                 contexts.insert(guard.runtime_id, SourceProcessContext {
                     shared: GlobalSpecialState::default(), hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
+                    source_speed_index: 0,
                 });
             } else {
                 contexts.remove(&guard.runtime_id);
@@ -2747,11 +2756,15 @@ impl Mc2RuntimePackageResolver {
                 .global_context_changes
                 .iter()
                 .any(|change| change.before_operation > save.operations.len()
-                    || change.hand_selection_flash_ticks.is_some_and(|ticks| ticks.iter().any(|value| *value > 8)))
+                    || change.hand_selection_flash_ticks.is_some_and(|ticks| ticks.iter().any(|value| *value > 8))
+                    || change.source_speed_index.is_some_and(|value| value > 2)
+                    || (change.speed_action.is_some() && (change.source_speed_index.is_some() || change.hand_selection_flash_ticks.is_some())))
             || save
                 .global_context_changes
                 .windows(2)
-                .any(|pair| pair[0].before_operation >= pair[1].before_operation)
+                .any(|pair| pair[0].before_operation > pair[1].before_operation
+                    || (pair[0].before_operation == pair[1].before_operation
+                        && pair[0].speed_action.is_none() && pair[1].speed_action.is_none()))
         {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: "source context changes have an invalid replay boundary".to_owned(),
@@ -3016,16 +3029,21 @@ impl Mc2RuntimePackageResolver {
                         let change = help_preference_changes.next().expect("matched help preference boundary");
                         candidate.backend_mut().set_help_enabled(change.enabled);
                     }
-                    if global_context_changes
+                    while global_context_changes
                         .peek()
                         .is_some_and(|change| change.before_operation == operation_index)
                     {
                         let change = global_context_changes
                             .next()
                             .expect("matched replay context boundary");
-                        candidate
-                            .backend_mut()
-                            .apply_process_context_change(change.context, change.hand_selection_flash_ticks);
+                        let backend = candidate.backend_mut();
+                        if let Some(secondary) = change.speed_action {
+                            if backend.campaign.source_global_context() != change.context || !backend.source_speed_action(secondary)? {
+                                return Err(crate::game_runtime::RuntimeTransitionError::InvalidReplay { message: "source speed action was not admitted at its recorded boundary".into() });
+                            }
+                        } else {
+                            backend.apply_process_context_change(change.context, change.hand_selection_flash_ticks, change.source_speed_index);
+                        }
                     }
                     Ok(())
                 },
@@ -3051,7 +3069,10 @@ impl Mc2RuntimePackageResolver {
                     // Paused; the public mutable session gate remains closed
                     // while paused.
                     if let Some(context) = warm_process_context {
-                        candidate.backend_mut().apply_process_context_change(context.shared, Some(context.hand_selection_flash_ticks));
+                        candidate.backend_mut().apply_process_context_change(context.shared, Some(context.hand_selection_flash_ticks), Some(context.source_speed_index));
+                    } else {
+                        let context = candidate.backend().campaign.source_global_context();
+                        candidate.backend_mut().apply_process_context_change(context, None, Some(0));
                     }
                     Ok(())
                 },
@@ -3665,6 +3686,19 @@ impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
 }
 
 impl Mc2CampaignBackend {
+    pub(crate) fn source_speed_action(&mut self, secondary: bool) -> Result<bool, crate::game_runtime::RuntimeTransitionError> {
+        let mut candidate = self.campaign.clone();
+        let admitted = candidate.simulation_mut().source_speed_action(secondary)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if !admitted { return Ok(false); }
+        self.campaign = candidate;
+        self.global_context_changes.push(Mc2GlobalContextChange {
+            before_operation: self.replay_operations.len(), context: self.campaign.source_global_context(),
+            hand_selection_flash_ticks: None, source_speed_index: None, speed_action: Some(secondary),
+        });
+        Ok(true)
+    }
+
     pub(crate) fn source_brightness_slot(&self) -> usize {
         match self.campaign.simulation().canonical_terrain().map_type() {
             crate::native_world::MapType::Day => 0,
@@ -3708,7 +3742,8 @@ impl Mc2CampaignBackend {
     }
     fn process_context(&self) -> SourceProcessContext {
         SourceProcessContext { shared: self.campaign.source_global_context(),
-            hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks() }
+            hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks(),
+            source_speed_index: self.campaign.simulation().source_speed_index() }
     }
 
     fn install_initial_hand_selection_flash(&mut self, ticks: [u8; 2])
@@ -3938,32 +3973,38 @@ impl Mc2CampaignBackend {
     }
 
     fn apply_source_context_change(&mut self, context: GlobalSpecialState) {
-        self.apply_process_context_change(context, None);
+        self.apply_process_context_change(context, None, None);
     }
 
-    fn apply_process_context_change(&mut self, context: GlobalSpecialState, hand_selection_flash_ticks: Option<[u8; 2]>) {
+    fn apply_process_context_change(&mut self, context: GlobalSpecialState, hand_selection_flash_ticks: Option<[u8; 2]>, source_speed_index: Option<u8>) {
+        let source_speed_index = source_speed_index.filter(|speed| self.campaign.simulation().source_speed_index() != *speed);
         if self.campaign.source_global_context() == context && hand_selection_flash_ticks
-            .is_none_or(|ticks| self.campaign.simulation().hand_selection_flash_ticks() == ticks) {
+            .is_none_or(|ticks| self.campaign.simulation().hand_selection_flash_ticks() == ticks)
+            && source_speed_index.is_none_or(|speed| self.campaign.simulation().source_speed_index() == speed) {
             return;
         }
         self.campaign.apply_warm_source_global_context(context);
         if let Some(ticks) = hand_selection_flash_ticks {
             self.campaign.simulation_mut().apply_warm_hand_selection_flash(ticks);
         }
+        if let Some(speed) = source_speed_index { self.campaign.simulation_mut().apply_process_speed_index(speed); }
         let mut change = Mc2GlobalContextChange {
             before_operation: self.replay_operations.len(),
             context,
             hand_selection_flash_ticks,
+            source_speed_index,
+            speed_action: None,
         };
         if self
             .global_context_changes
             .last()
-            .is_some_and(|previous| previous.before_operation == change.before_operation)
+            .is_some_and(|previous| previous.before_operation == change.before_operation && previous.speed_action.is_none())
         {
             let previous = self.global_context_changes.last_mut().expect("matched context boundary");
             if change.hand_selection_flash_ticks.is_none() {
                 change.hand_selection_flash_ticks = previous.hand_selection_flash_ticks;
             }
+            if change.source_speed_index.is_none() { change.source_speed_index = previous.source_speed_index; }
             *previous = change;
         } else {
             self.global_context_changes.push(change);
@@ -4746,6 +4787,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.pending_palette_brightness = Some(brightness);
     }
 
+    fn source_speed_index(&self) -> u8 { self.campaign.simulation().source_speed_index() }
+
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
         let hud_admission = self.pending_hud_top_bar.take().or(self.hud_admission);
         let brightness = self.pending_palette_brightness.take();
@@ -4768,7 +4811,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .advance_elapsed_centiseconds(command.elapsed_centiseconds);
         let _evidence = candidate.step_with_tuning(
             player_command,
-            CAMPAIGN_SPEED_INDEX,
+            candidate.simulation().source_speed_index(),
             self.flight_binding.tuning(),
         );
         if let Some(message) = candidate.events().iter().find_map(|event| match event {
@@ -6794,6 +6837,8 @@ pub(crate) mod tests {
         injected.global_context_changes.push(Mc2GlobalContextChange {
             before_operation: injected.operations.len(), context: GlobalSpecialState::default(),
             hand_selection_flash_ticks: Some([8, 0]),
+            source_speed_index: None,
+            speed_action: None,
         });
         injected.receipt_sha256 = injected.compute_receipt_sha256();
         assert!(!injected.verify(), "a rehashed v8 envelope cannot invent a new hand-flash history");
@@ -6846,6 +6891,135 @@ pub(crate) mod tests {
             actual.expected_terrain_hash, actual.expected_effect_head, &actual.expected_effect_journal_sha256));
         assert_eq!(ticks(&actual_cold), [0, 0]);
         assert_eq!(fs::read(path).unwrap(), actual_bytes, "historical input is never rewritten");
+    }
+
+    #[test]
+    fn source_speed_runs_real_passes_and_orders_process_restore_with_same_tick_actions() {
+        use crate::game_runtime::{GameRuntime, RuntimeGuard, RuntimeMode, preferences::PreferencesCommand};
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8994).unwrap();
+        let title = runtime.identity();
+        let invalid = sim_session::SessionGuard { session_id: 8994, generation: 0, expected_tick: 0 };
+        assert!(runtime.source_speed(title.guard(), invalid, false).is_err());
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert!(runtime.source_speed(loading.guard(), invalid, false).is_err());
+        resolver.open_pending(&mut runtime, loading.guard(), 8994).unwrap();
+        // Detached refusal controls only: no dead/inactive actor is offered
+        // as the positive production path below.
+        for inactive in [false, true] {
+            let mut rejected = runtime.session().unwrap().backend().campaign.clone();
+            let slot = usize::from(rejected.simulation().state.entity_index);
+            if inactive { rejected.simulation_mut().session.state.live.economy.entities[slot].active = false; }
+            else { rejected.simulation_mut().session.state.live.economy.entities[slot].life = -1; }
+            let hash = rejected.state_hash();
+            assert!(!rejected.simulation_mut().source_speed_action(false).unwrap());
+            assert_eq!(rejected.state_hash(), hash);
+        }
+        let turn = |runtime: &GameRuntime<Mc2CampaignBackend>| runtime.session().unwrap().backend().campaign.simulation().shared_spells().local_player().turn;
+        let step = |runtime: &mut GameRuntime<Mc2CampaignBackend>, command: GameCommand, passes: u64| {
+            let before = runtime.session().unwrap().backend().campaign.simulation().state;
+            let before_turn = turn(runtime);
+            let handle = runtime.session().unwrap().backend().campaign.simulation().source_arena().handle(before.entity_index).unwrap();
+            let frame = runtime.session().unwrap().backend().campaign.simulation().session.state.live.source_frame_timing_index;
+            let inner = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(inner, command).unwrap();
+            let simulation = runtime.session().unwrap().backend().campaign.simulation();
+            assert_eq!(simulation.source_arena().handle(before.entity_index), Some(handle), "same current source player generation");
+            assert!(simulation.session.state.live.economy.entities[usize::from(before.entity_index)].life >= 0);
+            assert_eq!(simulation.state.tick, before.tick + passes);
+            assert_eq!(simulation.state.entity_phase, before.entity_phase.wrapping_add(passes as u8),
+                "the actual local player callback visits every UpdateEntities pass");
+            assert_eq!(turn(runtime), before_turn.wrapping_add(1), "PlayerEvents executes once");
+            assert_eq!(simulation.session.state.live.source_frame_timing_index, frame.wrapping_add(1));
+        };
+        step(&mut runtime, GameCommand { roll_axis: 90, pitch_axis: 25, ..GameCommand::default() }, 1);
+        assert_ne!(runtime.session().unwrap().backend().campaign.simulation().state.roll_accumulator, 0,
+            "real input supplies the steering that case7 subsequently clears");
+        let source = runtime.identity();
+        let inner = runtime.session().unwrap().identity().guard();
+        for (outer, nested) in [
+            (RuntimeGuard { generation: source.generation + 1, ..source.guard() }, inner),
+            (source.guard(), sim_session::SessionGuard { generation: inner.generation + 1, ..inner }),
+            (source.guard(), sim_session::SessionGuard { expected_tick: inner.expected_tick + 1, ..inner }),
+        ] {
+            let bytes = resolver.save_replay(&runtime).unwrap();
+            assert!(runtime.source_speed(outer, nested, false).is_err());
+            assert_eq!(runtime.identity(), source);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
+        }
+        assert!(runtime.source_speed(source.guard(), inner, false).unwrap());
+        assert_eq!(runtime.identity().source_speed_index, 1);
+        assert_eq!(runtime.identity().session, source.session, "settings do not dispatch an entity pass");
+        let state = runtime.session().unwrap().backend().campaign.simulation().state;
+        assert_eq!((state.roll_accumulator, state.pitch_accumulator), (0, 0));
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(), "participant.game_speed_fast");
+        let saved = resolver.save_replay(&runtime).unwrap();
+        for _ in 0..3 { let _ = runtime.session().unwrap().snapshot(); assert_eq!(resolver.save_replay(&runtime).unwrap(), saved); }
+        step(&mut runtime, GameCommand::default(), 4);
+        let id = runtime.identity(); let inner = runtime.session().unwrap().identity().guard();
+        assert!(runtime.source_speed(id.guard(), inner, true).unwrap());
+        assert_eq!(runtime.identity().source_speed_index, 0, "either button leaves a nonzero speed");
+        assert!(runtime.source_speed(id.guard(), inner, true).unwrap());
+        assert_eq!(runtime.identity().source_speed_index, 2);
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(), "participant.game_speed_super_fast");
+        step(&mut runtime, GameCommand::default(), 8);
+        let paused = runtime.pause(runtime.identity().guard()).unwrap();
+        let inner = runtime.session().unwrap().identity().guard();
+        let before = runtime.session().unwrap().backend().campaign.simulation().state;
+        let before_turn = turn(&runtime);
+        runtime.paused_campaign_frame_timed(paused.guard(), inner, 0, false).unwrap();
+        assert_eq!(runtime.session().unwrap().backend().campaign.simulation().state.tick, before.tick);
+        assert_eq!(turn(&runtime), before_turn.wrapping_add(1));
+        assert_eq!(runtime.identity().source_speed_index, 2);
+        let original = resolver.save_replay(&runtime).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&original).unwrap();
+        assert!(packet.verify());
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8995).unwrap();
+        let cold_title = cold.identity();
+        resolver.load_replay(&mut cold, cold_title.guard(), 8995, &original).unwrap();
+        assert_eq!(cold.identity().mode, RuntimeMode::Paused);
+        assert_eq!(cold.identity().source_speed_index, 0, "cold process does not import auxiliary speed from SLEV");
+        assert_eq!(cold.identity().session.as_ref().unwrap().tick, before.tick);
+        assert_eq!(cold.session().unwrap().backend().campaign.simulation().state, runtime.session().unwrap().backend().campaign.simulation().state);
+        let cold_bytes = resolver.save_replay(&cold).unwrap();
+        let mut cold_again = GameRuntime::<Mc2CampaignBackend>::title(8996).unwrap();
+        let id = cold_again.identity();
+        resolver.load_replay(&mut cold_again, id.guard(), 8996, &cold_bytes).unwrap();
+        assert_eq!(resolver.save_replay(&cold_again).unwrap(), cold_bytes);
+        // Actual receiver control establishes1. Load verifies saved2 first,
+        // retains receiver1, then a same-tick input must execute AFTER restore.
+        let id = runtime.identity(); let inner = runtime.session().unwrap().identity().guard();
+        runtime.source_speed(id.guard(), inner, false).unwrap();
+        runtime.source_speed(id.guard(), inner, false).unwrap();
+        let receiver = resolver.source_process_context(&runtime).unwrap();
+        assert_eq!(receiver.source_speed_index, 1);
+        // The public warm-load path captures a live receiver's globals and
+        // restores into a distinct fresh Title owner.
+        let mut warm = GameRuntime::<Mc2CampaignBackend>::title(8997).unwrap();
+        let title = warm.identity();
+        resolver.load_replay_with_source_context(&mut warm, title.guard(), 8997, &original, receiver).unwrap();
+        assert_eq!(warm.identity().source_speed_index, 1);
+        let id = warm.identity(); let inner = warm.session().unwrap().identity().guard();
+        warm.source_speed(id.guard(), inner, true).unwrap();
+        assert_eq!(warm.identity().source_speed_index, 0);
+        let ordered = resolver.save_replay(&warm).unwrap();
+        let mut ordered_cold = GameRuntime::<Mc2CampaignBackend>::title(8998).unwrap();
+        let title = ordered_cold.identity();
+        resolver.load_replay(&mut ordered_cold, title.guard(), 8998, &ordered).unwrap();
+        assert_eq!(resolver.save_replay(&ordered_cold).unwrap(), ordered);
+        assert_eq!(ordered_cold.identity().source_speed_index, 0);
+        // Reset source state rather than persisting this auxiliary in CONFIG.
+        let id = warm.identity(); warm.resume(id.guard()).unwrap();
+        let id = warm.identity(); let inner = warm.session().unwrap().identity().guard();
+        warm.source_speed(id.guard(), inner, true).unwrap();
+        assert_eq!(warm.identity().source_speed_index, 2);
+        warm.session_mut().unwrap().reset(inner).unwrap();
+        assert_eq!(warm.identity().source_speed_index, 0);
+        assert!(warm.preferences_command(warm.identity().guard(), PreferencesCommand::Cancel).is_err(), "source control did not relax generic Playing preferences");
     }
 
     #[test]
@@ -8162,7 +8336,7 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .get(&paused.runtime_id),
-            Some(&SourceProcessContext { shared: paused_context, hand_selection_flash_ticks: paused_hand_flash })
+            Some(&SourceProcessContext { shared: paused_context, hand_selection_flash_ticks: paused_hand_flash, source_speed_index: 0 })
         );
         assert_ne!(mission_carry, pending.carry);
         assert_eq!(source_context, paused_context);
@@ -8811,7 +8985,7 @@ pub(crate) mod tests {
                 before.guard(),
                 7124,
                 &corrupt_bytes,
-                SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2] },
+                SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 },
             ),
             Err(Mc2CampaignReplaySaveError::Restore(
                 crate::game_runtime::RestorePlayingError::Transition(
@@ -8824,7 +8998,7 @@ pub(crate) mod tests {
         let mut warm = GameRuntime::<Mc2CampaignBackend>::title(7122).unwrap();
         let guard = warm.identity().guard();
         let loaded = resolver
-            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2] })
+            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 })
             .unwrap();
         assert_eq!(loaded.mode, crate::game_runtime::RuntimeMode::Paused);
         assert!(

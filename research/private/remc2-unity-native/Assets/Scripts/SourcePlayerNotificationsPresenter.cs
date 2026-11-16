@@ -54,6 +54,9 @@ namespace MagicCarpet.Native
                     "participant.panel_transparency_off" => 441,
                     "participant.flat_shading_on" => 442,
                     "participant.flat_shading_off" => 443,
+                    "participant.game_speed_normal" => 381,
+                    "participant.game_speed_fast" => 382,
+                    "participant.game_speed_super_fast" => 383,
                     _ => throw new InvalidDataException("unbound participant notification kind: " + notice.kind)
                 };
                 // Presence is authoritative. Zero is the final visible frame;

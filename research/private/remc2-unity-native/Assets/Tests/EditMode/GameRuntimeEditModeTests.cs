@@ -1435,6 +1435,16 @@ namespace MagicCarpet.Native.Tests
                 Send(EventType.MouseDown, new Vector2(320, 67 + 5 * 18 + 9), 1);
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.DecreaseBrightness), "right click proposes the source clamped decrease");
                 Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 6 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.SpeedPrimary), "left click proposes source fast mode");
+                Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 6 * 18 + 9), 1);
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.SpeedSecondary), "right click proposes source super-fast mode");
+                Unchanged();
+                var speedLabels = new[] { "speed normal", "speed fast", "speed super fast" };
+                for (var speed = 0; speed < speedLabels.Length; speed++)
+                    Assert.That(menu.GameplayLanguageText(SourcePauseMenu.SpeedTextRecord(speed)), Is.EqualTo(speedLabels[speed]));
+                Assert.Throws<InvalidDataException>(() => SourcePauseMenu.SpeedTextRecord(3));
                 menu.ResetPauseHoverHelp();
                 Hover(SourcePauseMenu.IconRect(174).center);
                 menu.ResetPauseHoverHelp();
@@ -3405,6 +3415,66 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveGameRuntimeFrames(5);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.IncreaseBrightness), Is.True);
                 Assert.That(preferences.Current.preferences.brightness[0], Is.EqualTo(1));
+                runtime.QualificationResumeGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.Zero);
+                NativeSim.CampaignEntitySnapshot Archer()
+                {
+                    var row = Array.Find(campaign.Entities(), value => value.entityIndex == 168);
+                    Assert.That((row.active, row.classId, row.model, row.sourceId), Is.EqualTo(((byte)1, (byte)5, (byte)4, (ushort)168)),
+                        "the actual authored Archer remains the current source actor");
+                    return row;
+                }
+                int PlayerTurn() => Array.Find(campaign.Players(), value => value.slot == 0).turn;
+                void ExpectPasses(int count)
+                {
+                    var actor = Archer();
+                    var turn = PlayerTurn();
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var afterActor = Archer();
+                    Assert.That(afterActor.phase, Is.EqualTo(unchecked((byte)(actor.phase + count))),
+                        "the actual Archer header advances once per source entity pass");
+                    Assert.That(PlayerTurn(), Is.EqualTo(unchecked(turn + 1)), "PlayerEvents runs once per outer frame");
+                }
+                ExpectPasses(1);
+                runtime.QualificationApplyGameRuntimeProductionSteering(4, 4);
+                Assert.That((float)Field("steeringRoll"), Is.Not.Zero);
+                var f3 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF3Input", flags);
+                void F3(bool pressed, bool shift, bool alt) => f3.Invoke(runtime, new object[] { pressed, shift, alt });
+                F3(true, true, false); F3(true, false, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.Zero, "modified F3 cannot trigger the bare source action");
+                F3(true, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.EqualTo(1));
+                Assert.That(((float)Field("steeringRoll"), (float)Field("steeringPitch")), Is.EqualTo((0f, 0f)), "entering fast mode clears steering");
+                runtime.QualificationApplyGameRuntimeProductionSteering(4, 4);
+                Assert.That(((float)Field("steeringRoll"), (float)Field("steeringPitch")), Is.EqualTo((0f, 0f)), "fast mode suppresses mouse steering");
+                var speedNotice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((speedNotice[0].kind, speedNotice[0].remaining_frames), Is.EqualTo(("participant.game_speed_fast", (short)50)));
+                ExpectPasses(4);
+                F3(true, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.Zero, "F3 toggles fast back to normal");
+                Assert.That(owner.GameRuntimeParticipantNotifications().value[0].kind, Is.EqualTo("participant.game_speed_normal"));
+                var audio = (OwnerAudioPresentation)Field("ownerAudio");
+                var activeLoops = (System.Collections.IDictionary)typeof(OwnerAudioPresentation)
+                    .GetField("loops", flags).GetValue(audio);
+                Assert.That(activeLoops.Contains(2), Is.True, "the actual wind loop owns its native voice before pause");
+                Assert.Throws<InvalidOperationException>(() => runtime.QualificationResumeGameRuntimeProduction(),
+                    "resume cannot be accepted while already playing");
+                Assert.That(activeLoops.Contains(2), Is.True, "a rejected transition leaves the existing voice owned");
+                runtime.QualificationPauseGameRuntimeProduction();
+                Assert.That(activeLoops.Count, Is.Zero, "the accepted pause immediately retires managed voices before any frame");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.SpeedSecondary), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.EqualTo(2));
+                Assert.That(owner.GameRuntimeParticipantNotifications().value[0].kind, Is.EqualTo("participant.game_speed_super_fast"));
+                runtime.QualificationResumeGameRuntimeProduction();
+                ExpectPasses(8);
+                var fastReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(fastReplay, resources))
+                    Assert.That(cold.GameRuntimeIdentity().source_speed_index, Is.Zero, "a true cold process starts source speed at normal");
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, fastReplay, resources))
+                    Assert.That(warm.GameRuntimeIdentity().source_speed_index, Is.EqualTo(2), "warm load retains the receiver's process speed");
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_speed_index, Is.Zero, "a real retry resets source speed");
             }
             finally
             {

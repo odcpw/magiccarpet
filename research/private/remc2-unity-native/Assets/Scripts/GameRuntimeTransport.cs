@@ -390,6 +390,7 @@ namespace MagicCarpet.Native
             public string runtime_id;
             public string generation;
             public string mode;
+            public byte source_speed_index;
             [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
             public DisplaySettings display_settings;
@@ -1078,6 +1079,7 @@ namespace MagicCarpet.Native
             Current = new Identity {
                 runtime_contract = before.runtime_contract, runtime_id = before.runtime_id,
                 generation = before.generation, mode = before.mode,
+                source_speed_index = before.source_speed_index,
                 frontend_media = before.frontend_media, player_preferences = before.player_preferences,
                 display_settings = before.display_settings,
                 presentation = before.presentation, campaign_menu = before.campaign_menu,
@@ -1128,6 +1130,7 @@ namespace MagicCarpet.Native
             if (after.generation != before.generation || after.mode != before.mode ||
                 !PreservesSessionBinding(before.session, after.session) ||
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
                 after.display_settings.minimap == before.display_settings.minimap ||
                 after.display_settings.top_bar == before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
@@ -1148,6 +1151,7 @@ namespace MagicCarpet.Native
             if (after.generation != before.generation || after.mode != before.mode ||
                 !PreservesSessionBinding(before.session, after.session) ||
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque == before.display_settings.panels_opaque ||
@@ -1168,12 +1172,59 @@ namespace MagicCarpet.Native
             if (after.generation != before.generation || after.mode != before.mode ||
                 !PreservesSessionBinding(before.session, after.session) ||
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading == before.display_settings.flat_shading)
                 throw new InvalidDataException("flat shading toggle changed the wrong source state");
             return after;
+        }
+
+        internal bool SourceSpeed(bool secondary, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source speed");
+            var before = Current;
+            var status = NativeSim.mc_game_runtime_source_speed_v1(
+                RequireHandle(), ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick"), secondary ? (byte)1 : (byte)0);
+            if (status == SourceActionBlocked) {
+                identity = null;
+                return false;
+            }
+            Check(status, "change source speed");
+            var after = IdentitySnapshot();
+            var expectedSpeed = before.source_speed_index == 0 ? (secondary ? 2 : 1) : 0;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.source_speed_index != expectedSpeed)
+                throw new InvalidDataException("source speed changed the wrong runtime state");
+            identity = after;
+            return true;
+        }
+
+        private static ulong SourceSpeedStepTick(Identity before, Identity after, bool recoverPlayer)
+        {
+            // A successful source revival resets speed before entity passes.
+            if (after.source_speed_index != before.source_speed_index &&
+                !(recoverPlayer && before.source_speed_index != 0 && after.source_speed_index == 0))
+                throw new InvalidDataException("campaign step changed source speed without a revival");
+            var passes = after.source_speed_index switch {
+                0 => 1UL,
+                1 => 4UL,
+                2 => 8UL,
+                _ => throw new InvalidDataException("source speed is outside its range")
+            };
+            var expectedTick = checked(ParseCounter(before.session.tick, "tick") + passes);
+            if (ParseCounter(after.session.tick, "tick") != expectedTick)
+                throw new InvalidDataException("campaign step did not advance its source speed passes");
+            return expectedTick;
         }
 
         internal bool SourceBrightness(SourceBrightnessAction action, out Identity identity)
@@ -1207,6 +1258,7 @@ namespace MagicCarpet.Native
             if (after.generation != before.generation || after.mode != before.mode ||
                 !PreservesSessionBinding(before.session, after.session) ||
                 after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
@@ -1269,8 +1321,26 @@ namespace MagicCarpet.Native
                 selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction);
             if (!JsonRenderObservations)
             {
-                var publication = ReadRenderPublication(before, checked(beforeTick + 1));
-                PublishCampaignIdentity(before, publication.Observation.identity);
+                // Source local-player revival may clear a nonzero speed during
+                // the step, without changing the runtime generation.
+                Identity updated = null;
+                var steppedTick = checked(beforeTick + 1);
+                if (before.source_speed_index != 0)
+                {
+                    updated = IdentitySnapshot();
+                    steppedTick = SourceSpeedStepTick(before, updated, recoverPlayer);
+                }
+                var publication = ReadRenderPublication(before, steppedTick);
+                if (updated != null)
+                {
+                    var observed = publication.Observation.identity;
+                    if (updated.mode != PlayingMode || updated.generation != before.generation ||
+                        !PreservesSessionBinding(observed, updated.session) ||
+                        updated.session.generation != observed.generation || updated.session.tick != observed.tick)
+                        throw new InvalidDataException("source speed identity does not match the stepped session");
+                }
+                else
+                    PublishCampaignIdentity(before, publication.Observation.identity);
                 return publication.Observation;
             }
             var identity = IdentitySnapshot();
@@ -1279,12 +1349,12 @@ namespace MagicCarpet.Native
                 !PreservesSessionBinding(before.session, identity.session) ||
                 !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
                 ParseCounter(identity.session.generation, "session_generation") !=
-                    beforeSessionGeneration ||
-                ParseCounter(identity.session.tick, "tick") != checked(beforeTick + 1))
+                    beforeSessionGeneration)
             {
                 throw new InvalidOperationException(
                     "campaign step did not advance only the bound gameplay tick");
             }
+            SourceSpeedStepTick(before, identity, recoverPlayer);
             return JsonRenderObservation();
         }
 
@@ -1470,6 +1540,7 @@ namespace MagicCarpet.Native
         internal static void ValidateIdentity(Identity identity, ulong handle)
         {
             if (identity == null || identity.display_settings == null || identity.runtime_contract != RuntimeContract ||
+                identity.source_speed_index > 2 ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
                 !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }
                     .Contains(identity.mode))

@@ -2265,6 +2265,10 @@ impl PlayerSnapshot {
         self.record[46..48].copy_from_slice(&value.to_le_bytes());
     }
 
+    pub(super) fn set_pitch_0x157(&mut self, value: i16) {
+        self.record[48..50].copy_from_slice(&value.to_le_bytes());
+    }
+
     /// Commit only the player fields owned by `sub_68FF0` spell acquisition.
     ///
     /// The shared spell view is a callback projection, not a second complete

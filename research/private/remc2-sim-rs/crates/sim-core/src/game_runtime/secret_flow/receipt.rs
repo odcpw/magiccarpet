@@ -389,6 +389,7 @@ mod tests {
             level_statistics: Vec::new(),
         });
         RuntimeIdentity {
+            source_speed_index: 0,
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: 42,
             generation: runtime_generation,
