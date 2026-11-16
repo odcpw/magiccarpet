@@ -311,6 +311,13 @@ namespace MagicCarpet.Native
             return gameRuntime.SourceBrightness(action, out identity);
         }
 
+        internal bool GameRuntimeSourceFlightAssistance(out GameRuntimeTransport.Identity identity)
+        {
+            if (gameRuntime == null)
+                throw new InvalidOperationException("session does not own a game runtime");
+            return gameRuntime.SourceFlightAssistance(out identity);
+        }
+
         internal bool GameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction action,
             bool speechAvailable, out GameRuntimeTransport.Identity identity)
         {
@@ -335,7 +342,8 @@ namespace MagicCarpet.Native
             bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null,
+            UnityEngine.Vector2? steeringObservation = null)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -343,7 +351,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction) ??
+                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 
@@ -355,14 +363,15 @@ namespace MagicCarpet.Native
             bool showObjective = false, bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null,
+            UnityEngine.Vector2? steeringObservation = null)
         {
             if (gameRuntime == null) throw new InvalidOperationException("session does not own a game runtime");
             // Diagnostic A/B uses the same advance, inputs and native library.
             // A failed read never retries an already committed command.
             var observation = gameRuntime.CampaignAdvance(roll, pitch, flags, lookYaw, lookPitch, selectSpell,
                 recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment,
-                showObjective, removeCastleStage, mark, cycle, abandonAction);
+                showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
             return DiagnosticRenderObservations ? gameRuntime.CampaignSnapshot() : observation;
         }
 

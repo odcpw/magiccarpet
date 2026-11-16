@@ -435,6 +435,11 @@ namespace MagicCarpet.Native
                             _ => CampaignMenuPresenter.Action.ToggleSpeech
                         };
                     }
+                    if (index == 4)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.ToggleFlightAssistance;
+                    }
                     if (index == 16)
                     {
                         Event.current.Use();
@@ -480,7 +485,6 @@ namespace MagicCarpet.Native
                     preferences.ApplySource(draft => {
                         switch (option) {
                             case 0: draft.show_help = !draft.show_help; break;
-                            case 4: draft.flight_assistance = !draft.flight_assistance; break;
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;
                             case 10: draft.shadows = !draft.shadows; break;

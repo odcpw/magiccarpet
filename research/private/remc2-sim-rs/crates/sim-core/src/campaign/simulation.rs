@@ -9277,6 +9277,25 @@ impl Mc2Simulation {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn prepare_flight_assistance_notice(&self, enabled: bool)
+        -> std::result::Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications, String>
+    {
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live = &self.session.state.live;
+        let mut notices = live.player_lifecycle_notifications.clone();
+        notices.publish(live.shared_spells.local_player().player_color_index(),
+            live.core.state.entity_index,
+            if enabled { PlayerLifeNoticeKind::FlightAssistanceOn } else { PlayerLifeNoticeKind::FlightAssistanceOff },
+            50).map_err(|error| error.to_string())?;
+        Ok(notices)
+    }
+
+    pub(crate) fn commit_flight_assistance_notice(&mut self,
+        notices: crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    ) {
+        self.session.state.live.player_lifecycle_notifications = notices;
+    }
+
     /// Validate the complete local source notice before CONFIG publication.
     pub(crate) fn prepare_source_audio_notice(
         &self, action: crate::game_runtime::preferences::SourceAudioAction, enabled: bool,

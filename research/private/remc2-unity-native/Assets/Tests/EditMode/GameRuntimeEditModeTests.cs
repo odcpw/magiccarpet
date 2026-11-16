@@ -3716,6 +3716,138 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
+        [Test]
+        public void SteeringObservationEncodingPreservesCommandVariantsAndLegacyBytes()
+        {
+            foreach (var json in new[] {
+                "{}",
+                "{\"roll_axis\":0,\"cast_left\":false}",
+                "{\"roll_axis\":0,\"select_spell\":\"spell.fireball\"}",
+                "{\"roll_axis\":0,\"assign_spell\":{\"spell_id\":\"spell.fireball\",\"tier\":1,\"hand\":\"left\"}}",
+                "{\"roll_axis\":0,\"mark_spell\":{\"spell_id\":\"spell.fireball\",\"hand\":\"left\"}}",
+                "{\"roll_axis\":0,\"cycle_marked_spell\":{\"hand\":\"left\",\"direction\":\"next\"}}",
+                "{\"roll_axis\":0,\"abandon_action\":\"toggle_gameplay_map\"}" })
+            {
+                var original = Encoding.UTF8.GetBytes(json);
+                Assert.That(EngineSessionTransport.EncodeSteeringObservation(original, null), Is.SameAs(original));
+                var encoded = EngineSessionTransport.EncodeSteeringObservation(original, new Vector2(-0f, 0.45f));
+                System.Xml.Linq.XElement Decode(byte[] bytes)
+                {
+                    using var reader = JsonReaderWriterFactory.CreateJsonReader(bytes, System.Xml.XmlDictionaryReaderQuotas.Max);
+                    return System.Xml.Linq.XElement.Load(reader);
+                }
+                var before = Decode(original);
+                var after = Decode(encoded);
+                var observed = after.Element("steering_observation");
+                Assert.That(observed, Is.Not.Null);
+                var bits = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(
+                    observed.Elements("item"), item => uint.Parse(item.Value, System.Globalization.CultureInfo.InvariantCulture)));
+                Assert.That(bits, Is.EqualTo(new[] { 0u, unchecked((uint)BitConverter.SingleToInt32Bits(0.45f)) }));
+                observed.Remove();
+                // Empty JSON objects can be represented as either a full
+                // element or an empty element by the XML JSON reader.
+                void NormalizeEmptyObjects(System.Xml.Linq.XElement root)
+                {
+                    foreach (var element in root.DescendantsAndSelf())
+                        if (element.Attribute("type")?.Value == "object" &&
+                            !element.HasElements && element.Value.Length == 0)
+                            element.RemoveNodes();
+                }
+                NormalizeEmptyObjects(before);
+                NormalizeEmptyObjects(after);
+                Assert.That(System.Xml.Linq.XNode.DeepEquals(before, after), Is.True,
+                    $"the original command fields are preserved; input={json}; encoded={Encoding.UTF8.GetString(encoded)}; " +
+                    $"before={before.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)}; after={after.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)}; " +
+                    $"before.IsEmpty={before.IsEmpty}; after.IsEmpty={after.IsEmpty}");
+                var negative = Decode(EngineSessionTransport.EncodeSteeringObservation(original, new Vector2(-0.45f, 0.45f)));
+                var negativeObservation = negative.Element("steering_observation");
+                Assert.That(negativeObservation, Is.Not.Null);
+                var negativeBits = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(
+                    negativeObservation.Elements("item"), item => uint.Parse(item.Value, System.Globalization.CultureInfo.InvariantCulture)));
+                Assert.That(negativeBits, Is.EqualTo(new[] {
+                    unchecked((uint)BitConverter.SingleToInt32Bits(-0.45f)),
+                    unchecked((uint)BitConverter.SingleToInt32Bits(0.45f)) }));
+                negativeObservation.Remove();
+                NormalizeEmptyObjects(negative);
+                Assert.That(System.Xml.Linq.XNode.DeepEquals(before, negative), Is.True,
+                    "negative steering bits preserve the original command fields");
+            }
+        }
+
+        [Test]
+        public void SourceFlightAssistanceDoesNotRecenterWhileSubByteMouseMoves()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-assist-mouse-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source assistance mouse precision"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var owner = (NativeSession)Field("session");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                runtime.QualificationPauseGameRuntimeProduction();
+                Assert.That(preferences.ApplySource(value => {
+                    value.input_device = "mouse_keyboard";
+                    value.mouse_sensitivity = 10;
+                }), Is.True);
+                runtime.QualificationResumeGameRuntimeProduction();
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF2Input", flags).Invoke(runtime,
+                    new object[] { true, false, false });
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.flight_assistance, Is.True);
+                var initialSequence = owner.ObservedCampaignIdentity().player_preferences.assistance_sequence;
+                float mouseX = 0;
+                var sampled = new PlayerPreferencesPresenter(_ => throw new InvalidOperationException("unexpected preferences command"),
+                    Path.Combine(temporary, "profile"), preferences.Current,
+                    keyHeld: _ => false, keyPressed: _ => false, mouseHeld: _ => false, mousePressed: _ => false,
+                    mouseAxis: axis => axis == "Mouse X" ? mouseX : 0);
+                var clamp = typeof(MagicCarpetRuntime).GetMethod("ClampToSByte",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                var steering = typeof(MagicCarpetRuntime).GetField("steeringRoll", flags);
+                var frames = 0;
+                for (var turn = 0; turn < 49; turn++)
+                {
+                    mouseX = turn % 2 == 0 ? 1 : -1;
+                    var sample = sampled.SampleInput(0, true);
+                    Assert.That(sample.Roll, Is.EqualTo(turn % 2 == 0 ? 0.45f : 0f).Within(0.0001f));
+                    Assert.That((sbyte)clamp.Invoke(null, new object[] { sample.Roll }), Is.Zero,
+                        "the current command quantizes both moving samples to zero");
+                    steering.SetValue(runtime, sample.Roll);
+                    var tick = ulong.Parse(owner.ObservedCampaignIdentity().session.tick);
+                    do {
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(++frames, Is.LessThan(300), "the real owner admits the requested turns");
+                    } while (ulong.Parse(owner.ObservedCampaignIdentity().session.tick) == tick);
+                    Assert.That(ulong.Parse(owner.ObservedCampaignIdentity().session.tick), Is.EqualTo(tick + 1));
+                    Assert.That(owner.ObservedCampaignIdentity().player_preferences.assistance_sequence,
+                        Is.EqualTo(initialSequence), "changing mouse position must not produce an idle recenter");
+                }
+                var stationaryTick = ulong.Parse(owner.ObservedCampaignIdentity().session.tick);
+                var targetTick = stationaryTick + 49;
+                while (ulong.Parse(owner.ObservedCampaignIdentity().session.tick) < targetTick)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(++frames, Is.LessThan(600), "the real owner admits stationary turns");
+                }
+                Assert.That(ulong.Parse(owner.ObservedCampaignIdentity().session.tick), Is.EqualTo(targetTick));
+                Assert.That(owner.ObservedCampaignIdentity().player_preferences.assistance_sequence,
+                    Is.EqualTo(initialSequence + 1), "stationary fractional steering still reaches the real idle recenter");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator SourceAudioKeysDriveRealSpeechSoundAndMusicWithoutGameplayStep()
         {
@@ -3743,9 +3875,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
                     prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)));
                 var f4 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF4Input", flags);
+                var f2 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF2Input", flags);
                 var f5 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags);
                 var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
                 void F4(bool shift = false, bool alt = false) => f4.Invoke(runtime, new object[] { true, shift, alt });
+                void F2(bool shift = false, bool alt = false) => f2.Invoke(runtime, new object[] { true, shift, alt });
                 void F5(bool shift = false, bool admitted = false, bool alt = false) =>
                     f5.Invoke(runtime, new object[] { true, shift, admitted, alt });
                 void F6(bool shift = false, bool admitted = false, bool alt = false) =>
@@ -3759,6 +3893,18 @@ namespace MagicCarpet.Native.Tests
                         menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(record)));
                 }
                 var beforeBlocked = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False);
+                F2(true); F2(false, true);
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False, "modifier branches suppress bare F2");
+                var flightTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                F2();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(flightTick));
+                Notice("participant.flight_assistance_on", 398);
+                F2();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False);
+                Notice("participant.flight_assistance_off", 399);
+                beforeBlocked = runtime.QualificationSaveGameRuntimeProductionReplay();
                 Assert.That(owner.GameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Speech, false, out var blocked), Is.False);
                 Assert.That(blocked, Is.Null, "unavailable CD support cannot change the actual owner");
                 CollectionAssert.AreEqual(beforeBlocked, runtime.QualificationSaveGameRuntimeProductionReplay());
@@ -3855,6 +4001,14 @@ namespace MagicCarpet.Native.Tests
                     surfaceRuntime.QualificationDisposeGameRuntimeProduction();
                     UnityEngine.Object.DestroyImmediate(surfaceRoot);
                 }
+                F2();
+                var assistanceBefore = prefs.Current.assistance_sequence;
+                typeof(PlayerPreferencesPresenter).GetField("roll", flags).SetValue(prefs, 0.5f);
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                prefs.Synchronize(owner.ObservedCampaignIdentity().player_preferences);
+                Assert.That(prefs.Current.assistance_sequence, Is.EqualTo(assistanceBefore + 1),
+                    "the accepted F2 preference reaches the actual idle recenter producer");
+                Assert.That(prefs.SteeringRoll, Is.Zero, "the retained sequence reaches the real recenter consumer");
             }
             finally
             {
@@ -3938,7 +4092,8 @@ namespace MagicCarpet.Native.Tests
                 foreach (var choice in new[] {
                     (2, CampaignMenuPresenter.Action.ToggleMusic, "participant.music_off", 393),
                     (1, CampaignMenuPresenter.Action.ToggleSound, "participant.sound_off", 391),
-                    (3, CampaignMenuPresenter.Action.ToggleSpeech, "participant.speech_off", 470) })
+                    (3, CampaignMenuPresenter.Action.ToggleSpeech, "participant.speech_off", 470),
+                    (4, CampaignMenuPresenter.Action.ToggleFlightAssistance, "participant.flight_assistance_on", 398) })
                 {
                     Send(new Vector2(320, 67 + choice.Item1 * 18 + 9));
                     Assert.That(action, Is.EqualTo(choice.Item2));
@@ -3951,6 +4106,7 @@ namespace MagicCarpet.Native.Tests
                     coldOwner.Handle, coldOwner.IdentitySnapshot(), json), Path.Combine(temporary, "profile"));
                 Assert.That((cold.Current.preferences.sound_enabled, cold.Current.preferences.music_enabled,
                     cold.Current.preferences.speech_enabled), Is.EqualTo((false, false, false)), "source audio choices persist in the cold profile");
+                Assert.That(cold.Current.preferences.flight_assistance, Is.True, "source assistance persists in the cold profile");
                 Assert.That(initial.session.session_id, Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
             }
             finally

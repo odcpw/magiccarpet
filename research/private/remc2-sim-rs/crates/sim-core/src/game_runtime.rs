@@ -108,6 +108,7 @@ pub(crate) enum ReplayOperation<C> {
     PlayerNamesNotice { visible: bool },
     /// Only the local notice is GAME history; audio flags remain CONFIG.
     SourceAudioNotice { action: preferences::SourceAudioAction, enabled: bool },
+    FlightAssistanceNotice { enabled: bool },
     Step {
         command: C,
     },
@@ -232,6 +233,7 @@ pub(crate) enum DisplayNotice {
     FlatShading(bool),
     PlayerNames(bool),
     SourceAudio(preferences::SourceAudioAction, bool),
+    FlightAssistance(bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1401,6 +1403,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::SourceAudio(action, enabled))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::FlightAssistanceNotice { enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::FlightAssistance(enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -1941,6 +1947,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         if next_paused {
             session.backend_mut().enter_pause();
         }
+        self.player_preferences.carry_input_generation(
+            (self.generation, session_guard.generation),
+            (next_runtime_generation, session.identity().generation),
+        );
         *paused = next_paused;
         self.generation = next_runtime_generation;
         Ok(self.identity())
@@ -2038,6 +2048,30 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source ChangeSettings case5 in the supported offline campaign. AI
+    /// participant rows and replay recording are not multiplayer admission.
+    /// Prepare the complete local notice before the atomic profile write.
+    pub fn source_flight_assistance_preferences(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let enabled = !self.player_preferences.snapshot().preferences.flight_assistance;
+        let notice = session.backend().prepare_flight_assistance_notice(enabled)?;
+        let accepted = self.player_preferences.source_flight_assistance_toggle()
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            session.backend_mut().commit_flight_assistance_notice(enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_flight_assistance_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
     /// Source cases2/3/4: admit against the actual host/resource capability,
     /// then atomically publish CONFIG and the prepared type3/50 local notice.
     pub fn source_audio_preferences(&mut self, guard: RuntimeGuard, session_guard: SessionGuard,

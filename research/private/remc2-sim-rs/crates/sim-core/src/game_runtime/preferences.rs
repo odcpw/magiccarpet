@@ -216,6 +216,10 @@ fn optional_locale<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreferencesCommand {
+    SourceFlightAssistance {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+    },
     SourceBrightness {
         #[serde(deserialize_with = "deserialize_brightness_guard")]
         session_guard: sim_session::SessionGuard,
@@ -313,6 +317,8 @@ pub struct PreferencesSnapshot {
     /// Ephemeral result for the guarded source audio command.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_audio_admitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_flight_assistance_admitted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -330,6 +336,21 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    /// Source case5 changes only the operational flag. The excluded idle
+    /// observations retain their sample/counter until assistance runs again.
+    pub fn source_flight_assistance_toggle(&mut self) -> Result<Option<bool>, String> {
+        if self.audio_preview.is_some() {
+            return Ok(None);
+        }
+        let mut preferences = self.current.clone();
+        preferences.flight_assistance = !preferences.flight_assistance;
+        self.write_profile(&preferences)?;
+        let enabled = preferences.flight_assistance;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
+    }
+
     fn write_profile(&self, preferences: &PlayerPreferences) -> Result<(), String> {
         let path = self.path.as_ref().ok_or("preferences profile is not installed")?;
         let parent = path.parent().ok_or("preferences path has no parent")?;
@@ -418,11 +439,13 @@ impl PreferenceStore {
             language_status: self.language_status.clone(),
             source_brightness_admitted: None,
             source_audio_admitted: None,
+            source_flight_assistance_admitted: None,
         }
     }
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
+            PreferencesCommand::SourceFlightAssistance { .. } => return Err("source flight assistance requires a guarded active campaign".into()),
             PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
             PreferencesCommand::SourceAudio { .. } => return Err("source audio requires a guarded active campaign".into()),
             PreferencesCommand::Install { profile_dir } => {
@@ -597,6 +620,14 @@ impl PreferenceStore {
         self.assistance.reset();
         self.input_generation = None;
     }
+
+    /// Pause/resume keeps the same input owner. Only carry a matching binding;
+    /// an actual reset or new session still starts a fresh observation run.
+    pub(super) fn carry_input_generation(&mut self, previous: (u64, u64), next: (u64, u64)) {
+        if self.input_generation == Some(previous) {
+            self.input_generation = Some(next);
+        }
+    }
 }
 
 /// `LoadLanguageFile` returns the numeric owner filename suffix, not a locale
@@ -749,20 +780,22 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         mut command: sim_session::GameCommand,
     ) -> Result<(), PreferenceStepError<B::Error>> {
         if self.identity().mode != super::RuntimeMode::Playing {
-            self.player_preferences.reset_input();
             return Err(PreferenceStepError::Unavailable);
         }
         self.session().ok_or(PreferenceStepError::Unavailable)?
             .completion_status(guard)
             .map_err(|error| PreferenceStepError::Session(sim_session::GameSessionError::Guard(error)))?;
+        // The exact input sample belongs to this operational producer, not
+        // GAME history. Record only its derived recenter and existing axes.
+        let steering_observation = command.steering_observation.take();
         let top_bar = self.display_settings.top_bar;
         let brightness = self.player_preferences.current.brightness;
         let previous_assistance = self.player_preferences.assistance.clone();
         let previous_sequence = self.player_preferences.assistance_sequence;
         let previous_generation = self.player_preferences.input_generation;
-        // Pause/resume, restart and mission changes advance authoritative
-        // lifecycle generations even when gameplay ticks remain unchanged.
-        // Their first accepted observation cannot inherit an earlier idle run.
+        // Real resets and mission changes start a new input owner. An admitted
+        // pause/resume carries its exact generation binding without consuming
+        // the source idle counter.
         let input_generation = (self.generation, guard.generation);
         if previous_generation != Some(input_generation) {
             self.player_preferences.assistance.reset();
@@ -778,6 +811,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             AssistanceInput {
                 roll: command.roll_axis,
                 pitch: command.pitch_axis,
+                steering_observation,
                 action,
             },
             AssistancePolicy {
@@ -827,6 +861,7 @@ fn command_has_player_activity(command: &sim_session::GameCommand) -> bool {
 pub struct AssistanceInput {
     pub roll: i8,
     pub pitch: i8,
+    pub steering_observation: Option<sim_session::SteeringObservation>,
     /// Any held movement/cast or ordered action prevents the idle producer.
     pub action: bool,
 }
@@ -840,17 +875,18 @@ pub struct AssistancePolicy {
 
 #[derive(Clone, Debug, Default)]
 pub struct FlightAssistance {
-    previous: (i8, i8),
+    previous: sim_session::SteeringObservation,
     unchanged: u16,
 }
 impl FlightAssistance {
     pub fn reset(&mut self) {
-        self.previous = (0, 0);
+        self.previous = sim_session::SteeringObservation::default();
         self.unchanged = 0;
     }
 
     /// Preserve source u16 counter width and strict > 0x30 threshold. Activity
-    /// starts a new observation run; excluded modes cannot accumulate a stop.
+    /// starts a new observation run; excluded modes retain, but cannot advance,
+    /// the previous sample and counter (sub_1A7A0).
     pub fn observe(
         &mut self,
         input: AssistanceInput,
@@ -858,10 +894,10 @@ impl FlightAssistance {
         policy: AssistancePolicy,
     ) -> bool {
         if !enabled || !policy.playing || policy.menu_open || policy.network {
-            self.reset();
             return false;
         }
-        let position = (input.roll, input.pitch);
+        let position = input.steering_observation.unwrap_or_else(||
+            sim_session::SteeringObservation::from_axes(input.roll, input.pitch));
         if input.action || self.previous != position {
             self.previous = position;
             self.unchanged = 0;
@@ -873,8 +909,9 @@ impl FlightAssistance {
             return false;
         }
         self.unchanged = 0;
-        // Full-stop's recenter changes the position carrier for the next turn.
-        self.previous = (0, 0);
+        // Opcode39 is only queued here. Retain the observed sample: the later
+        // PlayerEvents handler recenters, and that changed input is observed
+        // on the next pass rather than manufactured in this producer.
         true
     }
 }
@@ -894,8 +931,9 @@ mod tests {
         };
         use sim_session::{GameCommand, GameSessionError, SessionGuard};
 
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let package = std::env::var_os("MC_FLIGHT_ASSISTANCE_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq8-level1-collision-v5-night"));
         let definition =
             Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
         let open = || {
@@ -934,7 +972,7 @@ mod tests {
         let guard = observed.session().unwrap().identity().guard();
         let before = observed.session().unwrap().snapshot();
         let before_assistance = assistance(&observed);
-        for (rejected_guard, command, backend_rejection) in [
+        for (rejected_guard, mut command, backend_rejection) in [
             (
                 SessionGuard {
                     expected_tick: 1,
@@ -960,6 +998,7 @@ mod tests {
                 true,
             ),
         ] {
+            command.steering_observation = Some(sim_session::SteeringObservation::try_from([0.45_f32.to_bits(), 0]).unwrap());
             let observed_error = observed
                 .step_player_with_preferences(rejected_guard, command.clone())
                 .unwrap_err();
@@ -1011,6 +1050,11 @@ mod tests {
                     .replay_operation_count(),
                 1
             );
+            for _ in 0..48 {
+                let guard = runtime.session().unwrap().identity().guard();
+                runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            }
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 48);
             runtime.pause(runtime.identity().guard()).unwrap();
         }
         let paused = advanced.session().unwrap().snapshot();
@@ -1038,8 +1082,28 @@ mod tests {
                     .replay_operation_count(),
                 paused_operations
             );
-            assert_eq!(runtime.player_preferences.input_generation, None);
+            assert_eq!(runtime.player_preferences.input_generation,
+                Some((runtime.generation, paused_guard.generation)));
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 48,
+                "paused exclusion and a rejected ordinary input retain the source idle run");
+        }
+        for runtime in [&mut observed, &mut advanced] {
+            runtime.resume(runtime.identity().guard()).unwrap();
+            let before = assistance(runtime);
+            assert!(runtime.advance_player_with_preferences(paused_guard, GameCommand::default()).is_err());
+            assert_eq!(assistance(runtime), before, "a stale pre-resume guard consumes nothing");
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            assert_eq!(runtime.player_preferences.assistance_sequence, 2,
+                "the49th actual idle observation follows the retained pause boundary");
             assert_eq!(runtime.player_preferences.assistance.unchanged, 0);
+            let session = runtime.session_mut().unwrap();
+            session.reset(session.identity().guard()).unwrap();
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 1,
+                "a genuine session reset still starts a fresh input owner");
+            assert_eq!(runtime.player_preferences.assistance_sequence, 2);
         }
     }
 
@@ -1490,21 +1554,123 @@ mod tests {
                 ..policy
             },
         ] {
+            let displaced = AssistanceInput { roll: 17, pitch: -9, ..AssistanceInput::default() };
+            assert!(!assist.observe(displaced, true, policy));
+            for _ in 0..48 { assert!(!assist.observe(displaced, true, policy)); }
             for _ in 0..100 {
-                assert!(!assist.observe(idle, true, excluded));
+                assert!(!assist.observe(AssistanceInput { action: true, ..idle }, true, excluded));
             }
-            for _ in 0..48 {
-                assert!(!assist.observe(idle, true, policy));
-            }
-            assert!(assist.observe(idle, true, policy));
+            assert_eq!((assist.previous, assist.unchanged), (sim_session::SteeringObservation::from_axes(17, -9), 48),
+                "excluded source branches do not sample activity or clear the idle run");
+            assert!(assist.observe(displaced, true, policy));
+            assert_eq!(assist.previous, sim_session::SteeringObservation::from_axes(17, -9), "queue39 retains the pre-center sample");
+            assert!(!assist.observe(idle, true, policy), "the later actual center starts a new run");
         }
+        for _ in 0..48 { assert!(!assist.observe(idle, true, policy)); }
         for _ in 0..100 {
-            assert!(!assist.observe(idle, false, policy));
+            assert!(!assist.observe(AssistanceInput { roll: 100, action: true, ..idle }, false, policy));
         }
-        for _ in 0..48 {
-            assert!(!assist.observe(idle, true, policy));
-        }
+        assert_eq!((assist.previous, assist.unchanged), (sim_session::SteeringObservation::default(), 48));
         assert!(assist.observe(idle, true, policy));
+    }
+
+    #[test]
+    fn exact_steering_observation_preserves_activity_and_suppressed_samples() {
+        use sim_session::{GameCommand, SteeringObservation};
+        let zero = AssistanceInput::default();
+        let sample = SteeringObservation::try_from([0.45_f32.to_bits(), 0]).unwrap();
+        let precise = AssistanceInput { steering_observation:Some(sample), ..zero };
+        let policy = AssistancePolicy { playing:true, ..AssistancePolicy::default() };
+        let mut assist = FlightAssistance::default();
+        assert!(!assist.observe(precise,true,policy));
+        for index in 0..100 {
+            assert!(!assist.observe(if index % 2 == 0 { zero } else { precise }, true, policy));
+            assert_eq!(assist.unchanged, 0, "pre-quantization activity never becomes rounded-axis idle");
+        }
+        for _ in 0..48 { assert!(!assist.observe(precise, true, policy)); }
+        assert!(assist.observe(precise, true, policy), "49 unchanged precise samples still recenter");
+        assert_eq!(assist.previous, sample, "recenter is deferred, not an invented zero sample");
+        for (enabled, excluded) in [(false,policy),(true,AssistancePolicy { menu_open:true,..policy }),
+            (true,AssistancePolicy { network:true,..policy }),(true,AssistancePolicy::default())] {
+            for _ in 0..48 { assert!(!assist.observe(precise, true, policy)); }
+            for _ in 0..60 { assert!(!assist.observe(zero, enabled, excluded)); }
+            assert_eq!((assist.previous,assist.unchanged),(sample,48));
+            assert!(assist.observe(precise,true,policy));
+        }
+        assert!(!assist.observe(zero,true,policy), "the actual centered sample resets the run");
+        let legacy = GameCommand::default();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        assert!(!String::from_utf8(bytes.clone()).unwrap().contains("steering_observation"));
+        assert_eq!(serde_json::from_slice::<GameCommand>(&bytes).unwrap(), legacy);
+        let command: GameCommand = serde_json::from_value(serde_json::json!({
+            "steering_observation":[0.45_f32.to_bits(),(-0.0_f32).to_bits()]})).unwrap();
+        assert_eq!(command.steering_observation,Some(sample));
+        assert_eq!(serde_json::to_value(command).unwrap()["steering_observation"],
+            serde_json::json!([0.45_f32.to_bits(),0]));
+        for bits in [serde_json::json!([f32::NAN.to_bits(),0]),serde_json::json!([f32::INFINITY.to_bits(),0]),
+            serde_json::json!([(-128.00002_f32).to_bits(),0]),serde_json::json!([0,127.00001_f32.to_bits()]),
+            serde_json::json!([0]),serde_json::json!([0,0,0]),serde_json::json!([-1,0])] {
+            assert!(serde_json::from_value::<GameCommand>(serde_json::json!({"steering_observation":bits})).is_err());
+        }
+    }
+
+    #[test]
+    fn source_flight_assistance_preserves_idle_state_and_atomic_profile() {
+        let profile = std::env::temp_dir().join(format!("mc-flight-assistance-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap();
+        let mut store = PreferenceStore::default();
+        let before = store.snapshot();
+        assert!(store.source_flight_assistance_toggle().is_err());
+        assert_eq!(store.snapshot(), before);
+        let install = || PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() };
+        store.command(install()).unwrap();
+        let request = serde_json::json!({"operation":"source_flight_assistance", "session_guard":
+            {"session_id":"1","generation":"2","expected_tick":"3"}});
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(request.clone()).unwrap(),
+            PreferencesCommand::SourceFlightAssistance { .. }));
+        assert!(store.command(serde_json::from_value(request.clone()).unwrap()).is_err());
+        let mut invalid = request;
+        invalid["session_guard"]["expected_tick"] = "03".into();
+        assert!(serde_json::from_value::<PreferencesCommand>(invalid).is_err());
+        let original = store.current.clone();
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(true));
+        let policy = AssistancePolicy { playing: true, ..AssistancePolicy::default() };
+        let input = AssistanceInput { roll: 17, pitch: -9, ..AssistanceInput::default() };
+        assert!(!store.observe_input(input, policy));
+        for _ in 0..48 { assert!(!store.observe_input(input, policy)); }
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(false));
+        for _ in 0..20 { assert!(!store.observe_input(AssistanceInput::default(), policy)); }
+        assert_eq!((store.assistance.previous, store.assistance.unchanged), (sim_session::SteeringObservation::from_axes(17, -9), 48));
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(true));
+        assert!(store.observe_input(input, policy), "reenabling resumes the real idle carrier");
+        assert_eq!(store.assistance_sequence, 1);
+        assert_eq!(store.assistance.previous, sim_session::SteeringObservation::from_axes(17, -9));
+        assert!(!store.observe_input(AssistanceInput::default(), policy));
+        assert_eq!(store.assistance.unchanged, 0);
+        let before = store.snapshot();
+        let bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        store.command(PreferencesCommand::PreviewAudio { sound_enabled:false, music_enabled:false,
+            speech_enabled:false,sound_volume:0,music_volume:0 }).unwrap();
+        let preview = store.snapshot();
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), None);
+        assert_eq!(store.snapshot(), preview);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(), bytes);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        assert_eq!(store.snapshot(), before);
+        let mut cold = PreferenceStore::default();
+        assert_eq!(cold.command(install()).unwrap().preferences, store.snapshot().preferences);
+        assert_eq!(cold.assistance.unchanged, 0, "profile saves the flag, not an idle timer");
+        let mut expected = original;
+        expected.flight_assistance = true;
+        assert_eq!(cold.current, expected, "source action preserves every unrelated preference");
+        let saved_path = store.path.clone().unwrap();
+        store.path = Some(profile.clone()); // Actual rename failure: destination is a directory.
+        let before = store.snapshot();
+        assert!(store.source_flight_assistance_toggle().is_err());
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(saved_path).unwrap(), bytes);
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

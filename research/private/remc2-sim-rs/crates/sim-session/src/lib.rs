@@ -474,6 +474,42 @@ pub struct SourceMenuAdmission {
     pub tick: u64,
 }
 
+/// Exact pre-quantization steering sample. Private, finite IEEE754 values in
+/// the same -128..127 range as the steering adapter; canonical zero makes bit
+/// equality numerical equality without NaN or signed-zero exceptions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "[u32; 2]", into = "[u32; 2]")]
+pub struct SteeringObservation([u32; 2]);
+
+impl SteeringObservation {
+    #[must_use]
+    pub fn from_axes(roll: i8, pitch: i8) -> Self {
+        Self([f32::from(roll).to_bits(), f32::from(pitch).to_bits()])
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> [u32; 2] { self.0 }
+}
+
+impl TryFrom<[u32; 2]> for SteeringObservation {
+    type Error = &'static str;
+
+    fn try_from(mut bits: [u32; 2]) -> Result<Self, Self::Error> {
+        for axis in &mut bits {
+            let value = f32::from_bits(*axis);
+            if !value.is_finite() || !(-128.0..=127.0).contains(&value) {
+                return Err("steering observation requires finite axes in -128..127");
+            }
+            if value == 0.0 { *axis = 0; }
+        }
+        Ok(Self(bits))
+    }
+}
+
+impl From<SteeringObservation> for [u32; 2] {
+    fn from(value: SteeringObservation) -> Self { value.0 }
+}
+
 /// Portable player commands. Game adapters own their admission and rules;
 /// no remc2 opcode or bitfield crosses this boundary.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -483,6 +519,10 @@ pub struct GameCommand {
     pub lateral: LateralControl,
     pub roll_axis: i8,
     pub pitch_axis: i8,
+    /// Operational input observation consumed by runtime assistance before
+    /// recording the derived gameplay command. Omission retains legacy axes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steering_observation: Option<SteeringObservation>,
     pub cast_left: bool,
     pub cast_right: bool,
     pub cast_selected: bool,
@@ -1213,6 +1253,21 @@ mod tests {
         default_catalog, engine_capabilities,
     };
     use std::{cell::Cell, convert::Infallible, path::PathBuf};
+
+    #[test]
+    fn steering_observation_admits_only_canonical_finite_sampler_values() {
+        assert_eq!(SteeringObservation::try_from([0, (-0.0_f32).to_bits()]).unwrap(),
+            SteeringObservation::default());
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -128.00002, 127.00001] {
+            assert!(SteeringObservation::try_from([value.to_bits(), 0]).is_err());
+            assert!(SteeringObservation::try_from([0, value.to_bits()]).is_err());
+        }
+        let precise = SteeringObservation::try_from([0.45_f32.to_bits(), (-0.45_f32).to_bits()]).unwrap();
+        assert_eq!(precise.bits(), [0.45_f32.to_bits(), (-0.45_f32).to_bits()]);
+        assert_ne!(precise, SteeringObservation::from_axes(0, 0));
+        assert_eq!(SteeringObservation::try_from([(-128.0_f32).to_bits(), 127.0_f32.to_bits()]).unwrap(),
+            SteeringObservation::from_axes(-128, 127));
+    }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct ProbeSnapshot {

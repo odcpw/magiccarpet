@@ -530,6 +530,13 @@ namespace MagicCarpet.Native
             public bool speech_available;
         }
 
+        [Serializable]
+        private sealed class SourceFlightAssistanceCommand
+        {
+            public string operation = "source_flight_assistance";
+            public SourceBrightnessGuard session_guard;
+        }
+
         internal static PlayerPreferencesSnapshot PreferencesCommand(
             ulong handle, Identity identity, string json)
         {
@@ -1356,6 +1363,41 @@ namespace MagicCarpet.Native
             return expectedTick;
         }
 
+        internal bool SourceFlightAssistance(out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source flight assistance");
+            var before = Current;
+            var request = new SourceFlightAssistanceCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                }
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source flight assistance");
+            var after = IdentitySnapshot();
+            var expected = JsonUtility.FromJson<PlayerPreferences>(
+                JsonUtility.ToJson(before.player_preferences.preferences));
+            expected.flight_assistance = !expected.flight_assistance;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                JsonUtility.ToJson(after.player_preferences.preferences) != JsonUtility.ToJson(expected))
+                throw new InvalidDataException("source flight assistance changed the wrong runtime state");
+            identity = after;
+            return true;
+        }
+
         internal bool SourceAudio(SourceAudioAction action, bool speechAvailable, out Identity identity)
         {
             RequireSessionMode(allowPaused: true, "change source audio");
@@ -1460,11 +1502,11 @@ namespace MagicCarpet.Native
             bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null, Vector2? steeringObservation = null)
         {
             CampaignAdvance(roll, pitch, flags, lookYaw, lookPitch, selectSpell,
                 recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment,
-                showObjective, removeCastleStage, mark, cycle, abandonAction);
+                showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
             return CampaignSnapshot();
         }
 
@@ -1476,7 +1518,7 @@ namespace MagicCarpet.Native
             bool showObjective = false, bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null, Vector2? steeringObservation = null)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -1493,17 +1535,18 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
             if (!JsonRenderObservations)
             {
-                // Source local-player revival may clear a nonzero speed during
-                // the step, without changing the runtime generation.
+                // Revival may clear speed, and enabled flight assistance can
+                // advance its recenter sequence without a runtime generation change.
                 Identity updated = null;
                 var steppedTick = checked(beforeTick + 1);
-                if (before.source_speed_index != 0)
+                if (before.source_speed_index != 0 || before.player_preferences.preferences.flight_assistance)
                 {
                     updated = IdentitySnapshot();
-                    steppedTick = SourceSpeedStepTick(before, updated, recoverPlayer);
+                    if (before.source_speed_index != 0)
+                        steppedTick = SourceSpeedStepTick(before, updated, recoverPlayer);
                 }
                 var publication = ReadRenderPublication(before, steppedTick);
                 if (updated != null)
@@ -1512,7 +1555,7 @@ namespace MagicCarpet.Native
                     if (updated.mode != PlayingMode || updated.generation != before.generation ||
                         !PreservesSessionBinding(observed, updated.session) ||
                         updated.session.generation != observed.generation || updated.session.tick != observed.tick)
-                        throw new InvalidDataException("source speed identity does not match the stepped session");
+                        throw new InvalidDataException("source step identity does not match the stepped session");
                 }
                 else
                     PublishCampaignIdentity(before, publication.Observation.identity);

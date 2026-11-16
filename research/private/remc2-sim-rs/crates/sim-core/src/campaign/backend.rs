@@ -3111,6 +3111,7 @@ impl Mc2RuntimePackageResolver {
                     crate::game_runtime::DisplayNotice::FlatShading(enabled) => candidate.backend_mut().publish_flat_shading_notice(enabled),
                     crate::game_runtime::DisplayNotice::PlayerNames(visible) => candidate.backend_mut().publish_player_names_notice(visible),
                     crate::game_runtime::DisplayNotice::SourceAudio(action, enabled) => candidate.backend_mut().publish_source_audio_notice(action, enabled),
+                    crate::game_runtime::DisplayNotice::FlightAssistance(enabled) => candidate.backend_mut().publish_flight_assistance_notice(enabled),
                 },
                 observe,
             )
@@ -3824,6 +3825,29 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_player_names_notice(visible)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::PlayerNamesNotice { visible });
+        Ok(())
+    }
+
+    pub(crate) fn prepare_flight_assistance_notice(&self, enabled: bool)
+        -> Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+            crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation().prepare_flight_assistance_notice(enabled)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })
+    }
+
+    pub(crate) fn commit_flight_assistance_notice(&mut self, enabled: bool,
+        notices: crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    ) {
+        self.campaign.simulation_mut().commit_flight_assistance_notice(notices);
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::FlightAssistanceNotice { enabled });
+    }
+
+    pub(crate) fn publish_flight_assistance_notice(&mut self, enabled: bool)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        let notices = self.prepare_flight_assistance_notice(enabled)?;
+        self.commit_flight_assistance_notice(enabled, notices);
         Ok(())
     }
 
@@ -6953,6 +6977,173 @@ pub(crate) mod tests {
             actual.expected_terrain_hash, actual.expected_effect_head, &actual.expected_effect_journal_sha256));
         assert_eq!(ticks(&actual_cold), [0, 0]);
         assert_eq!(fs::read(path).unwrap(), actual_bytes, "historical input is never rewritten");
+    }
+
+    #[test]
+    fn source_flight_assistance_commits_notice_profile_and_exact_replay() {
+        use crate::game_runtime::{GameRuntime, RuntimeGuard, RuntimeMode,
+            preferences::{PreferenceStore, PreferencesCommand}};
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let profile = std::env::temp_dir().join(format!("mc-flight-assist-runtime-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = || PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() };
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8960).unwrap();
+        runtime.preferences_command(runtime.identity().guard(), install()).unwrap();
+        let title = runtime.identity();
+        let invalid = sim_session::SessionGuard { session_id:8960,generation:0,expected_tick:0 };
+        assert!(runtime.source_flight_assistance_preferences(title.guard(), invalid).is_err());
+        assert_eq!(runtime.identity(), title);
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert!(runtime.source_flight_assistance_preferences(loading.guard(), invalid).is_err());
+        assert_eq!(runtime.identity(), loading);
+        resolver.open_pending(&mut runtime, loading.guard(), 8960).unwrap();
+        let before = runtime.identity();
+        let nested = runtime.session().unwrap().identity().guard();
+        let original_save = resolver.save_replay(&runtime).unwrap();
+        for (outer, inner) in [
+            (RuntimeGuard { generation:before.generation+1,..before.guard() }, nested),
+            (before.guard(),sim_session::SessionGuard {generation:nested.generation+1,..nested}),
+            (before.guard(),sim_session::SessionGuard {expected_tick:nested.expected_tick+1,..nested}),
+        ] {
+            assert!(runtime.source_flight_assistance_preferences(outer, inner).is_err());
+            assert_eq!(runtime.identity(), before);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), original_save);
+            assert!(!profile.join("player-preferences.json").exists());
+        }
+        assert!(runtime.preferences_command(before.guard(), PreferencesCommand::Apply {
+            preferences: before.player_preferences.preferences.clone(),
+        }).is_err(), "generic Playing preference edits remain refused");
+        let before_snapshot = runtime.session().unwrap().backend().snapshot();
+        let before_reset = ResetReceipt::from_state(&ResetState::from_simulation(
+            runtime.session().unwrap().backend().campaign.simulation()));
+        let accepted = runtime.source_flight_assistance_preferences(before.guard(), nested).unwrap();
+        assert_eq!(accepted.source_flight_assistance_admitted, Some(true));
+        assert!(accepted.preferences.flight_assistance);
+        let after = runtime.identity();
+        assert_eq!(after.session, before.session);
+        assert_eq!(after.display_settings, before.display_settings);
+        assert_ne!(ResetReceipt::from_state(&ResetState::from_simulation(
+            runtime.session().unwrap().backend().campaign.simulation())).digest(), before_reset.digest());
+        let notice = runtime.session().unwrap().backend().participant_notifications();
+        assert_eq!(notice.len(), 1);
+        assert_eq!((notice[0].kind.as_str(),notice[0].remaining_frames),
+            ("participant.flight_assistance_on",50));
+        let mut expected_snapshot = before_snapshot;
+        expected_snapshot.participant_notifications = notice.clone();
+        assert_eq!(runtime.session().unwrap().backend().snapshot(), expected_snapshot,
+            "the only full observation change is the independently checked local notice");
+        assert!(runtime.session().unwrap().backend().campaign.simulation().session.state.live
+            .player_lifecycle_notifications.entries().iter().any(|entry| entry.state == 3
+                && entry.kind == Some(crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::FlightAssistanceOn)));
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let packet: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+        assert!(matches!(packet.operations.last(), Some(crate::game_runtime::ReplayOperation::FlightAssistanceNotice { enabled:true })));
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8961).unwrap();
+        cold.preferences_command(cold.identity().guard(), install()).unwrap();
+        assert!(cold.identity().player_preferences.preferences.flight_assistance);
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8961, &saved).unwrap();
+        assert_eq!(cold.session().unwrap().backend().participant_notifications(), notice);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), saved, "immediate save replays the same notice at the same boundary");
+        let profile_bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        let profile_path = profile.join("player-preferences.json");
+        let retained_path = profile.join("retained-preferences.json");
+        fs::rename(&profile_path, &retained_path).unwrap();
+        fs::create_dir(&profile_path).unwrap();
+        assert!(runtime.source_flight_assistance_preferences(after.guard(), nested).is_err(),
+            "an actual profile publication failure cannot commit the prepared notice");
+        assert_eq!(runtime.identity(), after);
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications(), notice);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), saved);
+        assert_eq!(fs::read(&retained_path).unwrap(), profile_bytes);
+        fs::remove_dir(&profile_path).unwrap();
+        fs::rename(&retained_path, &profile_path).unwrap();
+        for _ in 0..3 {
+            assert_eq!(runtime.identity(), after);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), saved);
+        }
+        let paused = runtime.pause(after.guard()).unwrap();
+        let nested = runtime.session().unwrap().identity().guard();
+        runtime.preferences_command(paused.guard(), PreferencesCommand::PreviewAudio {
+            sound_enabled:false,music_enabled:false,speech_enabled:false,sound_volume:0,music_volume:0,
+        }).unwrap();
+        let preview = runtime.identity();
+        let preview_save = resolver.save_replay(&runtime).unwrap();
+        assert_eq!(runtime.source_flight_assistance_preferences(paused.guard(), nested).unwrap()
+            .source_flight_assistance_admitted, Some(false));
+        assert_eq!(runtime.identity(), preview);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), preview_save);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(), profile_bytes);
+        runtime.preferences_command(paused.guard(), PreferencesCommand::Cancel).unwrap();
+        let disabled = runtime.source_flight_assistance_preferences(paused.guard(), nested).unwrap();
+        assert!(!disabled.preferences.flight_assistance);
+        assert_eq!(runtime.identity().mode, RuntimeMode::Paused);
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(),
+            "participant.flight_assistance_off");
+        runtime.presentation_frame(paused.guard(), nested, false).unwrap();
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames, 50);
+        for remaining in (0..50).rev() {
+            runtime.presentation_frame(paused.guard(), nested, true).unwrap();
+            assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames, remaining);
+        }
+        runtime.presentation_frame(paused.guard(), nested, true).unwrap();
+        assert!(runtime.session().unwrap().backend().participant_notifications().is_empty());
+        let expired = resolver.save_replay(&runtime).unwrap();
+        let mut replay = GameRuntime::<Mc2CampaignBackend>::title(8962).unwrap();
+        replay.preferences_command(replay.identity().guard(), install()).unwrap();
+        assert!(!replay.identity().player_preferences.preferences.flight_assistance);
+        let title = replay.identity();
+        resolver.load_replay(&mut replay, title.guard(), 8962, &expired).unwrap();
+        assert_eq!(resolver.save_replay(&replay).unwrap(), expired);
+        let mut profile_cold = PreferenceStore::default();
+        assert!(!profile_cold.command(install()).unwrap().preferences.flight_assistance);
+        runtime.resume(paused.guard()).unwrap();
+        let session = runtime.session_mut().unwrap();
+        session.reset(session.identity().guard()).unwrap();
+        assert!(!runtime.identity().player_preferences.preferences.flight_assistance);
+        assert!(runtime.session().unwrap().backend().participant_notifications().is_empty());
+        let outer = runtime.identity().guard();
+        let nested = runtime.session().unwrap().identity().guard();
+        runtime.source_flight_assistance_preferences(outer,nested).unwrap();
+        let precise = sim_session::SteeringObservation::try_from([0.45_f32.to_bits(),0]).unwrap();
+        for index in 0..100 {
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard,GameCommand {
+                steering_observation:Some(if index%2==0 { sim_session::SteeringObservation::default() } else { precise }),
+                ..GameCommand::default()
+            }).unwrap();
+            assert_eq!(runtime.identity().player_preferences.assistance_sequence,0,
+                "real sub-axis activity never qualifies as49 unchanged source samples");
+        }
+        for index in 0..49 {
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard,GameCommand {
+                steering_observation:Some(precise), ..GameCommand::default()
+            }).unwrap();
+            assert_eq!(runtime.identity().player_preferences.assistance_sequence,if index==48 {1} else {0});
+        }
+        let observed = runtime.session().unwrap().backend();
+        let commands: Vec<_> = observed.replay_operations.iter().filter_map(|operation| match operation {
+            crate::game_runtime::ReplayOperation::Step { command } => Some(command), _ => None,
+        }).collect();
+        assert_eq!(commands.len(),149);
+        assert!(commands.iter().all(|command|command.steering_observation.is_none()));
+        assert!(commands[..148].iter().all(|command|!command.recenter));
+        assert!(commands[148].recenter,"only the actual49th stationary sample becomes recorded recenter");
+        let derived = resolver.save_replay(&runtime).unwrap();
+        assert!(!String::from_utf8(derived.clone()).unwrap().contains("steering_observation"));
+        let mut derived_cold = GameRuntime::<Mc2CampaignBackend>::title(8963).unwrap();
+        derived_cold.preferences_command(derived_cold.identity().guard(),install()).unwrap();
+        let title = derived_cold.identity();
+        resolver.load_replay(&mut derived_cold,title.guard(),8963,&derived).unwrap();
+        assert_eq!(derived_cold.session().unwrap().backend().snapshot(),observed.snapshot());
+        assert_eq!(resolver.save_replay(&derived_cold).unwrap(),derived);
+        assert_eq!(derived_cold.identity().player_preferences.assistance_sequence,0);
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -23944,6 +24135,10 @@ pub(crate) mod tests {
                 }
                 ReplayOperation::SourceAudioNotice { action, enabled } => {
                     current.backend_mut().publish_source_audio_notice(action, enabled)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::FlightAssistanceNotice { enabled } => {
+                    current.backend_mut().publish_flight_assistance_notice(enabled)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {
@@ -48093,6 +48288,7 @@ pub(crate) mod tests {
             lateral: LateralControl::Positive,
             roll_axis: -32,
             pitch_axis: 24,
+            steering_observation: None,
             cast_left: true,
             cast_right: false,
             cast_selected: true,

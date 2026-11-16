@@ -911,6 +911,7 @@ mod tests {
             lateral: LateralControl::Positive,
             roll_axis: -32,
             pitch_axis: 24,
+            steering_observation: None,
             cast_left: true,
             cast_right: false,
             cast_selected: true,

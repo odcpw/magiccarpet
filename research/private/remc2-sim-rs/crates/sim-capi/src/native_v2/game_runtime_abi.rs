@@ -335,7 +335,6 @@ impl RuntimeRecord {
     ) -> AbiResult<()> {
         self.ensure_open()?;
         if self.runtime.identity().mode != RuntimeMode::Playing {
-            self.runtime.reset_preference_input();
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "INVALID_RUNTIME_MODE: preferences step requires playing",
@@ -2449,6 +2448,25 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceFlightAssistance { session_guard } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                let result = record.runtime.source_flight_assistance_preferences(
+                    RuntimeGuard { runtime_id: handle, generation }, session_guard,
+                ).map_err(map_transition_error)?;
+                return match result.source_flight_assistance_admitted {
+                    Some(true) => { record.campaign_presentation_dirty = true; Ok(()) }
+                    Some(false) => Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                        "source flight assistance is blocked by the current settings dialog")),
+                    None => Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                        "source flight assistance returned no admission result")),
+                };
+            }
             sim_core::game_runtime::preferences::PreferencesCommand::SourceAudio {
                 session_guard, action, speech_available,
             } => {
@@ -4419,6 +4437,106 @@ mod tests {
             "the failed active-resource binding can return through normal guarded recovery");
         assert_eq!(identity(invalid)["mode"], "title");
         assert_eq!(mc_game_runtime_destroy_v1(invalid), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn source_flight_assistance_controls_recenter_and_cold_replay() {
+        let packages = installed_package_set_json(&[
+            level_one_package(), level_two_package(), level_three_package(),
+        ]);
+        let profile = std::env::temp_dir().join(format!("mc-flight-assist-abi-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        let send = |owner: u64, outer: u64, nested: u64, tick: u64| {
+            let request = serde_json::to_vec(&serde_json::json!({"operation":"source_flight_assistance",
+                "session_guard":{"session_id":owner.to_string(),"generation":nested.to_string(),"expected_tick":tick.to_string()}})).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner,outer,request.as_ptr(),request.len() as u32)
+        };
+        assert_eq!(send(handle,1,1_u64,0_u64), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle,1,packages.as_ptr(),packages.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle,2),MC_STATUS_OK);
+        let before = identity(handle);
+        let save = |owner,outer,nested,tick| read_bytes(|buffer,capacity,length|
+            mc_game_runtime_save_replay_json_v1(owner,outer,nested,tick,buffer,capacity,length));
+        let original = save(handle,3,1,0);
+        for (outer,nested,tick,expected) in [(2,1,0,MC_STATUS_GENERATION_MISMATCH),
+            (3,2,0,MC_STATUS_GENERATION_MISMATCH),(3,1,1,MC_STATUS_INVALID_ARGUMENT)] {
+            assert_eq!(send(handle,outer,nested,tick),expected);
+            assert_eq!(identity(handle),before);
+            assert_eq!(save(handle,3,1,0),original);
+        }
+        assert_eq!(send(handle,3,1,0),MC_STATUS_OK);
+        let enabled = identity(handle);
+        assert_eq!(enabled["player_preferences"]["preferences"]["flight_assistance"],true);
+        assert_eq!(enabled["generation"],before["generation"]);
+        assert_eq!(enabled["session"],before["session"]);
+        assert_eq!(enabled["display_settings"],before["display_settings"]);
+        let notices = |owner| read_json(|buffer,capacity,length|
+            mc_game_runtime_participant_notifications_json_v1(owner,buffer,capacity,length));
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.flight_assistance_on");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        let enabled_save = save(handle,3,1,0);
+        for bits in [[f32::NAN.to_bits(),0],[f32::INFINITY.to_bits(),0],
+            [(-128.00002_f32).to_bits(),0],[0,127.00001_f32.to_bits()]] {
+            let bad = serde_json::to_vec(&serde_json::json!({"steering_observation":bits})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle,1,0,bad.as_ptr(),bad.len() as u32),MC_STATUS_INVALID_ARGUMENT);
+            assert_eq!(identity(handle),enabled);
+            assert_eq!(save(handle,3,1,0),enabled_save);
+        }
+        let precise = serde_json::to_vec(&serde_json::json!({"steering_observation":[0.45_f32.to_bits(),0]})).unwrap();
+        assert_eq!(mc_game_session_step_json_v1(handle,2,0,precise.as_ptr(),precise.len() as u32),MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(identity(handle),enabled);
+        assert_eq!(save(handle,3,1,0),enabled_save);
+        for tick in 0..49 {
+            assert_eq!(mc_game_session_step_json_v1(handle,1,tick,b"{}".as_ptr(),2),MC_STATUS_OK);
+            let id = identity(handle);
+            assert_eq!(id["player_preferences"]["assistance_sequence"],if tick==48 {1} else {0},
+                "the real producer emits only on its49th admitted unchanged observation");
+        }
+        for index in 0..100 {
+            let bits = if index % 2 == 0 { [0,0] } else { [0.45_f32.to_bits(),0] };
+            let input = serde_json::to_vec(&serde_json::json!({"steering_observation":bits})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle,1,49+index,input.as_ptr(),input.len() as u32),MC_STATUS_OK);
+            assert_eq!(identity(handle)["player_preferences"]["assistance_sequence"],1,
+                "exact activity below rounded-axis resolution never produces false recenter");
+        }
+        for index in 0..49 {
+            assert_eq!(mc_game_session_step_json_v1(handle,1,149+index,precise.as_ptr(),precise.len() as u32),MC_STATUS_OK);
+            assert_eq!(identity(handle)["player_preferences"]["assistance_sequence"],if index==48 {2} else {1});
+        }
+        assert_eq!(mc_game_runtime_pause_v1(handle,3),MC_STATUS_OK);
+        assert_eq!(send(handle,4,2,198),MC_STATUS_OK);
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.flight_assistance_off");
+        assert_eq!(send(handle,4,2,198),MC_STATUS_OK);
+        let saved_notice = notices(handle);
+        let saved = save(handle,4,2,198);
+        let packet: Value = serde_json::from_slice(&saved).unwrap();
+        assert!(!String::from_utf8(saved.clone()).unwrap().contains("steering_observation"),
+            "operational samples are consumed before recording the derived gameplay command");
+        assert_eq!(packet["operations"].as_array().unwrap().iter().filter(|operation|
+            operation["command"]["recenter"]==true).count(),2);
+        let profile_bytes = std::fs::read(profile.join("player-preferences.json")).unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        assert!(identity(cold)["player_preferences"]["preferences"]["flight_assistance"].as_bool().unwrap());
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold,1,packages.as_ptr(),packages.len() as u32,
+            saved.as_ptr(),saved.len() as u32),MC_STATUS_OK,"{}",LAST_ERROR.with(|value|value.borrow().clone()));
+        let cold_id = identity(cold);
+        assert_eq!(cold_id["mode"],"paused");
+        assert_eq!(cold_id["player_preferences"]["preferences"]["flight_assistance"],true);
+        assert_eq!(cold_id["player_preferences"]["assistance_sequence"],0,"cold restores no unrecorded input timer");
+        assert_eq!(notices(cold)["value"],saved_notice["value"]);
+        let outer = cold_id["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(save(cold,outer,nested,198),saved);
+        assert_eq!(std::fs::read(profile.join("player-preferences.json")).unwrap(),profile_bytes);
+        assert_eq!(mc_game_runtime_destroy_v1(cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle),MC_STATUS_OK);
+        std::fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
