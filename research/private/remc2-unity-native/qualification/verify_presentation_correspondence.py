@@ -333,24 +333,41 @@ def cross_timeline_claim_counts(contract: dict) -> tuple[int, int]:
 
 
 @functools.lru_cache(maxsize=1)
-def capture_cargo_test_inventory() -> frozenset[str]:
-    completed = subprocess.run(
-        ["cargo", "test", "--workspace", "--locked", "--", "--list"],
-        cwd=RUST_WORKSPACE,
+def run_cargo_test_list() -> subprocess.CompletedProcess[str]:
+    # These libraries own the Rust tests named by the FINAL MAIN contract.
+    # Build their release test harnesses together in the shared Cargo target.
+    command = [
+        "cargo", "+1.98.0", "test", "--manifest-path", str(RUST_WORKSPACE / "Cargo.toml"),
+        "--release", "--locked", "--lib", "-p", "sim-core", "-p", "sim-capi",
+        "-p", "sim-renderable-map-chain", "-p", "sim-indexed-postprocess", "--", "--list",
+    ]
+    remote = os.environ.get("RCH_REQUIRE_REMOTE") == "1"
+    if remote:
+        command = ["rch", "exec", "--", *command]
+    return subprocess.run(
+        command,
+        cwd=REPO,
         env={**os.environ, "CARGO_TERM_COLOR": "never"},
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        # RCH forwards the remote test listing on stderr.
+        stderr=subprocess.STDOUT if remote else subprocess.PIPE,
         text=True,
         check=False,
     )
+
+
+@functools.lru_cache(maxsize=1)
+def capture_cargo_test_inventory() -> frozenset[str]:
+    completed = run_cargo_test_list()
     require(
         completed.returncode == 0,
-        "native FINAL MAIN Cargo test inventory command failed",
+        f"native FINAL MAIN Cargo test inventory command failed ({completed.returncode}):\n"
+        f"{(completed.stderr or completed.stdout).strip()}",
     )
     names = [
         line.removesuffix(": test")
         for line in completed.stdout.splitlines()
-        if line.endswith(": test")
+        if re.fullmatch(r"[\w:]+: test", line)
     ]
     require(names and len(names) == len(set(names)), "Cargo test inventory is ambiguous")
     return frozenset(names)

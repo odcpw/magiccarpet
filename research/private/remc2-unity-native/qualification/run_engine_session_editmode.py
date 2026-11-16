@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the non-empty Unity neutral-engine EditMode conformance class."""
+"""Run the Unity neutral-engine EditMode class or a batch of named tests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -36,7 +37,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def parse_report(path: Path, test_filter: str) -> dict[str, object]:
+def parse_report(
+    path: Path, test_filter: str, *, test_names: tuple[str, ...] = ()
+) -> dict[str, object]:
     require(path.is_file() and not path.is_symlink(), f"missing fresh Unity XML: {path}")
     root = ET.parse(path).getroot()
     require(root.tag == "test-run", "unexpected Unity XML root")
@@ -49,10 +52,16 @@ def parse_report(path: Path, test_filter: str) -> dict[str, object]:
     require(cases, "Unity engine-session selection is empty")
     names = [case.attrib.get("fullname", "") for case in cases]
     require(len(names) == len(set(names)), "Unity report contains duplicate test names")
-    require(
-        all(name.startswith(test_filter + ".") for name in names),
-        "Unity report contains unrelated tests",
-    )
+    if test_names:
+        missing = sorted(set(test_names) - set(names))
+        unexpected = sorted(set(names) - set(test_names))
+        require(not missing and not unexpected,
+                f"Unity selection mismatch: missing={missing}, unexpected={unexpected}")
+    else:
+        require(
+            all(name.startswith(test_filter + ".") for name in names),
+            "Unity report contains unrelated tests",
+        )
     require(
         all(case.attrib.get("result") == "Passed" for case in cases),
         "Unity report contains a non-passing test",
@@ -80,7 +89,19 @@ def run(
     test_filter: str = TEST_FILTER,
     semantic_workspace: Path | None = None,
     semantic_baseline_workspace: Path | None = None,
+    *,
+    test_names: tuple[str, ...] = (),
+    graphics: bool = False,
 ) -> dict[str, object]:
+    if test_names:
+        require(len(set(test_names)) == len(test_names), "duplicate requested Unity test names")
+        require(
+            all(re.fullmatch(r"(?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*", name) for name in test_names),
+            "expected fully qualified, non-parameterized Unity test names",
+        )
+        unity_filter = ";".join(f"^{re.escape(name)}$" for name in test_names)
+    else:
+        unity_filter = test_filter
     require(project.is_dir(), f"missing Unity project: {project}")
     require(plugin.is_file() and not plugin.is_symlink(), f"missing candidate plugin: {plugin}")
     installed = project / "Assets/Plugins/x86_64/libsim_capi.so"
@@ -93,12 +114,14 @@ def run(
     for path, label in ((results, "results"), (log, "log")):
         require(not path.exists() and not path.is_symlink(), f"pre-existing {label}: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        str(unity), "-batchmode", "-nographics",
+    command = [str(unity), "-batchmode"]
+    if not graphics:
+        command.append("-nographics")
+    command += [
         "-projectPath", str(project),
         "-runTests", "-testPlatform", "EditMode",
         "-assemblyNames", ASSEMBLY,
-        "-testFilter", test_filter,
+        "-testFilter", unity_filter,
         "-testResults", str(results),
         "-logFile", str(log),
     ]
@@ -126,14 +149,14 @@ def run(
         timeout=TIMEOUT_SECONDS,
     )
     require(completed.returncode == 0, f"Unity command failed ({completed.returncode})")
-    report = parse_report(results, test_filter)
+    report = parse_report(results, test_filter, test_names=test_names)
     require(log.is_file() and log.stat().st_size > 0, "Unity log is empty")
     return {
         "ok": True,
         "status": "PASS",
         "unity": "6000.3.20f1",
         "assembly": ASSEMBLY,
-        "filter": test_filter,
+        "filter": unity_filter,
         "plugin_sha256": plugin_hash,
         **report,
     }
@@ -146,7 +169,11 @@ def main() -> int:
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--unity", type=Path, default=UNITY)
-    parser.add_argument("--test-filter", default=TEST_FILTER)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--test-filter", default=TEST_FILTER, help="select a whole test class")
+    selection.add_argument("--test-name", action="append", default=[],
+                           help="exact, fully qualified test method (repeat to batch)")
+    parser.add_argument("--graphics", action="store_true", help="enable Unity's graphics device")
     parser.add_argument("--semantic-workspace", type=Path)
     parser.add_argument("--semantic-baseline-workspace", type=Path)
     args = parser.parse_args()
@@ -164,6 +191,8 @@ def main() -> int:
             args.semantic_baseline_workspace.resolve()
             if args.semantic_baseline_workspace is not None
             else None,
+            test_names=tuple(args.test_name),
+            graphics=args.graphics,
         )
     except (
         EngineSessionEditModeError,
