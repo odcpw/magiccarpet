@@ -38,7 +38,7 @@ class OriginalWorld:
 
     def __init__(self, native):
         self.native = native
-        self.cache_key = None
+        self.epoch = None
         self.terrain = None
         self.terrain_gzip = None
         self.revision = 0
@@ -51,6 +51,7 @@ class OriginalWorld:
         }.items():
             fn = getattr(lib, name); fn.argtypes = args; fn.restype = c.c_int32
         self.rows = (EntityPresentation * 65536)()
+        self.plane_buffers = [(c.c_uint8 * 65536)() for _ in self.PLANE_NAMES]
 
     def read(self, generation, tick, yaw, epoch):
         native = self.native
@@ -58,21 +59,26 @@ class OriginalWorld:
         native.check(native.lib.mc_native_campaign_terrain_state(native.handle, generation, c.byref(state), c.sizeof(state)), 'terrain state')
         if (state.abi_version, state.struct_size, state.generation, state.tick, state.width, state.height) != (2, 64, generation, tick, 256, 256):
             raise RuntimeError('stale or unsupported native terrain state')
-        # A replay may create a new runtime whose native generation/hash repeats.
-        key = (epoch, generation, state.mutation_sequence, state.terrain_hash)
-        if key != self.cache_key:
-            planes = []
-            for kind in range(len(self.PLANE_NAMES)):
-                length = c.c_uint32()
-                native.check(native.lib.mc_native_campaign_terrain_plane_length(native.handle, generation, kind, c.byref(length)), 'terrain plane length')
-                if length.value != 65536: raise RuntimeError('invalid native terrain plane extent')
-                data, written = (c.c_uint8 * length.value)(), c.c_uint32()
-                native.check(native.lib.mc_native_campaign_terrain_plane_copy_u8(native.handle, generation, kind, data, len(data), c.byref(written)), 'terrain plane copy')
-                if written.value != length.value: raise RuntimeError('short native terrain plane')
-                planes.append(bytes(data))
-            self.terrain = b''.join(planes)
+        # The native terrain hash also includes changing entity links (and, in
+        # voxel mode, voxel state). Neither it nor the mutation sequence means
+        # that these five presentation planes changed. Read the planes at this
+        # owner-thread tick and compare their bytes, so no plane update can be
+        # hidden by a hash collision or an unrelated mutation counter.
+        planes = []
+        for kind, data in enumerate(self.plane_buffers):
+            length, written = c.c_uint32(), c.c_uint32()
+            native.check(native.lib.mc_native_campaign_terrain_plane_length(native.handle, generation, kind, c.byref(length)), 'terrain plane length')
+            if length.value != 65536: raise RuntimeError('invalid native terrain plane extent')
+            native.check(native.lib.mc_native_campaign_terrain_plane_copy_u8(native.handle, generation, kind, data, len(data), c.byref(written)), 'terrain plane copy')
+            if written.value != length.value: raise RuntimeError('short native terrain plane')
+            planes.append(bytes(data))
+        terrain = b''.join(planes)
+        # Epoch changes on reset/load even when the new world has identical
+        # bytes; its clients must rebind to the new world incarnation.
+        if epoch != self.epoch or terrain != self.terrain:
+            self.terrain = terrain
             self.terrain_gzip = gzip.compress(self.terrain, compresslevel=1, mtime=0)
-            self.cache_key = key
+            self.epoch = epoch
             self.revision += 1
         written = c.c_uint32()
         native.check(native.lib.mc_native_campaign_world_entity_presentations_copy(native.handle, generation, tick, yaw, self.rows, len(self.rows), c.sizeof(EntityPresentation), c.byref(written)), 'world entity presentations')

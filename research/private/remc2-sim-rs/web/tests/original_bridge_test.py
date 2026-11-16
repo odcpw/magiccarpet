@@ -26,6 +26,42 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_native_terrain_revision_tracks_plane_bytes_and_reset(self):
+        m = bridge_module
+        native = m.Native(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'])
+        try:
+            world = m.OriginalWorld(native)
+            previous = None
+            changes = stable = 0
+            for _ in range(25):
+                native.presentation_frame()
+                _, generation, tick = native.counters()
+                revision, terrain, _, _ = world.read(generation, tick, 0, 0)
+                if previous:
+                    prior_revision, prior_terrain, prior_gzip = previous
+                    if terrain != prior_terrain:
+                        changes += 1
+                        self.assertEqual(revision, prior_revision + 1)
+                        self.assertEqual(gzip.decompress(world.terrain_gzip), terrain)
+                    else:
+                        stable += 1
+                        self.assertEqual(revision, prior_revision)
+                        self.assertIs(world.terrain_gzip, prior_gzip)
+                previous = revision, terrain, world.terrain_gzip
+                native.step(dict(m.NEUTRAL, elapsed_centiseconds=3))
+            self.assertGreater(changes, 0, 'real startup must mutate the published planes')
+            self.assertGreater(stable, 0, 'real startup must contain an unchanged publication')
+            native.control('reset', None)
+            native.presentation_frame()
+            _, generation, tick = native.counters()
+            revision, terrain, _, _ = world.read(generation, tick, 0, 1)
+            self.assertEqual(revision, previous[0] + 1)
+            self.assertEqual(gzip.decompress(world.terrain_gzip), terrain)
+            again, same, _, _ = world.read(generation, tick, 0, 1)
+            self.assertEqual((again, same), (revision, terrain))
+        finally:
+            native.close()
+
     def test_geometry_retains_delayed_publications_until_bounded_eviction(self):
         m = bridge_module
         # Keep the real constructor, publication lookup and HTTP handlers, while
