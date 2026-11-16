@@ -5225,6 +5225,179 @@ namespace MagicCarpet.Native.Tests
         }
 
         [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceTitleExitUsesTimedConfirmationAndPreservesOwnerOnCancel()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-title-exit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source title exit"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var originalCursorVisible = Cursor.visible;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var arguments = new[] {
+                    "-mc-game-runtime", "-mc-runtime-menu",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile"),
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-package", LevelThreePackage };
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                Assert.That(runtime.StepGameRuntimeTitleMedia(0, false, false, startup: false), Is.True);
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.clear_input, Is.False,
+                    "the normal Title media frame completes its source input-release delay");
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                var preferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime).GetField("playerPreferences", flags).GetValue(runtime);
+                var originalPreferences = JsonUtility.ToJson(preferences.Current.preferences);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var cache = menu.LocaleCache;
+                var exit = Array.Find(cache.Startup.buttons, entry => entry.source_action == 0x258980);
+                Assert.That(exit, Is.Not.Null, "the retained source title owns its Exit button");
+                Assert.That(cache.StartupBitmap(39), Is.Not.Null, "the source cursor bitmap is bound");
+                Assert.That(cache.LanguageText(407), Is.Not.Empty, "the selected source locale owns the Exit prompt");
+                // Controlled source-clock check using the actual retained nine
+                // source rows; it does not advance the live Title GUI clock.
+                var helpRows = cache.Startup.help;
+                CollectionAssert.AreEqual(new[] { 6, 10, 9, 13, 12, 15, 8, 7, 11 },
+                    Array.ConvertAll(helpRows, row => row.help_key));
+                var help = new CampaignMenuPresenter.TitleHelpState(helpRows, 1000);
+                help.Advance(1199, 0, true);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 0, 1000u, 6)));
+                help.Advance(1200, 0, true);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 1, 1200u, 10)));
+                help.Advance(1900, 0, true);
+                Assert.That((help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 1900u, 9)),
+                    "a delayed source draw advances only once");
+                help.Advance(1910, 11, true);
+                Assert.That((help.Mode, help.DrawnHelp.help_key, help.LastTime), Is.EqualTo((3, 11, 1910u)));
+                help.Advance(2109, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(3));
+                Assert.That(help.DrawnHelp, Is.Null, "leaving hover does not redraw its tooltip");
+                help.Advance(2110, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(2));
+                Assert.That(help.DrawnHelp, Is.Null, "the transition pass also draws no tooltip");
+                help.Advance(2110, 0, true);
+                Assert.That((help.Index, help.DrawnHelp.help_key), Is.EqualTo((3, 13)));
+                help.Advance(2200, 9, false);
+                Assert.That(help.Mode, Is.EqualTo(1));
+                Assert.That(help.DrawnHelp, Is.Null);
+                help.Advance(2201, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(1));
+                Assert.That(help.DrawnHelp, Is.Null, "an absent hover is not an invented row");
+                help.Advance(2202, 9, true);
+                Assert.That((help.Mode, help.DrawnHelp.help_key), Is.EqualTo((3, 9)));
+                var suspended = (help.Mode, help.Index, help.LastTime, help.GoldHelpKey);
+                help.Suspend();
+                Assert.That(help.DrawnHelp, Is.Null);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.GoldHelpKey), Is.EqualTo(suspended),
+                    "modal suspension preserves source clock and selection");
+                var wrapped = new CampaignMenuPresenter.TitleHelpState(helpRows, uint.MaxValue - 99);
+                wrapped.Advance(100, 0, true);
+                Assert.That((wrapped.Index, wrapped.DrawnHelp.help_key), Is.EqualTo((1, 10)), "source hundredths wrap safely");
+                SourceScrollDialog Dialog() => (SourceScrollDialog)typeof(CampaignMenuPresenter).GetField("scrollDialog", flags).GetValue(menu);
+                int Height() => (int)typeof(SourceScrollDialog).GetField("height", flags).GetValue(Dialog());
+                int Closing() => (int)typeof(SourceScrollDialog).GetField("closeResult", flags).GetValue(Dialog());
+                var view = new Rect(); var origin = Vector2.zero;
+                var quitCount = 0;
+                var lastAction = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    lastAction = menu.Draw(runtime.GameRuntimeProductionIdentity, false, false, false, null, false);
+                    if (lastAction == CampaignMenuPresenter.Action.Quit) quitCount++;
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(gui.DrawCount, Is.GreaterThan(0), "the real Title GUI host drew");
+                Assert.That(Cursor.visible, Is.False, "the actual source title cursor owns cursor visibility");
+                var liveHelp = menu.TitleHelp;
+                Assert.That(liveHelp, Is.Not.Null);
+                var liveClock = (liveHelp.Mode, liveHelp.Index, liveHelp.LastTime);
+                var liveFrame = Time.frameCount;
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(Time.frameCount, Is.EqualTo(liveFrame), "both repaints belong to the same frame");
+                Assert.That((liveHelp.Mode, liveHelp.Index, liveHelp.LastTime), Is.EqualTo(liveClock),
+                    "another GUI repaint in the same frame does not advance the live source clock");
+                System.Collections.IEnumerator WaitFor(Func<bool> ready, string reason)
+                {
+                    var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                    do
+                    {
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        if (ready()) yield break;
+                        Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), reason);
+                        UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                        yield return null;
+                    } while (true);
+                }
+                var pointer = view.position + new Vector2(exit.x + exit.width * .5f, exit.y + exit.height * .5f) * (view.width / 640f) + origin;
+                gui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = pointer });
+                gui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = pointer });
+                Assert.That(lastAction, Is.EqualTo(CampaignMenuPresenter.Action.None), "Exit opens a source confirmation, not Quit");
+                yield return WaitFor(() => Dialog() != null && Height() >= 80, "Exit scroll opens through real GUI frames");
+                Assert.That(quitCount, Is.Zero);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Dialog(), Is.Not.Null);
+                Assert.That(Closing(), Is.EqualTo(2), "Escape cancels the existing confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Closing(), Is.EqualTo(2), "a held Escape cannot open another action during closing");
+                Assert.That(quitCount, Is.Zero);
+                yield return WaitFor(() => Dialog() == null, "Cancel closes the source scroll");
+                Assert.That(quitCount, Is.Zero);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Dialog(), Is.Null, "held Escape cannot reopen Exit after Cancel finishes");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                var afterCancel = runtime.GameRuntimeProductionIdentity;
+                Assert.That((afterCancel.runtime_id, afterCancel.generation, afterCancel.mode),
+                    Is.EqualTo((before.runtime_id, before.generation, GameRuntimeTransport.TitleMode)));
+                Assert.That(JsonUtility.ToJson(preferences.Current.preferences), Is.EqualTo(originalPreferences));
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(Dialog(), Is.Null, "the released key cannot reopen the Title action");
+
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(lastAction, Is.EqualTo(CampaignMenuPresenter.Action.None), "Title Escape opens confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                yield return WaitFor(() => Dialog() != null && Height() >= 80, "Escape opens the real source scroll");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(Dialog(), Is.Not.Null);
+                Assert.That(Closing(), Is.EqualTo(1));
+                Assert.That(quitCount, Is.Zero, "Quit is withheld until the scroll has closed");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(Closing(), Is.EqualTo(1), "a held Return cannot confirm twice");
+                Assert.That(quitCount, Is.Zero);
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Return });
+                yield return WaitFor(() => Dialog() == null && quitCount == 1, "confirmed Exit emits Quit after closing");
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(quitCount, Is.EqualTo(1), "closing emits exactly one typed Quit action");
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode),
+                    "this GUI check observes the action without executing process shutdown");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            Assert.That(Cursor.visible, Is.EqualTo(originalCursorVisible), "disposing the title owner restores the prior cursor");
+        }
+
+        [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator SourceNamedSlotsRecoverThroughTheirRealModalAnimation()
         {
             var activeBefore = NativeSession.ActiveSessionCount;
@@ -6812,7 +6985,8 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
                     "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                    "-mc-runtime-menu-cache", Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
                     "-mc-runtime-replay-save", save };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(args);
                 var runtimeId = runtime.GameRuntimeProductionIdentity.runtime_id;

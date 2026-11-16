@@ -217,6 +217,9 @@ namespace MagicCarpet.Native
 
         internal void Open() => Open(SourceSettingsDialog.Page.Keys);
 
+        internal bool OwnsSourceCursor => IsOpen &&
+            (page is SourceSettingsDialog.Page.Keys or SourceSettingsDialog.Page.Language);
+
         internal void Open(SourceSettingsDialog.Page requestedPage)
         {
             draft = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));

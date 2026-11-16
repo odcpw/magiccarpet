@@ -23,6 +23,10 @@ namespace MagicCarpet.Native
         private PlayerPreferencesPresenter preferences;
         private FrontendMediaPresenter media;
         private MainAnimation[] mainAnimations;
+        private TitleHelpState titleHelp;
+        private readonly HashSet<KeyCode> titleHeldKeys = new();
+        private bool sourceTitleCursorOwned, previousTitleCursorVisible;
+        internal TitleHelpState TitleHelp => titleHelp;
         private readonly Dictionary<string, PortalState> portalStates = new(StringComparer.Ordinal);
         private readonly Dictionary<string, SourceSecretPortalAnimation> secretPortalAnimations = new(StringComparer.Ordinal);
         private readonly Dictionary<string, SourceSecretPortalAnimation.Presentation> secretPortalFrames = new(StringComparer.Ordinal);
@@ -201,6 +205,57 @@ namespace MagicCarpet.Native
             internal uint LastTime;
         }
 
+        // DrawAndServe_7B250: state 2 cycles idle help, a hovered row enters
+        // state 1, and state 3 draws nothing after the pointer leaves it.
+        internal sealed class TitleHelpState
+        {
+            private readonly SourceMenuText.HelpBinding[] rows;
+            internal int Mode { get; private set; } = 2;
+            internal int Index { get; private set; }
+            internal uint LastTime { get; private set; }
+            internal int GoldHelpKey { get; private set; }
+            internal SourceMenuText.HelpBinding DrawnHelp { get; private set; }
+
+            internal TitleHelpState(SourceMenuText.HelpBinding[] rows, uint now)
+            {
+                if (rows == null || rows.Length == 0)
+                    throw new ArgumentException("source title help rows are required", nameof(rows));
+                this.rows = rows;
+                LastTime = now;
+            }
+
+            internal void Suspend() { DrawnHelp = null; }
+
+            internal void Advance(uint now, int hoveredHelpKey, bool enabled)
+            {
+                DrawnHelp = null;
+                GoldHelpKey = hoveredHelpKey;
+                if (hoveredHelpKey != 0) Mode = 1;
+                if (!enabled) return;
+                if (Mode == 2)
+                {
+                    if (unchecked(now - LastTime) / 100 > 1)
+                    {
+                        Index = (Index + 1) % rows.Length;
+                        LastTime = now;
+                    }
+                    DrawnHelp = rows[Index];
+                    GoldHelpKey = DrawnHelp.help_key;
+                }
+                else if (Mode == 3)
+                {
+                    if (unchecked(now - LastTime) / 100 > 1) Mode = 2;
+                }
+                else
+                {
+                    DrawnHelp = Array.Find(rows, row => row.help_key == hoveredHelpKey);
+                    if (DrawnHelp == null) return;
+                    LastTime = now;
+                    Mode = 3;
+                }
+            }
+        }
+
         internal sealed class PortalState
         {
             internal int Selector;
@@ -279,6 +334,8 @@ namespace MagicCarpet.Native
         {
             ClearPauseHoverHelp();
             var mode = identity.mode;
+            var now = unchecked((uint)(Time.realtimeSinceStartupAsDouble * 100));
+            if (mode != GameRuntimeTransport.TitleMode) OwnSourceTitleCursor(false);
             sourceBriefingSuppressed = false;
             OwnSourceMapCursor(mode == GameRuntimeTransport.CampaignMode && preferences?.IsOpen != true);
             if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
@@ -303,6 +360,11 @@ namespace MagicCarpet.Native
             }
             if (mode != lastMode || mode == GameRuntimeTransport.CampaignMode && identity.campaign_menu.phase != lastCampaignPhase)
             {
+                if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
+                {
+                    titleHelp = null;
+                    titleHeldKeys.Clear();
+                }
                 if (mode == GameRuntimeTransport.CampaignMode)
                 {
                     portalStates.Clear();
@@ -317,18 +379,37 @@ namespace MagicCarpet.Native
                 lastCampaignPhase = identity.campaign_menu?.phase;
             }
             var repaint = Event.current.type == EventType.Repaint && lastAnimationFrame != Time.frameCount;
-            var now = unchecked((uint)(Time.realtimeSinceStartupAsDouble * 100));
+            if (mode == GameRuntimeTransport.TitleMode)
+            {
+                var input = Event.current;
+                if (input.type == EventType.KeyUp) titleHeldKeys.Remove(input.keyCode);
+                else if (input.type == EventType.KeyDown &&
+                    (input.keyCode is KeyCode.Escape or KeyCode.Return or KeyCode.KeypadEnter or KeyCode.Space))
+                {
+                    var firstPress = titleHeldKeys.Add(input.keyCode);
+                    if (!firstPress && preferences?.IsOpen != true) input.Use();
+                }
+            }
             if (preferences?.IsOpen == true)
             {
+                OwnSourceTitleCursor(mode == GameRuntimeTransport.TitleMode && !preferences.OwnsSourceCursor);
                 if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
                     DrawStartup(now, repaint, canSave, canLoad, status, false);
                 preferences.Draw(campaignCache, PlayClick);
+                if (mode == GameRuntimeTransport.TitleMode && !preferences.OwnsSourceCursor)
+                    DrawSourceTitleCursor();
+                if (repaint) lastAnimationFrame = Time.frameCount;
                 return Action.None;
             }
             if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
             {
-                var result = DrawStartup(now, repaint, canSave, canLoad, status);
-                if (scrollDialog != null) result = DrawScrollDialog(identity.campaign_menu, repaint, now);
+                var acceptInput = identity.frontend_media?.clear_input != true;
+                if (!acceptInput && (Event.current.isKey || Event.current.isMouse))
+                    Event.current.Use();
+                var result = DrawStartup(now, repaint, canSave, canLoad, status, acceptInput);
+                if (acceptInput && scrollDialog != null)
+                    result = DrawScrollDialog(identity.campaign_menu, repaint, now);
+                DrawSourceTitleCursor();
                 if (repaint) lastAnimationFrame = Time.frameCount;
                 return result;
             }
@@ -511,10 +592,48 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void OwnSourceTitleCursor(bool active)
+        {
+            if (active)
+            {
+                if (!sourceTitleCursorOwned) previousTitleCursorVisible = Cursor.visible;
+                sourceTitleCursorOwned = true;
+                Cursor.visible = false;
+            }
+            else if (sourceTitleCursorOwned)
+            {
+                Cursor.visible = previousTitleCursorVisible;
+                sourceTitleCursorOwned = false;
+            }
+        }
+
+        private void DrawSourceTitleCursor()
+        {
+            var cursor = campaignCache.StartupBitmap(39);
+            OwnSourceTitleCursor(true);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var origin = new Vector2((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2);
+            var position = (Event.current.mousePosition - origin) / scale;
+            var x = Mathf.Clamp(Mathf.FloorToInt(position.x), 0, 639);
+            var y = Mathf.Clamp(Mathf.FloorToInt(position.y), 0, 479);
+            var oldColor = GUI.color;
+            // The source cursor is attached at its top-left and clipped at
+            // screen edges (sub_8C329), rather than moved inward by its size.
+            GUI.BeginGroup(new Rect(origin.x, origin.y, 640 * scale, 480 * scale));
+            try
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(x * scale, y * scale,
+                    cursor.width * scale, cursor.height * scale), cursor);
+            }
+            finally { GUI.EndGroup(); GUI.color = oldColor; }
+        }
+
         private Action DrawStartup(uint now, bool advance, bool canSave, bool canLoad, string status,
             bool acceptInput = true)
         {
             var startup = campaignCache.Startup;
+            if (acceptInput) titleHelp ??= new TitleHelpState(startup.help, now);
             if (mainAnimations == null)
             {
                 mainAnimations = new MainAnimation[startup.animations.Length];
@@ -551,6 +670,7 @@ namespace MagicCarpet.Native
                         animation.LastTime = now;
                     }
                 }
+                var hoveredHelpKey = 0;
                 foreach (var entry in startup.buttons)
                 {
                     var action = entry.source_action switch {
@@ -567,8 +687,9 @@ namespace MagicCarpet.Native
                         settings && preferences != null;
                     var hit = new Rect(view.x + entry.x * scale, view.y + entry.y * scale,
                         entry.width * scale, entry.height * scale);
-                    if (acceptInput && GUI.enabled && hit.Contains(Event.current.mousePosition))
+                    if (GUI.enabled && titleHelp?.GoldHelpKey == entry.help_key)
                         DrawBitmap(entry.hover_selector, entry.x, entry.y);
+                    if (GUI.enabled && hit.Contains(Event.current.mousePosition)) hoveredHelpKey = entry.help_key;
                     if (scrollDialog != null) continue;
                     if (acceptInput && GUI.Button(hit, GUIContent.none, GUIStyle.none))
                     {
@@ -589,12 +710,29 @@ namespace MagicCarpet.Native
                                 SourceScrollDialog.Kind.Save, true, configuredSavePath);
                             return Action.None;
                         }
+                        if (action == Action.Quit)
+                        {
+                            scrollDialog = new SourceScrollDialog(SourceScrollDialog.Kind.Exit, true, null);
+                            return Action.None;
+                        }
                         return action;
                     }
                 }
                 GUI.enabled = true;
-                var help = scrollDialog == null ? campaignCache.StartupHoverHelp((Event.current.mousePosition - view.position) / scale) : null;
-                if (help != null && preferences?.Current.preferences.show_help != false)
+                if (acceptInput && scrollDialog == null && Event.current.type == EventType.KeyDown &&
+                    Event.current.keyCode == KeyCode.Escape)
+                {
+                    scrollDialog = new SourceScrollDialog(SourceScrollDialog.Kind.Exit, true, null);
+                    Event.current.Use();
+                }
+                if (advance)
+                {
+                    if (acceptInput && scrollDialog == null)
+                        titleHelp.Advance(now, hoveredHelpKey, preferences?.Current.preferences.show_help != false);
+                    else titleHelp?.Suspend();
+                }
+                var help = acceptInput && scrollDialog == null ? titleHelp?.DrawnHelp : null;
+                if (help != null)
                     campaignCache.StartupText.DrawHelp(help, campaignCache.LanguageText(help.text_selector), view);
                 if (status != null) campaignCache.StartupText.DrawText(status, 10, 440, view);
                 return Action.None;
@@ -836,6 +974,7 @@ namespace MagicCarpet.Native
                 SourceScrollDialog.Kind.Save => Action.Save,
                 SourceScrollDialog.Kind.Load => Action.Load,
                 SourceScrollDialog.Kind.Reset => Action.ResetCampaign,
+                SourceScrollDialog.Kind.Exit => Action.Quit,
                 _ => throw new InvalidOperationException("unbound source scroll result")
             };
         }
@@ -850,6 +989,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            OwnSourceTitleCursor(false);
             OwnSourceMapCursor(false);
             campaignCache?.Dispose();
             if (Application.isPlaying) UnityEngine.Object.Destroy(background);
