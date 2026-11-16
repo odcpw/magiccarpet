@@ -805,20 +805,61 @@ Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed
 the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
 flight assistance, F1 Help Mode, Shift+F1/F2/F3/F4 graphics and original Title
 Exit/cursor/idle-help/F1 are implemented, verified, committed, pushed and installed.
-Finite mc-5r5.3 is CLOSED on its original acceptance; do not restart its checks.
-Next is existing ready mc-paj.5: finish destination-bound loading and failed-open
-resource/carry ownership. Inspect current source and saved connected evidence
-before assigning a real missing producer/consumer; the old three-cue assessment
-is not current authority. If this finite family is already implemented, assess
-its original acceptance with bounded evidence rather than inventing a defect or
-replaying all30 missions. BoldForge owns this connected capability; root keeps
-sole build/push/install dispatch and exact shared-file windows. Tutorial/help
-mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites; do not bypass them.
-Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
-resolution switching remains the explicitly classified separate renderer option,
-not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
-through real consumer failures. Preserve unrelated Modern/browser work and fixed
-ABI extents.
+Finite mc-5r5.3 remains CLOSED; do not restart its checks.
+
+Finite mc-paj.5 is now CLOSED on its original bounded Night/Day loading,
+recovery and resource-lifecycle acceptance. Canonical1fb4e497 includes
+ac574add/020a9d41; Original302965a9 includes cb53b978. Original build-5a4ygxbx
+with native8c862188 is installed and --check-installed passes. All627 current
+inputs match local/Rig/published source; the only Rust delta after the native
+build is the cfg(test)-only Spider test module, so release native is reused.
+Unrelated Modern/browser work is preserved; main was not pushed.
+
+Implemented fixes: retain the real campaign frontier on Title/NewGameMap;
+separate held IMGUI Escape from fresh source confirmation; publish every map
+scroll coordinate to drawing/hit tests; read current native MenuState through a
+pure guarded ABI query in ordinary/cold/reset/paused observations; materialize
+only the actual admitted action29 write into the existing optional banishment
+carrier; end gameplay menus/pending actions with their borrowed world before
+Title draws. Generic AI/projection setters still require qualified backing.
+MCPO/save schemas, source order and canonical refusal/admission gates stay intact.
+
+Verified: actual L1 flight/map confirm, read purity/guards and post-confirm cold
+replay/return1.075s; legacy/qualified carrier bytes0.152s; immutable released
+lighting-OFF save and signed incoming Day2 map load/exact byte resave; current
+managed menu consumer30.832s and actual confirm-to-Title GUI/borrower release
+41.289s; canonical116-source typecheck. Required native loading0.22s and managed
+visible-frame1.312s remain covered. UBS is partial/legacy; no added-line teardown
+finding. Failed installed run7 is preserved as the discovered teardown defect,
+not successful return/reopen evidence.
+
+Installed run8 passes missing-art ReturnMenu/Retry, visible Day2 source loading,
+exactly one bound/frame/open per request, confirmed Title return and same-process
+second Day2 open. Root viewed both worlds/map/Title/art; immutable incoming map
+unchanged. Actual unsteered native death clears menu13 to0 at tick805 before any
+confirm/cancel input, and settled pixels show no stale modal. A separate fresh
+canonical Night1 portal/loading/world run passes with zero retries. Owned smoke
+players/displays are stopped. Evidence: generated/loading-20261116/installed-day2-8,
+installed-night-final, abandon-death-1, source-menu-observation and menu-teardown.
+Declared incoming Day2 progress is not earned campaign proof. Human combat/FPS,
+hardware audio, full missions, general old saves and assembled Cave/secret routes
+are outside these bounded claims; full campaign parents remain OPEN.
+
+mc-oi6.7 is IN_PROGRESS. Its current aggregate already owns the web writer;
+the old presentation_bridge refusal alone is not a current-client defect.
+Actual controlled Level4 Spider contact/damage/natural expiry/reclaim passes
+0.54s. Its emitted authoritative observations feed the matching MWEBC Cave
+aggregate GPU; source pixel, repeated-read purity, expiry/reset pass2.828s.
+Declared pose/cadence/protection and separate producer/renderer owners remain
+explicit; no unstaged live encounter or same-owner replay claim. PearlBay owns
+the next actual admitted Day exit through native GTD2/blur/phase12 and reset/next
+history check in the existing backend test. No fabricated exit phase, new ABI,
+automated player or second receipt bridge. Full .7 stays OPEN.
+Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
+do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
+remain OPEN. Hardware resolution switching remains the explicitly separate
+renderer option, not the source in-game viewport. Root keeps sole Cargo/RCH/
+push/install dispatch; owners remain through consumer failures.
 
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
