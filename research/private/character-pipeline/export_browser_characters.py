@@ -97,6 +97,14 @@ def worker(name, destination):
             material.node_tree.links.new(orm.outputs['Color'], sep.inputs['Color'])
             material.node_tree.links.new(sep.outputs['Green'], shader.inputs['Roughness'])
             material.node_tree.links.new(sep.outputs['Blue'], shader.inputs['Metallic'])
+            # Blender's glTF exporter reads ambient occlusion from its named
+            # material-output group. Preserve the source ORM red channel too.
+            from io_scene_gltf2.blender.com.material_helpers import create_settings_group, get_gltf_node_name
+            group_name = get_gltf_node_name()
+            group = bpy.data.node_groups.get(group_name) or create_settings_group(group_name)
+            output = nodes.new('ShaderNodeGroup')
+            output.node_tree = group
+            material.node_tree.links.new(sep.outputs['Red'], output.inputs['Occlusion'])
         if mapspec.get('normal'):
             image = image_node(mapspec['normal'], True)
             normal = nodes.new('ShaderNodeNormalMap')
