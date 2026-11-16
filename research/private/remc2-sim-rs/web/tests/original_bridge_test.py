@@ -25,6 +25,38 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_geometry_retains_delayed_publications_until_bounded_eviction(self):
+        m = bridge_module
+        # Keep the real constructor, publication lookup and HTTP handlers, while
+        # controlling publication timing independently of a native 30 Hz loop.
+        with mock.patch.object(threading.Thread, 'start'):
+            geometry = m.Bridge(None, [], renderer='geometry')
+            indexed = m.Bridge(None, [], renderer='indexed')
+        self.assertEqual(indexed.publications.maxlen, 8)
+        server = m.Server(('127.0.0.1', 0), geometry, None)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        def append(sequence):
+            geometry.publications.append((sequence, b'world-' + bytes([sequence]), {'sequence': sequence},
+                                          b'observation-' + bytes([sequence]), None,
+                                          b'terrain-' + bytes([sequence]), b'compressed'))
+        def get(path):
+            with urllib.request.urlopen(base + path, timeout=5) as response: return response.read()
+        try:
+            for sequence in range(1, 33): append(sequence)
+            self.assertEqual(get('/original-api/world-frame?sequence=1'), b'world-\x01')
+            self.assertEqual(json.loads(get('/original-api/state?sequence=1')), {'sequence': 1})
+            self.assertEqual(get('/original-api/observation?sequence=1'), b'observation-\x01')
+            self.assertEqual(get('/original-api/terrain?sequence=1'), b'terrain-\x01')
+            append(33)
+            for endpoint in ('world-frame', 'state', 'observation', 'terrain'):
+                with self.assertRaises(urllib.error.HTTPError) as expired:
+                    get(f'/original-api/{endpoint}?sequence=1')
+                self.assertEqual(expired.exception.code, 410); expired.exception.close()
+            self.assertEqual(get('/original-api/world-frame?sequence=2'), b'world-\x02')
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
     def test_native_geometry_publication_and_replay(self):
         m = bridge_module
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(m.Native, 'frame', side_effect=AssertionError('geometry rasterized world')):

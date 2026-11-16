@@ -305,7 +305,7 @@ class Bridge:
         self.has_save = bool(save_path and save_path.is_file())
         self.items = queue.Queue(maxsize=128)
         self.lock = threading.Lock()
-        self.publications = deque(maxlen=8)
+        self.publications = deque(maxlen=32 if renderer == "geometry" else 8)
         self.ready = False; self.error = None; self.running = False; self.paused = False
         self.next_sequence = 0; self.last_reply = None; self.last_request = None
         self.last_contact = time.monotonic(); self.stop = threading.Event()
