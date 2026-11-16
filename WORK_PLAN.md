@@ -802,17 +802,63 @@ acceptance open; a working control panel alone does not finish the environment.
 ## Current Original mission delivery — 2026-11-14
 
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
-the source in-game viewport and Player Names are implemented, verified, committed,
-pushed and installed. Do not restart their delivered checkpoints below. Next
-concrete mandatory input gaps are source bare F4 speech and F5 sound: F4 is absent
-from current runtime dispatch, while F5 incorrectly uses replay save. Complete
-their real source admission, preference/audio consumers and type3/50 notices;
-reuse the operational Options controls and retain current save/load acceptance.
+the source in-game viewport, Player Names and F4/F5/F6 speech/sound/music are
+implemented, verified, committed, pushed and installed. Do not restart their
+delivered checkpoints below. Next is source F2 flight assistance through its real
+idle-recenter consumer, Options4 and398/399 notices. Bare F2 is absent; Options4
+uses generic Apply without source notice. The current assistance helper also
+incorrectly resets retained mouse/counter state in disabled/menu-suppressed lanes
+and substitutes an immediately centered sample when source only queues opcode39.
+BoldForge owns the native capability; PearlBay owns managed consumers; root
+serializes verification and installation. Preserve actual source update order,
+current profile persistence and strict guards; do not infer multiplayer from AI.
 Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
 resolution switching remains the explicitly classified separate renderer option,
 not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
 through real consumer failures. Preserve unrelated Modern/browser work and fixed
 ABI extents.
+
+Audio checkpoint: canonical b8b44284 plus Loading-contract fix124f58f7 are pushed
+as Original8ef5e2b0/6ca36e0d; all22 original owned blobs and both fix blobs match
+their published commits. Original build-h_lrtfo6/native
+fee7453b25fd53d84f5fe119bf3f72a8f881b470ed74eeabca4053ee478aca1a is installed;
+--check-installed passes. Actual guarded F4/Options3 gates future speech without
+stopping current CD; F5/Options1 retires native/managed samples and CD on BOTH
+edges; F6/Options2 stops/restarts actual current-map music without a fake step or
+fade advance. Source notices390..393/469..470 type3/50 replay through the existing
+notice owner. Sound-off drains real semantic events without stale sidecar lookup,
+keeps the cursor/music path and does not replay missed SFX on enable. Enabled
+ownership checks remain strict. F5 no longer invokes replay save; named slots
+remain. Product cold flags persist; original CONFIG did not store these flags.
+
+Actual availability comes from qualified sound banks, current-map music and the
+retained validated27-clip speech owner. Music qualification is lazy at the real
+active-entry resource query; identity reads remain pure and recovery stays usable
+after an asset error. An early all30-music preflight regressed the same warm native
+bootstrap24.24s to34.04s and was removed. Three alternating old/final pairs now
+have medians24.0693/24.0884s with matching I/O scale; this is a warm native slice,
+not whole-client startup/FPS. No new cache platform or fixed ABI enlargement.
+
+Atomic preferences, real authored transport audio, actual native controls/guards/
+pool/recovery, workspace all-targets and strict Rig native build pass. All627
+source/header/upstream inputs match; these are provenance inputs, not tests.
+Actual managed paused audio/cold profile passes33.059s; physical controls, later
+real speech cues and real Day land ambience retirement/reacquisition pass120.865s.
+The Cave cannot produce that Day loop; the fixture uses the existing real returned
+Day parent and ordinary frames, without injecting a voice. Initial real-client
+checks exposed and fixed disabled-SFX sidecar and stale managed generation joins.
+
+The first installed smoke FAILED at Loading because a shared C# response DTO
+required active-entry-only audio facts. Evidence is preserved in installed-1;
+no retry. Separate strict response DTOs fix that contract. The extended actual
+Loading->Playing/audio check passes91.628s and canonical116-source typecheck
+passes2.407s. UBS is partial/legacy with no finding on these added lines, not a
+clean scan. The rebuilt matching installation then passes normal canonical
+map/one portal/NightSpire scene/HUD, physical P/F4/F5/F6 and original Options all
+off/on; root viewed captures, mapped native matches, zero retries/errors, owned
+processes stopped. Evidence: generated/audio-controls-20261116 and loading-recovery.
+No human combat, FPS, hardware audio, whole missions or historical-save proof.
+Full existing acceptance/dependencies remain open. No owner art changes.
 
 Player Names checkpoint: canonical1a83f09b is pushed as Originalb2123b87;
 all31 owned blobs match. Original build-02d3en9v/native
