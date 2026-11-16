@@ -57,6 +57,8 @@ namespace MagicCarpet.Native
                     "participant.game_speed_normal" => 381,
                     "participant.game_speed_fast" => 382,
                     "participant.game_speed_super_fast" => 383,
+                    "participant.player_names_on" => 402,
+                    "participant.player_names_off" => 403,
                     _ => throw new InvalidDataException("unbound participant notification kind: " + notice.kind)
                 };
                 // Presence is authoritative. Zero is the final visible frame;

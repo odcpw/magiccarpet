@@ -9,6 +9,7 @@ use std::{
     collections::BTreeSet,
     fmt, fs,
     path::{Component, Path},
+    sync::Arc,
 };
 
 use serde_json::{Value, json};
@@ -725,7 +726,35 @@ pub struct DayIndexedFrameState {
     map_world: Option<MapWorldFrame>,
     last_sprite_pixel_mode: u8,
     render_options: WorldRenderOptions,
+    player_labels: Option<PlayerLabelBinding>,
+    player_label_revision: u64,
 }
+
+type LabelLocale = crate::game_runtime::preferences::installed_locale::InstalledLocaleBinding;
+
+#[derive(Clone)]
+struct PlayerLabelBinding {
+    visible: bool,
+    locale: Option<Arc<LabelLocale>>,
+    local_name: String,
+}
+
+impl fmt::Debug for PlayerLabelBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlayerLabelBinding").field("visible", &self.visible)
+            .field("locale", &self.locale.as_ref().map(|value| &value.identity))
+            .field("local_name", &self.local_name).finish()
+    }
+}
+
+impl PartialEq for PlayerLabelBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.visible == other.visible && self.local_name == other.local_name
+            && self.locale.as_ref().map(|value| &value.identity)
+                == other.locale.as_ref().map(|value| &value.identity)
+    }
+}
+impl Eq for PlayerLabelBinding {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MapWorldFrame {
@@ -746,12 +775,14 @@ struct FrameView {
     exit_blur: u8,
     exit_blank: bool,
     render_options: WorldRenderOptions,
+    player_label_revision: u64,
 }
 
 impl FrameView {
     fn current(
         session: &Mc2Simulation,
         render_options: WorldRenderOptions,
+        player_label_revision: u64,
     ) -> Result<Self, DayIndexedFrameError> {
         let exit = session.level_exit_sequence();
         Ok(Self {
@@ -761,6 +792,7 @@ impl FrameView {
             exit_blur: exit.blur_mode,
             exit_blank: exit.display_blank,
             render_options,
+            player_label_revision,
         })
     }
 }
@@ -776,6 +808,8 @@ impl DayIndexedFrameState {
             map_world: None,
             last_sprite_pixel_mode: 0,
             render_options: WorldRenderOptions::source_defaults(),
+            player_labels: None,
+            player_label_revision: 0,
         }
     }
 
@@ -798,6 +832,25 @@ impl DayIndexedFrameState {
         self.render_options = options;
     }
 
+    /// Bind the ordinary runtime's validated locale and auxiliary names flag.
+    /// Standalone environment frames have no frontend binding; the game runtime
+    /// must provide it rather than silently drawing a substitute font.
+    pub fn bind_player_names(
+        &mut self, visible: bool, locale: Option<Arc<LabelLocale>>, local_name: &str,
+    ) -> Result<(), DayIndexedFrameError> {
+        if local_name.len() > 32 || !local_name.is_ascii() {
+            return Err(DayIndexedFrameError::new("source local player name does not fit its byte carrier"));
+        }
+        let next = PlayerLabelBinding { visible, locale, local_name: local_name.to_owned() };
+        if self.player_labels.as_ref() != Some(&next) {
+            let revision = self.player_label_revision.checked_add(1)
+                .ok_or_else(|| DayIndexedFrameError::new("player-label presentation revision overflow"))?;
+            self.player_labels = Some(next);
+            self.player_label_revision = revision;
+        }
+        Ok(())
+    }
+
     /// Palette from the same committed narrow map view. Paused palette
     /// updates refresh it without re-rendering or advancing indexed history.
     #[must_use]
@@ -810,7 +863,7 @@ impl DayIndexedFrameState {
     pub fn is_current_view(&self, session: &Mc2Simulation) -> Result<bool, DayIndexedFrameError> {
         Ok(self.current_frame.is_some()
             && self.current_tick == Some(session.state.tick)
-            && self.current_view == Some(FrameView::current(session, self.render_options)?))
+            && self.current_view == Some(FrameView::current(session, self.render_options, self.player_label_revision)?))
     }
 
     pub fn reset(&mut self, generation: u64) {
@@ -844,7 +897,7 @@ impl DayIndexedFrameState {
             None => 0,
         };
         let tick = session.state.tick;
-        let view = FrameView::current(session, self.render_options)?;
+        let view = FrameView::current(session, self.render_options, self.player_label_revision)?;
         // Source speed performs four or eight UpdateEntities passes inside
         // one outer frame. Its PlayerEvents turn still advances only once;
         // a matching tick delta alone would also admit skipped normal frames.
@@ -869,6 +922,7 @@ impl DayIndexedFrameState {
             false,
             self.last_sprite_pixel_mode,
             self.render_options,
+            self.player_labels.as_ref(),
         )?;
         self.last_sprite_pixel_mode = frame.source_sprite_pixel_mode;
         self.current_tick = Some(tick);
@@ -897,7 +951,7 @@ impl DayIndexedFrameState {
             )));
         }
         let tick = session.state.tick;
-        let view = FrameView::current(session, self.render_options)?;
+        let view = FrameView::current(session, self.render_options, self.player_label_revision)?;
         if self.current_tick.is_some_and(|current| tick < current) {
             return Err(DayIndexedFrameError::new(format!(
                 "Day indexed frame tick {tick} predates the committed presentation revision"
@@ -929,6 +983,7 @@ impl DayIndexedFrameState {
             false,
             self.last_sprite_pixel_mode,
             self.render_options,
+            self.player_labels.as_ref(),
         )?;
         self.last_sprite_pixel_mode = frame.source_sprite_pixel_mode;
         self.current_tick = Some(tick);
@@ -952,7 +1007,7 @@ impl DayIndexedFrameState {
                 "map world generation differs from its frame owner",
             ));
         }
-        let view = FrameView::current(session, self.render_options)?;
+        let view = FrameView::current(session, self.render_options, self.player_label_revision)?;
         let tick = session.state.tick;
         if self
             .map_world
@@ -978,6 +1033,7 @@ impl DayIndexedFrameState {
             true,
             self.last_sprite_pixel_mode,
             self.render_options,
+            self.player_labels.as_ref(),
         )?;
         let mut indices = Vec::with_capacity(128 * 200);
         for row in frame.scene_indices.chunks_exact(320) {
@@ -1034,6 +1090,7 @@ pub fn render_level2_day_indexed_frame(
         false,
         0,
         WorldRenderOptions::source_defaults(),
+        None,
     )
 }
 
@@ -1046,8 +1103,13 @@ fn render_environment_indexed_frame(
     map_viewport: bool,
     previous_pixel_mode: u8,
     render_options: WorldRenderOptions,
+    player_labels: Option<&PlayerLabelBinding>,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
     validate_day_route(inspection, session, assets)?;
+    if player_labels.is_some_and(|binding| binding.visible
+        && binding.locale.as_ref().and_then(|locale| locale.fonts.get("font1")).is_none()) {
+        return Err(DayIndexedFrameError::new("visible source player names require the selected FONT1 binding"));
+    }
     if prior.is_some_and(|frame| {
         frame.generation != generation
             || frame.cache_content_sha256 != assets.cache_content_sha256()
@@ -1068,6 +1130,9 @@ fn render_environment_indexed_frame(
     // rectangle; it does not replace the retained ordinary GAME viewport.
     let reduced_viewport = (!map_viewport && render_options.viewport_size != 40)
         .then_some(viewport);
+    let world_viewport = if map_viewport {
+        Some(crate::classic_hd::ClassicHdViewport { x: 192, y: 0, width: 128, height: 200 })
+    } else { reduced_viewport };
     let background = assets.palette_rgb8()[0] >> 2;
     let sprite_projection = if map_viewport {
         crate::terrain_frame::source_map_projection(camera)
@@ -1200,6 +1265,12 @@ fn render_environment_indexed_frame(
             indices.len()
         )));
     }
+    // DrawGameFrame clears the surround before DrawWorld. Source low-res
+    // labels may subsequently write there; clearing after the painter would
+    // erase legitimate current-frame glyphs at reduced viewport sizes.
+    if let Some(viewport) = reduced_viewport {
+        clear_viewport_exterior(&mut indices, viewport, background);
+    }
     let mut provenance = vec![0_u8; extent];
     // Retain the exact terrain write ranks on every map. The legacy field
     // names predate outdoor sprite occlusion; their ABI extents are unchanged.
@@ -1220,17 +1291,29 @@ fn render_environment_indexed_frame(
         }
         Terrain::Outdoor(_) => Some(outdoor_cell_orders),
     };
+    if player_labels.is_some_and(|binding| binding.visible) && assets.materials.source_tmaps().is_none() {
+        return Err(DayIndexedFrameError::new("source player names require the qualified world sprite bank"));
+    }
     let mut source_sprites = assets
         .materials
         .source_tmaps()
         .map(|bank| {
+            let mut sprite_rows = session.campaign_entity_presentations(camera.yaw)
+                .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
+            if let Some(binding) = player_labels {
+                for row in &mut sprite_rows {
+                    if let Some(label) = row.player_label.as_mut().filter(|label| label.player_color_index == 0) {
+                        label.name_bytes.fill(0);
+                        label.name_bytes[..binding.local_name.len()].copy_from_slice(binding.local_name.as_bytes());
+                        label.name_len = binding.local_name.len() as u8;
+                    }
+                }
+            }
             SourceWorldSprites::new(
                 camera,
                 sprite_projection,
                 inspection.metadata().map_type,
-                session
-                    .campaign_entity_presentations(camera.yaw)
-                    .map_err(|error| DayIndexedFrameError::new(error.to_string()))?,
+                sprite_rows,
                 &session.session.definition.presentation.particles,
                 bank,
                 cave_cell_orders.as_deref().ok_or_else(|| {
@@ -1243,8 +1326,13 @@ fn render_environment_indexed_frame(
             .map_err(|error| DayIndexedFrameError::new(error.to_string()))
         })
         .transpose()?;
-    if let (Some(sprites), Some(viewport)) = (source_sprites.as_mut(), reduced_viewport) {
+    if let (Some(sprites), Some(viewport)) = (source_sprites.as_mut(), world_viewport) {
         sprites.set_viewport(viewport);
+    }
+    if let (Some(sprites), Some(binding)) = (source_sprites.as_mut(), player_labels.filter(|binding| binding.visible)) {
+        let font = binding.locale.as_ref().and_then(|locale| locale.fonts.get("font1"))
+            .ok_or_else(|| DayIndexedFrameError::new("selected FONT1 binding disappeared"))?;
+        sprites.set_sorcerer_labels(font, assets.environment_resources().colors()[0]);
     }
     let identity = {
         let mut writer = ClassicHdFrameWriter::from_planes(
@@ -1259,6 +1347,8 @@ fn render_environment_indexed_frame(
         .map_err(|error| {
             DayIndexedFrameError::new(format!("Day frame allocation failed: {error}"))
         })?;
+        writer.set_write_clip(world_viewport)
+            .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
         match &terrain {
             Terrain::Outdoor(plan) if source_sprites.is_some() => {
                 let sprites = source_sprites
@@ -1355,7 +1445,6 @@ fn render_environment_indexed_frame(
         ));
     }
     if let Some(viewport) = reduced_viewport {
-        clear_viewport_exterior(&mut indices, viewport, background);
         if let Some(orders) = cave_terrain_orders.as_mut() {
             clear_viewport_exterior(orders, viewport, 0);
         }
@@ -1371,9 +1460,9 @@ fn render_environment_indexed_frame(
             .map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
     }
     if let Some(viewport) = reduced_viewport {
-        // Exit blending is pointwise. Its prior MAIN may have been rendered
-        // at a different size; source DrawWorld still leaves the surround clear.
-        clear_viewport_exterior(&mut indices, viewport, background);
+        // Preserve current source labels in the surround without admitting
+        // pixels from the prior MAIN, which may use a different viewport.
+        restore_viewport_exterior(&mut indices, &scene_indices, viewport);
     }
     // The approved v2 presentation enables the source map layer. Retained v1
     // material captures keep their terrain-only contract.
@@ -1456,6 +1545,25 @@ fn clear_viewport_exterior<T: Copy>(
         } else {
             row[..left].fill(value);
             row[right..].fill(value);
+        }
+    }
+}
+
+fn restore_viewport_exterior<T: Copy>(
+    pixels: &mut [T], current: &[T], viewport: crate::classic_hd::ClassicHdViewport,
+) {
+    let left = viewport.x as usize;
+    let right = left + viewport.width as usize;
+    let top = viewport.y as usize;
+    let bottom = top + viewport.height as usize;
+    for (y, (row, source)) in pixels.chunks_exact_mut(usize::from(DAY_FRAME_WIDTH))
+        .zip(current.chunks_exact(usize::from(DAY_FRAME_WIDTH))).enumerate()
+    {
+        if y < top || y >= bottom {
+            row.copy_from_slice(source);
+        } else {
+            row[..left].copy_from_slice(&source[..left]);
+            row[right..].copy_from_slice(&source[right..]);
         }
     }
 }
@@ -2263,6 +2371,43 @@ mod tests {
     }
 
     #[test]
+    fn player_label_binding_invalidates_same_tick_and_recovers_without_clocking_gameplay() {
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("level3-day-block32-campaign-recipe-v2"),
+            generated_path("mc-level3-environment-exit-20261025"),
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        ).unwrap();
+        let assets = DayIndexedFrameAssets::load(generated_path("mc-level3-environment-exit-20261025")).unwrap();
+        let locale = crate::game_runtime::preferences::installed_locale::InstalledLanguages::load(
+            PathBuf::from(std::env::var_os("MC_LANGUAGE_CACHE").expect("actual source language cache")),
+        ).unwrap().binding(None).unwrap();
+        let hash = campaign.state_hash();
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        carrier.bind_player_names(false, None, "PLAYER").unwrap();
+        let render = |carrier: &mut DayIndexedFrameState| carrier.render_current(
+            campaign.inspection(), campaign.simulation(), &assets, campaign.generation(),
+        );
+        let hidden = render(&mut carrier).unwrap();
+        assert!(carrier.is_current_view(campaign.simulation()).unwrap());
+        carrier.bind_player_names(true, None, "PLAYER").unwrap();
+        assert!(!carrier.is_current_view(campaign.simulation()).unwrap());
+        assert!(render(&mut carrier).unwrap_err().to_string().contains("FONT1"));
+        assert_eq!(carrier.current_frame(), Some(&hidden), "missing font never commits partial presentation");
+        carrier.bind_player_names(true, Some(locale.clone()), "PLAYER").unwrap();
+        let visible = render(&mut carrier).unwrap();
+        assert_eq!(render(&mut carrier).unwrap(), visible, "repeated same-tick query is pure");
+        let revision = carrier.player_label_revision;
+        carrier.bind_player_names(true, Some(locale), "PLAYER").unwrap();
+        assert_eq!(carrier.player_label_revision, revision, "identical resource identity reuses the current frame");
+        assert!(carrier.bind_player_names(false, None, "non-ASCII é").is_err());
+        assert_eq!(carrier.player_label_revision, revision);
+        carrier.bind_player_names(false, None, "PLAYER").unwrap();
+        assert!(!carrier.is_current_view(campaign.simulation()).unwrap());
+        assert_eq!(render(&mut carrier).unwrap().scene_indices, hidden.scene_indices);
+        assert_eq!(campaign.state_hash(), hash, "font, flag, failure and render queries never clock gameplay");
+    }
+
+    #[test]
     fn source_viewport_projects_real_day_and_cave_without_cropping_full_frame() {
         use crate::campaign::{CampaignSession, spec::CampaignSelection};
         for (package, cache, selection) in [
@@ -2793,6 +2938,7 @@ mod tests {
                                 true,
                                 carrier.last_sprite_pixel_mode,
                                 carrier.render_options,
+                                carrier.player_labels.as_ref(),
                             )
                             .unwrap();
                             let mut expected: Vec<_> = raw

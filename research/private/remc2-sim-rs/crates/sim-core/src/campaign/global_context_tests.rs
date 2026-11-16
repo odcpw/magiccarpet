@@ -76,7 +76,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();
     resolver
-        .load_replay_with_source_context(&mut loaded, guard, 81803, &saved, SourceProcessContext { shared: warm, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 })
+        .load_replay_with_source_context(&mut loaded, guard, 81803, &saved, SourceProcessContext { shared: warm, hand_selection_flash_ticks: [0; 2], source_speed_index: 0, source_player_names_visible: true })
         .unwrap();
     assert_eq!(resolver.source_process_context(&loaded).unwrap().shared, warm);
     let after_load = resolver.save_replay(&loaded).unwrap();
@@ -199,7 +199,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let mut warm_map = GameRuntime::<Mc2CampaignBackend>::title(81808).unwrap();
     let guard = warm_map.identity().guard();
     resolver
-        .load_replay_with_source_context(&mut warm_map, guard, 81808, &map_save, SourceProcessContext { shared: first, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 })
+        .load_replay_with_source_context(&mut warm_map, guard, 81808, &map_save, SourceProcessContext { shared: first, hand_selection_flash_ticks: [0; 2], source_speed_index: 0, source_player_names_visible: true })
         .unwrap();
     assert_eq!(resolver.source_process_context(&warm_map).unwrap().shared, first);
 

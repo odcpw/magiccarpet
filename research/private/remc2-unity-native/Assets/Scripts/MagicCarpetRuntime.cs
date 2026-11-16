@@ -2421,13 +2421,13 @@ namespace MagicCarpet.Native
                         gameRuntimeAudioListener = gameObject.AddComponent<AudioListener>();
                     if (HasArgument(arguments, "-mc-runtime-menu"))
                     {
-                        PreparePlayerPreferences(arguments);
+                        if (playerPreferences == null) PreparePlayerPreferences(arguments);
                         EnsureGameRuntimeMenu();
                         StepGameRuntimeTitleMedia(0, false, false, startup: true);
                     }
                     else
                     {
-                        PreparePlayerPreferences(arguments);
+                        if (playerPreferences == null) PreparePlayerPreferences(arguments);
                         if (session.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode)
                             BeginGameRuntimeMenuNewGame();
                     }
@@ -10708,6 +10708,9 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.ViewportIncrease:
                         ApplyGameRuntimeSourceViewport(GameRuntimeTransport.SourceViewportAction.MenuIncrease);
                         break;
+                    case CampaignMenuPresenter.Action.TogglePlayerNames:
+                        ToggleGameRuntimePlayerNames();
+                        break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
                             SourceCampaignSaveSlots.Write(gameRuntimeReplaySavePath, saveSlot.Index,
@@ -10728,8 +10731,8 @@ namespace MagicCarpet.Native
                             DisposeGameRuntimeCampaignPresentation();
                             DestroyGameRuntimeFireballPresentation();
                             session = null;
-                            AttachAndValidateGameRuntimeProductionSession(opened, preserveSpeech: true);
-                            PreparePlayerPreferences(Environment.GetCommandLineArgs());
+                            AttachAndValidateGameRuntimeProductionSession(opened, preserveSpeech: true,
+                                preferenceArguments: Environment.GetCommandLineArgs());
                             gameRuntimeMenu?.AttachPreferences(playerPreferences);
                             previousOwner.Dispose();
                             // The catalog/clock belonged to the replaced Rust
@@ -11705,6 +11708,23 @@ namespace MagicCarpet.Native
             else if (gameRuntimeNightSurface != null || modernEnvironment != null)
                 UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+        }
+
+        private void ToggleGameRuntimePlayerNames()
+        {
+            var after = session.GameRuntimeTogglePlayerNames();
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            if (level2Mode)
+                UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (level3Mode)
+                UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeSecretSurface != null)
+                UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
         }
 
         private void ApplyGameRuntimeSourceViewport(GameRuntimeTransport.SourceViewportAction action)
@@ -15793,16 +15813,16 @@ namespace MagicCarpet.Native
                     gameRuntimeStartupReady = false;
                     return;
                 }
-                OpenAndValidateGameRuntimeProductionSession(packages);
+                OpenAndValidateGameRuntimeProductionSession(packages, arguments);
                 return;
             }
             OpenAndValidateGameRuntimeProductionReplaySession(
                 ReadReplaySaveFromPath(replayPath),
-                packages);
+                packages, arguments);
         }
 
         private void OpenAndValidateGameRuntimeProductionSession(
-            GameRuntimeTransport.InstalledPackageResource[] packages)
+            GameRuntimeTransport.InstalledPackageResource[] packages, string[] arguments)
         {
             if (session != null || campaignSession != null)
             {
@@ -15811,12 +15831,12 @@ namespace MagicCarpet.Native
             }
             gameRuntimePackages = packages;
             AttachAndValidateGameRuntimeProductionSession(
-                OpenGameRuntimeSessionForPackages(packages));
+                OpenGameRuntimeSessionForPackages(packages), preferenceArguments: arguments);
         }
 
         private void OpenAndValidateGameRuntimeProductionReplaySession(
             byte[] replaySave,
-            GameRuntimeTransport.InstalledPackageResource[] packages)
+            GameRuntimeTransport.InstalledPackageResource[] packages, string[] arguments)
         {
             if (session != null || campaignSession != null)
             {
@@ -15825,11 +15845,11 @@ namespace MagicCarpet.Native
             }
             gameRuntimePackages = packages;
             AttachAndValidateGameRuntimeProductionSession(
-                OpenGameRuntimeReplaySessionForPackages(replaySave, packages));
+                OpenGameRuntimeReplaySessionForPackages(replaySave, packages), preferenceArguments: arguments);
         }
 
         private void AttachAndValidateGameRuntimeProductionSession(NativeSession opened,
-            bool preserveSpeech = false)
+            bool preserveSpeech = false, string[] preferenceArguments = null)
         {
             try
             {
@@ -15846,6 +15866,7 @@ namespace MagicCarpet.Native
                     gameRuntimeSemanticEventCursor = "0";
                     gameRuntimeRecentSemanticEvents.Clear();
                     gameRuntimeObjectiveInstruction = null;
+                    if (preferenceArguments != null) PreparePlayerPreferences(preferenceArguments);
                     FreezeGameRuntimeInput();
                     ReleaseMouse();
                     return;
@@ -15868,6 +15889,19 @@ namespace MagicCarpet.Native
                     observation.identity.tick == identity.session.tick,
                     "production game runtime snapshot is bound to the same nested session");
                 session = opened;
+                if (preferenceArguments != null)
+                {
+                    // FONT1 is owned by the selected locale. Bind the real
+                    // profile before the first restored world is rendered.
+                    PreparePlayerPreferences(preferenceArguments);
+                    identity = opened.GameRuntimeIdentity();
+                    observation = opened.GameRuntimeCampaignSnapshot();
+                    Require(identity.session != null &&
+                        observation.identity.session_id == identity.session.session_id &&
+                        observation.identity.generation == identity.session.generation &&
+                        observation.identity.tick == identity.session.tick,
+                        "prepared preferences retain the accepted world binding");
+                }
                 gameRuntimeCampaignSnapshot = observation;
                 gameRuntimeLastCompletionTransitionReceipt = null;
                 gameRuntimeSemanticEventCursor = observation.value.effect_head;

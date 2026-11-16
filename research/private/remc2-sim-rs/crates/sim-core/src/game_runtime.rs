@@ -104,6 +104,8 @@ pub(crate) enum ReplayOperation<C> {
     ToggleIconsMap,
     TogglePanelTransparency,
     ToggleFlatShading,
+    /// Reconstruct the actual local source notice, never the process flag.
+    PlayerNamesNotice { visible: bool },
     Step {
         command: C,
     },
@@ -226,12 +228,14 @@ pub(crate) enum DisplayNotice {
     IconsMap(bool),
     PanelTransparency(bool),
     FlatShading(bool),
+    PlayerNames(bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RuntimeIdentity {
     pub source_speed_index: u8,
+    pub source_player_names_visible: bool,
     pub runtime_contract: &'static str,
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub runtime_id: u64,
@@ -535,6 +539,8 @@ pub struct GameRuntime<B> {
     frontend_media: media::FrontendMedia,
     player_preferences: preferences::PreferenceStore,
     display_settings: DisplaySettings,
+    /// Auxiliary byte207 is outside GAME/SLEV/CONFIG and is never hashed.
+    source_player_names_visible: bool,
     secret_flow: secret_flow::SecretFlowState,
     retained_campaign: Option<CampaignSaveState>,
 }
@@ -558,6 +564,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
+            source_player_names_visible: true,
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             state: RuntimeState::Title {
@@ -640,6 +647,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             };
         RuntimeIdentity {
             source_speed_index: self.session().map_or(0, |session| session.backend().source_speed_index()),
+            source_player_names_visible: self.source_player_names_visible,
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: self.runtime_id,
             generation: self.generation,
@@ -1382,6 +1390,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::FlatShading(display_settings.flat_shading))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::PlayerNamesNotice { visible } => {
+                    display_notice(&mut candidate, DisplayNotice::PlayerNames(visible))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -2019,6 +2031,27 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// ChangeSettings case17: auxiliary process visibility and the existing
+    /// local source notice have distinct lifetimes. Publish before committing.
+    pub fn toggle_player_names(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let visible = !self.source_player_names_visible;
+        session.backend_mut().publish_player_names_notice(visible)?;
+        self.source_player_names_visible = visible;
+        Ok(true)
+    }
+
+    pub(crate) fn restore_player_names_visibility(&mut self, visible: bool) {
+        self.source_player_names_visible = visible;
+    }
+
     /// ChangeSettings case8 on the supported ordinary screen mode. The source
     /// emits no notice; unchanged endpoint requests leave GAME/replay untouched.
     pub fn source_viewport(
@@ -2699,6 +2732,7 @@ mod tests {
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
+            source_player_names_visible: true,
             retained_campaign: None,
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
             level_statistics: Vec::new(),
@@ -2740,6 +2774,7 @@ mod tests {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
+            source_player_names_visible: true,
             completed_levels: resolver
                 .flow()
                 .entries()
@@ -4035,6 +4070,7 @@ mod tests {
                 frontend_media: media::FrontendMedia::default(),
                 player_preferences: preferences::PreferenceStore::default(),
                 display_settings: DisplaySettings::default(),
+                source_player_names_visible: true,
                 secret_flow: secret_flow::SecretFlowState::default(),
                 retained_campaign: None,
                 generation: 6,
@@ -4159,6 +4195,7 @@ mod tests {
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             generation: 6,
+            source_player_names_visible: true,
             completed_levels: Vec::new(),
             level_statistics: Vec::new(),
             state: RuntimeState::Loading {
@@ -5459,6 +5496,7 @@ mod tests {
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 223,
+            source_player_names_visible: true,
             generation: 4,
             completed_levels: Vec::new(),
             level_statistics: Vec::new(),

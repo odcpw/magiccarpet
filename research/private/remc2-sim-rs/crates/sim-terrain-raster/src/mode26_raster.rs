@@ -85,6 +85,7 @@ pub fn rasterize_mode26_span_from_atlas(
         tablesn,
         framebuffer_row,
         Mode5TextureAddressing::Full256,
+        None,
         |pixel| pixels.push(pixel),
     );
     pixels
@@ -107,6 +108,7 @@ pub(crate) fn rasterize_mode26_span_from_tile_atlas(
         tablesn,
         framebuffer_row,
         Mode5TextureAddressing::Tile32,
+        None,
         |pixel| pixels.push(pixel),
     );
     pixels
@@ -120,6 +122,7 @@ fn visit_mode26_span_from_atlas<F>(
     tablesn: &[u8],
     framebuffer_row: &mut [u8],
     addressing: Mode5TextureAddressing,
+    horizontal_clip: Option<[i32; 2]>,
     mut visitor: F,
 ) where
     F: FnMut(Mode26Pixel),
@@ -141,8 +144,9 @@ fn visit_mode26_span_from_atlas<F>(
         "mode-26 framebuffer row must match viewport width"
     );
 
-    let start = span.left_x.max(0);
-    let end = span.right_x.min(viewport_width);
+    let [clip_left, clip_right] = horizontal_clip.unwrap_or([0, viewport_width]);
+    let start = span.left_x.max(clip_left);
+    let end = span.right_x.min(clip_right);
     if end <= start {
         return;
     }
@@ -360,6 +364,8 @@ fn rasterize_mode26_triangle_from_atlas_with_addressing(
 /// record per sampled pixel. Classic HD uses this streaming seam because
 /// large profile-sized water triangles otherwise spend most of their time
 /// growing and copying temporary sample vectors.
+/// `write_clip` is optional target-relative left/top/right/bottom, exclusive
+/// at right/bottom. It is validated before any framebuffer write.
 #[doc(hidden)]
 pub fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
     vertices: [Mode5Vertex; 3],
@@ -369,6 +375,7 @@ pub fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
     texture_base: usize,
     tablesn: &[u8],
     framebuffer: &mut [u8],
+    write_clip: Option<[i32; 4]>,
     visitor: F,
 ) where
     F: FnMut(Mode26FramePixel),
@@ -382,6 +389,7 @@ pub fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
         tablesn,
         framebuffer,
         Mode5TextureAddressing::Tile32,
+        write_clip,
         visitor,
     );
 }
@@ -395,6 +403,7 @@ fn visit_mode26_triangle_from_atlas_with_addressing<F>(
     tablesn: &[u8],
     framebuffer: &mut [u8],
     addressing: Mode5TextureAddressing,
+    write_clip: Option<[i32; 4]>,
     mut visitor: F,
 ) where
     F: FnMut(Mode26FramePixel),
@@ -416,12 +425,20 @@ fn visit_mode26_triangle_from_atlas_with_addressing<F>(
             .expect("mode-26 framebuffer extent fits usize"),
         "mode-26 framebuffer must match the viewport"
     );
+    if let Some([left, top, right, bottom]) = write_clip {
+        assert!(left >= 0 && top >= 0 && left < right && top < bottom
+            && right <= viewport_width && bottom <= viewport_height,
+            "mode-26 write clip must lie inside the framebuffer");
+    }
 
     let Some(setup) = setup_mode5_triangle(vertices[0], vertices[1], vertices[2], viewport_height)
     else {
         return;
     };
     for row in setup.scanlines {
+        if write_clip.is_some_and(|[_, top, _, bottom]| row.y < top || row.y >= bottom) {
+            continue;
+        }
         let Some(span) =
             mode26_span_from_scanline(row, setup.du, setup.dv, setup.dpnt5, viewport_width)
         else {
@@ -440,6 +457,7 @@ fn visit_mode26_triangle_from_atlas_with_addressing<F>(
             tablesn,
             &mut framebuffer[row_start..row_end],
             addressing,
+            write_clip.map(|[left, _, right, _]| [left, right]),
             |sample| visitor(Mode26FramePixel { y: row.y, sample }),
         );
     }
@@ -462,6 +480,54 @@ const fn fixed_byte(value: i32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_write_clip_preserves_exterior_and_exact_interior_samples() {
+        let vertices = [
+            Mode5Vertex { x: -2, y: -2, u: 0, v: 0, pnt5: 3 << 16 },
+            Mode5Vertex { x: 8, y: -2, u: 0, v: 0, pnt5: 3 << 16 },
+            Mode5Vertex { x: -2, y: 8, u: 0, v: 0, pnt5: 3 << 16 },
+        ];
+        let atlas = vec![3; 256 * 32];
+        let tables = tables();
+        let initial = vec![181; 64];
+        let mut full = initial.clone();
+        let samples = rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
+            vertices, 8, 8, &atlas, 0, &tables, &mut full);
+        let mut streamed = initial.clone();
+        let mut streamed_samples = Vec::new();
+        visit_mode26_triangle_from_tile_atlas_into_framebuffer(
+            vertices, 8, 8, &atlas, 0, &tables, &mut streamed, None,
+            |pixel| streamed_samples.push(pixel));
+        assert_eq!(streamed, full);
+        assert_eq!(streamed_samples, samples, "unclipped legacy samples remain exact");
+        let mut clipped = initial.clone();
+        let mut visited = Vec::new();
+        visit_mode26_triangle_from_tile_atlas_into_framebuffer(
+            vertices, 8, 8, &atlas, 0, &tables, &mut clipped, Some([2, 2, 5, 5]),
+            |pixel| visited.push(pixel));
+        assert!(!visited.is_empty());
+        assert!(visited.iter().all(|pixel| (2..5).contains(&pixel.sample.x) && (2..5).contains(&pixel.y)));
+        assert!(samples.iter().any(|pixel| pixel.sample.x < 2 || pixel.y < 2),
+            "the real triangle covers exterior control pixels");
+        for y in 0..8 {
+            for x in 0..8 {
+                let offset = y * 8 + x;
+                assert_eq!(clipped[offset], if (2..5).contains(&x) && (2..5).contains(&y) {
+                    full[offset]
+                } else { initial[offset] });
+            }
+        }
+        for invalid in [Some([-1, 0, 3, 3]), Some([2, 2, 2, 5]), Some([0, 0, 9, 8])] {
+            let before = clipped.clone();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                visit_mode26_triangle_from_tile_atlas_into_framebuffer(
+                    vertices, 8, 8, &atlas, 0, &tables, &mut clipped, invalid, |_| {});
+            }));
+            assert!(result.is_err());
+            assert_eq!(clipped, before, "invalid clip refuses before destination mutation");
+        }
+    }
 
     fn tables() -> Vec<u8> {
         let mut table = vec![0; NIGHT_TABLES_BYTES];

@@ -6,6 +6,9 @@
 
 use std::collections::BTreeMap;
 
+#[path = "sorcerer_labels.rs"]
+mod sorcerer_labels;
+
 use crate::{
     campaign::sprite_render::{source_sprite_pixel_metadata, source_sprite_pixel_mode},
     classic_hd_raster::ClassicHdRasterError,
@@ -53,6 +56,9 @@ pub(crate) struct SourceWorldSprites<'a> {
     reflections: bool,
     previous_pixel_mode: u8,
     viewport: Option<crate::classic_hd::ClassicHdViewport>,
+    map_type: MapType,
+    label_font: Option<&'a crate::game_runtime::preferences::installed_locale::SourceFont>,
+    label_empty_bar: u8,
     stats: SourceWorldSpriteStats,
     primary_visibility_completions: Vec<u16>,
     animation_demands: Vec<(u16, u16)>,
@@ -198,6 +204,9 @@ impl<'a> SourceWorldSprites<'a> {
                 && camera.eye_z < REFLECTION_EYE_Z_LIMIT,
             previous_pixel_mode,
             viewport: None,
+            map_type,
+            label_font: None,
+            label_empty_bar: 0,
             stats: SourceWorldSpriteStats::default(),
             primary_visibility_completions: Vec::new(),
             animation_demands: Vec::new(),
@@ -210,6 +219,14 @@ impl<'a> SourceWorldSprites<'a> {
     }
     pub(crate) fn set_viewport(&mut self, viewport: crate::classic_hd::ClassicHdViewport) {
         self.viewport = Some(viewport);
+    }
+    pub(crate) fn set_sorcerer_labels(
+        &mut self,
+        font: &'a crate::game_runtime::preferences::installed_locale::SourceFont,
+        empty_bar: u8,
+    ) {
+        self.label_font = Some(font);
+        self.label_empty_bar = empty_bar;
     }
     pub(crate) fn stats(&self) -> SourceWorldSpriteStats {
         self.stats
@@ -328,6 +345,13 @@ impl<'a> SourceWorldSprites<'a> {
             let result = draw(primary, mode, SourceSpritePass::Primary)?;
             self.stats.primary_calls += 1;
             self.stats.primary_writes += u64::from(result.framebuffer_writes);
+            if !primary.quarter_sum_anchor {
+                if let (Some(font), Some(label)) = (self.label_font, source.player_label) {
+                    sorcerer_labels::draw(indices, width, height, clip, primary,
+                        self.camera.projection.roll, self.map_type, self.label_empty_bar, font, label)
+                        .map_err(ClassicHdRasterError)?;
+                }
+            }
             if !primary.quarter_sum_anchor && source.control_flags & 0x4000_0000 != 0 {
                 // In the source this write follows the primary rotated draw
                 // branch, including its internal clip exits. It is not
@@ -363,7 +387,7 @@ mod tests {
             orientation_sector: 0, mirrored: false,
             position: crate::Position { x: 1000, y: 488, z: 64 },
             yaw: 0, pixel_mode: 0, owner_color: 0, brightness: 8192,
-            draw_order: 0, control_flags: 0, primary_depth_adjustment: -480,
+            draw_order: 0, control_flags: 0, primary_depth_adjustment: -480, player_label: None,
         };
         let rejected = CampaignEntityPresentation {
             entity_index: 2, source_id: 2, selected_tmap: 2, base_tmap: 2,
@@ -430,6 +454,7 @@ mod tests {
             draw_order: 0,
             control_flags: 0x4000_0000,
             primary_depth_adjustment: 0,
+            player_label: None,
         };
         let particle = ParticleParameter {
             base_tmap: 1,
@@ -539,7 +564,7 @@ mod tests {
             orientation_sector: 0, mirrored: false,
             position: crate::Position { x: 3000, y: 488, z: 64 },
             yaw: 0, pixel_mode: 0, owner_color: 123, brightness: 8192,
-            draw_order: 0, control_flags: 0x4000_0000, primary_depth_adjustment: 0,
+            draw_order: 0, control_flags: 0x4000_0000, primary_depth_adjustment: 0, player_label: None,
         };
         let particle = ParticleParameter {
             base_tmap: 1, word_2: 0, word_4: 0, speed: 0, rotation_speed: 128,

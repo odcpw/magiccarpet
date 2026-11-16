@@ -14,6 +14,11 @@ const SOURCE_WIZARD_NAMES: [&str; SOURCE_PLAYER_SLOTS] = [
     "PLAYER", "Nyphur", "Rahn", "Belix", "Jark", "Elyssia", "Yragore", "Prish",
 ];
 
+/// The same pinned single-player roster used by world sorcerer labels.
+pub(crate) fn source_name_bytes(source_color: u8) -> Option<&'static [u8]> {
+    SOURCE_WIZARD_NAMES.get(usize::from(source_color)).map(|name| name.as_bytes())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProjectionError {
     SourceSlotOutOfRange(u8),

@@ -2826,6 +2826,10 @@ namespace MagicCarpet.Native
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_toggle_player_names_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_source_speed_v1(
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick, byte secondary);
 

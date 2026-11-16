@@ -15,7 +15,7 @@ mod global_context_tests;
 mod marked_spells;
 mod player_notifications;
 mod runtime_catalog;
-mod source_scoreboard;
+pub(crate) mod source_scoreboard;
 mod spells;
 #[path = "backend_voxels.rs"]
 mod voxels;
@@ -1331,11 +1331,20 @@ pub struct Mc2RuntimePackageResolver {
 
 fn hand_flash_is_zero(value: &[u8; 2]) -> bool { *value == [0; 2] }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceProcessContext {
     pub shared: GlobalSpecialState,
     pub hand_selection_flash_ticks: [u8; 2],
     pub source_speed_index: u8,
+    /// Nonserialized receiving-process byte207, never part of GAME receipts.
+    pub source_player_names_visible: bool,
+}
+
+impl Default for SourceProcessContext {
+    fn default() -> Self {
+        Self { shared: GlobalSpecialState::default(), hand_selection_flash_ticks: [0; 2],
+            source_speed_index: 0, source_player_names_visible: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1426,17 +1435,17 @@ impl Mc2RuntimePackageResolver {
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
     ) -> Result<SourceProcessContext, crate::game_runtime::RuntimeTransitionError> {
         if let Some(session) = runtime.session() {
-            return Ok(session.backend().process_context());
+            return Ok(session.backend().process_context(runtime.identity().source_player_names_visible));
         }
         let contexts = self.detached_source_contexts.lock().map_err(|_| {
             crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "source context owner is unavailable".to_owned(),
             }
         })?;
-        Ok(contexts
+        Ok(SourceProcessContext { source_player_names_visible: runtime.identity().source_player_names_visible, ..contexts
             .get(&runtime.identity().runtime_id)
             .copied()
-            .unwrap_or_default())
+            .unwrap_or_default() })
     }
 
     // Retained saves keep their exact closed catalog and receipt identities.
@@ -1979,7 +1988,7 @@ impl Mc2RuntimePackageResolver {
             .map_err(RuntimeTransitionError::SessionGuard)?;
         self.exact_package_for_definition(session.definition())?;
         let carry = session.backend().initial_semantic_spell_carry()?;
-        let source_context = session.backend().process_context();
+        let source_context = self.source_process_context(runtime)?;
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let destination_level = session
             .definition()
@@ -2706,17 +2715,18 @@ impl Mc2RuntimePackageResolver {
             } else if let Some(shared) = save.source_context {
                 contexts.insert(guard.runtime_id, SourceProcessContext {
                     shared, hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
-                    source_speed_index: 0,
+                    source_speed_index: 0, source_player_names_visible: true,
                 });
             } else if save.source_hand_selection_flash_ticks != [0; 2] {
                 contexts.insert(guard.runtime_id, SourceProcessContext {
                     shared: GlobalSpecialState::default(), hand_selection_flash_ticks: save.source_hand_selection_flash_ticks,
-                    source_speed_index: 0,
+                    source_speed_index: 0, source_player_names_visible: true,
                 });
             } else {
                 contexts.remove(&guard.runtime_id);
             }
             runtime.restore_played_cutscenes(played_cutscenes).map_err(Mc2CampaignReplaySaveError::Runtime)?;
+            runtime.restore_player_names_visibility(warm_process_context.map_or(true, |context| context.source_player_names_visible));
             return Ok(runtime.identity());
         }
         let save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).map_err(|error| {
@@ -3099,6 +3109,7 @@ impl Mc2RuntimePackageResolver {
                     crate::game_runtime::DisplayNotice::IconsMap(visible) => candidate.backend_mut().publish_display_notice(visible),
                     crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => candidate.backend_mut().publish_panel_transparency_notice(opaque),
                     crate::game_runtime::DisplayNotice::FlatShading(enabled) => candidate.backend_mut().publish_flat_shading_notice(enabled),
+                    crate::game_runtime::DisplayNotice::PlayerNames(visible) => candidate.backend_mut().publish_player_names_notice(visible),
                 },
                 observe,
             )
@@ -3107,6 +3118,7 @@ impl Mc2RuntimePackageResolver {
             .restore_secret_flow_state(secret_flow, retained_campaign)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         runtime.restore_played_cutscenes(played_cutscenes).map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        runtime.restore_player_names_visibility(warm_process_context.map_or(true, |context| context.source_player_names_visible));
         pending.remove(&guard.runtime_id);
         contexts.remove(&guard.runtime_id);
         Ok(runtime.identity())
@@ -3289,7 +3301,7 @@ impl Mc2RuntimePackageResolver {
             }
             let secret_id = entry.secret_level_id().clone();
             let carry = session.backend().transition_spell_carry()?;
-            let context = session.backend().process_context();
+            let context = session.backend().process_context(runtime.identity().source_player_names_visible);
             let secret_announcement = session.backend().secret_announcement_after_statistics().after_level_init();
             let rewards = simulation.mission_rewards();
             let show_help = runtime.identity().player_preferences.preferences.show_help;
@@ -3340,7 +3352,7 @@ impl Mc2RuntimePackageResolver {
         }
         let carry = session.backend().transition_spell_carry()?;
         let source_secret_announcement_count = session.backend().secret_announcement_after_statistics().collected_count;
-        let context = session.backend().process_context();
+        let context = session.backend().process_context(runtime.identity().source_player_names_visible);
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "resolver spell-carry state is unavailable".to_owned(),
@@ -3429,7 +3441,7 @@ impl Mc2RuntimePackageResolver {
         }
 
         let carry = session.backend().initial_semantic_spell_carry()?;
-        let context = session.backend().process_context();
+        let context = session.backend().process_context(runtime.identity().source_player_names_visible);
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             RuntimeTransitionError::InvalidRuntimeFlow {
@@ -3530,6 +3542,7 @@ impl Mc2RuntimePackageResolver {
         let source_index = source_package.selection.internal_level;
         let reward_enabled = source.backend().campaign.simulation().mission_rewards() != super::rewards::MissionRewards::Suppressed;
         let final_reward = source.backend().initial_final_reward && reward_enabled;
+        let source_player_names_visible = runtime.identity().source_player_names_visible;
         let source_secret_announcement_count = if reward_enabled {
             source.backend().secret_announcement_after_statistics().collected_count
         } else { source.backend().campaign.simulation().secret_announcement().collected_count };
@@ -3572,7 +3585,7 @@ impl Mc2RuntimePackageResolver {
                 } else {
                     session.backend().initial_semantic_spell_carry()
                 })
-                    .map(|carry| (carry, session.backend().process_context()))
+                    .map(|carry| (carry, session.backend().process_context(source_player_names_visible)))
             },
             campaign_return,
             if reward_enabled { crate::game_runtime::CompletionDisposition::Results }
@@ -3754,10 +3767,10 @@ impl Mc2CampaignBackend {
             before_operation: self.replay_operations.len(), top_bar,
         });
     }
-    fn process_context(&self) -> SourceProcessContext {
+    fn process_context(&self, source_player_names_visible: bool) -> SourceProcessContext {
         SourceProcessContext { shared: self.campaign.source_global_context(),
             hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks(),
-            source_speed_index: self.campaign.simulation().source_speed_index() }
+            source_speed_index: self.campaign.simulation().source_speed_index(), source_player_names_visible }
     }
 
     fn install_initial_hand_selection_flash(&mut self, ticks: [u8; 2])
@@ -3801,6 +3814,15 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_flat_shading_notice(enabled)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::ToggleFlatShading);
+        Ok(())
+    }
+
+    pub(crate) fn publish_player_names_notice(&mut self, visible: bool)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation_mut().publish_player_names_notice(visible)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::PlayerNamesNotice { visible });
         Ok(())
     }
 
@@ -6908,6 +6930,308 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn player_names_notice_replays_but_visibility_keeps_source_process_lifetime() {
+        use crate::game_runtime::{CampaignMenuCommand, GameRuntime, RuntimeGuard, RuntimeMode};
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8950).unwrap();
+        let title = runtime.identity();
+        assert!(title.source_player_names_visible);
+        let invalid = sim_session::SessionGuard { session_id: 8950, generation: 0, expected_tick: 0 };
+        assert!(runtime.toggle_player_names(title.guard(), invalid).is_err());
+        assert_eq!(runtime.identity(), title);
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert!(runtime.toggle_player_names(loading.guard(), invalid).is_err());
+        assert_eq!(runtime.identity(), loading);
+        resolver.open_pending(&mut runtime, loading.guard(), 8950).unwrap();
+        let guard = runtime.session().unwrap().identity().guard();
+        runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+        let before = runtime.identity();
+        let flight = runtime.session().unwrap().backend().campaign.simulation().state;
+        let snapshot = runtime.session().unwrap().backend().snapshot();
+        let source_context = runtime.session().unwrap().backend().campaign.source_global_context();
+        let nested = runtime.session().unwrap().identity().guard();
+        let read_bytes = resolver.save_replay(&runtime).unwrap();
+        let sim = runtime.session().unwrap().backend().campaign.simulation();
+        let label = sim.campaign_player_label(flight.entity_index).unwrap().unwrap();
+        assert_eq!(label.player_color_index, flight.player_color_index);
+        assert_eq!(&label.name_bytes[..usize::from(label.name_len)], b"PLAYER");
+        assert_eq!(label.life, sim.session.state.live.player_life);
+        assert_eq!(label.max_life, sim.entities()[usize::from(flight.entity_index)].max_life);
+        let rows = sim.campaign_entity_presentations(flight.yaw).unwrap();
+        let before_notice_receipt = ResetReceipt::from_state(&ResetState::from_simulation(sim));
+        for _ in 0..3 {
+            assert_eq!(sim.campaign_player_label(flight.entity_index).unwrap(), Some(label));
+            assert_eq!(sim.campaign_entity_presentations(flight.yaw).unwrap(), rows);
+        }
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), read_bytes, "name/actor queries never clock or mutate");
+        for (outer, inner) in [
+            (RuntimeGuard { generation: before.generation + 1, ..before.guard() }, nested),
+            (before.guard(), sim_session::SessionGuard { generation: nested.generation + 1, ..nested }),
+            (before.guard(), sim_session::SessionGuard { expected_tick: nested.expected_tick + 1, ..nested }),
+        ] {
+            assert!(runtime.toggle_player_names(outer, inner).is_err());
+            assert_eq!(runtime.identity(), before);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(), read_bytes);
+        }
+        assert!(runtime.toggle_player_names(before.guard(), nested).unwrap());
+        assert!(!runtime.identity().source_player_names_visible);
+        assert_eq!(runtime.identity().session, before.session);
+        assert_eq!(runtime.identity().display_settings, before.display_settings);
+        assert_eq!(runtime.identity().player_preferences, before.player_preferences);
+        let backend = runtime.session().unwrap().backend();
+        assert_eq!(backend.campaign.simulation().state, flight);
+        assert_eq!(backend.campaign.source_global_context(), source_context);
+        let after = backend.snapshot();
+        assert_eq!((after.tick, after.terrain_hash, after.effect_head, &after.effect_journal_sha256),
+            (snapshot.tick, snapshot.terrain_hash, snapshot.effect_head, &snapshot.effect_journal_sha256));
+        assert_eq!(after.state_hash, snapshot.state_hash,
+            "the historical public campaign hash excludes the presentation notice domain");
+        let after_notice_receipt = ResetReceipt::from_state(
+            &ResetState::from_simulation(backend.campaign.simulation()));
+        assert_ne!(after_notice_receipt.digest(), before_notice_receipt.digest(),
+            "the canonical reset receipt hashes the actual source notice payload and lifetime");
+        let notice = backend.participant_notifications();
+        assert_eq!(notice.len(), 1);
+        assert_eq!(notice[0].kind.as_str(), "participant.player_names_off");
+        assert_eq!(notice[0].remaining_frames, 50);
+        let paused = runtime.pause(runtime.identity().guard()).unwrap();
+        let saved = resolver.save_replay(&runtime).unwrap();
+        assert!(!String::from_utf8(saved.clone()).unwrap().contains("source_player_names_visible"),
+            "auxiliary byte207 is never a saved GAME/header value");
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8951).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8951, &saved).unwrap();
+        assert_eq!(cold.identity().mode, RuntimeMode::Paused);
+        assert!(cold.identity().source_player_names_visible, "cold defaults visible after verifying the notice history");
+        assert_eq!(cold.session().unwrap().backend().participant_notifications(), notice);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), saved);
+        let receiver = resolver.source_process_context(&runtime).unwrap();
+        assert!(!receiver.source_player_names_visible);
+        let mut warm = GameRuntime::<Mc2CampaignBackend>::title(8952).unwrap();
+        let title = warm.identity();
+        let mut bad: Mc2CampaignReplaySave = serde_json::from_slice(&saved).unwrap();
+        bad.expected_state_hash ^= 1;
+        bad.receipt_sha256 = bad.compute_receipt_sha256();
+        assert!(resolver.load_replay_with_source_context(&mut warm, title.guard(), 8952,
+            &serde_json::to_vec(&bad).unwrap(), receiver).is_err());
+        assert_eq!(warm.identity(), title, "a failed receipt never installs receiver visibility");
+        resolver.load_replay_with_source_context(&mut warm, title.guard(), 8952, &saved, receiver).unwrap();
+        assert!(!warm.identity().source_player_names_visible);
+        assert_eq!(resolver.save_replay(&warm).unwrap(), saved);
+        let nested = runtime.session().unwrap().identity().guard();
+        runtime.toggle_player_names(paused.guard(), nested).unwrap();
+        assert!(runtime.identity().source_player_names_visible);
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(), "participant.player_names_on");
+        runtime.toggle_player_names(paused.guard(), nested).unwrap();
+        assert!(!runtime.identity().source_player_names_visible);
+        let hidden = resolver.save_replay(&runtime).unwrap();
+        runtime.presentation_frame(paused.guard(), nested, false).unwrap();
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames, 50);
+        for remaining in (0..50).rev() {
+            runtime.presentation_frame(paused.guard(), nested, true).unwrap();
+            assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames, remaining);
+        }
+        runtime.presentation_frame(paused.guard(), nested, true).unwrap();
+        assert!(runtime.session().unwrap().backend().participant_notifications().is_empty());
+        assert!(!runtime.identity().source_player_names_visible, "notice expiry never changes the process setting");
+        assert_eq!(runtime.session().unwrap().backend().campaign.simulation().state, flight);
+        assert_ne!(resolver.save_replay(&runtime).unwrap(), hidden, "only real presentation operations clock the notice");
+        let id = warm.identity(); warm.resume(id.guard()).unwrap();
+        let session = warm.session_mut().unwrap(); session.reset(session.identity().guard()).unwrap();
+        warm.reset_panel_transparency_to_level_default();
+        assert!(!warm.identity().source_player_names_visible, "retry retains byte207");
+        let reset = resolver.save_replay(&warm).unwrap();
+        let mut reset_cold = GameRuntime::<Mc2CampaignBackend>::title(8953).unwrap();
+        let title = reset_cold.identity();
+        resolver.load_replay(&mut reset_cold, title.guard(), 8953, &reset).unwrap();
+        assert!(reset_cold.identity().source_player_names_visible);
+        let id = warm.identity(); let nested = warm.session().unwrap().identity().guard();
+        resolver.close_to_title(&mut warm, id.guard(), nested).unwrap();
+        let map = warm.identity();
+        let receiver = resolver.source_process_context(&warm).unwrap();
+        assert!(!receiver.source_player_names_visible, "detached campaign context uses the actual process flag");
+        let map_bytes = resolver.save_replay(&warm).unwrap();
+        assert!(warm.toggle_player_names(map.guard(), invalid).is_err());
+        assert_eq!(warm.identity(), map);
+        assert_eq!(resolver.save_replay(&warm).unwrap(), map_bytes);
+        let mut map_warm = GameRuntime::<Mc2CampaignBackend>::title(8954).unwrap();
+        let title = map_warm.identity();
+        resolver.load_replay_with_source_context(&mut map_warm, title.guard(), 8954, &map_bytes, receiver).unwrap();
+        assert!(!map_warm.identity().source_player_names_visible);
+        let mut map_cold = GameRuntime::<Mc2CampaignBackend>::title(8955).unwrap();
+        let title = map_cold.identity();
+        resolver.load_replay(&mut map_cold, title.guard(), 8955, &map_bytes).unwrap();
+        assert!(map_cold.identity().source_player_names_visible);
+        assert_eq!(resolver.save_replay(&map_cold).unwrap(), map_bytes);
+        let id = map_warm.identity();
+        let loading = resolver.campaign_menu_command(&mut map_warm, id.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut map_warm, loading.guard(), 8954).unwrap();
+        assert!(!map_warm.identity().source_player_names_visible, "ordinary mission entry retains byte207");
+        if let Some(output) = std::env::var_os("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT") {
+            export_public_nyphur_label_replay_for_test(PathBuf::from(output));
+        }
+    }
+
+    fn export_public_nyphur_label_replay_for_test(output: PathBuf) {
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime};
+        use crate::goat_sprite_raster::{Mode20SpriteCamera, Mode20SpriteDefinition, Mode20SpriteEntity,
+            project_fixed_sprite_with_depth_adjustment};
+        use crate::day_indexed_frame::{DayIndexedFrameAssets, DayIndexedFrameState};
+        use std::io::Write;
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
+        ).join("generated");
+        let resource_path = std::env::var_os("MC_SECRET_RETURN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("continuity-20261115/installed-full-resources.json"));
+        let resource_bytes = fs::read(&resource_path).unwrap();
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(&resource_bytes).unwrap();
+        assert_eq!(resources.len(), 30);
+        let inputs = resources.iter().map(|row| Mc2CampaignInputs::with_owner_cache(&row["package_dir"], &row["owner_cache_path"])).collect::<Vec<_>>();
+        let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
+        let entries = resolver.flow().entries();
+        let level2 = entries[1].level_id().clone();
+        let first = resolver.package(resolver.flow().entry_level_id()).unwrap();
+        let package = resolver.package(&level2).unwrap();
+        assert_eq!(package.selection, CampaignSelection::LEVEL2);
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8956).unwrap();
+        let title = runtime.identity();
+        // Declared completed Level1 frontier only. No incoming inventory,
+        // pose, actor, holder or encounter state is staged.
+        let map = runtime.restore_campaign_resolved(title.guard(), CampaignSaveState {
+            definition: first.definition.as_ref().clone(), phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None, selected_level_id: Some(level2.clone()),
+            completed_levels: vec![resolver.flow().entry_level_id().clone()], level_statistics: Vec::new(),
+        }, Default::default(), |definition, selected| {
+            resolver.exact_package_for_definition(definition)?;
+            Ok(Arc::clone(&resolver.package(selected).unwrap().definition))
+        }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8956).unwrap();
+        let entry = runtime.session().unwrap().backend().campaign.simulation().state;
+        let initial_target = runtime.session().unwrap().backend().campaign.simulation().entities()[112].clone();
+        assert!(initial_target.active && (initial_target.class, initial_target.model) == (3, 1));
+        let target_handle = runtime.session().unwrap().backend().campaign.simulation().source_arena().handle(112).unwrap();
+        let mut public_commands = Vec::new();
+        // Reuse the existing public flight helper; its Fireball-specific
+        // approach/cast predicate is intentionally not used by this route.
+        for _ in 0..1_280 {
+            let session = runtime.session().unwrap();
+            let sim = session.backend().campaign.simulation();
+            let target = &sim.entities()[112];
+            assert!(target.active && (target.class, target.model) == (3, 1));
+            assert_eq!(sim.source_arena().handle(112), Some(target_handle));
+            assert!(sim.session.state.live.player_life >= 0);
+            if crate::distance_3d_wrapped(sim.state.position, target.position) <= 4_000 { break; }
+            let command = source_public_creature_pursuit_command_for_test(session, target.position);
+            assert!(command.select_spell.is_none() && !command.cast_selected && !command.cast_left && !command.cast_right);
+            let guard = session.identity().guard();
+            public_commands.push(command.clone());
+            runtime.advance_player_with_preferences(guard, command).unwrap();
+        }
+        let sim = runtime.session().unwrap().backend().campaign.simulation();
+        assert!(crate::distance_3d_wrapped(sim.state.position, sim.entities()[112].position) <= 4_000,
+            "bounded public approach did not reach the real source sprite range");
+        // Match RuntimeRecord's real world-frame role. The separate
+        // presentation cache supplies audio/UI, not source terrain authority.
+        let assets = DayIndexedFrameAssets::load(&resources[1]["owner_cache_path"]).unwrap();
+        let mut admitted = None;
+        // Fixed public look controls, after real approach. The yaw offset
+        // places the rival on the left, as required by literal lowres labels.
+        for look_pitch in [32_i16, 64, 96, 0, -32] {
+            let session = runtime.session().unwrap();
+            let sim = session.backend().campaign.simulation();
+            let target = &sim.entities()[112];
+            let look_yaw = (crate::heading_for_positions(sim.state.position, target.position) as i16)
+                .wrapping_add(64).wrapping_sub(sim.state.yaw);
+            let command = GameCommand { full_stop: true,
+                look_yaw, look_pitch, ..GameCommand::default() };
+            let guard = session.identity().guard();
+            public_commands.push(command.clone());
+            runtime.advance_player_with_preferences(guard, command).unwrap();
+            let session = runtime.session().unwrap();
+            let sim = session.backend().campaign.simulation();
+            assert_eq!(sim.source_arena().handle(112), Some(target_handle));
+            let view = sim.source_camera_pose();
+            let row = sim.campaign_entity_presentations(view.yaw).unwrap().into_iter()
+                .find(|row| row.entity_index == 112).expect("current real Nyphur source draw row");
+            let label = row.player_label.expect("real class3/model1 A4 label");
+            assert_eq!(&label.name_bytes[..usize::from(label.name_len)], b"Nyphur");
+            let frame = assets.environment_resources().source_tmaps().unwrap().frame(row.selected_tmap).unwrap();
+            let camera = crate::terrain_frame::Level1TerrainFrameCamera { render_x: view.x, render_y: view.y,
+                eye_z: i32::from(view.z), yaw: view.yaw, pitch: view.pitch, roll: view.roll,
+                fov: 128, source_turn: sim.shared_spells().local_player().turn, reflections: true };
+            let placement = project_fixed_sprite_with_depth_adjustment(
+                Mode20SpriteDefinition { base_selector: row.selected_tmap, logical_height: i32::from(row.logical_height) },
+                matches!(row.render_mode, 11 | 36).then_some(0), matches!(row.render_mode, 21 | 36),
+                Mode20SpriteCamera { render_x: view.x, render_y: view.y, eye_z: i32::from(view.z), yaw: view.yaw,
+                    projection: crate::terrain_frame::level1_projection(camera) },
+                Mode20SpriteEntity { x: row.position.x, y: row.position.y, z: row.position.z, yaw: row.yaw },
+                frame.width, frame.height, row.primary_depth_adjustment,
+            ).expect("actual current primary projection is admitted");
+            if placement.quarter_sum_anchor { continue; }
+            let sin = crate::SIN_16_16[usize::from(view.roll as u16 & 2047)];
+            let cos = crate::SIN_16_16[512 + usize::from(view.roll as u16 & 2047)];
+            let top_y = placement.bottom_y - ((cos.wrapping_mul(placement.projected_height)
+                - (sin.wrapping_mul(placement.projected_width) >> 1)) >> 16);
+            let top_x = placement.bottom_x - (((cos.wrapping_mul(placement.projected_width) >> 1)
+                + sin.wrapping_mul(placement.projected_height)) >> 16);
+            let label_x = ((top_x + (placement.projected_width >> 1)) as i16).wrapping_mul(2);
+            let label_y = top_y.wrapping_mul(2) - 20;
+            if label_x >= 0 && i32::from(label_x) + 52 <= 316 && (0..178).contains(&label_y) {
+                admitted = Some((row, placement, label_x, label_y, look_yaw, look_pitch));
+                break;
+            }
+        }
+        let (row, placement, label_x, label_y, look_yaw, look_pitch) = admitted.expect("fixed public look controls must admit the real full Nyphur label");
+        let paused = runtime.pause(runtime.identity().guard()).unwrap();
+        let save = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8957).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8957, &save).unwrap();
+        assert_eq!(cold.session().unwrap().snapshot().value, runtime.session().unwrap().snapshot().value);
+        assert_eq!(resolver.save_replay(&cold).unwrap(), save, "all real receipt fields and input history cold-replay exactly");
+        let locale = crate::game_runtime::preferences::installed_locale::InstalledLanguages::load(
+            PathBuf::from(std::env::var_os("MC_LANGUAGE_CACHE").expect("actual selected source locale cache")))
+            .unwrap().binding(None).unwrap();
+        let session = cold.session().unwrap();
+        let sim = session.backend().campaign.simulation();
+        let generation = session.identity().generation;
+        let mut off = DayIndexedFrameState::new(generation);
+        off.bind_player_names(false, None, "PLAYER").unwrap();
+        let base = off.render_current(session.backend().campaign.inspection(), sim, &assets, generation).unwrap();
+        let mut on = DayIndexedFrameState::new(generation);
+        on.bind_player_names(true, Some(locale.clone()), "PLAYER").unwrap();
+        let named = on.render_current(session.backend().campaign.inspection(), sim, &assets, generation).unwrap();
+        let changed = base.scene_indices.iter().zip(&named.scene_indices).filter(|(a,b)| a != b).count();
+        assert!(changed > 0, "actual selected FONT1/current-frame label changes real native indexed pixels");
+        assert_eq!(resolver.save_replay(&cold).unwrap(), save, "actual font/world renders are pure");
+        let target = &sim.entities()[112];
+        let metadata = serde_json::json!({ "proof_boundary": "declared Level2 entry; public approach and look only; no inventory/cast/pose staging",
+            "resources": resources, "resource_list": resource_path, "locale": locale.identity,
+            "source_package": resources[1]["package_dir"], "source_owner": resources[1]["owner_cache_path"],
+            "source_presentation": resources[1]["presentation_cache_path"],
+            "entry_player": {"x": entry.position.x,"y": entry.position.y,"z": entry.position.z,"yaw":entry.yaw,"pitch":entry.pitch_accumulator},
+            "entry_target": {"x": initial_target.position.x,"y": initial_target.position.y,"z": initial_target.position.z},
+            "tick": session.identity().tick, "runtime_mode": paused.mode.as_str(),
+            "target": {"slot":112,"class":target.class,"model":target.model,"life":target.life,"max_life":target.max_life,
+                "a4":format!("{:?}",target.special_relation),"color":row.player_label.unwrap().player_color_index},
+            "public_look": {"yaw":look_yaw,"pitch":look_pitch},
+            "public_commands": public_commands,
+            "primary": {"x":placement.bottom_x,"y":placement.bottom_y,"width":placement.projected_width,"height":placement.projected_height,
+                "selector":row.selected_tmap,"logical_height":row.logical_height,"render_mode":row.render_mode},
+            "label": {"x":label_x,"y":label_y,"changed_pixels":changed},
+            "state_hash":session.backend().snapshot().state_hash,"terrain_hash":session.backend().snapshot().terrain_hash });
+        let mut metadata_file = fs::OpenOptions::new().write(true).create_new(true).open(output.with_extension("json")).unwrap();
+        metadata_file.write_all(&serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(output).unwrap();
+        file.write_all(&save).unwrap();
+    }
+
+    #[test]
     fn source_viewport_preserves_game_header_across_cold_warm_retry_and_mission_entry() {
         use crate::game_runtime::{CampaignMenuCommand, DisplaySettings, GameRuntime, RuntimeGuard,
             RuntimeMode, SourceViewportAction, preferences::PreferencesCommand};
@@ -8506,7 +8830,7 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .get(&paused.runtime_id),
-            Some(&SourceProcessContext { shared: paused_context, hand_selection_flash_ticks: paused_hand_flash, source_speed_index: 0 })
+            Some(&SourceProcessContext { shared: paused_context, hand_selection_flash_ticks: paused_hand_flash, source_speed_index: 0, source_player_names_visible: true })
         );
         assert_ne!(mission_carry, pending.carry);
         assert_eq!(source_context, paused_context);
@@ -9155,7 +9479,7 @@ pub(crate) mod tests {
                 before.guard(),
                 7124,
                 &corrupt_bytes,
-                SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 },
+                SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0, source_player_names_visible: true },
             ),
             Err(Mc2CampaignReplaySaveError::Restore(
                 crate::game_runtime::RestorePlayingError::Transition(
@@ -9168,7 +9492,7 @@ pub(crate) mod tests {
         let mut warm = GameRuntime::<Mc2CampaignBackend>::title(7122).unwrap();
         let guard = warm.identity().guard();
         let loaded = resolver
-            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0 })
+            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, SourceProcessContext { shared: warm_context, hand_selection_flash_ticks: [0; 2], source_speed_index: 0, source_player_names_visible: true })
             .unwrap();
         assert_eq!(loaded.mode, crate::game_runtime::RuntimeMode::Paused);
         assert!(
@@ -23586,6 +23910,10 @@ pub(crate) mod tests {
                 ReplayOperation::ToggleFlatShading => {
                     display_settings.flat_shading = !display_settings.flat_shading;
                     current.backend_mut().publish_flat_shading_notice(display_settings.flat_shading)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::PlayerNamesNotice { visible } => {
+                    current.backend_mut().publish_player_names_notice(visible)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {

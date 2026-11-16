@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -259,6 +259,7 @@ namespace MagicCarpet.Native
                 Action.IncreaseBrightness or Action.DecreaseBrightness => mode == GameRuntimeTransport.PausedMode,
                 Action.SpeedPrimary or Action.SpeedSecondary => mode == GameRuntimeTransport.PausedMode,
                 Action.ViewportDecrease or Action.ViewportIncrease => mode == GameRuntimeTransport.PausedMode,
+                Action.TogglePlayerNames => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
                     mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,
@@ -344,7 +345,7 @@ namespace MagicCarpet.Native
                     sourcePauseMenuDrawn = true;
                     return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
                         preferences, canSave, canLoad, identity.display_settings.minimap, identity.display_settings.panels_opaque,
-                        identity.display_settings.flat_shading, identity.source_speed_index);
+                        identity.display_settings.flat_shading, identity.source_speed_index, identity.source_player_names_visible);
                 }
                 finally { GUI.color = previousColor; GUI.enabled = previousEnabled; }
             }

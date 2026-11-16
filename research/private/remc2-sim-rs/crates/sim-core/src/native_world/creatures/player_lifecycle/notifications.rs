@@ -18,6 +18,8 @@ pub(crate) enum PlayerLifeNoticeKind {
     GameSpeedNormal,
     GameSpeedFast,
     GameSpeedSuperFast,
+    PlayerNamesOn,
+    PlayerNamesOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -34,6 +36,8 @@ impl PlayerLifeNoticeKind {
             Self::GameSpeedNormal => "participant.game_speed_normal",
             Self::GameSpeedFast => "participant.game_speed_fast",
             Self::GameSpeedSuperFast => "participant.game_speed_super_fast",
+            Self::PlayerNamesOn => "participant.player_names_on",
+            Self::PlayerNamesOff => "participant.player_names_off",
         }
     }
 }
@@ -83,7 +87,8 @@ impl PlayerLifecycleNotifications {
                     | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff
                     | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff
                     | PlayerLifeNoticeKind::GameSpeedNormal | PlayerLifeNoticeKind::GameSpeedFast
-                    | PlayerLifeNoticeKind::GameSpeedSuperFast => 3,
+                    | PlayerLifeNoticeKind::GameSpeedSuperFast
+                    | PlayerLifeNoticeKind::PlayerNamesOn | PlayerLifeNoticeKind::PlayerNamesOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -143,6 +148,8 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::GameSpeedNormal) => 9,
                 Some(PlayerLifeNoticeKind::GameSpeedFast) => 10,
                 Some(PlayerLifeNoticeKind::GameSpeedSuperFast) => 11,
+                Some(PlayerLifeNoticeKind::PlayerNamesOn) => 12,
+                Some(PlayerLifeNoticeKind::PlayerNamesOff) => 13,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -177,7 +184,8 @@ mod tests {
         notices.publish(0, 111, PlayerLifeNoticeKind::IconsMapVisible, 50).unwrap();
         assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_visible");
         assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (3, 50));
-        for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff] {
+        for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff,
+            PlayerLifeNoticeKind::PlayerNamesOn, PlayerLifeNoticeKind::PlayerNamesOff] {
             notices.publish(0, 111, kind, 50).unwrap();
             assert_eq!(notices.entries()[0].kind, Some(kind));
             assert_eq!(notices.entries()[0].state, 3);

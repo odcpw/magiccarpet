@@ -211,7 +211,7 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
-            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
+            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible)
         {
             HoverHelpRow = 0;
             HoverHelpAnchor = default;
@@ -246,7 +246,7 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex);
+                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
@@ -387,7 +387,7 @@ namespace MagicCarpet.Native
         }
 
         private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
-            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
+            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible)
         {
             var prefs = preferences.Current.preferences;
             var longest = OnText.Concat(OffText).Max(index => language(index).Length) * 8;
@@ -403,12 +403,13 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 14;
+                var supported = index <= 14 || index == 16;
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance, 7 => true,
                     8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
-                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading, _ => false
+                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading,
+                    16 => playerNamesVisible, _ => false
                 };
                 var text = language(index == 6 ? SpeedTextRecord(speedIndex) : enabled ? OnText[index] : OffText[index]);
                 var y = 67 + index * 18;
@@ -419,6 +420,11 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 16)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.TogglePlayerNames;
+                    }
                     if (index == 7)
                     {
                         var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.ViewportIncrease :

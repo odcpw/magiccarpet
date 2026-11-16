@@ -397,6 +397,7 @@ namespace MagicCarpet.Native
             public string generation;
             public string mode;
             public byte source_speed_index;
+            public bool source_player_names_visible;
             [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
             public DisplaySettings display_settings;
@@ -1086,6 +1087,7 @@ namespace MagicCarpet.Native
                 runtime_contract = before.runtime_contract, runtime_id = before.runtime_id,
                 generation = before.generation, mode = before.mode,
                 source_speed_index = before.source_speed_index,
+                source_player_names_visible = before.source_player_names_visible,
                 frontend_media = before.frontend_media, player_preferences = before.player_preferences,
                 display_settings = before.display_settings,
                 presentation = before.presentation, campaign_menu = before.campaign_menu,
@@ -1141,7 +1143,8 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar == before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
-                after.display_settings.viewport_size != before.display_settings.viewport_size)
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("icons and map toggle changed the wrong source state");
             return after;
         }
@@ -1163,7 +1166,8 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque == before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
-                after.display_settings.viewport_size != before.display_settings.viewport_size)
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("panel transparency toggle changed the wrong source state");
             return after;
         }
@@ -1185,8 +1189,32 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading == before.display_settings.flat_shading ||
-                after.display_settings.viewport_size != before.display_settings.viewport_size)
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("flat shading toggle changed the wrong source state");
+            return after;
+        }
+
+        internal Identity TogglePlayerNames()
+        {
+            RequireSessionMode(allowPaused: true, "toggle player names");
+            var before = Current;
+            Check(NativeSim.mc_game_runtime_toggle_player_names_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick")), "toggle player names");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible == before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size)
+                throw new InvalidDataException("player names toggle changed the wrong runtime state");
             return after;
         }
 
@@ -1220,7 +1248,8 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
-                after.display_settings.viewport_size != expected)
+                after.display_settings.viewport_size != expected ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("source viewport changed the wrong runtime state");
             identity = after;
             return true;
@@ -1249,7 +1278,8 @@ namespace MagicCarpet.Native
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
                 after.display_settings.viewport_size != before.display_settings.viewport_size ||
-                after.source_speed_index != expectedSpeed)
+                after.source_speed_index != expectedSpeed ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("source speed changed the wrong runtime state");
             identity = after;
             return true;
@@ -1310,7 +1340,8 @@ namespace MagicCarpet.Native
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
                 after.display_settings.viewport_size != before.display_settings.viewport_size ||
-                after.player_preferences?.preferences?.brightness == null)
+                after.player_preferences?.preferences?.brightness == null ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("source brightness changed the wrong runtime state");
             identity = after;
             return true;

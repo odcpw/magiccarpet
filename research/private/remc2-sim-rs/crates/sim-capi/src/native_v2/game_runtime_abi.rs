@@ -656,6 +656,9 @@ impl RuntimeRecord {
     ) -> AbiResult<super::campaign_abi::CampaignSessionRecord> {
         let identity = self.runtime.identity();
         let preferences = &identity.player_preferences.preferences;
+        let player_names_visible = identity.source_player_names_visible;
+        let player_label_locale = self.runtime.selected_locale_binding();
+        let player_label_name = preferences.player_name.clone();
         let render_options = sim_core::day_indexed_frame::WorldRenderOptions {
             reflections: preferences.reflections,
             sky: preferences.sky,
@@ -676,6 +679,12 @@ impl RuntimeRecord {
             } = &mut record.kind
             {
                 day_frame_state.set_render_options(render_options);
+                if let Err(error) = day_frame_state.bind_player_names(
+                    player_names_visible, player_label_locale.clone(), &player_label_name,
+                ) {
+                    self.campaign_presentation = Some(record);
+                    return Err(AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()));
+                }
             }
             return Ok(record);
         }
@@ -747,6 +756,8 @@ impl RuntimeRecord {
             ),
         };
         state.set_render_options(render_options);
+        state.bind_player_names(player_names_visible, player_label_locale, &player_label_name)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
         if initializing
             && (self.runtime.identity().mode == RuntimeMode::Paused
                 || !self
@@ -2193,6 +2204,34 @@ pub extern "C" fn mc_game_runtime_source_viewport_v1(
             return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED, "source viewport is blocked by game state"));
         }
         record.campaign_presentation_dirty |= before != record.runtime.identity().display_settings.viewport_size;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_toggle_player_names_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        let entry = runtime_arc(handle)?;
+        let mut guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned")
+        })?;
+        let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+            return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+        };
+        record.ensure_open()?;
+        let admitted = record.runtime.toggle_player_names(
+            RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+            SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+        ).map_err(map_transition_error)?;
+        if !admitted {
+            return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED, "source player names are blocked by game state"));
+        }
+        record.campaign_presentation_dirty = true;
         Ok(())
     })
 }
@@ -4039,6 +4078,99 @@ mod tests {
             Ok(())
         })
         .unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn runtime_player_names_toggle_guards_and_cold_replays_notice_only() {
+        let packages = installed_package_set_json(&[
+            level_three_package(), level_one_package(), level_two_package(),
+        ]);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let title = identity(handle);
+        assert_eq!(title["source_player_names_visible"], true);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle), title);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
+            handle, 1, packages.as_ptr(), packages.len() as u32,
+        ), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let before = identity(handle);
+        assert_eq!(before["source_player_names_visible"], true);
+        let notices = |owner| read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(owner, buffer, capacity, length)
+        });
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 3, 1, 0), MC_STATUS_OK);
+        let hidden = identity(handle);
+        assert_eq!(hidden["source_player_names_visible"], false);
+        assert_eq!(hidden["session"], before["session"]);
+        assert_eq!(hidden["generation"], before["generation"]);
+        assert_eq!(hidden["display_settings"], before["display_settings"]);
+        assert_eq!(hidden["player_preferences"], before["player_preferences"]);
+        let hidden_notice = notices(handle);
+        assert_eq!(hidden_notice["value"].as_array().unwrap().len(), 1);
+        assert_eq!(hidden_notice["value"][0]["kind"], "participant.player_names_off");
+        assert_eq!(hidden_notice["value"][0]["is_local"], true);
+        assert_eq!(hidden_notice["value"][0]["remaining_frames"], 50);
+        let hidden_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let hidden_save = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+        });
+        for (outer, nested, tick, expected) in [
+            (2, 1, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 2, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 1, 1, MC_STATUS_INVALID_ARGUMENT),
+        ] {
+            assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, outer, nested, tick), expected);
+            assert_eq!(identity(handle), hidden);
+            assert_eq!(notices(handle), hidden_notice);
+            assert_eq!(read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }), hidden_snapshot);
+            assert_eq!(read_bytes(|buffer, capacity, length| {
+                mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+            }), hidden_save);
+        }
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_player_names_visible"], true);
+        let visible_notice = notices(handle);
+        assert_eq!(visible_notice["value"].as_array().unwrap().len(), 1);
+        assert_eq!(visible_notice["value"][0]["kind"], "participant.player_names_on");
+        assert_eq!(visible_notice["value"][0]["is_local"], true);
+        assert_eq!(visible_notice["value"][0]["remaining_frames"], 50);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_player_names_visible"], false);
+        let saved_notice = notices(handle);
+        assert_eq!(saved_notice["value"][0]["kind"], "participant.player_names_off");
+        let saved_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let saved = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            cold, 1, packages.as_ptr(), packages.len() as u32, saved.as_ptr(), saved.len() as u32,
+        ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cold_identity = identity(cold);
+        assert_eq!(cold_identity["mode"], "paused");
+        assert_eq!(cold_identity["source_player_names_visible"], true,
+            "cold restores the real notice history but byte207 defaults visible");
+        assert_eq!(notices(cold)["value"], saved_notice["value"]);
+        assert_eq!(read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(cold, buffer, capacity, length)
+        })["value"], saved_snapshot["value"]);
+        let outer = cold_identity["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_identity["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(cold, outer, nested, 0, buffer, capacity, length)
+        }), saved, "the auxiliary cold default changes no stored receipt or notice bytes");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 

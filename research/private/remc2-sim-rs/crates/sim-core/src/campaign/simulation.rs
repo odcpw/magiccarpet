@@ -7595,6 +7595,46 @@ impl Mc2Simulation {
             .collect())
     }
 
+    /// DrawSorcererName reads the current class3 A4 color, not the sprite's
+    /// selected asset, a cached ownership list or its source ID.
+    pub fn campaign_player_label(&self, entity_index: u16) -> Result<Option<crate::native_world::CampaignPlayerLabel>> {
+        let live = &self.session.state.live;
+        let Some(header) = live.economy.entities.get(usize::from(entity_index)) else { return Ok(None); };
+        // Ordinary constructors publish class/model in the actual source
+        // header. Other families need no player-status/A4 interpretation.
+        if !header.active || header.class != 3 || !matches!(header.model, 0 | 1) {
+            return Ok(None);
+        }
+        let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+        context.spells = Some(&live.shared_spells);
+        context.particles = Some(&self.session.definition.presentation.particles);
+        context.player = Some((live.core.state.entity_index, live.core.state.position, live.player_life));
+        let Some(body) = source_target::status_parent(&live.economy, context, entity_index)
+            .map_err(NativeWorldError::new)? else { return Ok(None); };
+        if !body.active || body.class != 3 || !matches!(body.model, 0 | 1) {
+            return Ok(None);
+        }
+        let player_color_index = match body.special_relation {
+            EntitySpecialRelation::PlayerState(slot) => live.shared_spells.players()
+                .iter().chain(live.core.players.iter()).find(|player| player.slot == slot)
+                .map(PlayerSnapshot::player_color_index)
+                .ok_or_else(|| NativeWorldError::new("sorcerer label has no current A4 player"))?,
+            // NewEvent's shared unk_F42B0x byte38 is zero-initialized; only
+            // the real player constructor writes a per-player color.
+            EntitySpecialRelation::GlobalSpecialState => 0,
+            EntitySpecialRelation::None => return Err(NativeWorldError::new("sorcerer label has no A4 relation")),
+        };
+        let source_name = crate::campaign::backend::source_scoreboard::source_name_bytes(player_color_index)
+            .ok_or_else(|| NativeWorldError::new("sorcerer label color is outside the source roster"))?;
+        let mut name_bytes = [0; 32];
+        if source_name.len() >= name_bytes.len() {
+            return Err(NativeWorldError::new("source sorcerer name exceeds the label buffer"));
+        }
+        name_bytes[..source_name.len()].copy_from_slice(source_name);
+        Ok(Some(crate::native_world::CampaignPlayerLabel { player_color_index, name_bytes,
+            name_len: source_name.len() as u8, life: body.life, max_life: body.max_life }))
+    }
+
     pub fn campaign_entity_presentations(
         &self,
         camera_yaw: i16,
@@ -8064,6 +8104,7 @@ impl Mc2Simulation {
                         draw_order,
                         control_flags,
                         primary_depth_adjustment,
+                        player_label: self.campaign_player_label(entity_index)?,
                     })
                 },
             )
@@ -9224,6 +9265,15 @@ impl Mc2Simulation {
         let color = live.shared_spells.local_player().player_color_index();
         live.player_lifecycle_notifications.publish(color, live.core.state.entity_index,
             if enabled { PlayerLifeNoticeKind::FlatShadingOn } else { PlayerLifeNoticeKind::FlatShadingOff }, 50)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn publish_player_names_notice(&mut self, visible: bool) -> std::result::Result<(), String> {
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live = &mut self.session.state.live;
+        let color = live.shared_spells.local_player().player_color_index();
+        live.player_lifecycle_notifications.publish(color, live.core.state.entity_index,
+            if visible { PlayerLifeNoticeKind::PlayerNamesOn } else { PlayerLifeNoticeKind::PlayerNamesOff }, 50)
             .map_err(|error| error.to_string())
     }
 
@@ -49388,12 +49438,28 @@ mod tests {
         assert_ne!(before.fireball_holder_index, 0);
         assert_ne!(before.possession_holder_index, 0);
         let slot = before.entity_index;
+        let label = session.campaign_player_label(slot).unwrap().unwrap();
+        assert_eq!(label.player_color_index, 1);
+        assert_eq!(&label.name_bytes[..usize::from(label.name_len)], b"Nyphur");
+        let current = &session.entities()[usize::from(slot)];
+        assert_eq!((label.life, label.max_life), (current.life, current.max_life));
+        let before_read = session.state_hash();
+        assert_eq!(session.campaign_player_label(slot).unwrap(), Some(label));
+        assert_eq!(session.state_hash(), before_read, "current labels are non-consuming observations");
+        // Detached admission negatives: a familiar slot/asset cannot replace
+        // the current source class/model or its actual A4 relation.
+        let mut missing_a4 = session.clone();
+        missing_a4.economy.entities[usize::from(slot)].special_relation = EntitySpecialRelation::None;
+        assert!(missing_a4.campaign_player_label(slot).is_err());
+        let mut different_model = session.clone();
+        different_model.economy.entities[usize::from(slot)].model = 2;
+        assert_eq!(different_model.campaign_player_label(slot).unwrap(), None);
         assert!(
             session
                 .campaign_entity_presentations(0)
                 .unwrap()
                 .iter()
-                .any(|row| row.entity_index == slot),
+                .any(|row| row.entity_index == slot && row.player_label == Some(label)),
             "living rival has a sprite presentation"
         );
         let row = &session.economy.entities[usize::from(slot)];

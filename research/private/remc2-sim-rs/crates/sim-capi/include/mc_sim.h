@@ -1444,6 +1444,10 @@ int32_t mc_game_runtime_source_speed_v1(
 int32_t mc_game_runtime_source_viewport_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
     uint64_t expected_tick, uint8_t action);
+/* Source auxiliary byte207, visible by default and independent of GAME/CONFIG. */
+int32_t mc_game_runtime_toggle_player_names_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick);
 int32_t mc_game_runtime_participant_notifications_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_runtime_resume_v1(

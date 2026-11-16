@@ -189,7 +189,7 @@ namespace MagicCarpet.Native
         private ulong historyGeneration, historyRevision;
         private byte pendingSceneBlur;
         private bool pendingExitTable, hasSceneHistory;
-        private byte sourceViewportSize = 40, sourceViewportClearIndex;
+        private byte sourceViewportSize = 40;
 
         internal static Vector4 SourceViewportBounds(byte size)
         {
@@ -333,7 +333,6 @@ namespace MagicCarpet.Native
             historyMaterial.SetTexture("_BlendLut", pendingExitTable ? exitBlendTable : sceneBlendTable);
             historyMaterial.SetFloat("_BlendHistory", hasSceneHistory && pendingSceneBlur == 2 ? 1f : 0f);
             historyMaterial.SetVector("_SourceViewport", SourceViewportBounds(sourceViewportSize));
-            historyMaterial.SetFloat("_ViewportClearIndex", sourceViewportClearIndex);
             var previousTarget = RenderTexture.active;
             var previousSrgb = GL.sRGBWrite;
             try
@@ -731,7 +730,6 @@ namespace MagicCarpet.Native
             if (environmentCache == null)
             {
                 environmentCache = cache;
-                sourceViewportClearIndex = (byte)(cache.ReadOutput(descriptor.palette.rgb8_path)[0] >> 2);
                 // Pause/resume advances the same runtime's generation. Bind
                 // immutable assets to its owner, then validate each returned
                 // frame against the current generation below/above.

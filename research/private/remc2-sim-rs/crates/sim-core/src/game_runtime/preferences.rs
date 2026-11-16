@@ -1152,6 +1152,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before_bytes);
         let nested = runtime.session().unwrap().identity().guard();
         runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
+        runtime.toggle_player_names(playing.guard(), nested).unwrap();
         let paused = runtime.pause(playing.guard()).unwrap();
         let snapshot = runtime.session().unwrap().snapshot();
         let operations = runtime.session().unwrap().backend().replay_operation_count();
@@ -1161,6 +1162,7 @@ mod tests {
         assert_eq!(runtime.identity().player_preferences.preferences, source_default);
         assert_eq!(runtime.identity().display_settings, paused.display_settings, "source Default does not set minimap/topbar");
         assert!(!runtime.identity().display_settings.minimap);
+        assert!(!runtime.identity().source_player_names_visible, "Default Keys retains auxiliary player-name visibility");
         assert_eq!(runtime.identity().generation, paused.generation);
         assert_eq!(runtime.session().unwrap().snapshot(), snapshot);
         assert_eq!(runtime.session().unwrap().backend().replay_operation_count(), operations);

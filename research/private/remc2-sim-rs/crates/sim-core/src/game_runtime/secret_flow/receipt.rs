@@ -390,6 +390,7 @@ mod tests {
         });
         RuntimeIdentity {
             source_speed_index: 0,
+            source_player_names_visible: true,
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: 42,
             generation: runtime_generation,

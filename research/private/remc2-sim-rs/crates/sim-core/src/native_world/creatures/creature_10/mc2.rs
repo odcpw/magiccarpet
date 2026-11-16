@@ -2976,6 +2976,7 @@ mod tests {
                 crate::game_runtime::DisplayNotice::IconsMap(visible) => session.backend_mut().publish_display_notice(visible),
                 crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => session.backend_mut().publish_panel_transparency_notice(opaque),
                 crate::game_runtime::DisplayNotice::FlatShading(enabled) => session.backend_mut().publish_flat_shading_notice(enabled),
+                crate::game_runtime::DisplayNotice::PlayerNames(visible) => session.backend_mut().publish_player_names_notice(visible),
             },
             |_| {},
         ).expect("controlled admission of the unchanged completed session");

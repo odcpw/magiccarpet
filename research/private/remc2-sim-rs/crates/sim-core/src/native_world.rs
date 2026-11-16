@@ -797,6 +797,15 @@ impl Level2EconomyState {
 /// relation and the qualified package presentation table. Presentation
 /// clients copy this projection; they never infer a selector from class/model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CampaignPlayerLabel {
+    pub player_color_index: u8,
+    pub name_bytes: [u8; 32],
+    pub name_len: u8,
+    pub life: i32,
+    pub max_life: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CampaignEntityPresentation {
     pub entity_index: u16,
     pub source_id: u16,
@@ -818,6 +827,8 @@ pub struct CampaignEntityPresentation {
     pub draw_order: u32,
     pub control_flags: u32,
     pub primary_depth_adjustment: i16,
+    /// Actual current class3/model0|1 A4/roster relation, independent of art.
+    pub player_label: Option<CampaignPlayerLabel>,
 }
 
 /// Level 2's shared spell/economy reset projection. The two active authored

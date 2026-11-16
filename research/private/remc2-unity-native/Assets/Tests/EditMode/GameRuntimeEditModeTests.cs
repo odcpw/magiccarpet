@@ -1919,12 +1919,15 @@ namespace MagicCarpet.Native.Tests
                 for (var i = 0; i < actual.Length; i++) actual[i] = rgba[i].r;
                 CollectionAssert.AreEqual(table, actual, "each actual source LUT entry uses current-high/prior-low indices");
 
-                // The real source viewport has an asymmetric bottom margin at
-                // size 17. Its outside must remain clear even during mode 2.
+                // Size 17 has an asymmetric bottom margin. Current labels in
+                // that margin survive, but old history cannot bleed into it.
                 var bounds = CampaignPresentationSurface.SourceViewportBounds(17);
                 Assert.That(bounds, Is.EqualTo(new Vector4(92 / 320f, 58 / 200f, 228 / 320f, 143 / 200f)));
                 var clear = (byte)(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path)[0] >> 2);
-                var index = Array.FindIndex(table, value => value != clear);
+                var index = -1;
+                for (var candidate = 0; candidate < table.Length; candidate++)
+                    if ((candidate >> 8) != clear && table[candidate] != (byte)(candidate >> 8) &&
+                        table[(clear << 8) | (candidate & 255)] != clear) { index = candidate; break; }
                 Assert.That(index, Is.GreaterThanOrEqualTo(0));
                 var currentIndex = (byte)(index >> 8); var priorIndex = (byte)index;
                 var scene = new Texture2D(320, 200, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
@@ -1934,12 +1937,14 @@ namespace MagicCarpet.Native.Tests
                 try
                 {
                     var currentBytes = new byte[320 * 200]; var priorBytes = new byte[320 * 200];
-                    Array.Fill(currentBytes, currentIndex); Array.Fill(priorBytes, priorIndex);
+                    Array.Fill(currentBytes, clear); Array.Fill(priorBytes, priorIndex);
+                    for (var y = 58; y < 143; y++) for (var x = 92; x < 228; x++)
+                        currentBytes[y * 320 + x] = currentIndex;
+                    currentBytes[40 * 320 + 40] = currentIndex; // current source label outside viewport
                     scene.LoadRawTextureData(currentBytes); scene.Apply();
                     oldScene.LoadRawTextureData(priorBytes); oldScene.Apply();
                     material.SetTexture("_SceneHistory", oldScene);
                     material.SetVector("_SourceViewport", bounds);
-                    material.SetFloat("_ViewportClearIndex", clear);
                     Graphics.Blit(scene, smallOutput, material);
                     RenderTexture.active = smallOutput;
                     smallPixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); smallPixels.Apply();
@@ -1949,6 +1954,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(At(228, 100), Is.EqualTo(clear));
                     Assert.That(At(160, 57), Is.EqualTo(clear));
                     Assert.That(At(160, 143), Is.EqualTo(clear));
+                    Assert.That(At(40, 40), Is.EqualTo(currentIndex), "current-frame exterior label survives without history");
                     Assert.That(At(92, 58), Is.EqualTo(table[index]));
                     Assert.That(At(227, 142), Is.EqualTo(table[index]),
                         "history retains source LUT order inside the actual viewport");
@@ -3659,6 +3665,251 @@ namespace MagicCarpet.Native.Tests
                 RenderTexture.active = previousTarget;
                 gui.DrawRuntime = null;
                 if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourcePlayerNamesOptionRetainsItsActualRuntimeLifetime()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-player-names-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source player names");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                yield return StartReturnedParentFromNormalMap(runtime);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var owner = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var selected = menu.LocaleCache.PrepareLocale(preferences.Current.locale_binding);
+                Assert.That(menu.GameplayLanguageText(402), Is.EqualTo(selected.Record(402)));
+                Assert.That(menu.GameplayLanguageText(403), Is.EqualTo(selected.Record(403)));
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.True,
+                    "fresh actual source runtime defaults to player names on");
+                var view = new Rect(); var origin = Vector2.zero; var cursor = Vector2.zero;
+                CampaignMenuPresenter.Action action = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var e = Event.current; var prior = e.mousePosition;
+                    try {
+                        e.mousePosition = view.position + cursor * scale;
+                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null);
+                    }
+                    finally { e.mousePosition = prior; }
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Vector2 source)
+                {
+                    cursor = source; var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = EventType.MouseDown,
+                        mousePosition = view.position + source * (view.width / 640f) + origin, button = 0 });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw));
+                }
+                Send(SourcePauseMenu.IconRect(178).center);
+                var before = runtime.GameRuntimeProductionIdentity;
+                Send(new Vector2(320, 67 + 16 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.TogglePlayerNames));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                var off = runtime.GameRuntimeProductionIdentity;
+                Assert.That(off.source_player_names_visible, Is.False);
+                Assert.That((off.generation, off.session.generation, off.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)),
+                    "the real source option does not step the session");
+                var notice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((notice[0].kind, notice[0].remaining_frames), Is.EqualTo(("participant.player_names_off", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(notice, false, false, false, 14,
+                    menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(403)));
+                var save = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(save, resources))
+                    Assert.That(cold.GameRuntimeIdentity().source_player_names_visible, Is.True, "fresh process defaults on after verifying the replay");
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, save, resources))
+                    Assert.That(warm.GameRuntimeIdentity().source_player_names_visible, Is.False, "warm load retains the receiver process flag");
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.False, "retry retains the source auxiliary flag");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.True);
+                notice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((notice[0].kind, notice[0].remaining_frames), Is.EqualTo(("participant.player_names_on", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(notice, false, false, false, 14,
+                    menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(402)));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
+        public void PlayerNamesRenderSelectedFontOnRealNyphurAndPreserveQueries()
+        {
+            var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT");
+            Assert.That(string.IsNullOrEmpty(input), Is.False, "requires the real source-valid Nyphur replay");
+            var proof = ReadReplayDocument(File.ReadAllBytes(Path.ChangeExtension(input, ".json")));
+            int ProofInt(string path) => int.Parse(proof.SelectSingleNode(path).InnerText);
+            Assert.That((ProofInt("/root/target/slot"), ProofInt("/root/target/class"), ProofInt("/root/target/model")),
+                Is.EqualTo((112, 3, 1)));
+            var labelX = ProofInt("/root/label/x"); var labelY = ProofInt("/root/label/y");
+            var colorIndex = ProofInt("/root/target/color");
+            var dayColors = new byte[] { 0x60, 0x7b, 0x1c, 0x5b, 0x9a, 0xdb, 0x76, 0x3d };
+            Assert.That(colorIndex, Is.InRange(0, dayColors.Length - 1));
+            var ownerColor = dayColors[colorIndex];
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-nyphur-label-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual Nyphur label"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            Transform surfaceRoot = null, originalParent = null;
+            try
+            {
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                Assert.That((campaign.Selection.externalLevel, campaign.Selection.internalLevel, campaign.Selection.mapType),
+                    Is.EqualTo(((ushort)2, (ushort)1, (byte)0)));
+                var actor = Array.Find(campaign.Entities(), row => row.entityIndex == 112);
+                Assert.That((actor.active, actor.classId, actor.model), Is.EqualTo(((byte)1, (byte)3, (byte)1)),
+                    "the real retained Nyphur remains the current source actor");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var selected = menu.LocaleCache.PrepareLocale(preferences.Current.locale_binding);
+                Assert.That(selected.Id, Is.EqualTo(proof.SelectSingleNode("/root/locale/id").InnerText));
+                Assert.That(selected.Identity.font_ids, Does.Contain("font1"), "the real accepted language owns FONT1");
+                var manifest = ReadReplayDocument(File.ReadAllBytes(Path.Combine(selected.CachePath, "manifest.json")));
+                var font = manifest.SelectSingleNode("/root/fonts/item[id='font1']");
+                Assert.That(font, Is.Not.Null);
+                var glyph = font.SelectSingleNode("glyphs/item[index='79']"); // 'N' + 1
+                var width = int.Parse(glyph.SelectSingleNode("width").InnerText);
+                var height = int.Parse(glyph.SelectSingleNode("height").InnerText);
+                var offset = int.Parse(glyph.SelectSingleNode("offset").InnerText);
+                var masks = File.ReadAllBytes(Path.Combine(selected.CachePath, font.SelectSingleNode("masks_path").InnerText));
+                var surface = (CampaignPresentationSurface)Field("level2DayPresentationSurface");
+                // Keep the real runtime inactive to prevent automatic gameplay,
+                // but let its actual presentation meshes participate in camera renders.
+                surfaceRoot = surface.FrameCamera.transform.parent;
+                originalParent = surfaceRoot.parent;
+                surfaceRoot.SetParent(null, true);
+                Assert.That(surfaceRoot.gameObject.activeInHierarchy, Is.True);
+                var cameras = surfaceRoot.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras) if (camera.targetTexture == null) camera.targetTexture = display;
+                byte[] Scene()
+                {
+                    foreach (var camera in cameras) camera.Render();
+                    Assert.That(surface.SceneHistoryGeneration, Is.EqualTo(surface.Generation));
+                    var capture = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+                    try {
+                        RenderTexture.active = surface.ComposedSceneIndices;
+                        capture.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); capture.Apply();
+                        var rgba = capture.GetPixels32(); var result = new byte[rgba.Length];
+                        for (var y = 0; y < 200; y++) for (var x = 0; x < 320; x++)
+                            result[y * 320 + x] = rgba[(199 - y) * 320 + x].r;
+                        return result;
+                    }
+                    finally { UnityEngine.Object.DestroyImmediate(capture); RenderTexture.active = previousTarget; }
+                }
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.source_player_names_visible, Is.True);
+                var on = Scene();
+                var nativeOn = (byte[])campaign.SceneFrameIndices.Clone();
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                var offIdentity = runtime.GameRuntimeProductionIdentity;
+                Assert.That(offIdentity.source_player_names_visible, Is.False);
+                Assert.That((offIdentity.generation, offIdentity.session.generation, offIdentity.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)));
+                var off = Scene();
+                var nativeOff = (byte[])campaign.SceneFrameIndices.Clone();
+                var trace = new System.Text.StringBuilder();
+                var nativeChanges = 0; var gpuChanges = 0;
+                var nMinX = 320; var nMaxX = -1; var nMinY = 200; var nMaxY = -1;
+                var gMinX = 320; var gMaxX = -1; var gMinY = 200; var gMaxY = -1;
+                for (var y = 0; y < 200; y++) for (var x = 0; x < 320; x++)
+                {
+                    var pixel = y * 320 + x;
+                    if (nativeOn[pixel] != nativeOff[pixel]) {
+                        nativeChanges++; nMinX = Math.Min(nMinX, x); nMaxX = Math.Max(nMaxX, x);
+                        nMinY = Math.Min(nMinY, y); nMaxY = Math.Max(nMaxY, y);
+                    }
+                    if (on[pixel] != off[pixel]) {
+                        gpuChanges++; gMinX = Math.Min(gMinX, x); gMaxX = Math.Max(gMaxX, x);
+                        gMinY = Math.Min(gMinY, y); gMaxY = Math.Max(gMaxY, y);
+                    }
+                }
+                for (var y = 0; y < height / 2; y++) for (var x = 0; x < width; x++)
+                {
+                    if (masks[offset + y * width + x] == 0) continue;
+                    var px = (labelX + 4) / 2 + x; var py = labelY / 2 + y;
+                    var pixel = py * 320 + px;
+                    trace.Append($" ({px},{py}:native={nativeOn[pixel]}/{nativeOff[pixel]} gpu={on[pixel]}/{off[pixel]})");
+                }
+                TestContext.WriteLine($"NYPHUR_GLYPH label={labelX},{labelY} color={ownerColor} " +
+                    $"font={width}x{height}@{offset} frame={surface.Generation}/{surface.Tick} " +
+                    $"history={surface.SceneHistoryGeneration}/{surface.SceneHistoryRevision} " +
+                    $"nativeDiff={nativeChanges}[{nMinX},{nMinY}..{nMaxX},{nMaxY}] " +
+                    $"gpuDiff={gpuChanges}[{gMinX},{gMinY}..{gMaxX},{gMaxY}]{trace}");
+                var glyphVisible = false;
+                for (var y = 0; y < height / 2; y++) for (var x = 0; x < width; x++)
+                {
+                    var pixel = (labelY / 2 + y) * 320 + (labelX + 4) / 2 + x;
+                    if (masks[offset + y * width + x] != 0 && on[pixel] == ownerColor && off[pixel] != ownerColor)
+                        glyphVisible = true;
+                }
+                Assert.That(glyphVisible, Is.True, "actual selected FONT1 Nyphur glyph reaches the composed indexed scene");
+                Assert.That(ProofInt("/root/target/life"), Is.GreaterThan(0));
+                var barY = (labelY + 14) / 2; var barX = (labelX + 2) / 2;
+                var barVisible = false;
+                for (var x = 0; x < 25; x++)
+                    if (on[barY * 320 + barX + x] == ownerColor && off[barY * 320 + barX + x] != ownerColor)
+                        barVisible = true;
+                Assert.That(barVisible, Is.True, "the actual living Nyphur health bar reaches the same scene");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                CollectionAssert.AreEqual(on, Scene(), "turning names back on restores the same indexed frame");
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Scene(); campaign.Entities();
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "repeated raster and actor queries do not mutate the actual runtime");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                if (surfaceRoot != null) surfaceRoot.SetParent(originalParent, true);
                 runtime.QualificationDisposeGameRuntimeProduction();
                 display.Release(); UnityEngine.Object.DestroyImmediate(display);
                 UnityEngine.Object.DestroyImmediate(root);
