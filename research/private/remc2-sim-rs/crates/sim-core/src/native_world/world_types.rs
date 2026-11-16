@@ -4555,6 +4555,7 @@ impl RuntimeSnapshot {
     pub(super) fn service_campaign_objective_presentation(
         &mut self,
         mut input: crate::campaign::objective_speech::ObjectivePresentationInput,
+        source_palette_phase: Option<u8>,
     ) -> crate::campaign::objective_speech::ObjectivePresentationActions {
         self.objective_presentation_palette_mod = self
             .objective_presentation_palette_mod
@@ -4564,7 +4565,7 @@ impl RuntimeSnapshot {
             self.objective_textbox_ticks -= 1;
             self.bytes[69] = self.objective_textbox_ticks;
         }
-        input.palette_mod = self.objective_presentation_palette_mod;
+        input.palette_mod = source_palette_phase.unwrap_or(self.objective_presentation_palette_mod);
         let actions = crate::campaign::objective_speech::service_objective_presentation(
             &mut self.objective_presentation_phase,
             input,

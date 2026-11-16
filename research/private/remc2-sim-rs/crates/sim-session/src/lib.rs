@@ -782,6 +782,10 @@ pub trait GameSessionBackend {
     /// is a frame argument, not another persisted preference; implementations
     /// must publish its history/state effects only when that frame is accepted.
     fn prepare_hud_frame(&mut self, _top_bar: bool) {}
+    /// Supply the runtime owner's per-environment brightness for one guarded
+    /// palette frame. This is a frame argument, not a second preference store;
+    /// history and palette state may change only when that frame is accepted.
+    fn prepare_palette_frame(&mut self, _brightness: [u8; 3]) {}
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
     /// Apply package-declared presentation changes at an accepted pause edge.
     /// This cannot advance gameplay or fail after lifecycle publication.

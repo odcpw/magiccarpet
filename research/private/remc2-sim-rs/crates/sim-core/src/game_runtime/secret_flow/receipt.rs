@@ -403,6 +403,7 @@ mod tests {
                 installed_locales: Vec::new(),
                 locale_binding: None,
                 language_status: "not_installed".to_owned(),
+                source_brightness_admitted: None,
             },
             presentation: RuntimePresentationCue {
                 cue_id: SemanticPresentationCueId::parse("presentation.receipt.current").unwrap(),

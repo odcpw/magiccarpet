@@ -31,6 +31,8 @@ pub const MC_STATUS_GENERATION_MISMATCH: i32 = 12;
 pub const MC_STATUS_CURSOR_EXPIRED: i32 = 13;
 pub const MC_STATUS_INTERNAL_PANIC: i32 = 14;
 pub const MC_STATUS_LOCK_FAILED: i32 = 15;
+/// A source action was valid but temporarily blocked by its gameplay state.
+pub const MC_STATUS_SOURCE_ACTION_BLOCKED: i32 = 16;
 
 pub const MC_PROFILE_OUTDOOR: u8 = 0;
 pub const MC_PROFILE_CAVE: u8 = 1;

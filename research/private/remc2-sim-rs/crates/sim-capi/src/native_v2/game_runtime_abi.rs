@@ -2237,6 +2237,40 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                 format!("invalid preferences command: {error}"),
             )
         })?;
+        let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceBrightness {
+                session_guard, action,
+            } => {
+                // Unlike the general mutating helper, a blocked source action
+                // must leave the retained presentation cache untouched.
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| {
+                    AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned")
+                })?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                let result = record.runtime.source_brightness_preferences(
+                    RuntimeGuard { runtime_id: handle, generation },
+                    session_guard,
+                    action,
+                ).map_err(map_transition_error)?;
+                return match result.source_brightness_admitted {
+                    Some(true) => {
+                        record.campaign_presentation_dirty = true;
+                        Ok(())
+                    }
+                    Some(false) => Err(AbiError::new(
+                        MC_STATUS_SOURCE_ACTION_BLOCKED, "source brightness is blocked by palette state",
+                    )),
+                    None => Err(AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED, "source brightness returned no admission result",
+                    )),
+                };
+            }
+            command => command,
+        };
         let initial_profile = matches!(&command, sim_core::game_runtime::preferences::PreferencesCommand::Install { .. });
         with_runtime_mut(handle, |record| {
             let before = record.runtime.identity().player_preferences.preferences;
@@ -4096,6 +4130,97 @@ mod tests {
         assert_eq!(identity(cold)["display_settings"]["panels_opaque"], false, "Night retry default");
         assert_eq!(identity(cold)["display_settings"]["flat_shading"], true, "retry retains source flat setting");
         assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+
+        // The existing JSON preference command carries both source guards.
+        // A blocked palette must not publish a profile or replay mutation;
+        // after real paused frames it accepts, and the ordinary Playing path
+        // can use the same action after the requested fade clears.
+        let profile = std::env::temp_dir().join(format!("mc-source-brightness-{}-{}",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({
+            "operation": "install", "profile_dir": profile,
+        })).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        let source_command = |id: &Value, action: &str| serde_json::to_vec(&serde_json::json!({
+            "operation": "source_brightness",
+            "session_guard": {
+                "session_id": id["session"]["session_id"],
+                "generation": id["session"]["generation"],
+                "expected_tick": id["session"]["tick"],
+            },
+            "action": action,
+        })).unwrap();
+        let send = |outer, request: &[u8]| mc_game_runtime_preferences_command_json_v1(
+            handle, outer, request.as_ptr(), request.len() as u32,
+        );
+        let initial = identity(handle);
+        let command = source_command(&initial, "cycle");
+        let mut stale = initial.clone();
+        stale["session"]["generation"] = serde_json::json!("999");
+        assert_eq!(send(3, &command), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(send(4, &source_command(&stale, "cycle")), MC_STATUS_GENERATION_MISMATCH);
+        stale = initial.clone();
+        stale["session"]["tick"] = serde_json::json!("1");
+        assert_eq!(send(4, &source_command(&stale, "cycle")), MC_STATUS_INVALID_ARGUMENT);
+        let initial_replay = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        assert_eq!(send(4, &command), MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(identity(handle), initial);
+        assert!(!profile.join("player-preferences.json").exists());
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        }), initial_replay);
+        let mut admitted_before = None;
+        for _ in 0..64 {
+            assert_eq!(mc_game_runtime_paused_frame_v1(handle, 4, 2, 0), MC_STATUS_OK);
+            let before_action = identity(handle);
+            let status = send(4, &source_command(&before_action, "cycle"));
+            if status == MC_STATUS_OK {
+                admitted_before = Some(before_action);
+                break;
+            }
+            assert_eq!(status, MC_STATUS_SOURCE_ACTION_BLOCKED);
+        }
+        let before_action = admitted_before.expect("paused source fade must become ready");
+        let accepted = identity(handle);
+        let mut expected = before_action.clone();
+        expected["player_preferences"]["preferences"]["brightness"][1] = serde_json::json!(1);
+        expected["player_preferences"]["load_status"] = serde_json::json!("saved");
+        assert_eq!(accepted, expected, "only the active Night preference changes");
+        let profile_bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        let accepted_replay = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        assert_eq!(send(4, &source_command(&accepted, "cycle")), MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(identity(handle), accepted);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(), profile_bytes);
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        }), accepted_replay);
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let mut played = false;
+        for _ in 0..64 {
+            let current = identity(handle);
+            let nested = current["session"]["generation"].as_str().unwrap().parse().unwrap();
+            let tick = current["session"]["tick"].as_str().unwrap().parse().unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle, nested, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+            let current = identity(handle);
+            let status = send(5, &source_command(&current, "cycle"));
+            if status == MC_STATUS_OK {
+                played = true;
+                break;
+            }
+            assert_eq!(status, MC_STATUS_SOURCE_ACTION_BLOCKED);
+        }
+        assert!(played, "Playing F7 must become palette-admitted");
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["brightness"], serde_json::json!([0, 2, 0]));
+        let mut preference_cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut preference_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(preference_cold, 1, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        assert_eq!(identity(preference_cold)["player_preferences"]["preferences"]["brightness"], serde_json::json!([0, 2, 0]));
+        assert_eq!(mc_game_runtime_destroy_v1(preference_cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
 
         // A real transferred Pav save predates this optional GAME setting.

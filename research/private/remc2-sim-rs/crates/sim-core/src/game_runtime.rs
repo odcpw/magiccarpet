@@ -1738,6 +1738,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .map_err(RuntimeTransitionError::SessionGuard)
             .map_err(PausedFrameError::Transition)?;
         session.backend_mut().prepare_hud_frame(self.display_settings.top_bar);
+        session.backend_mut().prepare_palette_frame(self.player_preferences.snapshot().preferences.brightness);
         session
             .paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
             .map_err(PausedFrameError::Session)?;
@@ -2150,6 +2151,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         session
             .backend_mut()
             .set_dynamic_lighting_enabled(dynamic_lighting);
+        session.backend_mut().prepare_palette_frame(self.player_preferences.snapshot().preferences.brightness);
         if let Err(error) =
             session.paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
         {

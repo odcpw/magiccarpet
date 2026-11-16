@@ -414,6 +414,13 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 5)
+                    {
+                        var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.DecreaseBrightness :
+                            CampaignMenuPresenter.Action.IncreaseBrightness;
+                        Event.current.Use();
+                        return action;
+                    }
                     if (index == 12)
                     {
                         Event.current.Use();
@@ -430,7 +437,6 @@ namespace MagicCarpet.Native
                         return CampaignMenuPresenter.Action.ToggleFlatShading;
                     }
                     var option = index;
-                    var brightnessStep = Event.current.button == 1 ? -1 : 1;
                     preferences.ApplySource(draft => {
                         switch (option) {
                             case 0: draft.show_help = !draft.show_help; break;
@@ -438,11 +444,6 @@ namespace MagicCarpet.Native
                             case 2: draft.music_enabled = !draft.music_enabled; break;
                             case 3: draft.speech_enabled = !draft.speech_enabled; break;
                             case 4: draft.flight_assistance = !draft.flight_assistance; break;
-                            case 5:
-                                var terrain = profile == profiles["night"] ? 1 : profile == profiles["cave"] ? 2 : 0;
-                                // ReadOptionMenuEvents calls ChangeSettings with a3=1, so both ends clamp.
-                                draft.brightness[terrain] = Mathf.Clamp(draft.brightness[terrain] + brightnessStep, 0, 4);
-                                break;
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;
                             case 10: draft.shadows = !draft.shadows; break;
