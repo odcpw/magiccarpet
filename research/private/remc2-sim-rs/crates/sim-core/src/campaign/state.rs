@@ -340,6 +340,7 @@ impl CampaignSession {
         self.state.live.clone_from(&self.baseline);
         self.state.live.core.context.hand_selection_flash_ticks = hand_selection_flash_ticks;
         self.state.live.core.context.historical_hand_selection_flash = historical_hand_selection_flash;
+        self.state.live.core.context.source_speed_index = 0; // ClearSettings_567C0, unlike carried A4/flash globals.
         self.state
             .live
             .shared_spells
@@ -1053,6 +1054,10 @@ fn digest_flight_context(context: &FlightContext) -> CanonicalDigest {
         if context.hand_selection_flash_ticks != [0; 2] {
             hasher.update(b"source-hand-selection-flash-v1");
             hasher.update(context.hand_selection_flash_ticks);
+        }
+        if context.source_speed_index != 0 {
+            hasher.update(b"source-game-speed-v1");
+            hasher.update([context.source_speed_index]);
         }
     })
 }

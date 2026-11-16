@@ -842,12 +842,22 @@ impl DayIndexedFrameState {
             None => 0,
         };
         let tick = session.state.tick;
-        if tick != expected_tick {
+        let view = FrameView::current(session, self.render_options)?;
+        // Source speed performs four or eight UpdateEntities passes inside
+        // one outer frame. Its PlayerEvents turn still advances only once;
+        // a matching tick delta alone would also admit skipped normal frames.
+        let source_batch = self.current_tick.zip(self.current_view).is_some_and(
+            |(previous_tick, previous_view)| {
+                tick.checked_sub(previous_tick).is_some_and(|passes| matches!(passes, 4 | 8))
+                    && view.camera.source_turn
+                        == previous_view.camera.source_turn.wrapping_add(1)
+            },
+        );
+        if tick != expected_tick && !source_batch {
             return Err(DayIndexedFrameError::new(format!(
                 "Day indexed frame tick {tick} is out of order; expected {expected_tick}"
             )));
         }
-        let view = FrameView::current(session, self.render_options)?;
         let frame = render_environment_indexed_frame(
             inspection,
             session,
@@ -3596,6 +3606,53 @@ mod tests {
             validate_neutral_profile(profile, true).is_err(),
             "v2 cannot relabel Night indices as Day"
         );
+    }
+
+    #[test]
+    fn indexed_frame_admits_one_real_fast_outer_turn_but_not_skipped_frames() {
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("level3-day-block32-campaign-recipe-v2"),
+            generated_path("mc-level3-environment-exit-20261025"),
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        ).unwrap();
+        let assets = DayIndexedFrameAssets::load(
+            generated_path("mc-level3-environment-exit-20261025"),
+        ).unwrap();
+        let generation = campaign.generation();
+        let mut carrier = DayIndexedFrameState::new(generation);
+        carrier.render(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+
+        // Declared scheduler settings exercise the canonical source loop; the
+        // runtime F3 control and its actor consequences have their own check.
+        for (speed, passes) in [(1, 4), (2, 8), (0, 1)] {
+            let tick = campaign.simulation().state.tick;
+            let turn = camera_from_session(campaign.simulation()).unwrap().source_turn;
+            let evidence = campaign.step(crate::PlayerCommand::default(), speed);
+            assert_eq!(evidence.len(), passes);
+            assert_eq!(campaign.simulation().state.tick, tick + passes as u64);
+            assert_eq!(camera_from_session(campaign.simulation()).unwrap().source_turn,
+                turn.wrapping_add(1));
+            let hash = campaign.state_hash();
+            let frame = carrier.render(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            assert_eq!(frame.tick, tick + passes as u64);
+            assert_eq!(campaign.state_hash(), hash, "rendering cannot run intermediate gameplay");
+            let committed = carrier.clone();
+            assert!(carrier.render(campaign.inspection(), campaign.simulation(), &assets, generation).is_err());
+            assert_eq!(carrier, committed, "duplicate frame refusal preserves the last image");
+        }
+
+        let committed = carrier.clone();
+        let mut skipped_fast = campaign.clone();
+        for _ in 0..2 { let _ = skipped_fast.step(crate::PlayerCommand::default(), 1); }
+        assert_eq!(skipped_fast.simulation().state.tick - campaign.simulation().state.tick, 8);
+        assert!(carrier.render(skipped_fast.inspection(), skipped_fast.simulation(), &assets, generation).is_err(),
+            "two fast outer frames are not one super-fast outer frame");
+        assert_eq!(carrier, committed);
+        for _ in 0..4 { let _ = campaign.step(crate::PlayerCommand::default(), 0); }
+        assert_eq!(campaign.simulation().state.tick - committed.current_tick().unwrap(), 4);
+        assert!(carrier.render(campaign.inspection(), campaign.simulation(), &assets, generation).is_err(),
+            "four normal outer frames are not one fast outer frame");
+        assert_eq!(carrier, committed);
     }
 
     #[test]

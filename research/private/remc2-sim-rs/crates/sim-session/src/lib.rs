@@ -776,6 +776,11 @@ pub trait GameSessionBackend {
     fn flight_assistance_menu_open(&self) -> bool {
         false
     }
+    /// Observe the source outer-frame update setting without advancing it.
+    /// Backends without that control retain their normal single-pass index.
+    fn source_speed_index(&self) -> u8 {
+        0
+    }
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     /// Prepare the runtime owner's TopBar value for one guarded frame. This

@@ -15,6 +15,9 @@ pub(crate) enum PlayerLifeNoticeKind {
     PanelTransparencyOff,
     FlatShadingOn,
     FlatShadingOff,
+    GameSpeedNormal,
+    GameSpeedFast,
+    GameSpeedSuperFast,
 }
 
 impl PlayerLifeNoticeKind {
@@ -28,6 +31,9 @@ impl PlayerLifeNoticeKind {
             Self::PanelTransparencyOff => "participant.panel_transparency_off",
             Self::FlatShadingOn => "participant.flat_shading_on",
             Self::FlatShadingOff => "participant.flat_shading_off",
+            Self::GameSpeedNormal => "participant.game_speed_normal",
+            Self::GameSpeedFast => "participant.game_speed_fast",
+            Self::GameSpeedSuperFast => "participant.game_speed_super_fast",
         }
     }
 }
@@ -75,7 +81,9 @@ impl PlayerLifecycleNotifications {
             state: match kind {
                 PlayerLifeNoticeKind::IconsMapHidden | PlayerLifeNoticeKind::IconsMapVisible
                     | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff
-                    | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff => 3,
+                    | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff
+                    | PlayerLifeNoticeKind::GameSpeedNormal | PlayerLifeNoticeKind::GameSpeedFast
+                    | PlayerLifeNoticeKind::GameSpeedSuperFast => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -132,6 +140,9 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::PanelTransparencyOff) => 6,
                 Some(PlayerLifeNoticeKind::FlatShadingOn) => 7,
                 Some(PlayerLifeNoticeKind::FlatShadingOff) => 8,
+                Some(PlayerLifeNoticeKind::GameSpeedNormal) => 9,
+                Some(PlayerLifeNoticeKind::GameSpeedFast) => 10,
+                Some(PlayerLifeNoticeKind::GameSpeedSuperFast) => 11,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());

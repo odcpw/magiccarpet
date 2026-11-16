@@ -534,6 +534,9 @@ pub struct FlightContext {
     /// Source process-global bytes0x9600/0x9601, not holder/player fields.
     /// PlayerEvents decrements before accepted hand assignments restore eight.
     pub hand_selection_flash_ticks: [u8; 2],
+    /// Auxiliary process-global speedIndex (not CONFIG/GAME/SLEV data).
+    /// ClearSettings/new mission and successful local revival restore zero.
+    pub source_speed_index: u8,
     /// Replay-only historical policy: v8 and earlier had no flash producer.
     /// This policy is not source state and contributes no state-hash bytes.
     #[doc(hidden)]

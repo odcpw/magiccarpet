@@ -394,7 +394,7 @@ namespace MagicCarpet.Native
             AddKeys(previous);
             AddKeys(next);
             foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.RightShift,
-                         KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F5, KeyCode.F6, KeyCode.F7,
+                         KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7,
                          KeyCode.JoystickButton0, KeyCode.JoystickButton1 })
                 if (keyHeld(key)) releaseKeys.Add(key);
             for (var button = 0; button < 3; button++)
@@ -441,7 +441,7 @@ namespace MagicCarpet.Native
             return false;
         }
 
-        internal InputFrame SampleInput(float deltaTime, bool active)
+        internal InputFrame SampleInput(float deltaTime, bool active, bool suppressSourceMouse = false)
         {
             if (!active || IsOpen) { Center(); return default; }
             var prefs = Current.preferences;
@@ -455,7 +455,7 @@ namespace MagicCarpet.Native
             var joystick = HasJoystick();
             var mouse = prefs.input_device == "mouse_keyboard" || prefs.input_device == "joystick" && !joystick;
             var gain = prefs.mouse_sensitivity / 100f;
-            if (mouse)
+            if (mouse && !suppressSourceMouse)
             {
                 roll = Mathf.Clamp(roll + Input.GetAxisRaw("Mouse X") * 4.5f * gain, -128, 127);
                 pitch = Mathf.Clamp(pitch + Input.GetAxisRaw("Mouse Y") * (prefs.invert_mouse ? 4.5f : -4.5f) * gain, -128, 127);

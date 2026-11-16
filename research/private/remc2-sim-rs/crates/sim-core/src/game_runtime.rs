@@ -207,6 +207,7 @@ pub(crate) enum DisplayNotice {
 /// Canonical observation of the outer runtime and its current binding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RuntimeIdentity {
+    pub source_speed_index: u8,
     pub runtime_contract: &'static str,
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub runtime_id: u64,
@@ -614,6 +615,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 ),
             };
         RuntimeIdentity {
+            source_speed_index: self.session().map_or(0, |session| session.backend().source_speed_index()),
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: self.runtime_id,
             generation: self.generation,
@@ -1993,6 +1995,21 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source default case7 (the alternative renderer CLI cycle is not enabled).
+    /// This runtime supplies single-player ordinary sessions, not source demo
+    /// playback. The engine's replay journal is not a source movie flag.
+    pub fn source_speed(&mut self, guard: RuntimeGuard, session_guard: SessionGuard, secondary: bool)
+        -> Result<bool, RuntimeTransitionError>
+    {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        session.backend_mut().source_speed_action(secondary)
+    }
+
     /// ChangeSettings case15: supported cflat is initialized to one. Neither
     /// LevelInit nor SetKeysDefault clears the source GAME flat byte.
     pub fn toggle_flat_shading(

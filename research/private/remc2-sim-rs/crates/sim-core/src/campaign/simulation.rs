@@ -7173,6 +7173,38 @@ impl Mc2Simulation {
         self.session.state.live.economy.fields.palette.request_brightness(brightness);
     }
 
+    pub(crate) fn source_speed_index(&self) -> u8 { self.session.state.live.core.context.source_speed_index }
+
+    pub(crate) fn apply_process_speed_index(&mut self, value: u8) {
+        self.session.state.live.core.context.source_speed_index = value;
+    }
+
+    pub(crate) fn source_speed_action(&mut self, secondary: bool) -> std::result::Result<bool, String> {
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live = &mut self.session.state.live;
+        let entity = live.core.state.entity_index;
+        let slot = usize::from(live.core.runtime.local_player_slot);
+        if entity == 0 || live.economy.entities.get(usize::from(entity))
+            .is_none_or(|actor| !actor.active || actor.life < 0)
+            || live.core.players.get(slot).is_none_or(|player| player.entity_index != entity)
+        { return Ok(false); }
+        let speed = if live.core.context.source_speed_index != 0 { 0 } else { 1 + u8::from(secondary) };
+        let player = &mut live.core.players[slot];
+        live.player_lifecycle_notifications.publish(player.player_color_index(), entity, match speed {
+            0 => PlayerLifeNoticeKind::GameSpeedNormal,
+            1 => PlayerLifeNoticeKind::GameSpeedFast,
+            _ => PlayerLifeNoticeKind::GameSpeedSuperFast,
+        }, 50).map_err(|error| error.to_string())?;
+        live.core.context.source_speed_index = speed;
+        if speed != 0 {
+            player.set_roll_0x155(0);
+            player.set_pitch_0x157(0);
+            live.core.state.roll_accumulator = 0;
+            live.core.state.pitch_accumulator = 0;
+        }
+        Ok(true)
+    }
+
     pub fn field_source_rows(&self) -> Vec<EntitySnapshot> {
         self.session.state.live.economy.fields.source_rows()
     }
@@ -30958,6 +30990,7 @@ impl Mc2Simulation {
         #[cfg(test)]
         CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
         let state_before = self.session.state.clone();
+        self.session.state.live.core.context.source_speed_index = speed_index;
         self.advance_campaign_palette_frame();
         self.session.state.scratch.dispatch_events.clear();
         self.session.state.scratch.nyphur_dispatch_traces.clear();
@@ -30986,6 +31019,7 @@ impl Mc2Simulation {
             let revival = self.revive_level2_player_at_castle();
             if matches!(revival, Ok(true)) {
                 speed_index = 0;
+                self.session.state.live.core.context.source_speed_index = 0;
             }
             if let Err(error) = revival {
                 self.session.state = state_before;
@@ -39579,6 +39613,7 @@ mod tests {
                     campaign.state_hash(),
                     "successful source revival restores speedIndex=0 before entity dispatch"
                 );
+                assert_eq!(fast.simulation().source_speed_index(), 0, "the actual auxiliary speed carrier resets too");
             }
         }
     }

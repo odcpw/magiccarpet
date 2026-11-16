@@ -275,6 +275,13 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal bool GameRuntimeSourceSpeed(bool secondary, out GameRuntimeTransport.Identity identity)
+        {
+            if (gameRuntime == null)
+                throw new InvalidOperationException("session does not own a game runtime");
+            return gameRuntime.SourceSpeed(secondary, out identity);
+        }
+
         internal bool GameRuntimeSourceBrightness(
             GameRuntimeTransport.SourceBrightnessAction action, out GameRuntimeTransport.Identity identity)
         {

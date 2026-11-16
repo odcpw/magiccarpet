@@ -54,6 +54,11 @@ namespace MagicCarpet.Native
         private static readonly int[] OnText = { 400, 390, 392, 469, 398, 7, 382, 13, 359, 363, 357, 395, 365, 441, 442, 468, 402 };
         private static readonly int[] OffText = { 401, 391, 393, 470, 399, 7, 381, 14, 360, 364, 358, 396, 366, 440, 443, 468, 403 };
 
+        internal static int SpeedTextRecord(int speedIndex) => speedIndex switch {
+            0 => 381, 1 => 382, 2 => 383,
+            _ => throw new InvalidDataException("source speed index is invalid")
+        };
+
         internal SourcePauseMenu(Binding binding, Func<string, int, byte[]> read, Func<int, string> language)
         {
             if (binding?.profiles?.Length != 3 || binding.font == null)
@@ -206,7 +211,7 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
-            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading)
+            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
         {
             HoverHelpRow = 0;
             HoverHelpAnchor = default;
@@ -241,7 +246,7 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading);
+                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
@@ -382,7 +387,7 @@ namespace MagicCarpet.Native
         }
 
         private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
-            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading)
+            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
         {
             var prefs = preferences.Current.preferences;
             var longest = OnText.Concat(OffText).Max(index => language(index).Length) * 8;
@@ -398,14 +403,14 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 5 || index is 8 or 9 or 10 or 11 or 12 or 13 or 14;
+                var supported = index <= 6 || index is 8 or 9 or 10 or 11 or 12 or 13 or 14;
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance,
                     8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
                     11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading, _ => false
                 };
-                var text = language(enabled ? OnText[index] : OffText[index]);
+                var text = language(index == 6 ? SpeedTextRecord(speedIndex) : enabled ? OnText[index] : OffText[index]);
                 var y = 67 + index * 18;
                 Row(x, y, width);
                 var hit = new Rect(x, y, width, 18);
@@ -414,6 +419,13 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 6)
+                    {
+                        var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.SpeedSecondary :
+                            CampaignMenuPresenter.Action.SpeedPrimary;
+                        Event.current.Use();
+                        return action;
+                    }
                     if (index == 5)
                     {
                         var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.DecreaseBrightness :
