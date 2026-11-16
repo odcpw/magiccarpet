@@ -2,6 +2,7 @@
 """Real local Rust runtime -> HTTP scene -> controls/save/load regression."""
 import argparse
 import gzip
+import hashlib
 import http.cookiejar
 import http.client
 import importlib.util
@@ -60,7 +61,7 @@ class OriginalBridgeTest(unittest.TestCase):
     def test_native_geometry_publication_and_replay(self):
         m = bridge_module
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(m.Native, 'frame', side_effect=AssertionError('geometry rasterized world')):
-            bridge = m.Bridge(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'], Path(temporary) / 'save.json', 'geometry')
+            bridge = m.Bridge(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'], Path(temporary) / 'save.json', 'geometry', modern=True)
             server = m.Server(('127.0.0.1', 0), bridge, None)
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             base = f'http://127.0.0.1:{server.server_port}'
@@ -80,6 +81,15 @@ class OriginalBridgeTest(unittest.TestCase):
                 state = json.loads(get(f'/original-api/state?sequence={sequence}'))
                 observation = get(f'/original-api/observation?sequence={sequence}')
                 self.assertEqual((outer, generation, tick), (state['runtime_generation'], state['session_generation'], state['tick']))
+                modern = get(f'/original-api/modern-frame?sequence={sequence}')
+                from original_world import MODERN_HEADER
+                header = MODERN_HEADER.unpack_from(modern)
+                self.assertEqual(header[:8], (b'MCD1', 1, 88, outer, generation, tick, sequence, header[7]))
+                self.assertEqual(header[9::2], (52, 96, 48, 96, 56))
+                self.assertEqual(len(modern), 88 + sum(header[i] * header[i + 1] for i in (8, 10, 12, 14, 16)))
+                self.assertGreater(header[10], 0)
+                self.assertGreater(header[12], 0)
+                state['modern_epoch'] = header[7]
                 self.assertEqual(outer, struct.unpack_from('<Q', observation, 20)[0])
                 offset = 29
                 for _ in range(3):
@@ -129,13 +139,70 @@ class OriginalBridgeTest(unittest.TestCase):
                 post(8, 'load')
                 loaded, rev3, _ = publication()
                 self.assertEqual((loaded['tick'], loaded['player_pose']), (stopped['tick'], stopped['player_pose']))
+                self.assertGreater(loaded['modern_epoch'], stopped['modern_epoch'])
                 self.assertGreater(rev3, rev2)
                 post(9, 'reset')
                 reset, rev4, _ = publication()
                 self.assertEqual(reset['tick'], 0)
+                self.assertGreater(reset['modern_epoch'], loaded['modern_epoch'])
                 self.assertGreater(rev4, rev3)
                 with self.assertRaises(urllib.error.HTTPError) as rejected: get('/original-api/frame')
                 self.assertEqual(rejected.exception.code, 404); rejected.exception.close()
+            finally:
+                server.shutdown(); server.server_close(); bridge.close(); thread.join(timeout=5)
+
+    def test_modern_asset_allowlist_receipt_and_path_bounds(self):
+        m = bridge_module
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); world = root / 'world'; world.mkdir()
+            data = b'approved glb'; (world / 'house.glb').write_bytes(data)
+            (world / 'secret.txt').write_bytes(b'secret')
+            manifest = {'schema': 'mc-browser-modern-world/v1', 'files': {
+                'house.glb': {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}}}
+            (world / 'manifest.json').write_text(json.dumps(manifest))
+            with mock.patch.object(m, 'MODERN_ASSETS', root):
+                server = m.Server(('127.0.0.1', 0), object(), None)
+                thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+                base = f'http://127.0.0.1:{server.server_port}/original-api/modern-assets/'
+                def get(path):
+                    with urllib.request.urlopen(base + path, timeout=5) as response: return response.read()
+                try:
+                    self.assertEqual(get('world/house.glb'), data)
+                    self.assertEqual(json.loads(get('world/manifest.json')), manifest)
+                    for path, expected in [('world/secret.txt', 404), ('world/../secret.txt', 404),
+                                           ('world/%2e%2e', 404), ('characters/manifest.json', 503)]:
+                        with self.assertRaises(urllib.error.HTTPError) as error: get(path)
+                        self.assertEqual(error.exception.code, expected); error.exception.close()
+                    (world / 'house.glb').write_bytes(b'unapproved!')
+                    with self.assertRaises(urllib.error.HTTPError) as error: get('world/house.glb')
+                    self.assertEqual(error.exception.code, 503); error.exception.close()
+                    (world / 'link.glb').symlink_to(world / 'secret.txt')
+                    manifest['files']['link.glb'] = {'bytes': 6, 'sha256': hashlib.sha256(b'secret').hexdigest()}
+                    (world / 'manifest.json').write_text(json.dumps(manifest))
+                    with self.assertRaises(urllib.error.HTTPError) as error: get('world/link.glb')
+                    self.assertEqual(error.exception.code, 503); error.exception.close()
+                finally:
+                    server.shutdown(); server.server_close(); thread.join(timeout=5)
+
+    def test_missing_modern_native_api_keeps_original_available(self):
+        m = bridge_module
+        with mock.patch.object(m, 'ModernWorld', side_effect=AttributeError('missing modern API')):
+            bridge = m.Bridge(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'], renderer='geometry', modern=True)
+            server = m.Server(('127.0.0.1', 0), bridge, None)
+            thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+            base = f'http://127.0.0.1:{server.server_port}'
+            try:
+                deadline = time.monotonic() + 60
+                while not bridge.status()['ready']:
+                    if bridge.error: self.fail(bridge.error)
+                    if time.monotonic() > deadline: self.fail('native startup timed out')
+                    time.sleep(.1)
+                self.assertIn('missing modern API', bridge.status()['modern_error'])
+                with urllib.request.urlopen(base + '/original-api/world-frame', timeout=30) as response:
+                    self.assertEqual(response.read(4), b'MCW1')
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(base + '/original-api/modern-frame', timeout=30)
+                self.assertEqual(error.exception.code, 503); error.exception.close()
             finally:
                 server.shutdown(); server.server_close(); bridge.close(); thread.join(timeout=5)
 

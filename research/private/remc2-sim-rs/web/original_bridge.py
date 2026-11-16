@@ -12,6 +12,7 @@ import os
 import queue
 import re
 import secrets
+import stat
 import struct
 import tempfile
 import threading
@@ -23,7 +24,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFrameInfo,
                              read_hud, read_minimap, read_objective, read_world_map)
-from original_world import OriginalWorld
+from original_world import ModernWorld, OriginalWorld
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -33,6 +34,7 @@ PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
 WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
 SOURCE_PALETTE = PRIVATE / "generated/settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1/palette/source.rgb8"
+MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
 
 
 class FrameInfo(c.Structure):
@@ -297,10 +299,12 @@ def camera_from_observation(packet):
 
 
 class Bridge:
-    def __init__(self, library, packages, save_path=None, renderer="indexed"):
+    def __init__(self, library, packages, save_path=None, renderer="indexed", modern=False):
         self.library, self.packages = library, packages
         if renderer not in ("indexed", "geometry"): raise ValueError("invalid renderer")
         self.renderer = renderer
+        if modern and renderer != 'geometry': raise ValueError('modern observations require geometry renderer')
+        self.modern = modern
         self.save_path = save_path
         self.has_save = bool(save_path and save_path.is_file())
         self.items = queue.Queue(maxsize=128)
@@ -310,6 +314,7 @@ class Bridge:
         self.next_sequence = 0; self.last_reply = None; self.last_request = None
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
+        self.modern_error = None
         self.thread = threading.Thread(target=self.run, name="original-native-owner", daemon=True)
         self.thread.start()
 
@@ -317,7 +322,7 @@ class Bridge:
         with self.lock:
             return {"ready": self.ready, "error": self.error, "running": self.running,
                     "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
-                    "renderer": self.renderer}
+                    "renderer": self.renderer, "modern_error": self.modern_error}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -344,6 +349,10 @@ class Bridge:
             native = Native(self.library, self.packages)
             self.assets = OriginalAssets()
             world = OriginalWorld(native) if self.renderer == "geometry" else None
+            modern = None
+            if world and self.modern:
+                try: modern = ModernWorld(native)
+                except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
             if world:
                 from original_world_assets import OriginalWorldAssets
                 self.world_assets = OriginalWorldAssets()
@@ -353,7 +362,7 @@ class Bridge:
             epoch = 0
             menu_state = None
             def publish():
-                nonlocal sequence, menu_state
+                nonlocal sequence, menu_state, modern
                 native.presentation_frame()
                 sequence += 1
                 packet = None if world else native.frame(sequence)
@@ -361,11 +370,17 @@ class Bridge:
                 outer, gen, tick = native.counters()
                 pose = pose_from_observation(observation)
                 terrain = None
+                modern_packet = None
                 if world:
                     camera = camera_from_observation(observation)
                     revision, terrain, rows, row_count = world.read(gen, tick, camera["yaw"], epoch)
                     packet = WORLD_HEADER.pack(b"MCW1", 1, WORLD_HEADER.size, outer, gen, tick,
                                                sequence, revision, row_count, 64, 1, 0) + palette + rows
+                    if modern:
+                        try: modern_packet = modern.read(outer, gen, tick, sequence, epoch)
+                        except (AttributeError, RuntimeError) as exc:
+                            self.modern_error = str(exc)
+                            modern = None
                 menu = menu_from_observation(observation)
                 if menu is not None: menu_state = menu
                 minimap = read_minimap(native.lib, native.handle.value, gen, tick)
@@ -388,7 +403,7 @@ class Bridge:
                                             outer, gen, tick, sequence, sequence) + indices + map_palette
                     state["world_map"] = map_rows
                 with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
-                                                          world.terrain_gzip if world else None))
+                                                          world.terrain_gzip if world else None, modern_packet))
             publish()
             with self.lock: self.ready = True
             deadline = time.monotonic()
@@ -559,9 +574,56 @@ class Handler(BaseHTTPRequestHandler):
         expected = hmac.new(self.server.secret, nonce.encode(), hashlib.sha256).hexdigest()
         return value if secrets.compare_digest(signature, expected) else None
 
+    def modern_asset(self, path):
+        parts = path.split('/')
+        if len(parts) != 5 or parts[:3] != ['', 'original-api', 'modern-assets']:
+            return self.send_json(404, {'error': 'not found'})
+        family, name = parts[3:]
+        if family not in ('characters', 'world') or not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..'):
+            return self.send_json(404, {'error': 'not found'})
+        root = (MODERN_ASSETS / family).resolve()
+        if not root.is_relative_to(MODERN_ASSETS.resolve()): return self.send_json(404, {'error': 'not found'})
+        manifest_path = root / 'manifest.json'
+        try:
+            with os.fdopen(os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 1_000_000: raise ValueError('invalid manifest')
+                raw = source.read(1_000_001)
+                if len(raw) > 1_000_000: raise ValueError('invalid manifest')
+            manifest = json.loads(raw)
+            if manifest.get('schema') != f'mc-browser-modern-{family}/v1' or not isinstance(manifest.get('files'), dict):
+                raise ValueError('invalid manifest')
+            if name == 'manifest.json': return self.send_data(200, raw, 'application/json')
+            entry = manifest['files'].get(name) or manifest['files'].get(f'{family}/{name}')
+            if not isinstance(entry, dict): return self.send_json(404, {'error': 'asset not allowlisted'})
+            expected_size, expected_hash = entry.get('bytes'), entry.get('sha256')
+            if type(expected_size) is not int or not 0 <= expected_size <= 100_000_000 or not isinstance(expected_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_hash):
+                raise ValueError('invalid asset receipt')
+            asset = root / name
+            with os.fdopen(os.open(asset, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != expected_size: raise ValueError('asset size mismatch')
+                digest = hashlib.sha256()
+                while chunk := source.read(1024 * 1024): digest.update(chunk)
+                if digest.hexdigest() != expected_hash: raise ValueError('asset hash mismatch')
+                source.seek(0)
+                self.send_response(200)
+                self.send_header('Content-Type', mimetypes.guess_type(name)[0] or 'application/octet-stream')
+                self.send_header('Content-Length', str(expected_size))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                try:
+                    while chunk := source.read(1024 * 1024): self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError): pass
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return self.send_json(503, {'error': 'modern asset pack unavailable or invalid'})
+
     def do_GET(self):
         if not self.host_allowed(): return self.send_json(403, {"error": "invalid host"})
         target = urlsplit(self.path); bridge = self.server.bridge
+        if target.path.startswith('/original-api/modern-assets/'):
+            return self.modern_asset(target.path)
         if target.path == "/original-api/status":
             token = self.controller_cookie()
             if not token:
@@ -579,7 +641,7 @@ class Handler(BaseHTTPRequestHandler):
             if not assets: return self.send_json(503, {"error": "world assets unavailable"})
             if target.path.endswith("/manifest"): return self.send_json(200, assets.manifest)
             return self.send_data(200, assets.blob, "application/octet-stream")
-        if target.path in ("/original-api/frame", "/original-api/world-frame", "/original-api/terrain", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
+        if target.path in ("/original-api/frame", "/original-api/world-frame", "/original-api/modern-frame", "/original-api/terrain", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
             params = parse_qs(target.query)
             try:
                 requested = int(params["sequence"][0]) if "sequence" in params else None
@@ -588,6 +650,10 @@ class Handler(BaseHTTPRequestHandler):
             publication = bridge.publication(requested)
             if publication is None:
                 return self.send_json(410 if requested is not None else 503, {"error": "publication unavailable"})
+            if target.path.endswith('/modern-frame'):
+                if bridge.renderer != 'geometry': return self.send_json(404, {'error': 'renderer unavailable'})
+                if publication[7] is None: return self.send_json(503, {'error': bridge.modern_error or 'modern observation unavailable'})
+                return self.send_data(200, publication[7], 'application/octet-stream')
             if target.path in ("/original-api/frame", "/original-api/world-frame"):
                 expected = "geometry" if target.path.endswith("/world-frame") else "indexed"
                 if bridge.renderer != expected: return self.send_json(404, {"error": "renderer unavailable"})
@@ -649,6 +715,7 @@ def main():
     parser.add_argument("--packages", type=Path, default=PACKAGES)
     parser.add_argument("--probe-frame", type=Path)
     parser.add_argument("--renderer", choices=("indexed", "geometry"), default="indexed")
+    parser.add_argument("--modern", action="store_true", help="publish native Modern observations with geometry")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8881)
     parser.add_argument("--allow-host", type=host_alias, action="append", default=[],
@@ -667,7 +734,7 @@ def main():
                               "frame_sha256": hashlib.sha256(frame).hexdigest(), "file": str(args.probe_frame)}))
         finally: runtime.close()
         return
-    bridge = Bridge(args.library, packages, args.save, args.renderer)
+    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern)
     server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)
