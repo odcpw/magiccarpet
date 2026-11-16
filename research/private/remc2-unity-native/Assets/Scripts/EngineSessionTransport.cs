@@ -210,6 +210,8 @@ namespace MagicCarpet.Native
             public bool spell_menu_has_any_spell;
             public byte[] spell_menu_wizard_colors;
             public bool spell_menu_panels_opaque;
+            // Source selection clocks in left/right order; advanced by gameplay, not reads.
+            public byte[] player_hand_selection_flash_ticks;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
             // Zero represents the native optional record's null value. The
@@ -1152,6 +1154,10 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("invalid secret announcement language record");
             if (value.spell_menu_wizard_colors != null && value.spell_menu_wizard_colors.Length != 2)
                 throw new InvalidOperationException("spell menu requires two bound wizard colors");
+            if (value.player_hand_selection_flash_ticks == null ||
+                value.player_hand_selection_flash_ticks.Length != 2 ||
+                value.player_hand_selection_flash_ticks.Any(ticks => ticks > 8))
+                throw new InvalidOperationException("hand selection requires two source clocks in range 0..8");
             if (value.player_vitals.max_life <= 0 || value.player_vitals.max_mana <= 0 ||
                 value.player_vitals.life > value.player_vitals.max_life ||
                 value.player_vitals.mana > value.player_vitals.max_mana)

@@ -125,6 +125,7 @@ namespace MagicCarpet.Native
         internal byte GameplayBlackIndex(string profile) => checked((byte)profiles[profile].Colours[0]);
         internal Color GameplayNoticeColor(string profile) => profiles[profile].Palette[profiles[profile].Colours[2]];
         internal Color GameplayPausedColor(string profile) => profiles[profile].Palette[profiles[profile].Colours[1]];
+        internal byte GameplayPausedColorIndex(string profile) => checked((byte)profiles[profile].Colours[1]);
         // Source SelectedMenuItem gates its confirmation/save/load dialogs;
         // the ordinary options/volume submenus do not set that selector.
         internal bool IsSourceDialogOpen => confirmation != CampaignMenuPresenter.Action.None;

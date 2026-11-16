@@ -298,6 +298,9 @@ pub struct CampaignSnapshot {
     pub spell_menu_has_any_spell: bool,
     pub spell_menu_wizard_colors: [u8; 2],
     pub spell_menu_panels_opaque: bool,
+    /// Source global left/right hand-selection visibility, decremented by
+    /// PlayerEvents before accepted hand assignment retriggers eight updates.
+    pub player_hand_selection_flash_ticks: [u8; 2],
     pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
     /// Authoritative objective-panel countdown; clients never invent a timer.

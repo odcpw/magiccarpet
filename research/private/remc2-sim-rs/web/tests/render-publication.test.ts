@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { decodeRenderPublication } from '../src/render-publication.ts';
 
-// Hand-authored v3 packet: every nested field, each option, non-ASCII UTF-8,
+// Hand-authored v4 packet: every nested field, each option, non-ASCII UTF-8,
 // signed values, enum cases and identifiers beyond JavaScript's safe integers.
 function packet(emptyOptions = false, announcement: number | null = emptyOptions ? null : 284) {
   const bytes: number[] = [];
@@ -14,7 +14,7 @@ function packet(emptyOptions = false, announcement: number | null = emptyOptions
   const u32 = (v: number) => { u16(v); u16(v >>> 16); };
   const u64 = (v: bigint) => { for (let i = 0n; i < 8n; i++) u8(Number((v >> (8n * i)) & 255n)); };
   const str = (s: string) => { const b = new TextEncoder().encode(s); u32(b.length); bytes.push(...b); };
-  bytes.push(77, 67, 80, 79); u32(3); u32(0);
+  bytes.push(77, 67, 80, 79); u32(4); u32(0);
   u64(9007199254740993n); u64(9007199254740994n); mark('mode'); u8(1);
   mark('firstStringLength'); str('é'); str('graph'); str('definition');
   u64(2n); u64(3n); u64(4n); u64(5n); u64(6n); mark('valueTick'); u64(5n); u64(9007199254740995n);
@@ -46,12 +46,13 @@ function packet(emptyOptions = false, announcement: number | null = emptyOptions
   u32(17); u32(18); u8(1); u8(19); u16(announcement ?? 0); u8(1);
   u32(1); u64(9007199254740998n); str('creature.goat'); [20, 21, -22, -23, -24].forEach(u16);
   u16(25); str('asset.goat'); str('sha256:abcd');
+  mark('flashLeft'); u8(8); mark('flashRight'); u8(1);
   const result = Uint8Array.from(bytes);
   new DataView(result.buffer).setUint32(8, result.length, true);
   return { result, offsets };
 }
 
-test('decodes all v3 fields, preserves wide integers, and owns an immutable result', () => {
+test('decodes all v4 fields, preserves wide integers, and owns an immutable result', () => {
   const { result } = packet();
   const actual = decodeRenderPublication(result);
   const padded = new Uint8Array(result.length + 2); padded.set(result, 1);
@@ -82,6 +83,7 @@ test('decodes all v3 fields, preserves wide integers, and owns an immutable resu
         mana_cost: -10, hand: 'both', marked_hand: 'right', availability: 'insufficient_mana' }],
       objective_progress: { current_objective: 'objective.finish', completed_count: 17, total_count: 18, all_objectives_satisfied: true },
       objective_textbox_ticks: 19, objective_secret_announcement_record: 284, exit_sequence_active: true,
+      player_hand_selection_flash_ticks: [8, 1],
       presentation_entities: [{ actor: 9007199254740998n, kind: 'creature.goat', pose: { x: 20, y: 21, z: -22, yaw: -23, pitch: -24 },
         logical_height: 25, asset: { id: 'asset.goat', content_address: 'sha256:abcd' } }] },
   });
@@ -121,6 +123,7 @@ test('rejects invalid headers, truncation, booleans, UTF-8, counts and trailing 
   assert.throws(() => decodeRenderPublication(changed(0, 0)), /magic/);
   assert.throws(() => decodeRenderPublication(changed(4, 1)), /version/);
   assert.throws(() => decodeRenderPublication(changed(4, 2)), /version/);
+  assert.throws(() => decodeRenderPublication(changed(4, 3)), /version/);
   assert.throws(() => decodeRenderPublication(changed(8, 0)), /length/);
   assert.throws(() => decodeRenderPublication(changed(offsets.mode!, 2)), /enum/);
   assert.throws(() => decodeRenderPublication(changed(offsets.valueTick!, 6)), /tick mismatch/);
@@ -128,6 +131,9 @@ test('rejects invalid headers, truncation, booleans, UTF-8, counts and trailing 
   assert.throws(() => decodeRenderPublication(changed(offsets.returnBool!, 2)), /boolean/);
   assert.throws(() => decodeRenderPublication(changed(offsets.helpStandard!, 2)), /boolean/);
   assert.throws(() => decodeRenderPublication(changed(offsets.helpTier!, 3)), /spell menu help tier/);
+  assert.throws(() => decodeRenderPublication(changed(offsets.flashLeft!, 9)), /hand selection/);
+  assert.throws(() => decodeRenderPublication(changed(offsets.flashRight!, 9)), /hand selection/);
+  assert.deepEqual(decodeRenderPublication(changed(offsets.flashRight!, 0)).value.player_hand_selection_flash_ticks, [8, 0]);
   const badTitle = result.slice();
   new DataView(badTitle.buffer).setUint16(offsets.helpRecord!, 471, true);
   assert.throws(() => decodeRenderPublication(badTitle), /spell menu help tier or language record/);

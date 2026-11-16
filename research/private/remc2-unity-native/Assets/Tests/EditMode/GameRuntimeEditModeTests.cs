@@ -3369,6 +3369,227 @@ namespace MagicCarpet.Native.Tests
         }
 
         [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator FullMapHandsFollowAcceptedSourceSelectionAndExpiry()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-map-hands-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source map hand selection");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var previousTarget = RenderTexture.active;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            byte[] Counters() => runtime.GameRuntimeProductionCampaignSnapshot.value.player_hand_selection_flash_ticks;
+            Color32[] Read(RenderTexture source)
+            {
+                Assert.That(source, Is.Not.Null);
+                var texture = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    RenderTexture.active = source;
+                    texture.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0); texture.Apply();
+                    return texture.GetPixels32();
+                }
+                finally { UnityEngine.Object.DestroyImmediate(texture); RenderTexture.active = previousTarget; }
+            }
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                yield return StartReturnedParentFromNormalMap(runtime);
+                var sourceMenus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var map = sourceMenus.Step(true, false, false, false, false, true);
+                Assert.That(sourceMenus.QueueAction(map.Action, sourceMenus.MapOpen, sourceMenus.SpellOpen,
+                    sourceMenus.PlayerInformationOpen, map), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(sourceMenus.MapOpen, Is.True);
+                for (var frame = 0; frame < 8 && (Counters()[0] != 0 || Counters()[1] != 0); frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                CollectionAssert.AreEqual(new byte[] { 0, 0 }, Counters(), "real source updates exhaust any inherited counters");
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
+                    new object[] { true, true, true, false });
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.top_bar, Is.False);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False);
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", 0, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                CollectionAssert.AreEqual(new byte[] { 8, 0 }, Counters(), "accepted left source action sets only its own counter");
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var mapIndices = surface.HudUnderlayIndices;
+                var handIndices = (RenderTexture)Field("gameRuntimeHudIndices");
+                Assert.That(mapIndices, Is.Not.Null); Assert.That(handIndices, Is.Not.Null);
+                var mapPixels = Read(mapIndices); var handPixels = Read(handIndices);
+                var hud = runtime.Level2ProductionDayHud;
+                var descriptors = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                int Extent(int selector, string name) => (int)descriptors[selector].GetType().GetField(name).GetValue(descriptors[selector]);
+                bool Masked(int selector, int x, int y)
+                {
+                    var rw = Extent(selector, "runtime_width"); var rh = Extent(selector, "runtime_height");
+                    if (x < 0 || y < 0 || x >= rw || y >= rh) return false;
+                    var sw = Extent(selector, "stored_width"); var sh = Extent(selector, "stored_height");
+                    return masks[selector][y * sh / rh * sw + x * sw / rw] != 0;
+                }
+                var frameWidth = Extent(hud.left.frameSelector, "runtime_width");
+                var frameHeight = Extent(hud.left.frameSelector, "runtime_height");
+                var storedWidth = Extent(hud.left.frameSelector, "stored_width");
+                var storedHeight = Extent(hud.left.frameSelector, "stored_height");
+                var assets = ((CampaignMenuPresenter)Field("gameRuntimeMenu")).ObjectiveForProfile("day");
+                Vector2Int? point = null; byte frameIndex = 0;
+                for (var dy = 20; dy < Math.Min(frameHeight, 36) && !point.HasValue; dy++)
+                for (var dx = 0; dx < frameWidth && !point.HasValue; dx++)
+                {
+                    if (!Masked(hud.left.frameSelector, dx, dy) || Masked(hud.left.iconSelector, dx, dy)) continue;
+                    var x = 510 + dx; var y = 2 + dy;
+                    if (x >= 640) continue;
+                    var sx = Mathf.Clamp(Mathf.FloorToInt((x + .5f) / 640f * mapIndices.width), 0, mapIndices.width - 1);
+                    var sy = Mathf.Clamp(Mathf.FloorToInt((1f - (y + .5f) / 480f) * mapIndices.height), 0, mapIndices.height - 1);
+                    var background = mapPixels[sy * mapIndices.width + sx].r;
+                    var value = indices[hud.left.frameSelector][dy * storedHeight / frameHeight * storedWidth + dx * storedWidth / frameWidth];
+                    var blended = assets.Tables[assets.TableOffset + (background << 8) + value];
+                    if (blended == background || blended == value) continue;
+                    Assert.That(handPixels[(479 - y) * 640 + x].r, Is.EqualTo(blended),
+                        "the selected map hand uses the source transparent frame over the current map");
+                    point = new Vector2Int(x, y); frameIndex = value;
+                }
+                Assert.That(point.HasValue, Is.True, "the actual source hand has a discriminating indexed frame pixel");
+                var statusX = 250; var statusY = 10;
+                var mapX = Mathf.FloorToInt((statusX + .5f) / 640f * mapIndices.width);
+                var mapY = Mathf.FloorToInt((1f - (statusY + .5f) / 480f) * mapIndices.height);
+                Assert.That(handPixels[(479 - statusY) * 640 + statusX].r, Is.EqualTo(mapPixels[mapY * mapIndices.width + mapX].r),
+                    "full map never draws the ordinary top status strip");
+                var tick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                // A long source-font row is a declared compositor control: it
+                // exercises the real overlap without changing the native owner.
+                var glyph = assets.Glyphs['W' + 1];
+                var overlap = false;
+                var originalDraw = gui.DrawRuntime;
+                try
+                {
+                    gui.DrawRuntime = () => {
+                        originalDraw();
+                        typeof(MagicCarpetRuntime).GetField("gameRuntimeMapNoticeRows", flags).SetValue(runtime,
+                            new[] { new SourcePlayerNotificationsPresenter.Row(new string('W', 40) + "\r" + new string('W', 40), 6, 6) });
+                        typeof(MagicCarpetRuntime).GetMethod("DrawGameRuntimeIndexedHud", flags).Invoke(runtime,
+                            new object[] { hud, true });
+                    };
+                    gui.SendEvent(new Event { type = EventType.Repaint });
+                    var composed = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                    for (var column = 0; column < 80 && !overlap; column++)
+                    for (var gy = 0; gy < glyph.Height && !overlap; gy++)
+                    for (var gx = 0; gx < glyph.Width && !overlap; gx++)
+                    {
+                        var x = 6 + column * glyph.Width + gx; var y = 6 + gy;
+                        var dx = x - 510; var dy = y - 2;
+                        if (x >= 640 || dx < 0 || dx >= frameWidth / 2 || dy < 0 || dy >= frameHeight ||
+                            assets.GlyphMasks[glyph.Offset + gy * glyph.Width + gx] == 0 ||
+                            !Masked(hud.left.frameSelector, dx, dy) || Masked(hud.left.iconSelector, dx, dy)) continue;
+                        var sx = Mathf.FloorToInt((x + .5f) / 640f * mapIndices.width);
+                        var sy = Mathf.FloorToInt((1f - (y + .5f) / 480f) * mapIndices.height);
+                        var background = mapPixels[sy * mapIndices.width + sx].r;
+                        var frame = indices[hud.left.frameSelector][dy * storedHeight / frameHeight * storedWidth + dx * storedWidth / frameWidth];
+                        var expected = assets.Tables[assets.TableOffset + (assets.TextColor << 8) + frame];
+                        if (expected == assets.Tables[assets.TableOffset + (background << 8) + frame]) continue;
+                        Assert.That(composed[(479 - y) * 640 + x].r, Is.EqualTo(expected),
+                            "the transparent hand blends over source notice glyphs, not bare map");
+                        overlap = true;
+                    }
+                    Assert.That(overlap, Is.True, "the source glyph/frame overlap has a discriminating pixel");
+                }
+                finally { gui.DrawRuntime = originalDraw; }
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "the declared overlap control does not change the native owner");
+                for (var repaint = 0; repaint < 3; repaint++) gui.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(new byte[] { 8, 0 }, Counters(), "repaint cannot decrement source counters");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
+                f6.Invoke(runtime, new object[] { true, true, true, false });
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.True);
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var opaque = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                Assert.That(opaque[(479 - point.Value.y) * 640 + point.Value.x].r, Is.EqualTo(frameIndex),
+                    "the selected map hand follows the accepted opaque setting on the same tick");
+                f6.Invoke(runtime, new object[] { true, true, true, false });
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False);
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", 0, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                CollectionAssert.AreEqual(new byte[] { 7, 8 }, Counters(), "right assignment preserves the independently aging left counter");
+                hud = runtime.Level2ProductionDayHud;
+                runtime.QualificationPauseGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                CollectionAssert.AreEqual(new byte[] { 6, 7 }, Counters(), "a real paused source pass ages both counters once");
+                for (var expected = 6; expected >= 0; expected--)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(Counters()[1], Is.EqualTo(expected));
+                    if (expected == 1)
+                    {
+                        CollectionAssert.AreEqual(new byte[] { 0, 1 }, Counters());
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        var rightMap = surface.HudUnderlayIndices;
+                        var rightBackground = Read(rightMap);
+                        var rightOutput = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                        var width = Extent(hud.right.frameSelector, "runtime_width");
+                        var height = Extent(hud.right.frameSelector, "runtime_height");
+                        var sw = Extent(hud.right.frameSelector, "stored_width");
+                        var sh = Extent(hud.right.frameSelector, "stored_height");
+                        var foundRight = false;
+                        for (var dy = 20; dy < Math.Min(height, 36) && !foundRight; dy++)
+                        for (var dx = 0; dx < width && !foundRight; dx++)
+                        {
+                            var x = 574 + dx; var y = 2 + dy;
+                            if (x >= 640 || !Masked(hud.right.frameSelector, dx, dy) ||
+                                Masked(hud.right.iconSelector, dx, dy)) continue;
+                            var sx = Mathf.FloorToInt((x + .5f) / 640f * rightMap.width);
+                            var sy = Mathf.FloorToInt((1f - (y + .5f) / 480f) * rightMap.height);
+                            var background = rightBackground[sy * rightMap.width + sx].r;
+                            var value = indices[hud.right.frameSelector][dy * sh / height * sw + dx * sw / width];
+                            var blend = assets.Tables[assets.TableOffset + (background << 8) + value];
+                            if (blend == background) continue;
+                            Assert.That(rightOutput[(479 - y) * 640 + x].r, Is.EqualTo(blend),
+                                "the independently live right hand is rendered over the current map");
+                            foundRight = true;
+                        }
+                        Assert.That(foundRight, Is.True);
+                    }
+                }
+                CollectionAssert.AreEqual(new byte[] { 0, 0 }, Counters());
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(Field("gameRuntimeHudIndices"), Is.Null, "expired map hands leave no stale indexed overlay");
+                runtime.QualificationResumeGameRuntimeProduction();
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", byte.MaxValue, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                CollectionAssert.AreEqual(new byte[] { 0, 0 }, Counters(), "a rejected source assignment does not start a hand counter");
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(Field("gameRuntimeHudIndices"), Is.Null, "real reset discards the old indexed hand generation");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator SourceSpellMenuHoverUsesCurrentOwnerAndSharedClock()
         {
             var activeBefore = NativeSession.ActiveSessionCount;
@@ -3653,7 +3874,7 @@ namespace MagicCarpet.Native.Tests
                 var mapPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
                 var material = (Material)typeof(SourceObjectiveTextboxPresenter).GetField("material", flags).GetValue(mapPresenter);
                 Assert.That(mapSurface.HudUnderlayIndices, Is.Not.Null);
-                var mapHud = (Texture)Field("gameRuntimeHudIndices");
+                var mapHud = (Texture)Field("gameRuntimeHudIndices") ?? mapSurface.HudUnderlayIndices;
                 Assert.That(mapHud, Is.Not.Null);
                 Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(mapHud),
                     "source map+spell help blends the current map and indexed HUD in source order");
@@ -5256,7 +5477,7 @@ namespace MagicCarpet.Native.Tests
                         .GetField("material", objectiveFlags).GetValue(objectivePresenter);
                     Assert.That(objectiveSurface.HudUnderlayIndices, Is.Not.Null);
                     var mapHudIndices = (Texture)typeof(MagicCarpetRuntime)
-                        .GetField("gameRuntimeHudIndices", objectiveFlags).GetValue(runtime);
+                        .GetField("gameRuntimeHudIndices", objectiveFlags).GetValue(runtime) ?? objectiveSurface.HudUnderlayIndices;
                     Assert.That(mapHudIndices, Is.Not.Null);
                     Assert.That(objectiveMaterial.GetTexture("_SceneIndices"), Is.SameAs(mapHudIndices),
                         "the live map textbox samples the current map and HUD indexed result");

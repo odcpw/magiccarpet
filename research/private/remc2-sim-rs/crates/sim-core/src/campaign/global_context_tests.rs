@@ -76,9 +76,9 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();
     resolver
-        .load_replay_with_source_context(&mut loaded, guard, 81803, &saved, warm)
+        .load_replay_with_source_context(&mut loaded, guard, 81803, &saved, SourceProcessContext { shared: warm, hand_selection_flash_ticks: [0; 2] })
         .unwrap();
-    assert_eq!(resolver.source_global_context(&loaded).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&loaded).unwrap().shared, warm);
     let after_load = resolver.save_replay(&loaded).unwrap();
     let payload: Mc2CampaignReplaySave = serde_json::from_slice(&after_load).unwrap();
     assert_eq!(payload.initial_global_context, first);
@@ -86,7 +86,8 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         payload.global_context_changes,
         [Mc2GlobalContextChange {
             before_operation: payload.operations.len(),
-            context: warm
+            context: warm,
+            hand_selection_flash_ticks: Some([0; 2]),
         }]
     );
     assert_ne!(
@@ -124,7 +125,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
 
     let session = restored.session_mut().unwrap();
     session.reset(session.identity().guard()).unwrap();
-    assert_eq!(resolver.source_global_context(&restored).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&restored).unwrap().shared, warm);
     assert!(
         restored
             .session()
@@ -149,7 +150,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         .close_to_title(&mut loaded, guard, session_guard)
         .unwrap();
     assert_eq!(loaded.identity().mode, RuntimeMode::Title);
-    assert_eq!(resolver.source_global_context(&loaded).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&loaded).unwrap().shared, warm);
     let guard = loaded.identity().guard();
     let loading = resolver.new_game(&mut loaded, guard).unwrap();
     let map = resolver
@@ -169,7 +170,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let map_identity = resolver
         .load_replay(&mut cold_map, guard, 81807, &map_save)
         .unwrap();
-    assert_eq!(resolver.source_global_context(&cold_map).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&cold_map).unwrap().shared, warm);
     assert_eq!(resolver.save_replay(&cold_map).unwrap(), map_save);
     let loading = resolver
         .campaign_menu_command(
@@ -181,7 +182,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     resolver
         .open_pending(&mut cold_map, loading.guard(), 81807)
         .unwrap();
-    assert_eq!(resolver.source_global_context(&cold_map).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&cold_map).unwrap().shared, warm);
     let carried = cold_map
         .session()
         .unwrap()
@@ -196,9 +197,9 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let mut warm_map = GameRuntime::<Mc2CampaignBackend>::title(81808).unwrap();
     let guard = warm_map.identity().guard();
     resolver
-        .load_replay_with_source_context(&mut warm_map, guard, 81808, &map_save, first)
+        .load_replay_with_source_context(&mut warm_map, guard, 81808, &map_save, SourceProcessContext { shared: first, hand_selection_flash_ticks: [0; 2] })
         .unwrap();
-    assert_eq!(resolver.source_global_context(&warm_map).unwrap(), first);
+    assert_eq!(resolver.source_process_context(&warm_map).unwrap().shared, first);
 
     let mut altered: serde_json::Value = serde_json::from_slice(&map_save).unwrap();
     altered["source_context"] = serde_json::to_value(first).unwrap();
@@ -230,7 +231,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         )
         .unwrap();
     assert_eq!(
-        resolver.source_global_context(&legacy_map).unwrap(),
+        resolver.source_process_context(&legacy_map).unwrap().shared,
         GlobalSpecialState::default()
     );
 
@@ -240,7 +241,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     resolver
         .open_pending(&mut loaded, loading.guard(), 81805)
         .unwrap();
-    assert_eq!(resolver.source_global_context(&loaded).unwrap(), warm);
+    assert_eq!(resolver.source_process_context(&loaded).unwrap().shared, warm);
     assert!(
         !resolver
             .detached_source_contexts
@@ -249,7 +250,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
             .contains_key(&81803)
     );
     assert_eq!(
-        resolver.source_global_context(&original).unwrap(),
+        resolver.source_process_context(&original).unwrap().shared,
         first,
         "separate live game instances do not share context"
     );

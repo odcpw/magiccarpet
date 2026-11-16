@@ -530,6 +530,13 @@ pub struct FlightContext {
     pub events: Vec<FlightEvent>,
     /// Opcode 0x2c clears the source chat/name edit buffer before sound 14.
     pub chat_clear_requested: bool,
+    /// Source process-global bytes0x9600/0x9601, not holder/player fields.
+    /// PlayerEvents decrements before accepted hand assignments restore eight.
+    pub hand_selection_flash_ticks: [u8; 2],
+    /// Replay-only historical policy: v8 and earlier had no flash producer.
+    /// This policy is not source state and contributes no state-hash bytes.
+    #[doc(hidden)]
+    pub historical_hand_selection_flash: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -2120,6 +2127,9 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                         fire.right_holder_index = holder_index;
                         fire.right_subspell_index = raw_tier;
                     }
+                    if !context.historical_hand_selection_flash {
+                        context.hand_selection_flash_ticks[usize::from(command.opcode == 32)] = 8;
+                    }
                     fire.spell_menu_stage = 0;
                     mark_source_audio_call(SourceAudioCallTag::PlayerOpcode1F20HandAssignment);
                     context.events.push(FlightEvent::PrepareSound {
@@ -3196,6 +3206,10 @@ fn conformance_hash_with_spell_tiers(
     }
     if context.chat_clear_requested {
         feed(b"chat-clear-requested\0");
+    }
+    if context.hand_selection_flash_ticks != [0; 2] {
+        feed(b"source-hand-selection-flash-v1\0");
+        feed(&context.hand_selection_flash_ticks);
     }
     feed(
         &u64::try_from(context.events.len())
