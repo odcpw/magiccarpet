@@ -14,6 +14,7 @@ mod render_observation;
 #[path = "building_observation.rs"]
 mod building_observation;
 use serde::Deserialize;
+use std::cell::Cell;
 use sim_core::{
     campaign::backend::{
         MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT, Mc2CampaignBackend,
@@ -54,6 +55,7 @@ struct InstalledCampaignInput {
     campaign: Mc2CampaignInputs,
     presentation_cache: Option<std::path::PathBuf>,
     sound_bank: Option<super::campaign_sound_bank::CampaignSoundBank>,
+    music_available: Cell<Option<bool>>,
 }
 
 fn preflight_sound_banks(
@@ -77,26 +79,29 @@ fn preflight_sound_banks(
                         "sound bank has no exact installed source identity",
                     )
                 })?;
+            let mut bank = None;
             for root in input
                 .campaign
                 .owner_cache
                 .iter()
                 .chain(input.presentation_cache.iter())
             {
-                if let Some(bank) = super::campaign_sound_bank::CampaignSoundBank::load_if_present(
+                if let Some(candidate) = super::campaign_sound_bank::CampaignSoundBank::load_if_present(
                     root,
                     selection,
                     owner_hash,
                     campaign_hash,
                 )? {
-                    return Ok(Some(bank));
+                    bank = Some(candidate);
+                    break;
                 }
             }
-            Ok(None)
+            Ok(bank)
         })
         .collect::<AbiResult<Vec<_>>>()?;
     for (input, bank) in inputs.iter_mut().zip(banks) {
         input.sound_bank = bank;
+        input.music_available.set(None);
     }
     Ok(())
 }
@@ -125,6 +130,87 @@ struct CampaignPreferenceRollback {
 }
 
 impl RuntimeRecord {
+    fn source_audio_input(&self) -> Option<&InstalledCampaignInput> {
+        let session = self.runtime.session()?;
+        let package = &session.backend().campaign_presentation_source().definition().package_root;
+        self.installed_inputs.iter().find(|input| &input.campaign.package_root == package)
+    }
+
+    fn source_music_available(&self) -> AbiResult<bool> {
+        let Some(input) = self.source_audio_input() else { return Ok(false); };
+        if let Some(available) = input.music_available.get() { return Ok(available); }
+        let campaign = self.session()?.backend().campaign_presentation_source();
+        let available = super::campaign_audio::load_campaign_music(
+            input.presentation_cache.as_deref().or(input.campaign.owner_cache.as_deref()),
+            campaign.definition().identity, campaign.inspection().package_sha256(),
+            &campaign.definition().package_sha256,
+        )?.is_some();
+        // Resource memo only: the outer RuntimeRecord mutex serializes this
+        // read, and neither gameplay nor the retained music clock is touched.
+        // Failed validation is never cached as an absent device.
+        input.music_available.set(Some(available));
+        Ok(available)
+    }
+
+    fn source_audio_capabilities(&self) -> AbiResult<(bool, bool)> {
+        let sound = self.source_audio_input().is_some_and(|input| input.sound_bank.is_some());
+        Ok((sound, self.source_music_available()?))
+    }
+
+    fn cached_source_audio_capabilities(&self) -> Option<(bool, bool)> {
+        let input = self.source_audio_input()?;
+        Some((input.sound_bank.is_some(), input.music_available.get()?))
+    }
+
+    fn source_audio_command(&mut self, handle: u64, generation: u64,
+        session_guard: SessionGuard, action: sim_core::game_runtime::preferences::SourceAudioAction,
+        speech_available: Option<bool>,
+    ) -> AbiResult<()> {
+        use sim_core::game_runtime::preferences::SourceAudioAction;
+        let mode = self.runtime.identity().mode;
+        self.validate_transition(handle, generation, mode)?;
+        if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+            return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing, actual: mode,
+            }));
+        }
+        self.session()?.completion_status(session_guard).map_err(|error|
+            map_transition_error(RuntimeTransitionError::SessionGuard(Box::new(error))))?;
+        let available = match action {
+            SourceAudioAction::Sound => self.source_audio_input().is_some_and(|input| input.sound_bank.is_some()),
+            SourceAudioAction::Music => self.source_music_available()?,
+            SourceAudioAction::Speech => speech_available == Some(true),
+        };
+        // Prepare the existing music owner before CONFIG publication, without
+        // advancing its timer/fade. Resource failures cannot commit a toggle.
+        if action == SourceAudioAction::Music && available {
+            let presentation = self.take_campaign_presentation_record()?;
+            self.retain_campaign_presentation_record(presentation);
+        }
+        let result = self.runtime.source_audio_preferences(
+            RuntimeGuard { runtime_id: handle, generation }, session_guard, action, available,
+        ).map_err(map_transition_error)?;
+        match result.source_audio_admitted {
+            Some(false) => return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                "source audio is unavailable or owned by an active dialog preview")),
+            Some(true) => {},
+            None => return Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                "source audio returned no admission result")),
+        }
+        match action {
+            SourceAudioAction::Sound => self.reset_audio()?,
+            SourceAudioAction::Music => {
+                if let Some(music) = self.campaign_presentation.as_mut().and_then(|record| record.day_music.as_mut()) {
+                    if result.preferences.music_enabled { music.restart(); } else { music.stop(); }
+                }
+            }
+            // Source Speech changes later admission, never the current CD.
+            SourceAudioAction::Speech => {},
+        }
+        self.campaign_presentation_dirty = true;
+        Ok(())
+    }
+
     fn title(runtime_id: u64) -> AbiResult<Self> {
         let runtime = GameRuntime::title(runtime_id).map_err(map_transition_error)?;
         Ok(Self {
@@ -354,6 +440,7 @@ impl RuntimeRecord {
             session.backend().campaign_presentation_source(),
             session.identity().generation,
             paused,
+            self.runtime.identity().player_preferences.preferences.sound_enabled,
         )?;
         if let Some(music) = self
             .campaign_presentation
@@ -1453,6 +1540,7 @@ fn installed_package_set_inputs(
             Ok(InstalledCampaignInput {
                 campaign,
                 sound_bank: None,
+                music_available: Cell::new(None),
                 presentation_cache: location
                     .presentation_cache_path
                     .filter(|path| !path.is_empty())
@@ -1613,6 +1701,11 @@ pub extern "C" fn mc_game_runtime_identity_json_v1(
         with_runtime(handle, |runtime| {
             let mut identity = serde_json::to_value(runtime.runtime.identity())
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            if let Some((sound_available, music_available)) = runtime.cached_source_audio_capabilities() {
+                identity["source_audio_capabilities"] = serde_json::json!({
+                    "sound_available": sound_available, "music_available": music_available,
+                });
+            }
             if let Some(speech) = runtime
                 .resolver
                 .as_ref()
@@ -1994,8 +2087,13 @@ pub extern "C" fn mc_game_runtime_active_entry_presentation_json_v1(
                     },
                 )
                 .map_err(map_transition_error)?;
-            let observation =
-                serde_json::json!({"identity": record.runtime.identity(), "value": value});
+            let (sound_available, music_available) = record.source_audio_capabilities()?;
+            let observation = serde_json::json!({
+                "identity": record.runtime.identity(), "value": value,
+                "source_audio_capabilities": {
+                    "sound_available": sound_available, "music_available": music_available,
+                },
+            });
             super::game_session_abi::write_json(&observation, buffer, capacity, out_length)
         })
     })
@@ -2351,6 +2449,17 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceAudio {
+                session_guard, action, speech_available,
+            } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                return record.source_audio_command(handle, generation, session_guard, action, speech_available);
+            }
             sim_core::game_runtime::preferences::PreferencesCommand::SourceBrightness {
                 session_guard, action,
             } => {
@@ -4079,6 +4188,237 @@ mod tests {
         })
         .unwrap();
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn source_audio_controls_use_real_capabilities_notices_and_same_generation_pool() {
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from).join("generated");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir":level_one_package(),"owner_cache_path":generated.join("mc-oi68-level1-fullbank-v2-20261029")},
+                {"package_dir":level_two_package(),"owner_cache_path":null},
+                {"package_dir":level_three_package(),"owner_cache_path":null}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let profile = std::env::temp_dir().join(format!("mc-source-audio-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 1, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let send = |owner, outer, id: &Value, action: &str, capability: Option<bool>| {
+            let mut request = serde_json::json!({"operation":"source_audio","action":action,
+                "session_guard":{"session_id":id["session"]["session_id"],
+                    "generation":id["session"]["generation"],"expected_tick":id["session"]["tick"]}});
+            if let Some(value) = capability { request["speech_available"] = value.into(); }
+            let bytes = serde_json::to_vec(&request).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner, outer, bytes.as_ptr(), bytes.len() as u32)
+        };
+        let read_save = |owner, outer, nested, tick| read_bytes(|buffer, capacity, length|
+            mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length));
+        let notice = |owner| read_json(|buffer, capacity, length|
+            mc_game_runtime_participant_notifications_json_v1(owner, buffer, capacity, length));
+        let unobserved = with_runtime(handle, |record| {
+            assert!(record.installed_inputs.iter().all(|input| input.music_available.get().is_none()),
+                "bootstrap/open do not load all installed music banks");
+            Ok(serde_json::to_value(record.runtime.identity()).unwrap())
+        }).unwrap();
+        let initial_save = read_save(handle, 3, 1, 0);
+        assert_eq!(send(handle, 2, &unobserved, "music", None), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(send(handle, 3, &unobserved, "speech", None), MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(read_save(handle, 3, 1, 0), initial_save);
+        for _ in 0..2 {
+            assert_eq!(send(handle, 3, &unobserved, "sound", None), MC_STATUS_OK);
+            with_runtime(handle, |record| {
+                assert!(record.installed_inputs.iter().all(|input| input.music_available.get().is_none()),
+                    "Sound and blocked/stale actions do not require unrelated music");
+                Ok(())
+            }).unwrap();
+        }
+        assert!(identity(handle).get("source_audio_capabilities").is_none(), "guard metadata never qualifies pending resources");
+        let entry = read_json(|buffer, capacity, length|
+            mc_game_runtime_active_entry_presentation_json_v1(handle, 3, buffer, capacity, length));
+        assert_eq!(entry["source_audio_capabilities"], serde_json::json!({"sound_available":true,"music_available":true}));
+        let opened = identity(handle);
+        assert_eq!(opened["source_audio_capabilities"], serde_json::json!({"sound_available":true,"music_available":true}));
+        with_runtime(handle, |record| {
+            assert_eq!(record.source_audio_input().unwrap().music_available.get(), Some(true));
+            assert_eq!(record.installed_inputs.iter().filter(|input| input.music_available.get().is_some()).count(), 1,
+                "only the actual active binding is validated by a full capability observation");
+            let dirty = record.campaign_presentation_dirty;
+            assert_eq!(record.source_audio_capabilities()?, (true, true));
+            assert_eq!(record.campaign_presentation_dirty, dirty, "resource reads never invalidate world frames");
+            Ok(())
+        }).unwrap();
+        for tick in 0..10 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            assert!(record.audio.commands.values().any(|command|
+                command.sound_id == 41 && command.action == MC_AUDIO_ACTION_START), "real phase7 current source sound");
+            assert!(record.audio.voices.iter().any(Option::is_some));
+            Ok(())
+        }).unwrap();
+        let before = identity(handle);
+        let before_save = read_save(handle, 3, 1, 10);
+        for (outer, nested, tick, expected) in [
+            (2, "1", "10", MC_STATUS_GENERATION_MISMATCH),
+            (3, "2", "10", MC_STATUS_GENERATION_MISMATCH),
+            (3, "1", "11", MC_STATUS_INVALID_ARGUMENT),
+        ] {
+            let mut stale = before.clone();
+            stale["session"]["generation"] = nested.into(); stale["session"]["tick"] = tick.into();
+            assert_eq!(send(handle, outer, &stale, "sound", None), expected);
+            assert_eq!(identity(handle), before);
+            assert_eq!(read_save(handle, 3, 1, 10), before_save);
+        }
+        for capability in [None, Some(false)] {
+            assert_eq!(send(handle, 3, &before, "speech", capability), MC_STATUS_SOURCE_ACTION_BLOCKED);
+            assert_eq!(identity(handle), before);
+            assert_eq!(read_save(handle, 3, 1, 10), before_save);
+        }
+        // The true value is the explicitly declared host CD capability here;
+        // the actual validated27-track host is exercised by the managed test.
+        assert_eq!(send(handle, 3, &before, "speech", Some(true)), MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["speech_enabled"], false);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.speech_off");
+        assert_eq!(notice(handle)["value"][0]["remaining_frames"], 50);
+        with_runtime(handle, |record| {
+            assert!(!record.session()?.backend().speech_enabled());
+            assert!(record.audio.voices.iter().any(Option::is_some), "Speech does not EndSample");
+            Ok(())
+        }).unwrap();
+        let immediate = read_save(handle, 3, 1, 10);
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold, 1, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32,
+            immediate.as_ptr(), immediate.len() as u32), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cold_id = identity(cold);
+        let outer = cold_id["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(read_save(cold, outer, nested, 10), immediate, "immediate action history cold-replays exactly");
+        assert_eq!(notice(cold)["value"], notice(handle)["value"]);
+        assert_eq!(identity(cold)["player_preferences"]["preferences"]["speech_enabled"], false, "cold CONFIG owner retains accepted audio flag");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(send(handle, 3, &identity(handle), "sound", None), MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["sound_enabled"], false);
+        assert_eq!(identity(handle)["session"], before["session"]);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.sound_off");
+        with_runtime(handle, |record| {
+            assert!(record.audio.voices.iter().all(Option::is_none));
+            assert!(record.audio.commands.is_empty()); Ok(())
+        }).unwrap();
+        assert_eq!(send(handle, 3, &identity(handle), "music", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.music_off");
+        with_runtime(handle, |record| { assert!(!record.campaign_presentation.as_ref().unwrap().day_music.unwrap().playing); Ok(()) }).unwrap();
+        assert_eq!(send(handle, 3, &identity(handle), "music", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.music_on");
+        with_runtime(handle, |record| { assert!(record.campaign_presentation.as_ref().unwrap().day_music.unwrap().playing); Ok(()) }).unwrap();
+        let accelerate = br#"{"longitudinal":"accelerate"}"#;
+        for tick in 10..18 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, accelerate.as_ptr(), accelerate.len() as u32), MC_STATUS_OK);
+            with_runtime(handle, |record| {
+                assert!(record.audio.voices.iter().all(Option::is_none));
+                assert!(record.audio.commands.is_empty());
+                Ok(())
+            }).unwrap();
+        }
+        assert_eq!(send(handle, 3, &identity(handle), "sound", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.sound_on");
+        with_runtime(handle, |record| { assert!(record.audio.commands.is_empty(), "no old disabled burst"); Ok(()) }).unwrap();
+        for tick in 18..26 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, accelerate.as_ptr(), accelerate.len() as u32), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            assert!(record.audio.commands.values().any(|row| row.action == MC_AUDIO_ACTION_START), "real current flight starts audio after re-enable");
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(send(handle, 4, &identity(handle), "speech", Some(true)), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.speech_on");
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["speech_enabled"], true);
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let resumed = identity(handle);
+        let generation = resumed["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_reset_v1(handle, generation, 26), MC_STATUS_OK);
+        let reset = identity(handle);
+        assert_eq!(reset["player_preferences"]["preferences"], resumed["player_preferences"]["preferences"]);
+        assert_eq!(notice(handle)["value"], serde_json::json!([]), "LevelInit clears source notices, retaining CONFIG flags");
+        let generation = reset["session"]["generation"].as_str().unwrap().parse().unwrap();
+        for tick in 0..10 {
+            assert_eq!(mc_game_session_step_json_v1(handle, generation, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            let campaign = record.session()?.backend().campaign_presentation_source();
+            let page = campaign.effects_after(sim_core::campaign::journal::EffectCursor {
+                generation: campaign.generation(), next_sequence: 0,
+            }, 16_384).unwrap();
+            assert!(page.records.iter().any(|row| matches!(&row.effect,
+                sim_core::campaign::journal::CampaignEffect::ObjectivePresentation(actions)
+                    if actions.speech.is_some())), "next real ordinary objective uses re-enabled speech");
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+        let absent_packages = installed_package_set_json(&[
+            level_one_package(), level_two_package(), level_three_package(),
+        ]);
+        let mut absent = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut absent), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(absent, 1,
+            absent_packages.as_ptr(), absent_packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(absent, 2), MC_STATUS_OK);
+        assert!(identity(absent).get("source_audio_capabilities").is_none());
+        let absent_entry = read_json(|buffer, capacity, length|
+            mc_game_runtime_active_entry_presentation_json_v1(absent, 3, buffer, capacity, length));
+        assert_eq!(absent_entry["source_audio_capabilities"], serde_json::json!({"sound_available":false,"music_available":false}));
+        let id = identity(absent);
+        assert_eq!(id["source_audio_capabilities"], serde_json::json!({"sound_available":false,"music_available":false}));
+        let absent_save = read_save(absent, 3, 1, 0);
+        for action in ["sound", "music", "speech"] {
+            assert_eq!(send(absent, 3, &id, action, None), MC_STATUS_SOURCE_ACTION_BLOCKED);
+            assert_eq!(read_save(absent, 3, 1, 0), absent_save);
+        }
+        with_runtime(absent, |record| {
+            assert_eq!(record.source_audio_input().unwrap().music_available.get(), Some(false));
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(absent), MC_STATUS_OK);
+        let mut wrong_resources: Value = serde_json::from_slice(&packages).unwrap();
+        wrong_resources["packages"][0]["presentation_cache_path"] = serde_json::to_value(
+            generated.join("level3-day-spell-owner-cache-audio-v4")).unwrap();
+        let wrong_resources = serde_json::to_vec(&wrong_resources).unwrap();
+        let mut invalid = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut invalid), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(invalid, 1,
+            wrong_resources.as_ptr(), wrong_resources.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(invalid, 2), MC_STATUS_OK);
+        let invalid_before = identity(invalid);
+        assert!(invalid_before.get("source_audio_capabilities").is_none());
+        let invalid_save = read_save(invalid, 3, 1, 0);
+        for _ in 0..2 {
+            let mut length = 0;
+            assert_eq!(identity(invalid), invalid_before, "resource failure cannot hide current guard metadata");
+            assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(invalid, 3, std::ptr::null_mut(), 0, &raw mut length),
+                MC_STATUS_IO_ERROR, "the Day cache lacks the required Night descriptor");
+            assert!(LAST_ERROR.with(|value| value.borrow().contains("audio/music-channel-0-f.json")));
+            assert_eq!(send(invalid, 3, &invalid_before, "music", None), MC_STATUS_IO_ERROR);
+            with_runtime(invalid, |record| {
+                assert_eq!(record.source_audio_input().unwrap().music_available.get(), None,
+                    "failed validation is not cached as false");
+                assert_eq!(serde_json::to_value(record.runtime.identity()).unwrap(), invalid_before);
+                Ok(())
+            }).unwrap();
+            assert_eq!(read_save(invalid, 3, 1, 0), invalid_save);
+        }
+        assert_eq!(mc_game_runtime_close_v1(invalid, 3, 1, 0), MC_STATUS_OK,
+            "the failed active-resource binding can return through normal guarded recovery");
+        assert_eq!(identity(invalid)["mode"], "title");
+        assert_eq!(mc_game_runtime_destroy_v1(invalid), MC_STATUS_OK);
     }
 
     #[test]

@@ -25,6 +25,7 @@ namespace MagicCarpet.Native
         private readonly GameObject root;
         private readonly AudioSource source;
         internal bool IsPlaying => source.isPlaying;
+        internal bool IsAvailable => source != null && clips.Count == 27;
         internal int PlayCount { get; private set; }
         internal int LastTrack { get; private set; }
         internal uint LastStartMs { get; private set; }

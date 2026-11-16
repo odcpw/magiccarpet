@@ -15,7 +15,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --menu                  Open the campaign menu (default)
   --new-game              Start at the installed campaign's resolver-owned entry
   --load-save PATH        Resume a current runtime save (also --replay PATH)
-  --save PATH             Save destination for F5 and the in-game Save action
+  --save PATH             Save destination for the in-game Save action
   --package DIR           Install a package; repeat for the complete campaign set
   --owner-cache DIR       Native owner cache for the preceding package
   --presentation-cache DIR  Presentation cache for the preceding package

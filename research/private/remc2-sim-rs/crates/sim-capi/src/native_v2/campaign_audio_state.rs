@@ -71,6 +71,7 @@ impl CampaignRuntimeAudio {
         campaign: &CampaignSession,
         generation: u64,
         paused: bool,
+        sound_enabled: bool,
     ) -> AbiResult<Vec<(u8, u8)>> {
         if self
             .sound_bank
@@ -93,6 +94,10 @@ impl CampaignRuntimeAudio {
                 ..Self::default()
             };
         }
+        if !sound_enabled {
+            self.voices.fill(None);
+            self.commands.clear();
+        }
         let page = campaign
             .effects_after(
                 EffectCursor {
@@ -113,6 +118,9 @@ impl CampaignRuntimeAudio {
             }) = record.effect
             {
                 music_updates.push((mode, timer_multiplier));
+            }
+            if !sound_enabled {
+                continue;
             }
             let Some(prepared) = record.audio else {
                 continue;
@@ -320,7 +328,7 @@ mod tests {
         assert_eq!(sounds, [22], "ordinary local arrival without replaying startup");
 
         let before_audio = campaign.state_hash();
-        audio.sync(&campaign, generation, false).unwrap();
+        audio.sync(&campaign, generation, false, true).unwrap();
         assert_eq!(
             campaign.state_hash(),
             before_audio,
@@ -365,11 +373,31 @@ mod tests {
             );
         }
         let commands = audio.commands.clone();
-        audio.sync(&campaign, generation, false).unwrap();
+        audio.sync(&campaign, generation, false, true).unwrap();
         assert_eq!(
             audio.commands, commands,
             "the journal cursor prevents duplicate native commands"
         );
+        // Replay the same genuine producer page through a disabled device
+        // cohort. Existing real voices are retired, SFX requests are dropped,
+        // and independent UpdateMusic events retain their original order.
+        let mut disabled = CampaignRuntimeAudio {
+            generation, cursor: cursor.next_sequence, voices: audio.voices,
+            commands: audio.commands.clone(), ..CampaignRuntimeAudio::default()
+        };
+        let music = disabled.sync(&campaign, generation, false, false).unwrap();
+        let expected_music = page.records.iter().filter_map(|row| match row.effect {
+            CampaignEffect::Flight(FlightEvent::UpdateMusic { mode, timer_multiplier }) => Some((mode, timer_multiplier)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(music, expected_music);
+        assert!(disabled.voices.iter().all(Option::is_none));
+        assert!(disabled.commands.is_empty());
+        assert_eq!(disabled.cursor, campaign.effect_cursor().next_sequence);
+        assert!(disabled.sync(&campaign, generation, false, true).unwrap().is_empty());
+        assert!(disabled.commands.is_empty(), "re-enabling never bursts old disabled requests");
+        assert!(disabled.voices.iter().all(Option::is_none));
+        assert_eq!(campaign.state_hash(), before_audio);
     }
 
     #[test]

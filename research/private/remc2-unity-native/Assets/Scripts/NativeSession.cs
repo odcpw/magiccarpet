@@ -218,6 +218,13 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal GameRuntimeTransport.LoadingPresentationBinding BindGameRuntimeActiveEntryPresentation(
+            GameRuntimeTransport.Identity identity)
+        {
+            return gameRuntime?.BindActiveEntryPresentation(identity) ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
         // Campaign callbacks reuse metadata published by the owning transport.
         // Its step/pause/reset/load/preference mutations explicitly refresh it.
         // Frontend media has separate mutations, so those modes still read.
@@ -302,6 +309,14 @@ namespace MagicCarpet.Native
             if (gameRuntime == null)
                 throw new InvalidOperationException("session does not own a game runtime");
             return gameRuntime.SourceBrightness(action, out identity);
+        }
+
+        internal bool GameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction action,
+            bool speechAvailable, out GameRuntimeTransport.Identity identity)
+        {
+            if (gameRuntime == null)
+                throw new InvalidOperationException("session does not own a game runtime");
+            return gameRuntime.SourceAudio(action, speechAvailable, out identity);
         }
 
         internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignStep(

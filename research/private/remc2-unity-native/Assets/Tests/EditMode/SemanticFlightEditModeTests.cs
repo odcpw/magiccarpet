@@ -43,13 +43,14 @@ namespace MagicCarpet.Native.Tests
                 // The old and new forward keys, map key, and confirming mouse
                 // button are down when the draft is committed.
                 keys.UnionWith(new[] { KeyCode.UpArrow, KeyCode.W, KeyCode.Return, KeyCode.LeftShift,
-                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10,
+                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10,
                     KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.F4);
                 downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Apply(), Is.True);
@@ -59,7 +60,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyHeld(KeyCode.LeftShift), Is.False, "source fixed modifier is suppressed");
                 Assert.That(preferences.KeyHeld(KeyCode.RightShift), Is.False);
                 Assert.That(preferences.KeyHeld(KeyCode.RightAlt), Is.False, "both physical Alt keys share source modifier precedence");
-                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.False, "held F5 cannot leak a save or display toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F4), Is.False, "held F4 cannot leak the speech toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.False, "held F5 cannot leak the sound or display toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.False, "held F6 cannot leak the transparency toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.False, "held F7 cannot leak the flat shading toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.False, "held F3 cannot leak the speed action");
@@ -90,16 +92,17 @@ namespace MagicCarpet.Native.Tests
                 // Observe release while no flight input is sampled, then a
                 // subsequent press is fresh rather than permanently latched.
                 keys.ExceptWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.LeftShift, KeyCode.RightShift,
-                    KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
+                    KeyCode.RightAlt, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Clear();
                 buttons.Remove(0);
                 preferences.AdvanceInputReleaseBarrier();
-                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
+                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.F4);
                 downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Held(0), Is.True);
@@ -116,6 +119,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.True, "release and repress admits the fresh F6 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.True, "release and repress admits the fresh F7 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.True, "release and repress admits the fresh F3 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.F4), Is.True, "release and repress admits the fresh F4 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.LeftBracket), Is.True);
                 Assert.That(preferences.KeyPressed(KeyCode.RightBracket), Is.True);
                 Assert.That(preferences.MouseHeld(0), Is.True);

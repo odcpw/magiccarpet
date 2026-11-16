@@ -9277,6 +9277,33 @@ impl Mc2Simulation {
             .map_err(|error| error.to_string())
     }
 
+    /// Validate the complete local source notice before CONFIG publication.
+    pub(crate) fn prepare_source_audio_notice(
+        &self, action: crate::game_runtime::preferences::SourceAudioAction, enabled: bool,
+    ) -> std::result::Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications, String> {
+        use crate::game_runtime::preferences::SourceAudioAction;
+        use crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind;
+        let live = &self.session.state.live;
+        let mut notices = live.player_lifecycle_notifications.clone();
+        let kind = match (action, enabled) {
+            (SourceAudioAction::Sound, true) => PlayerLifeNoticeKind::SoundOn,
+            (SourceAudioAction::Sound, false) => PlayerLifeNoticeKind::SoundOff,
+            (SourceAudioAction::Music, true) => PlayerLifeNoticeKind::MusicOn,
+            (SourceAudioAction::Music, false) => PlayerLifeNoticeKind::MusicOff,
+            (SourceAudioAction::Speech, true) => PlayerLifeNoticeKind::SpeechOn,
+            (SourceAudioAction::Speech, false) => PlayerLifeNoticeKind::SpeechOff,
+        };
+        notices.publish(live.shared_spells.local_player().player_color_index(),
+            live.core.state.entity_index, kind, 50).map_err(|error| error.to_string())?;
+        Ok(notices)
+    }
+
+    pub(crate) fn commit_source_audio_notice(&mut self,
+        notices: crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    ) {
+        self.session.state.live.player_lifecycle_notifications = notices;
+    }
+
     /// Move one imported source entity through the lossless Level 2 seam.
     /// Callers cannot create an entity or alter its class/model identity. The
     /// local player's flight state and entity projection are one public input

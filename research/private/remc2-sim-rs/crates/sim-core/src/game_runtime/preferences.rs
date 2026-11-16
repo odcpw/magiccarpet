@@ -221,6 +221,13 @@ pub enum PreferencesCommand {
         session_guard: sim_session::SessionGuard,
         action: SourceBrightnessAction,
     },
+    SourceAudio {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+        action: SourceAudioAction,
+        #[serde(default)]
+        speech_available: Option<bool>,
+    },
     Install {
         profile_dir: String,
     },
@@ -256,6 +263,12 @@ pub enum PreferencesCommand {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceBrightnessAction { Cycle, Increment, Decrement }
+
+/// Source ChangeSettings cases 2, 3 and 4; availability is supplied by the
+/// active audio owner, independently of the user's enabled preference.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceAudioAction { Sound, Music, Speech }
 
 fn deserialize_brightness_guard<'de, D: serde::Deserializer<'de>>(deserializer: D)
     -> Result<sim_session::SessionGuard, D::Error>
@@ -297,6 +310,9 @@ pub struct PreferencesSnapshot {
     /// It is never stored in runtime identity or preferences persistence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_brightness_admitted: Option<bool>,
+    /// Ephemeral result for the guarded source audio command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_audio_admitted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -331,6 +347,28 @@ impl PreferenceStore {
         let (temp, mut file) = candidate.ok_or("cannot allocate preferences publication file")?;
         file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|error| error.to_string())?;
         fs::rename(temp, path).map_err(|error| error.to_string())
+    }
+
+    /// Commit an admitted source audio toggle without disturbing other owners.
+    /// An active dialog preview must retain its independent cancel semantics.
+    pub fn source_audio_toggle(
+        &mut self, action: SourceAudioAction, available: bool,
+    ) -> Result<Option<bool>, String> {
+        if !available || self.audio_preview.is_some() {
+            return Ok(None);
+        }
+        let mut preferences = self.current.clone();
+        let enabled = match action {
+            SourceAudioAction::Sound => &mut preferences.sound_enabled,
+            SourceAudioAction::Music => &mut preferences.music_enabled,
+            SourceAudioAction::Speech => &mut preferences.speech_enabled,
+        };
+        *enabled = !*enabled;
+        let enabled = *enabled;
+        self.write_profile(&preferences)?;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
     }
 
     /// Borrow the authoritative name without materializing a preferences snapshot.
@@ -379,12 +417,14 @@ impl PreferenceStore {
             locale_binding: self.locale.as_ref().map(|locale| locale.identity.clone()),
             language_status: self.language_status.clone(),
             source_brightness_admitted: None,
+            source_audio_admitted: None,
         }
     }
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
             PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
+            PreferencesCommand::SourceAudio { .. } => return Err("source audio requires a guarded active campaign".into()),
             PreferencesCommand::Install { profile_dir } => {
                 if self.path.is_some() {
                     return Err("preferences profile is already installed".into());
@@ -1636,6 +1676,51 @@ mod tests {
             "source punctuation bindings survive a cold profile load"
         );
         assert!(!cold.snapshot().preferences.dynamic_lighting);
+        let audio_command = serde_json::json!({
+            "operation": "source_audio",
+            "session_guard": { "session_id": "1", "generation": "2", "expected_tick": "3" },
+            "action": "speech", "speech_available": true
+        });
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(audio_command.clone()).unwrap(),
+            PreferencesCommand::SourceAudio { action: SourceAudioAction::Speech,
+                speech_available: Some(true), .. }));
+        assert!(store.command(serde_json::from_value(audio_command.clone()).unwrap()).is_err());
+        let mut invalid_guard = audio_command;
+        invalid_guard["session_guard"]["expected_tick"] = serde_json::json!("03");
+        assert!(serde_json::from_value::<PreferencesCommand>(invalid_guard).is_err());
+        assert!(serde_json::to_value(store.snapshot()).unwrap().get("source_audio_admitted").is_none());
+        // The source admission guard and an active dialog preview cannot
+        // mutate either the retained preference or its cold profile.
+        let before = store.snapshot();
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Speech, false).unwrap(), None);
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        store.command(PreferencesCommand::PreviewAudio {
+            sound_enabled: false, music_enabled: true, speech_enabled: false,
+            sound_volume: 10, music_volume: 20,
+        }).unwrap();
+        let preview = store.snapshot();
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Sound, true).unwrap(), None);
+        assert_eq!(store.snapshot(), preview);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        assert_eq!(store.snapshot(), before);
+
+        for action in [SourceAudioAction::Sound, SourceAudioAction::Music, SourceAudioAction::Speech] {
+            assert_eq!(store.source_audio_toggle(action, true).unwrap(), Some(false));
+            assert_eq!(store.source_audio_toggle(action, true).unwrap(), Some(true));
+        }
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Speech, true).unwrap(), Some(false));
+        let mut audio_cold = PreferenceStore::default();
+        assert_eq!(audio_cold.command(install()).unwrap().preferences, store.snapshot().preferences);
+        assert!(!audio_cold.snapshot().preferences.speech_enabled);
+        assert!(audio_cold.snapshot().preferences.sound_enabled);
+        assert_eq!(audio_cold.snapshot().preferences.keys, before.preferences.keys);
+        assert_eq!(audio_cold.snapshot().preferences.sound_volume, 63);
+        let mut uninstalled = PreferenceStore::default();
+        let uninstalled_before = uninstalled.snapshot();
+        assert!(uninstalled.source_audio_toggle(SourceAudioAction::Sound, true).is_err());
+        assert_eq!(uninstalled.snapshot(), uninstalled_before);
         assert_eq!(fs::read(&save).unwrap(), b"existing campaign save");
         fs::remove_file(path).unwrap();
         fs::remove_file(save).unwrap();

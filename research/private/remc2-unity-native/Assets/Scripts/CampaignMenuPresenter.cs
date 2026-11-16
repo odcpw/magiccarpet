@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames, ToggleSound, ToggleMusic, ToggleSpeech }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -260,6 +260,7 @@ namespace MagicCarpet.Native
                 Action.SpeedPrimary or Action.SpeedSecondary => mode == GameRuntimeTransport.PausedMode,
                 Action.ViewportDecrease or Action.ViewportIncrease => mode == GameRuntimeTransport.PausedMode,
                 Action.TogglePlayerNames => mode == GameRuntimeTransport.PausedMode,
+                Action.ToggleSound or Action.ToggleMusic or Action.ToggleSpeech => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
                     mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,
@@ -273,7 +274,7 @@ namespace MagicCarpet.Native
             };
         }
 
-        internal Action Draw(GameRuntimeTransport.Identity identity, bool canSave, bool canLoad, bool objectivesSatisfied, string status)
+        internal Action Draw(GameRuntimeTransport.Identity identity, bool canSave, bool canLoad, bool objectivesSatisfied, string status, bool speechAvailable)
         {
             ClearPauseHoverHelp();
             var mode = identity.mode;
@@ -345,7 +346,9 @@ namespace MagicCarpet.Native
                     sourcePauseMenuDrawn = true;
                     return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
                         preferences, canSave, canLoad, identity.display_settings.minimap, identity.display_settings.panels_opaque,
-                        identity.display_settings.flat_shading, identity.source_speed_index, identity.source_player_names_visible);
+                        identity.display_settings.flat_shading, identity.source_speed_index, identity.source_player_names_visible,
+                        identity.source_audio_capabilities?.sound_available == true,
+                        identity.source_audio_capabilities?.music_available == true, speechAvailable);
                 }
                 finally { GUI.color = previousColor; GUI.enabled = previousEnabled; }
             }
@@ -406,14 +409,6 @@ namespace MagicCarpet.Native
                             stats, campaignCache.SourceView(menu), campaignCache.ForMission,
                             PortalSelector, SourceText);
                         DrawMapCommands(menu, status, false, false, identity.secret_campaign);
-                        // F5 is the host save edge, not a Results dismissal.
-                        // The runtime owns the save request and consumes it once.
-                        if (Event.current.type == EventType.KeyDown &&
-                            Event.current.keyCode == KeyCode.F5)
-                        {
-                            Event.current.Use();
-                            return Action.None;
-                        }
                         // NewGameDraw states4/5 consume any key or mouse
                         // button, with the map itself retained behind the sheet.
                         if (Event.current.type == EventType.KeyDown || Event.current.type == EventType.MouseDown)
@@ -475,7 +470,7 @@ namespace MagicCarpet.Native
                 var help = mode == GameRuntimeTransport.PausedMode
                     ? $"{preferences?.Current.preferences.keys[0] ?? "W"}/{preferences?.Current.preferences.keys[1] ?? "S"} fly · Mouse steer\n" +
                       "Number keys select spells · Space cast\n" +
-                      "Backspace stop · F5 save · R restart"
+                      "Backspace stop · F5 sound · R restart"
                     : "";
                 if (status != null || preferences?.Current.preferences.show_help != false)
                     GUI.Label(new Rect(x, y + 8, width, 80), status ?? help, message);

@@ -3110,6 +3110,7 @@ impl Mc2RuntimePackageResolver {
                     crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => candidate.backend_mut().publish_panel_transparency_notice(opaque),
                     crate::game_runtime::DisplayNotice::FlatShading(enabled) => candidate.backend_mut().publish_flat_shading_notice(enabled),
                     crate::game_runtime::DisplayNotice::PlayerNames(visible) => candidate.backend_mut().publish_player_names_notice(visible),
+                    crate::game_runtime::DisplayNotice::SourceAudio(action, enabled) => candidate.backend_mut().publish_source_audio_notice(action, enabled),
                 },
                 observe,
             )
@@ -3823,6 +3824,31 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_player_names_notice(visible)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::PlayerNamesNotice { visible });
+        Ok(())
+    }
+
+    pub(crate) fn prepare_source_audio_notice(&self,
+        action: crate::game_runtime::preferences::SourceAudioAction, enabled: bool,
+    ) -> Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+        crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation().prepare_source_audio_notice(action, enabled)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })
+    }
+
+    pub(crate) fn commit_source_audio_notice(&mut self,
+        action: crate::game_runtime::preferences::SourceAudioAction, enabled: bool,
+        notices: crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    ) {
+        self.campaign.simulation_mut().commit_source_audio_notice(notices);
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::SourceAudioNotice { action, enabled });
+    }
+
+    pub(crate) fn publish_source_audio_notice(&mut self,
+        action: crate::game_runtime::preferences::SourceAudioAction, enabled: bool,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        let notices = self.prepare_source_audio_notice(action, enabled)?;
+        self.commit_source_audio_notice(action, enabled, notices);
         Ok(())
     }
 
@@ -23914,6 +23940,10 @@ pub(crate) mod tests {
                 }
                 ReplayOperation::PlayerNamesNotice { visible } => {
                     current.backend_mut().publish_player_names_notice(visible)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::SourceAudioNotice { action, enabled } => {
+                    current.backend_mut().publish_source_audio_notice(action, enabled)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {

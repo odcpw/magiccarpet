@@ -1275,7 +1275,7 @@ namespace MagicCarpet.Native.Tests
                         received = input.mousePosition;
                         GUI.DrawTexture(view, background);
                         identity = native.GameRuntimeIdentity();
-                        action = menu.Draw(identity, true, false, false, null);
+                        action = menu.Draw(identity, true, false, false, null, false);
                         menu.DrawPauseHoverHelp(identity, scene, generation, 0, view, palette, true);
                     }
                     finally { input.mousePosition = hostCursor; }
@@ -1429,6 +1429,12 @@ namespace MagicCarpet.Native.Tests
                     false, false, false, 14, menu.GameplayLanguageText);
                 Assert.That(plainRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(443)));
                 stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 1 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleSound)); Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 2 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleMusic)); Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 3 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.None), "missing retained speech owner disables the source option"); Unchanged();
                 Send(EventType.MouseDown, new Vector2(320, 67 + 5 * 18 + 9));
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.IncreaseBrightness), "left click proposes the source clamped increase");
                 Unchanged();
@@ -2258,8 +2264,6 @@ namespace MagicCarpet.Native.Tests
                         CollectionAssert.AreEqual(File.ReadAllBytes(inputSave), nativeBefore,
                             "native replay admission preserves the original complete controlled source packet");
                         var identityBefore = JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity);
-                        var f5Consumed = gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F5 });
-                        if (isResults) Assert.That(f5Consumed, Is.True, "Results consumes F5 without dismissing itself");
                         runtime.QualificationRequestGameRuntimeProductionReplaySave();
                         runtime.QualificationRequestGameRuntimeProductionReplaySave(false);
                         update.Invoke(runtime, null);
@@ -2267,7 +2271,7 @@ namespace MagicCarpet.Native.Tests
                         Assert.That(File.Exists(outputSave), Is.False, "the real completed phase retains one queued edge");
                         fixedUpdate.Invoke(runtime, null);
                         Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(identityBefore),
-                            "F5 cannot dismiss Results, alter the frontier/secret state, or add a gameplay tick");
+                            "explicit replay publication cannot alter the frontier/secret state or add a gameplay tick");
                         var completedBytes = File.ReadAllBytes(outputSave);
                         CollectionAssert.AreEqual(nativeBefore, completedBytes,
                             "the exact native packet retains all map, media, source-context and semantic-carry bytes");
@@ -2281,6 +2285,17 @@ namespace MagicCarpet.Native.Tests
                             Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.secret_campaign)));
                         CollectionAssert.AreEqual(nativeBefore, cold.GameRuntimeSaveReplay(),
                             "a fresh native owner reserializes the same media and full pending carry without consuming or awarding it");
+                        if (isResults)
+                        {
+                            Assert.That(gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F5 }), Is.True);
+                            Assert.That((CampaignMenuPresenter.Action)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuAction", flags).GetValue(runtime),
+                                Is.EqualTo(CampaignMenuPresenter.Action.DismissResults), "source Results dismisses on any key, including F5");
+                            Assert.That((bool)typeof(MagicCarpetRuntime).GetField("gameRuntimeReplaySaveRequested", flags).GetValue(runtime), Is.False,
+                                "F5 does not queue a host save");
+                            update.Invoke(runtime, null);
+                            Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.phase, Is.EqualTo("mission_select"));
+                            CollectionAssert.AreEqual(completedBytes, File.ReadAllBytes(outputSave));
+                        }
                     }
                     finally
                     {
@@ -3322,7 +3337,12 @@ namespace MagicCarpet.Native.Tests
                 var before = runtime.GameRuntimeProductionIdentity;
                 var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
                 void F6(bool pressed, bool physical, bool admitted, bool alt) => f6.Invoke(runtime, new object[] { pressed, physical, admitted, alt });
-                F6(true, false, false, false); F6(true, true, false, false); F6(true, true, true, true);
+                var musicInitiallyEnabled = runtime.GameRuntimeProductionIdentity.player_preferences.preferences.music_enabled;
+                F6(true, false, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.music_enabled, Is.EqualTo(!musicInitiallyEnabled),
+                    "bare F6 controls source music independently of panel transparency");
+                F6(true, false, false, false);
+                F6(true, true, false, false); F6(true, true, true, true);
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False);
                 F6(true, true, true, false);
                 var after = runtime.GameRuntimeProductionIdentity;
@@ -3345,11 +3365,16 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(cold.GameRuntimeIdentity().display_settings.panels_opaque, Is.True);
                     Assert.That(cold.GameRuntimeIdentity().session.tick, Is.EqualTo(after.session.tick));
                 }
+                var soundBefore = runtime.GameRuntimeProductionIdentity.player_preferences.preferences.sound_enabled;
                 typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
                     new object[] { true, false, false, false });
-                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its independent save edge");
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.sound_enabled, Is.EqualTo(!soundBefore));
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "bare F5 is the source sound control");
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
+                    new object[] { true, false, false, false });
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
                 typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
-                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(save));
+                CollectionAssert.AreEqual(runtime.QualificationSaveGameRuntimeProductionReplay(), File.ReadAllBytes(save));
                 var campaign = (NativeCampaignSession)Field("campaignSession");
                 var unshaded = (byte[])campaign.SceneFrameIndices.Clone();
                 var beforeFlat = runtime.GameRuntimeProductionIdentity;
@@ -3674,6 +3699,254 @@ namespace MagicCarpet.Native.Tests
         }
 
         [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAudioKeysDriveRealSpeechSoundAndMusicWithoutGameplayStep()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-source-audio-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source audio controls"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var prefs = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                var audio = (OwnerAudioPresentation)Field("ownerAudio");
+                Assert.That(speech.IsAvailable, Is.True, "the actual retained speech catalog is validated");
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)));
+                var f4 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF4Input", flags);
+                var f5 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags);
+                var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
+                void F4(bool shift = false, bool alt = false) => f4.Invoke(runtime, new object[] { true, shift, alt });
+                void F5(bool shift = false, bool admitted = false, bool alt = false) =>
+                    f5.Invoke(runtime, new object[] { true, shift, admitted, alt });
+                void F6(bool shift = false, bool admitted = false, bool alt = false) =>
+                    f6.Invoke(runtime, new object[] { true, shift, admitted, alt });
+                void Notice(string kind, int record)
+                {
+                    var notices = owner.GameRuntimeParticipantNotifications().value;
+                    Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo((kind, (short)50)));
+                    var selected = menu.LocaleCache.PrepareLocale(prefs.Current.locale_binding);
+                    Assert.That(SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14,
+                        menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(record)));
+                }
+                var beforeBlocked = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(owner.GameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Speech, false, out var blocked), Is.False);
+                Assert.That(blocked, Is.Null, "unavailable CD support cannot change the actual owner");
+                CollectionAssert.AreEqual(beforeBlocked, runtime.QualificationSaveGameRuntimeProductionReplay());
+                F4(true); F4(false, true); F5(false, false, true); F6(false, false, true);
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)), "modifier branches suppress bare audio actions");
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That((speech.PlayCount, speech.LastTrack), Is.EqualTo((1, 26)), "the real source phase plays the first secret announcement");
+                var speechSource = (AudioSource)typeof(CampaignSpeechPresenter).GetField("source", flags).GetValue(speech);
+                var currentClip = speechSource.clip;
+                Assert.That(currentClip, Is.Not.Null);
+                var before = runtime.GameRuntimeProductionIdentity;
+                F4();
+                Assert.That(prefs.Current.preferences.speech_enabled, Is.False);
+                Assert.That(speechSource.clip, Is.SameAs(currentClip), "speech off does not stop the current source CD segment");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(before.session.tick));
+                Notice("participant.speech_off", 470);
+                runtime.QualificationResetGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "real subsequent source phase suppresses a new cue while speech is off");
+                F4();
+                Assert.That(prefs.Current.preferences.speech_enabled, Is.True);
+                Notice("participant.speech_on", 469);
+                runtime.QualificationResetGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That((speech.PlayCount, speech.LastTrack), Is.EqualTo((2, 26)), "re-enabled speech reaches a later real source cue");
+                audio = (OwnerAudioPresentation)Field("ownerAudio");
+                campaign = (NativeCampaignSession)Field("campaignSession");
+                var loops = (System.Collections.IDictionary)typeof(OwnerAudioPresentation).GetField("loops", flags).GetValue(audio);
+                before = runtime.GameRuntimeProductionIdentity;
+                F5();
+                Assert.That(prefs.Current.preferences.sound_enabled, Is.False);
+                Assert.That((speechSource.clip, loops.Count), Is.EqualTo(((AudioClip)null, 0)), "sound off ends CD and resident voices");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(before.session.tick));
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "bare F5 cannot queue a save");
+                Notice("participant.sound_off", 391);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(loops.Count, Is.Zero, "disabled source sound produces no stale voice burst");
+                F5();
+                Assert.That(prefs.Current.preferences.sound_enabled, Is.True);
+                Notice("participant.sound_on", 390);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var musicBefore = campaign.DayMusicState();
+                F6();
+                var musicOff = campaign.DayMusicState();
+                Assert.That(prefs.Current.preferences.music_enabled, Is.False);
+                Notice("participant.music_off", 393);
+                Assert.That(musicOff.playing, Is.Zero);
+                Assert.That(musicOff.fadeCallbackCount, Is.EqualTo(musicBefore.fadeCallbackCount), "toggle does not advance the fade clock");
+                F6();
+                Assert.That(prefs.Current.preferences.music_enabled, Is.True);
+                Notice("participant.music_on", 392);
+                Assert.That(campaign.DayMusicState().playing, Is.EqualTo(1));
+
+                // Pav is a Cave: its player body produces cave ambience, not surface land ambience.
+                // Use the real returned-parent Day entry to exercise land ambience ownership across F5.
+                var surfaceRoot = new GameObject("actual surface land ambience controls");
+                surfaceRoot.SetActive(false);
+                var surfaceRuntime = surfaceRoot.AddComponent<MagicCarpetRuntime>();
+                try
+                {
+                    var surfaceInput = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                        Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                    var surfaceArguments = ReturnedParentArguments(surfaceInput, Path.Combine(temporary, "surface-profile"),
+                        Path.Combine(temporary, "surface-save.mcs"));
+                    surfaceRuntime.QualificationInitializeGameRuntimeProductionFromArguments(surfaceArguments);
+                    typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(surfaceRuntime, new object[] { surfaceArguments });
+                    yield return StartReturnedParentFromNormalMap(surfaceRuntime);
+                    var surfaceCampaign = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(surfaceRuntime);
+                    Assert.That((surfaceCampaign.Selection.externalLevel, surfaceCampaign.Selection.internalLevel, surfaceCampaign.Selection.mapType),
+                        Is.EqualTo(((ushort)20, (ushort)19, (byte)0)), "the real returned parent uses its Day source profile");
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    var surfaceAudio = (OwnerAudioPresentation)typeof(MagicCarpetRuntime).GetField("ownerAudio", flags).GetValue(surfaceRuntime);
+                    var surfaceLoops = (System.Collections.IDictionary)typeof(OwnerAudioPresentation).GetField("loops", flags).GetValue(surfaceAudio);
+                    var surfacePrefs = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime).GetField("playerPreferences", flags).GetValue(surfaceRuntime);
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.True);
+                    Assert.That(surfaceLoops.Contains(2), Is.True, "the actual surface player body owns its source land ambience voice");
+                    var surfaceTick = surfaceRuntime.GameRuntimeProductionIdentity.session.tick;
+                    f5.Invoke(surfaceRuntime, new object[] { true, false, false, false });
+                    Assert.That(surfaceRuntime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(surfaceTick));
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.False);
+                    Assert.That(surfaceLoops.Count, Is.Zero, "F5 retires the actual surface land ambience voice");
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(surfaceLoops.Count, Is.Zero, "disabled sound does not recreate the source land ambience voice");
+                    surfaceTick = surfaceRuntime.GameRuntimeProductionIdentity.session.tick;
+                    f5.Invoke(surfaceRuntime, new object[] { true, false, false, false });
+                    Assert.That(surfaceRuntime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(surfaceTick));
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.True);
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(surfaceLoops.Contains(2), Is.True, "the next actual surface body pass reacquires land ambience");
+                }
+                finally
+                {
+                    surfaceRuntime.QualificationDisposeGameRuntimeProduction();
+                    UnityEngine.Object.DestroyImmediate(surfaceRoot);
+                }
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAudioOptionsUseRealPausedOwnerAndColdProfile()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-source-audio-options-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source audio options"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>(); var guiShown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var owner = (NativeSession)Field("session");
+                var prefs = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)));
+                void Notice(string kind, int record)
+                {
+                    var notices = owner.GameRuntimeParticipantNotifications().value;
+                    Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo((kind, (short)50)));
+                    var selected = menu.LocaleCache.PrepareLocale(prefs.Current.locale_binding);
+                    Assert.That(SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14,
+                        menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(record)));
+                }
+                var initial = runtime.GameRuntimeProductionIdentity;
+                runtime.QualificationDriveGameRuntimeFrames(12);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var pausedTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var caps = runtime.GameRuntimeProductionIdentity.source_audio_capabilities;
+                Assert.That(caps, Is.Not.Null);
+                Assert.That((caps.sound_available, caps.music_available, speech.IsAvailable), Is.EqualTo((true, true, true)),
+                    "the actual retained owners admit all three source Options");
+                var view = new Rect(); var origin = Vector2.zero; var cursor = Vector2.zero;
+                CampaignMenuPresenter.Action action = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var e = Event.current; var prior = e.mousePosition;
+                    try {
+                        e.mousePosition = view.position + cursor * scale;
+                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null, speech.IsAvailable);
+                    }
+                    finally { e.mousePosition = prior; }
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); guiShown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Vector2 point)
+                {
+                    cursor = point; var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = EventType.MouseDown,
+                        mousePosition = view.position + point * (view.width / 640f) + origin, button = 0 });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw));
+                }
+                Send(SourcePauseMenu.IconRect(178).center);
+                foreach (var choice in new[] {
+                    (2, CampaignMenuPresenter.Action.ToggleMusic, "participant.music_off", 393),
+                    (1, CampaignMenuPresenter.Action.ToggleSound, "participant.sound_off", 391),
+                    (3, CampaignMenuPresenter.Action.ToggleSpeech, "participant.speech_off", 470) })
+                {
+                    Send(new Vector2(320, 67 + choice.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(choice.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(choice.Item3, choice.Item4);
+                }
+                using var coldOwner = new GameRuntimeTransport();
+                var cold = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    coldOwner.Handle, coldOwner.IdentitySnapshot(), json), Path.Combine(temporary, "profile"));
+                Assert.That((cold.Current.preferences.sound_enabled, cold.Current.preferences.music_enabled,
+                    cold.Current.preferences.speech_enabled), Is.EqualTo((false, false, false)), "source audio choices persist in the cold profile");
+                Assert.That(initial.session.session_id, Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (guiShown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator SourcePlayerNamesOptionRetainsItsActualRuntimeLifetime()
         {
             var activeBefore = NativeSession.ActiveSessionCount;
@@ -3712,7 +3985,8 @@ namespace MagicCarpet.Native.Tests
                     var e = Event.current; var prior = e.mousePosition;
                     try {
                         e.mousePosition = view.position + cursor * scale;
-                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null);
+                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null,
+                            ((CampaignSpeechPresenter)Field("campaignSpeech"))?.IsAvailable == true);
                     }
                     finally { e.mousePosition = prior; }
                 };

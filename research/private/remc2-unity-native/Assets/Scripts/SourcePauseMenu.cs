@@ -211,7 +211,8 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
-            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible)
+            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
+            bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
             HoverHelpRow = 0;
             HoverHelpAnchor = default;
@@ -246,7 +247,8 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible);
+                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible,
+                    soundAvailable, musicAvailable, speechAvailable);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
@@ -387,7 +389,8 @@ namespace MagicCarpet.Native
         }
 
         private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
-            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible)
+            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
+            bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
             var prefs = preferences.Current.preferences;
             var longest = OnText.Concat(OffText).Max(index => language(index).Length) * 8;
@@ -403,7 +406,10 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 14 || index == 16;
+                var supported = index switch {
+                    1 => soundAvailable, 2 => musicAvailable, 3 => speechAvailable,
+                    _ => index <= 14 || index == 16
+                };
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance, 7 => true,
@@ -420,6 +426,15 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index is 1 or 2 or 3)
+                    {
+                        Event.current.Use();
+                        return index switch {
+                            1 => CampaignMenuPresenter.Action.ToggleSound,
+                            2 => CampaignMenuPresenter.Action.ToggleMusic,
+                            _ => CampaignMenuPresenter.Action.ToggleSpeech
+                        };
+                    }
                     if (index == 16)
                     {
                         Event.current.Use();
@@ -465,9 +480,6 @@ namespace MagicCarpet.Native
                     preferences.ApplySource(draft => {
                         switch (option) {
                             case 0: draft.show_help = !draft.show_help; break;
-                            case 1: draft.sound_enabled = !draft.sound_enabled; break;
-                            case 2: draft.music_enabled = !draft.music_enabled; break;
-                            case 3: draft.speech_enabled = !draft.speech_enabled; break;
                             case 4: draft.flight_assistance = !draft.flight_assistance; break;
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;

@@ -3344,6 +3344,10 @@ namespace MagicCarpet.Native
                     (effect.code == 1 || effect.code == 2) &&
                     effect.assetRefIndex != uint.MaxValue)
                 {
+                    // Native still journals the source event while sound is off,
+                    // but intentionally creates no SFX command for that event.
+                    if (!session.ObservedCampaignIdentity().player_preferences.preferences.sound_enabled)
+                        continue;
                     var sound = effect;
                     sound.kind = effect.code == 1 ? NativeSim.EventPrepareSound : NativeSim.EventEndLoop;
                     sound.code = checked((uint)effect.value0);
@@ -3682,6 +3686,8 @@ namespace MagicCarpet.Native
                     GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode))
                 {
                     DispatchGameRuntimeF5Input(modifierOnly: true);
+                    DispatchGameRuntimeF5Input(modifierOnly: false);
+                    DispatchGameRuntimeF4Input();
                     DispatchGameRuntimeF6Input();
                     DispatchGameRuntimeF7Input();
                     DispatchGameRuntimeF3Input();
@@ -3801,7 +3807,6 @@ namespace MagicCarpet.Native
                     }
                     if (runtimeIdentity.mode == GameRuntimeTransport.CampaignMode)
                     {
-                        DispatchGameRuntimeF5Input(modifierOnly: false);
                         FreezeGameRuntimeInput(preserveReplaySave: true);
                         return;
                     }
@@ -3828,7 +3833,6 @@ namespace MagicCarpet.Native
                         if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha1 + key - 1))) spellKey = key;
                     if (spellKey != 0) SubmitGameRuntimeSpellKey(spellKey);
                     if (!sourceSuppressCasting && (mapped?.CastSelected ?? Input.GetKeyDown(KeyCode.Space))) RequestGameRuntimeSelectedSpellCast();
-                    DispatchGameRuntimeF5Input(modifierOnly: false);
                     if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L))
                         gameRuntimeRemoveCastleStageRequested = true;
                     if (session.ObservedCampaignIdentity().mode ==
@@ -10286,7 +10290,7 @@ namespace MagicCarpet.Native
         private void ComposeGameRuntimeActivePresentation(GameRuntimeTransport.Identity identity,
             EngineSessionTransport.CampaignRenderObservation observation)
         {
-            var activeBinding = GameRuntimeTransport.ReadActiveEntryPresentation(identity);
+            var activeBinding = session.BindGameRuntimeActiveEntryPresentation(identity);
             var source = activeBinding.source_selection;
             var selection = NativeSim.CampaignSelection.Create(
                 source.external_level, source.internal_level, source.map_type_id);
@@ -10657,9 +10661,8 @@ namespace MagicCarpet.Native
                 if (saveSlot != null) gameRuntimeMenu.CompleteSlotAction(false);
                 return false;
             }
-            // A retained F5 edge precedes a later menu action even when no
-            // fixed pass ran between their render frames. Save its phase
-            // before dismissal/selection can move to the next screen.
+            // Finish any already queued replay publication before a menu
+            // action changes the retained campaign phase.
             ServiceGameRuntimeReplaySave();
             var mode = session.GameRuntimeIdentity().mode;
             var canSave = !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath);
@@ -10710,6 +10713,15 @@ namespace MagicCarpet.Native
                         break;
                     case CampaignMenuPresenter.Action.TogglePlayerNames:
                         ToggleGameRuntimePlayerNames();
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleSound:
+                        ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Sound);
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleMusic:
+                        ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Music);
+                        break;
+                    case CampaignMenuPresenter.Action.ToggleSpeech:
+                        ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Speech);
                         break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
@@ -11551,11 +11563,12 @@ namespace MagicCarpet.Native
             if (!pressed || physicalAlt) return; // Source Alt branch precedes Shift.
             if (!physicalShift)
             {
-                ApplyGameRuntimeReplaySaveInput(true);
+                if (CanToggleGameRuntimeIconsAndMap())
+                    ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Sound);
                 return;
             }
             // A modifier held across a source dialog must be released before
-            // it can admit this chord, and must not turn it into a bare save.
+            // it can admit this chord, and must not turn it into bare sound.
             if (!admittedShift || !CanToggleGameRuntimeIconsAndMap()) return;
             ToggleGameRuntimeIconsAndMap();
         }
@@ -11572,8 +11585,23 @@ namespace MagicCarpet.Native
 
         private void ApplyGameRuntimeF6Input(bool pressed, bool physicalShift, bool admittedShift, bool physicalAlt)
         {
-            if (!pressed || !physicalShift || !admittedShift || physicalAlt || !CanToggleGameRuntimeIconsAndMap()) return;
-            ToggleGameRuntimePanelTransparency();
+            if (!pressed || physicalAlt || !CanToggleGameRuntimeIconsAndMap()) return;
+            if (!physicalShift) ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Music);
+            else if (admittedShift) ToggleGameRuntimePanelTransparency();
+        }
+
+        private void DispatchGameRuntimeF4Input()
+        {
+            var pressed = playerPreferences?.KeyPressed(KeyCode.F4) ?? Input.GetKeyDown(KeyCode.F4);
+            var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            ApplyGameRuntimeF4Input(pressed, shift, alt);
+        }
+
+        private void ApplyGameRuntimeF4Input(bool pressed, bool shift, bool alt)
+        {
+            if (!pressed || shift || alt || !CanToggleGameRuntimeIconsAndMap()) return;
+            ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Speech);
         }
 
         private void DispatchGameRuntimeF7Input()
@@ -11740,6 +11768,34 @@ namespace MagicCarpet.Native
             else if (gameRuntimeNightSurface != null || modernEnvironment != null)
                 UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+        }
+
+        private void ApplyGameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction action)
+        {
+            if (!session.GameRuntimeSourceAudio(action, campaignSpeech?.IsAvailable == true, out var after)) return;
+            campaignSession?.SynchronizeGameRuntimeIdentity(after);
+            if (action == GameRuntimeTransport.SourceAudioAction.Sound)
+            {
+                // Source EndSample/StopCd are unconditional on either edge;
+                // native has already retired the matching shared voice pool.
+                ownerAudio?.EndCampaignSamples();
+                deferredAudioEvents.Clear();
+                campaignSpeech?.Stop();
+            }
+            playerPreferences?.Synchronize(after.player_preferences);
+            ownerAudio?.ApplyPreferences(after.player_preferences.preferences);
+            campaignSpeech?.ApplyPreferences(after.player_preferences.preferences);
+            if (campaignSpeech != null)
+                ownerAudio?.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
+            if (action == GameRuntimeTransport.SourceAudioAction.Music && ownerAudio != null && campaignSession != null)
+            {
+                // Observe the accepted source state without an extra fade callback.
+                level2DayMusic = campaignSession.DayMusicState();
+                ownerAudio.ApplyCampaignMusic(level2DayMusic);
+            }
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
         }
 
         private void ApplyGameRuntimeSourceSpeed(bool secondary)
@@ -15189,7 +15245,7 @@ namespace MagicCarpet.Native
                             !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath),
                             !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath) && File.Exists(gameRuntimeReplaySavePath),
                             gameRuntimeCampaignSnapshot?.value?.objective_progress?.all_objectives_satisfied == true,
-                            gameRuntimeMenuStatus);
+                            gameRuntimeMenuStatus, campaignSpeech?.IsAvailable == true);
                         if (action != CampaignMenuPresenter.Action.None && gameRuntimeMenuAction == CampaignMenuPresenter.Action.None)
                             gameRuntimeMenuAction = action;
                         drawObjective = mode == GameRuntimeTransport.PausedMode;

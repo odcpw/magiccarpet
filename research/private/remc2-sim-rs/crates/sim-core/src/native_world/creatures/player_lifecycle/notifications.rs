@@ -20,6 +20,12 @@ pub(crate) enum PlayerLifeNoticeKind {
     GameSpeedSuperFast,
     PlayerNamesOn,
     PlayerNamesOff,
+    SoundOn,
+    SoundOff,
+    MusicOn,
+    MusicOff,
+    SpeechOn,
+    SpeechOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -38,6 +44,12 @@ impl PlayerLifeNoticeKind {
             Self::GameSpeedSuperFast => "participant.game_speed_super_fast",
             Self::PlayerNamesOn => "participant.player_names_on",
             Self::PlayerNamesOff => "participant.player_names_off",
+            Self::SoundOn => "participant.sound_on",
+            Self::SoundOff => "participant.sound_off",
+            Self::MusicOn => "participant.music_on",
+            Self::MusicOff => "participant.music_off",
+            Self::SpeechOn => "participant.speech_on",
+            Self::SpeechOff => "participant.speech_off",
         }
     }
 }
@@ -88,7 +100,10 @@ impl PlayerLifecycleNotifications {
                     | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff
                     | PlayerLifeNoticeKind::GameSpeedNormal | PlayerLifeNoticeKind::GameSpeedFast
                     | PlayerLifeNoticeKind::GameSpeedSuperFast
-                    | PlayerLifeNoticeKind::PlayerNamesOn | PlayerLifeNoticeKind::PlayerNamesOff => 3,
+                    | PlayerLifeNoticeKind::PlayerNamesOn | PlayerLifeNoticeKind::PlayerNamesOff
+                    | PlayerLifeNoticeKind::SoundOn | PlayerLifeNoticeKind::SoundOff
+                    | PlayerLifeNoticeKind::MusicOn | PlayerLifeNoticeKind::MusicOff
+                    | PlayerLifeNoticeKind::SpeechOn | PlayerLifeNoticeKind::SpeechOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -150,6 +165,12 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::GameSpeedSuperFast) => 11,
                 Some(PlayerLifeNoticeKind::PlayerNamesOn) => 12,
                 Some(PlayerLifeNoticeKind::PlayerNamesOff) => 13,
+                Some(PlayerLifeNoticeKind::SoundOn) => 14,
+                Some(PlayerLifeNoticeKind::SoundOff) => 15,
+                Some(PlayerLifeNoticeKind::MusicOn) => 16,
+                Some(PlayerLifeNoticeKind::MusicOff) => 17,
+                Some(PlayerLifeNoticeKind::SpeechOn) => 18,
+                Some(PlayerLifeNoticeKind::SpeechOff) => 19,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -185,7 +206,10 @@ mod tests {
         assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_visible");
         assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (3, 50));
         for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff,
-            PlayerLifeNoticeKind::PlayerNamesOn, PlayerLifeNoticeKind::PlayerNamesOff] {
+            PlayerLifeNoticeKind::PlayerNamesOn, PlayerLifeNoticeKind::PlayerNamesOff,
+            PlayerLifeNoticeKind::SoundOn, PlayerLifeNoticeKind::SoundOff,
+            PlayerLifeNoticeKind::MusicOn, PlayerLifeNoticeKind::MusicOff,
+            PlayerLifeNoticeKind::SpeechOn, PlayerLifeNoticeKind::SpeechOff] {
             notices.publish(0, 111, kind, 50).unwrap();
             assert_eq!(notices.entries()[0].kind, Some(kind));
             assert_eq!(notices.entries()[0].state, 3);

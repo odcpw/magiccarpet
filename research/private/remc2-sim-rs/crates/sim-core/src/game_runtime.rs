@@ -106,6 +106,8 @@ pub(crate) enum ReplayOperation<C> {
     ToggleFlatShading,
     /// Reconstruct the actual local source notice, never the process flag.
     PlayerNamesNotice { visible: bool },
+    /// Only the local notice is GAME history; audio flags remain CONFIG.
+    SourceAudioNotice { action: preferences::SourceAudioAction, enabled: bool },
     Step {
         command: C,
     },
@@ -229,6 +231,7 @@ pub(crate) enum DisplayNotice {
     PanelTransparency(bool),
     FlatShading(bool),
     PlayerNames(bool),
+    SourceAudio(preferences::SourceAudioAction, bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1394,6 +1397,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::PlayerNames(visible))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::SourceAudioNotice { action, enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::SourceAudio(action, enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -2031,6 +2038,43 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source cases2/3/4: admit against the actual host/resource capability,
+    /// then atomically publish CONFIG and the prepared type3/50 local notice.
+    pub fn source_audio_preferences(&mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+        action: preferences::SourceAudioAction, available: bool,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let show_foreign_text = self.show_foreign_objective_text();
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        if !available {
+            let mut snapshot = self.player_preferences.snapshot();
+            snapshot.source_audio_admitted = Some(false);
+            return Ok(snapshot);
+        }
+        let current = self.player_preferences.snapshot().preferences;
+        let enabled = match action {
+            preferences::SourceAudioAction::Sound => !current.sound_enabled,
+            preferences::SourceAudioAction::Music => !current.music_enabled,
+            preferences::SourceAudioAction::Speech => !current.speech_enabled,
+        };
+        let notice = session.backend().prepare_source_audio_notice(action, enabled)?;
+        let accepted = self.player_preferences.source_audio_toggle(action, available)
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            if action == preferences::SourceAudioAction::Speech {
+                session.backend_mut().set_objective_presentation_preferences(enabled, show_foreign_text);
+            }
+            session.backend_mut().commit_source_audio_notice(action, enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_audio_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
     /// ChangeSettings case17: auxiliary process visibility and the existing
     /// local source notice have distinct lifetimes. Publish before committing.
     pub fn toggle_player_names(

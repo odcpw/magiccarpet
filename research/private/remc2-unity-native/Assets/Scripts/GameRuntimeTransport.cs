@@ -198,6 +198,7 @@ namespace MagicCarpet.Native
         {
             public Identity identity;
             public LoadingPresentationBinding value;
+            public SourceAudioCapabilities source_audio_capabilities;
         }
 
         [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
@@ -227,6 +228,11 @@ namespace MagicCarpet.Native
 
         internal static LoadingPresentationBinding ReadActiveEntryPresentation(Identity playing)
         {
+            return ReadActiveEntryObservation(playing).value;
+        }
+
+        private static LoadingPresentationObservation ReadActiveEntryObservation(Identity playing)
+        {
             ValidateIdentityPresentation(playing);
             if (playing.mode is not (PlayingMode or PausedMode) || playing.active_runtime_flow == null ||
                 !HasSessionIdentity(playing) || HasDefinitionIdentityData(playing.pending_definition))
@@ -247,6 +253,20 @@ namespace MagicCarpet.Native
                     "active-entry asset observation changed its runtime identity");
             }
             ValidateActiveEntryPresentation(playing, observation.value);
+            return observation;
+        }
+
+        internal LoadingPresentationBinding BindActiveEntryPresentation(Identity playing)
+        {
+            var observation = ReadActiveEntryObservation(playing);
+            var after = ReadIdentity(RequireHandle());
+            var qualified = observation.source_audio_capabilities;
+            var current = after.source_audio_capabilities;
+            if (!SameIdentity(playing, after) || qualified == null || current == null ||
+                qualified.sound_available != current.sound_available ||
+                qualified.music_available != current.music_available)
+                throw new InvalidDataException("active-entry audio capabilities do not bind the current runtime identity");
+            Current = after;
             return observation.value;
         }
 
@@ -384,6 +404,12 @@ namespace MagicCarpet.Native
             public byte viewport_size;
         }
 
+        [Serializable]
+        internal sealed class SourceAudioCapabilities
+        {
+            public bool sound_available, music_available;
+        }
+
         internal enum SourceViewportAction : byte
         {
             MenuDecrease = 0, MenuIncrease = 1, KeyboardEnlarge = 2, KeyboardShrink = 3
@@ -398,6 +424,7 @@ namespace MagicCarpet.Native
             public string mode;
             public byte source_speed_index;
             public bool source_player_names_visible;
+            [OptionalField] public SourceAudioCapabilities source_audio_capabilities;
             [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
             public DisplaySettings display_settings;
@@ -463,6 +490,7 @@ namespace MagicCarpet.Native
 
         private const int SourceActionBlocked = 16;
         internal enum SourceBrightnessAction { Cycle, Increment, Decrement }
+        internal enum SourceAudioAction { Sound, Music, Speech }
 
         [Serializable]
         private sealed class SourceBrightnessGuard
@@ -476,6 +504,23 @@ namespace MagicCarpet.Native
             public string operation = "source_brightness";
             public SourceBrightnessGuard session_guard;
             public string action;
+        }
+
+        [Serializable]
+        private sealed class SourceAudioCommand
+        {
+            public string operation = "source_audio";
+            public SourceBrightnessGuard session_guard;
+            public string action;
+        }
+
+        [Serializable]
+        private sealed class SourceSpeechCommand
+        {
+            public string operation = "source_audio";
+            public SourceBrightnessGuard session_guard;
+            public string action = "speech";
+            public bool speech_available;
         }
 
         internal static PlayerPreferencesSnapshot PreferencesCommand(
@@ -1088,6 +1133,7 @@ namespace MagicCarpet.Native
                 generation = before.generation, mode = before.mode,
                 source_speed_index = before.source_speed_index,
                 source_player_names_visible = before.source_player_names_visible,
+                source_audio_capabilities = before.source_audio_capabilities,
                 frontend_media = before.frontend_media, player_preferences = before.player_preferences,
                 display_settings = before.display_settings,
                 presentation = before.presentation, campaign_menu = before.campaign_menu,
@@ -1301,6 +1347,50 @@ namespace MagicCarpet.Native
             if (ParseCounter(after.session.tick, "tick") != expectedTick)
                 throw new InvalidDataException("campaign step did not advance its source speed passes");
             return expectedTick;
+        }
+
+        internal bool SourceAudio(SourceAudioAction action, bool speechAvailable, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source audio");
+            var before = Current;
+            var guard = new SourceBrightnessGuard {
+                session_id = before.session.session_id, generation = before.session.generation,
+                expected_tick = before.session.tick
+            };
+            object request = action switch {
+                SourceAudioAction.Sound => new SourceAudioCommand { action = "sound", session_guard = guard },
+                SourceAudioAction.Music => new SourceAudioCommand { action = "music", session_guard = guard },
+                SourceAudioAction.Speech => new SourceSpeechCommand { session_guard = guard, speech_available = speechAvailable },
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source audio");
+            var after = IdentitySnapshot();
+            var oldPrefs = before.player_preferences.preferences;
+            var newPrefs = after.player_preferences.preferences;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                (before.source_audio_capabilities != null &&
+                 (after.source_audio_capabilities == null ||
+                  after.source_audio_capabilities.sound_available != before.source_audio_capabilities.sound_available ||
+                  after.source_audio_capabilities.music_available != before.source_audio_capabilities.music_available)) ||
+                newPrefs.sound_enabled != (action == SourceAudioAction.Sound ? !oldPrefs.sound_enabled : oldPrefs.sound_enabled) ||
+                newPrefs.music_enabled != (action == SourceAudioAction.Music ? !oldPrefs.music_enabled : oldPrefs.music_enabled) ||
+                newPrefs.speech_enabled != (action == SourceAudioAction.Speech ? !oldPrefs.speech_enabled : oldPrefs.speech_enabled))
+                throw new InvalidDataException("source audio changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceBrightness(SourceBrightnessAction action, out Identity identity)

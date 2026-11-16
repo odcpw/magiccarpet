@@ -1472,8 +1472,12 @@ int32_t mc_game_runtime_campaign_menu_command_json_v1(
 int32_t mc_game_runtime_media_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
-/* source_brightness may return MC_STATUS_SOURCE_ACTION_BLOCKED while the
- * guarded palette cannot accept a change; this leaves the owner unchanged. */
+/* source_brightness/source_audio use the exact decimal-string session_guard.
+ * MC_STATUS_SOURCE_ACTION_BLOCKED leaves preferences, notices and replay
+ * unchanged. source_audio accepts sound/music/speech; speech_available is
+ * solely the host's validated CD-resource fact. Sound/music availability is
+ * derived from bound native resources and reported in runtime identity's
+ * source_audio_capabilities. No generic Playing preference edit is admitted. */
 int32_t mc_game_runtime_preferences_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
