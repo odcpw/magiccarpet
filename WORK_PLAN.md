@@ -893,18 +893,34 @@ mana and stale reuse are declared controls; the managed UI uses a separate owner
 This is not one continuous unstaged physical pickup/UI route or earned campaign.
 The historical Nov10 Castle save was rejected for incompatible runtime_flow,
 remains untouched and is not positive evidence. Full parents remain OPEN.
-Next ready capability is existing mc-oi6.2: actual package map type/graphics
-flags -> source material profile/decoder -> validated banks/palette/tables/
-textures/masks -> current native/Unity pixels -> rejected wrong-bank recovery
-and generation disposal/rebind. Current native team: CobaltBridge owns the
-connected capability and importer/cache production; NavyFinch owns Rust frame
-consumption; LilacWolf owns Unity material binding/disposal. All three are
-Terra6.1/high per Oliver's current choice; root owns integration, sole builds,
-publication and installation. Previous workers remain stopped.
-The old three-level/no-Cave assessment is not current truth. Reuse all30 current
-resource bindings and existing owner/pixel evidence before changing code. Actual
-fire-Night admission must be established; no fabricated producer/profile. Keep
-default32, dormant16 and optional enhanced128/replacements explicitly distinct.
+Finite mc-oi6.2 is CLOSED. Canonical 10aa9b48 and Original 7c49d918 contain
+the cached native frame owner check and Unity read-time output integrity check.
+Original build-wuukj1s5 is installed with native d8a7a7b6, reusing the verified
+Rig artifact because no additional Rust changes were needed. `--check-installed`
+passed. Normal map/loading/NightSpire terrain and HUD were viewed using the
+matching mapped native, one portal and zero retries. All 30 resource roles
+were present and the owned smoke processes stopped.
+
+Exact cache validation and source byte comparisons cover Night1, Day2, Cave12
+and fire-Night25, including the original palette, tables, block atlas and
+dormant16 bank. Three focused importer tests pass. Matching Unity passes the
+four named wrong-bank, changed-output, Day/Night/Cave and fire-Night material
+checks. Actual Level25 takes a source turn and renders the real boss with
+declared group/position controls; the Level25 material frame and Cave12
+wrong-owner rejection/rebind pass separately. Evidence under
+`generated/materials-20261116/` and `generated/ci-baseline-20261116/materials-batch-serial.xml`.
+The standalone smoke covers NightSpire entry; controlled editor/native checks
+cover the other material profiles. Hardware audio, Cave occlusion and full
+missions retain their separate acceptance.
+
+Next is existing mc-oi6.1, starting with the real Night Goat selector 152.
+The owner cache retains its four-frame stream; the shared campaign material
+bank currently supplies only base pixels to SourceWorldSprites. Trace the
+ordinary draw demand into one selector-owned mutable image advanced on the
+source turn, then prove changed pixels at the current indexed consumer with
+two actors, pause/reset, and repeated-read controls. Use the existing Goat
+decoder and source clock before extending directional Archer/Villager.
+Root coordinates the existing source owners and the sole build/install lane.
 Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
 do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
 remain OPEN. Hardware resolution switching remains the explicitly separate
