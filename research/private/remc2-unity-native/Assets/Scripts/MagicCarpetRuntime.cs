@@ -10361,9 +10361,6 @@ namespace MagicCarpet.Native
         {
             FreezeGameRuntimeInput();
             playerPreferences?.Center();
-            gameRuntimeSpellMenuOpen = false;
-            gameRuntimeSourceMenus.Reset();
-            gameRuntimeAbandonConfirmationOpen = false;
             DisposeGameRuntimeCampaignPresentation();
             DestroyGameRuntimeFireballPresentation();
             ownerAudio?.Dispose();
@@ -11271,6 +11268,9 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            gameRuntimeSourceMenus.Reset();
+            gameRuntimeSpellMenuOpen = gameRuntimeAbandonConfirmationOpen = false;
+            gameRuntimeSourceSpellMenu.Close();
             gameRuntimeMenu?.ResetPauseHoverHelp();
             ResetGameRuntimeHelpHint();
             campaignSpeech?.Stop();

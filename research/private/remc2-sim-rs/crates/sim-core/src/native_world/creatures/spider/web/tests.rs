@@ -285,6 +285,8 @@ fn source_water_contact_hides_even_when_splash_allocation_fails() {
 
 #[test]
 fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_reclaim() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
     let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
         || {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -292,13 +294,18 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
         },
         std::path::PathBuf::from,
     );
-    let mut session = crate::campaign::CampaignSession::open(
-        root.join("level4"),
-        crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
+    let package = root.join("level4");
+    let definition =
+        load_mc2_campaign(&package, &crate::game_definition::default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2004,
+        Mc2CampaignInputs::new(&package),
     )
-    .unwrap()
-    .simulation()
-    .clone();
+    .unwrap();
+    let initial = game.backend().render_observation();
+    let session = game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
     let (_, _, _, _, _, feature) = super::super::tests::mission_four();
     let particles = session.session.definition.presentation.particles.clone();
     let (spider, player, projectile, life) = {
@@ -450,9 +457,37 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
         live.economy.entities[usize::from(impact)].phase,
         (impact as u8).wrapping_add(1)
     );
+    // Check reset from the actual active contact on a cloned source owner;
+    // the original remains available for its natural expiry below.
+    let source_hash = session.campaign_state_hash();
+    let mut reset_active = session.clone();
+    reset_active.reset();
+    assert_eq!(
+        (reset_active.state.immobilize_counter, reset_active.state.immobilize_subcounter),
+        (0, 0)
+    );
+    assert_eq!(
+        session.campaign_state_hash(), source_hash,
+        "resetting the copy does not mutate the contact owner"
+    );
+    let contact = game.backend().render_observation();
+    assert_eq!(contact.player_immobilized_ticks, 1);
+    let session = game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
     let evidence = session.step_outer_turn(crate::PlayerCommand::default(), 0);
     assert!(!evidence.is_empty(), "{:?}", session.dispatch_events());
     assert!(!session.session.state.live.economy.entities[usize::from(impact)].active);
+    for _ in 0..8 {
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    }
+    assert_eq!(
+        (session.state.immobilize_counter, session.state.immobilize_subcounter),
+        (0, 0)
+    );
+    let expired = game.backend().render_observation();
+    assert_eq!(expired.player_immobilized_ticks, 0);
+    game.reset(game.identity().guard()).unwrap();
+    let reset = game.backend().render_observation();
+    assert_eq!(reset.player_immobilized_ticks, 0);
 
     // Exercise the same consumer from the ordinary authored group and the
     // numeric Spider callback. Position and cadence are controlled, but the
@@ -578,5 +613,22 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
                 "the source row is reclaimed or its address was reused"
             );
         }
+    }
+    if let Some(path) = std::env::var_os("MC_SPIDER_WEB_OBSERVATION_OUTPUT") {
+        use std::io::Write;
+        let receipt = serde_json::json!({
+            "controlled_encounter": "Level4 source Spider position, cadence and protection; no replay claim",
+            "package": package, "player": player, "spider": spider, "projectile": projectile, "impact": impact,
+            "initial": initial, "contact": contact, "expired": expired, "reset": reset,
+            "active_clone_reset_counter": reset_active.state.immobilize_counter,
+            "active_clone_reset_subcounter": reset_active.state.immobilize_subcounter
+        });
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        serde_json::to_writer(&mut output, &receipt).unwrap();
+        output.flush().unwrap();
     }
 }

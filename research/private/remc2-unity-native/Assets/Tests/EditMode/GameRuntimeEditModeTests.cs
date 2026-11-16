@@ -38,6 +38,13 @@ namespace MagicCarpet.Native.Tests
             public WallHelpFrame contact, dry, reset;
         }
 
+        [Serializable]
+        private sealed class SpiderWebReceipt
+        {
+            public string controlled_encounter, package;
+            public EngineSessionTransport.CampaignRenderValue initial, contact, expired, reset;
+        }
+
         private const string SecretOriginLevel = "level.magic_carpet_2.t_klom";
         private const string SecretDestinationLevel = "level.magic_carpet_2.karakir";
 
@@ -2020,6 +2027,94 @@ namespace MagicCarpet.Native.Tests
             surface.PresentImmobilization(2, false);
             Assert.That(visible.GetValue(surface), Is.False);
             Assert.That(session.Tick, Is.Zero, "WEB consumer diagnostic performs no gameplay");
+        }
+
+        [Test]
+        public void ControlledSpiderContactReachesActualCaveWebAndExpires()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var receiptPath = Environment.GetEnvironmentVariable("MC_SPIDER_WEB_RECEIPT") ??
+                Path.Combine(PrivateRoot, "generated/status-web-20261116/spider-contact-observation.json");
+            var receiptJson = File.ReadAllText(receiptPath);
+            var receipt = JsonUtility.FromJson<SpiderWebReceipt>(receiptJson);
+            Assert.That(receipt?.controlled_encounter, Does.Contain("controlled").Or.Contain("position"));
+            var receiptDocument = ReadReplayDocument(Encoding.UTF8.GetBytes(receiptJson));
+            Assert.That(receiptDocument.SelectSingleNode("/root/active_clone_reset_counter")?.InnerText, Is.EqualTo("0"),
+                "the producer reset a cloned active-contact source owner");
+            Assert.That(receiptDocument.SelectSingleNode("/root/active_clone_reset_subcounter")?.InnerText, Is.EqualTo("0"));
+            foreach (var value in new[] { receipt.initial, receipt.contact, receipt.expired, receipt.reset })
+                Assert.That(value?.player_vitals, Is.Not.Null, "the producer emitted its actual render observation");
+            Assert.That(receipt.initial.player_immobilized_ticks, Is.Zero);
+            Assert.That(receipt.contact.player_immobilized_ticks, Is.EqualTo(1));
+            Assert.That(receipt.contact.player_vitals.life, Is.GreaterThanOrEqualTo(0));
+            Assert.That(receipt.expired.player_immobilized_ticks, Is.Zero);
+            Assert.That(receipt.reset.player_immobilized_ticks, Is.Zero);
+
+            // Controlled geometry/protection in the native producer and this
+            // receipt bridge are not a same-session live-player claim.
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var packageRoot = Environment.GetEnvironmentVariable("MC_ORDINARY_CAMPAIGN_PACKAGES") ??
+                Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj");
+            var package = Path.Combine(packageRoot, "level4");
+            var cachePath = Path.Combine(generated, "mc-oi62-environment-level4-audio-v3");
+            Assert.That(receipt.package, Is.Not.Null.And.Not.Empty);
+            Assert.That(Path.GetFullPath(receipt.package), Is.EqualTo(Path.GetFullPath(package)),
+                "the contact producer and Cave presentation bind the same source package");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            Assert.That(cache.EnvironmentMaterials.profile.web, Is.EqualTo("MWEBC0-0"));
+            var bank = cache.EnvironmentMaterials.bitmap_banks.Single(row => row.bank == "MWEBC0-0");
+            var first = bank.bitmaps.Single(row => row.selector == 1);
+            Assert.That((first.width, first.height), Is.EqualTo((100, 100)));
+            var sourceIndices = cache.ReadOutput(first.indices_path);
+            var sourceMask = cache.ReadOutput(first.mask_path);
+            using var session = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(4, 3, 2), cachePath);
+            using var surface = new CampaignPresentationSurface();
+            surface.PresentEnvironment(session, cache);
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                Assert.That(surface.ComposedSceneIndices, Is.Not.Null, "the real Cave world history is present");
+                Color32[] Draw(EngineSessionTransport.CampaignRenderValue value)
+                {
+                    surface.PresentImmobilization(value.player_immobilized_ticks, value.player_vitals.life >= 0);
+                    var underlay = surface.HudUnderlayIndices;
+                    Assert.That(underlay, Is.Not.Null);
+                    RenderTexture.active = underlay;
+                    pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                    return pixels.GetPixels32();
+                }
+                var before = Draw(receipt.initial);
+                var active = Draw(receipt.contact);
+                var actual = -1;
+                for (var y = 64; y < 100 && actual < 0; y++)
+                    for (var x = 64; x < 100; x++)
+                    {
+                        var source = y * first.width + x;
+                        var target = (199 - y) * 320 + x;
+                        if (sourceMask[source] != 0 && sourceIndices[source] != before[target].r)
+                        { actual = target; Assert.That(active[target].r, Is.EqualTo(sourceIndices[source]),
+                            "real MWEBC selector1 is drawn outside the minimap in source order"); break; }
+                    }
+                Assert.That(actual, Is.GreaterThanOrEqualTo(0), "the actual source web has a discriminating visible pixel");
+                CollectionAssert.AreEqual(active, Draw(receipt.contact), "repeated render reads do not advance contact");
+                CollectionAssert.AreEqual(before, Draw(receipt.expired), "ordinary producer expiry removes the web");
+                CollectionAssert.AreEqual(before, Draw(receipt.reset), "reset observation leaves no stale web");
+                Assert.That(session.Tick, Is.Zero, "the separate real aggregate owner is never stepped by drawing");
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                display.Release(); UnityEngine.Object.DestroyImmediate(display); UnityEngine.Object.DestroyImmediate(pixels);
+            }
         }
 
         [Test]
@@ -8838,6 +8933,93 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 NativeCampaignSession.ActiveSessionCount,
                 Is.EqualTo(campaignSessionsBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAbandonReleasesGameplayMenusBeforeReturnedTitleDraw()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var campaignBefore = NativeCampaignSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-abandon-title-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source abandon and returned Title"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                // Real declared incoming L2 state, followed only by accepted
+                // source menu commands. This does not claim earned L1 progress.
+                var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/player-names-20261116/real-nyphur-view.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                var owner = (NativeSession)Field("session");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                Assert.That(menus.QueueAction("open_abandon_confirmation", false, null, null), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(owner.GameRuntimePlayerMenuState(runtime.GameRuntimeProductionCampaignSnapshot.identity), Is.EqualTo(13));
+                Assert.That((bool)Field("gameRuntimeAbandonConfirmationOpen"), Is.True);
+                var openedFrame = Time.frameCount;
+                GameRuntimeTransport.Identity drawnIdentity = null;
+                var drawnObjective = false;
+                gui.DrawRuntime = () => {
+                    var output = new object[] { null, false };
+                    typeof(MagicCarpetRuntime).GetMethod("DrawRuntimeGui", flags).Invoke(runtime, output);
+                    drawnIdentity = (GameRuntimeTransport.Identity)output[0];
+                    drawnObjective = (bool)output[1];
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true;
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (gui.DrawCount == 0 || Time.frameCount <= openedFrame)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), "normal GUI frames admit a fresh confirmation key");
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(menus.PendingAction, Is.EqualTo("confirm_abandon"), "the real dialog submits the source confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Return });
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.return_to_title_requested, Is.True);
+                Assert.That(owner.GameRuntimePlayerMenuState(runtime.GameRuntimeProductionCampaignSnapshot.identity), Is.EqualTo(13),
+                    "source action29 retains menu13 until its outer return");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                runtime.StepGameRuntimeTitleMedia(0, false, false);
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                var beforeDraw = gui.DrawCount;
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw), "the actual returned Title GUI draws after world teardown");
+                Assert.That(drawnIdentity?.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(drawnObjective, Is.False);
+                Assert.That(Field("campaignSession"), Is.Null);
+                Assert.That((bool)Field("gameRuntimeAbandonConfirmationOpen"), Is.False);
+                Assert.That((bool)Field("gameRuntimeSpellMenuOpen"), Is.False);
+                Assert.That(menus.AbandonConfirmationPending || menus.HasPendingAction || menus.SpellOpen || menus.MapOpen,
+                    Is.False, "gameplay menu/input ownership ends with its borrowed world");
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore));
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore + 1), "the Title runtime remains usable");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore));
         }
 
         [UnityEngine.TestTools.UnityTest]
