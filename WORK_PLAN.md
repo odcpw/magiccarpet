@@ -801,12 +801,11 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): complete source actions31/32's eight-update
-hand-selection visibility through authoritative state, full/render observations
-and full-map indexed hands, independently of the ordinary topbar predicate.
-BoldForge owns native production/update/lifetime and receipt-compatible replay;
-QuietIsland owns real managed consumers; PearlBay owns CAPI/C#/TS transport.
-Root implements sim-session joins and serializes checks/push/installation. The installed
+Current capability (2026-11-16): complete real Castle/balloon top-status HUD
+through actual owner/stage/ordered live slots, source hit/goal lifetimes and
+indexed icons/bars/removal. BoldForge owns native producer/projection/lifetime;
+QuietIsland owns indexed consumers/assets; root owns ABI integration and sole
+build/push/install. Do not extend an existing fixed ABI struct in place. The installed
 spell-menu, Default Keys and secret announcement checkpoints below are delivered;
 do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
 Modern work. Shift+F7 is flat shading, a separate source control.
@@ -859,7 +858,7 @@ distinct predicates; do not invent a GUI timer or derive flash from holder
 validity. Detailed Castle/balloon HUD parity also remains incomplete. Full
 mc-oi6.5, mc-oi6.6 and mc-5r5.2 acceptance stays open.
 
-Hand-selection visibility is now implemented and verified, pending installation.
+Hand-selection visibility is now implemented, verified, committed and installed.
 Real accepted31/32 retriggers its global byte8 after the PlayerEvents prologue
 decrements both. Source local-player startup ApplyEvents does not dispatch that
 prologue; reset/ordinary/secret owner transitions retain the actual global pair.
@@ -899,6 +898,18 @@ totals are not candidate defects: no added-line critical finding; new warnings
 are bounded indexing/validated invariants and test assertions. C# analysis
 remains partial. No scanner suppression or assertion weakening. Evidence:
 generated/hand-selection-20261116. Full HUD/settings acceptance remains open.
+
+Canonical7cc76199 is pushed/remote-verified as Original9cdd13a1; all21 owned
+code blobs match. Matching build-cloulkxe/native875cb19902ed is installed and
+--check-installed passes. Root viewed normal map/loading/NightSpire, physical
+Return full map with no stale idle hands/status strip, and Shift+F5/world HUD
+hide/restore. All30 resource roles and mapped native match, one portal/zero
+retries/no runtime errors; owned processes stopped without escalation. Installed
+proof is idle-map/topbar/launch-load, not a fresh native hand-assignment visual,
+human combat/FPS/hardware audio/full missions or old saves. The actual assignment
+visual/lifetime proof is the connected managed check above. Source F5's
+counterintuitive365/366 notice wording is preserved exactly; this is not a new
+defect or reason to rebuild the unchanged checkpoint.
 
 Next connected gap: Castle and balloon state exists but day_hud_for still
 projects empty54/54 panels. Bind actual owner relation/stage, ordered live
