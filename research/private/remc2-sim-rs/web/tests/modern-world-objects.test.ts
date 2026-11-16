@@ -56,7 +56,9 @@ test('inconsistent descriptor fails before returning a partial visual plane',()=
 test('opening building facets and emissive windows are finite and remain within source envelope',()=>{
  for(const profile of layout.profiles){const group=buildingMesh(profile,1);let points=0,glazing=0;
   group.traverse((obj:any)=>{if(!obj.isMesh)return;const pos=obj.geometry.getAttribute('position');points+=pos.count;
-   if(obj.material.emissive?.getHex()===0xffad56){glazing+=pos.count;assert.equal(obj.material.emissiveIntensity,1);}
+   if(obj.material.emissive?.getHex()===0xffad56){glazing+=pos.count;assert.equal(obj.material.emissiveIntensity,1);
+    const normal=obj.geometry.getAttribute('normal');assert.ok(normal.count===pos.count&&Math.hypot(normal.getX(0),normal.getY(0),normal.getZ(0))>.99);
+    if([26,29,30].includes(profile.build_index)){const center=[0,1,2].map(axis=>{let sum=0;for(let i=0;i<6;i++)sum+=axis===0?pos.getX(i):axis===1?pos.getY(i):pos.getZ(i);return +(sum/6).toFixed(3);});console.log('window sample',profile.build_index,center,'normal',[normal.getX(0),normal.getY(0),normal.getZ(0)].map(v=>+v.toFixed(3)));}}
    for(let i=0;i<pos.count;i++){assert.ok(Number.isFinite(pos.getX(i))&&Number.isFinite(pos.getY(i))&&Number.isFinite(pos.getZ(i)));assert.ok(Math.abs(pos.getX(i))<=(profile.columns-1)*2+.06);assert.ok(Math.abs(pos.getZ(i))<=(profile.rows-1)*2+.06);}
   });assert.ok(points>0);assert.ok(glazing>0,`missing glazing for ${profile.build_index}`);
  }
