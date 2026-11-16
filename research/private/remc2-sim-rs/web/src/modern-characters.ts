@@ -6,6 +6,13 @@ import type { ModernCharacter, ModernFrame } from './modern-runtime';
 interface ClipInfo { name: string; duration: number; loop: boolean }
 interface CharacterAsset { url: string; sha256: string; bytes: number; height: number; forward_yaw: number; walk_speed: number; run_speed: number; clips: ClipInfo[] }
 interface CharacterManifest { schema: string; assets: Record<string, CharacterAsset> }
+export interface ModernCharacterMetrics {
+  actorCount: number; arrowCount: number;
+  resourceCounts: Record<string, number>; clipCounts: Record<string, number>;
+  actors: ReadonlyArray<{slot: number; sourceId: number; generation: number; resource: string; clip: string;
+    objectName: string; visible: boolean; action: number; phase: number; x: number; y: number; z: number}>;
+  arrows: ReadonlyArray<{slot: number; sourceId: number; generation: number; objectName: string; visible: boolean}>;
+}
 interface Art { definition: CharacterAsset; scene: THREE.Group; clips: Map<string, THREE.AnimationClip>; bounds: THREE.Box3; attackYaw?: number; arrow?: THREE.Group; nockIndices?: number[] }
 interface Arrow { root: THREE.Group; generation: number; sourceId: number; from: THREE.Vector3; to: THREE.Vector3; offset: THREE.Vector3; birthElapsed: number; elapsed: number; interval: number; yaw: number; pitch: number; seen: boolean; active: boolean }
 interface Actor {
@@ -141,6 +148,7 @@ export class ModernCharacters {
     const art = this.assets.get(resource);
     if (!art) throw new Error(`missing character art ${resource}`);
     const root = new THREE.Group(), model = clone(art.scene);
+    root.name = `MCCharacter:${resource}:${state.entityIndex}:${state.sourceId}:${state.slotGeneration}`;
     root.add(model); this.parent.add(root);
     const mixer = new THREE.AnimationMixer(model), actions = new Map<string, THREE.AnimationAction>();
     for (const info of art.definition.clips) {
@@ -268,6 +276,7 @@ export class ModernCharacters {
       const fresh = !arrow;
       if (!arrow) {
         const art = this.assets.get('Archer')!, root = art.arrow!.clone(true);
+        root.name = `MCArrow:${s.entityIndex}:${s.sourceId}:${s.slotGeneration}`;
         root.scale.setScalar((250 / 64) / (art.bounds.max.y - art.bounds.min.y));
         this.parent.add(root);
         const position = new THREE.Vector3(s.x / 64, s.z / 64, s.y / 64);
@@ -390,6 +399,21 @@ export class ModernCharacters {
     const actor = this.actors.get(slot);
     if (actor?.sourceId === sourceId) return true;
     return this.arrows.get(slot)?.sourceId === sourceId;
+  }
+  /** Allocate an inspection snapshot only when requested; this never changes actors. */
+  getMetrics(): ModernCharacterMetrics {
+    const resourceCounts: Record<string, number> = {}, clipCounts: Record<string, number> = {};
+    const actors: ModernCharacterMetrics['actors'][number][] = [], arrows: ModernCharacterMetrics['arrows'][number][] = [];
+    for (const a of this.actors.values()) {
+      resourceCounts[a.resource] = (resourceCounts[a.resource] ?? 0) + 1;
+      clipCounts[a.clip] = (clipCounts[a.clip] ?? 0) + 1;
+      actors.push({slot:a.slot, sourceId:a.sourceId, generation:a.generation, resource:a.resource, clip:a.clip,
+        objectName:a.root.name, visible:a.root.visible, action:a.state.action, phase:a.state.phase,
+        x:a.root.position.x, y:a.root.position.y, z:a.root.position.z});
+    }
+    for (const [slot, arrow] of this.arrows) arrows.push({slot, sourceId:arrow.sourceId, generation:arrow.generation,
+      objectName:arrow.root.name, visible:arrow.root.visible});
+    return {actorCount:actors.length, arrowCount:arrows.length, resourceCounts, clipCounts, actors, arrows};
   }
   clear(): void { for (const actor of this.actors.values()) this.destroy(actor); this.actors.clear();
     for (const arrow of this.arrows.values()) arrow.root.removeFromParent(); this.arrows.clear(); this.wormHeads.clear(); this.tick = undefined; }

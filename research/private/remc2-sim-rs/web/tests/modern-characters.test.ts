@@ -61,6 +61,11 @@ test('only live native arrows allocate a visual and a reused slot replaces it', 
   const arrow = row({classId:9,model:13,entityIndex:20,sourceId:44,hasParent:1,parentIndex:7,parentId:9});
   presenter.observe(frame(1n,[row({model:4}),arrow])); presenter.render(camera,1/30);
   assert.equal(scene.children.length,2);
+  const metrics = presenter.getMetrics();
+  assert.equal(metrics.actorCount,1); assert.equal(metrics.arrowCount,1);
+  assert.equal(metrics.resourceCounts.Archer,1); assert.equal(metrics.clipCounts.Idle,1);
+  assert.equal(scene.getObjectByName(metrics.actors[0]!.objectName),scene.children[0]);
+  assert.equal(scene.getObjectByName(metrics.arrows[0]!.objectName),scene.children[1]);
   const original = scene.children[1];
   presenter.observe(frame(2n,[row({model:4}),{...arrow,slotGeneration:1}]));
   assert.equal(scene.children.length,2); assert.notEqual(scene.children[1],original);
