@@ -801,27 +801,67 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed
-and the source in-game viewport are implemented, verified, committed, pushed and
-installed. Do not restart their delivered checkpoints below. Continue the actual
-Player Names option through the existing live sorcerer/A4/name/life carrier,
-original selected FONT1, painter-ordered label/health drawing, source notices and
-auxiliary process lifetime. Native settings/carriers and managed controls are
-implemented but not yet qualified or installed; root is integrating the font/frame
-bridge and a valid current Nyphur view. No invisible/synthetic actor or GUI text
-overlay is accepted as glyph-consumer proof. Source case17 defaults names visible;
-byte207 is outside GAME/CONFIG/SLEV, retained on retry/mission/warm receiver load,
-and cold-defaulted only after saved receipts verify. Notice history must still
-reconstruct the actual local type3/50 message. Full mc-5r5.2/mc-oi6.5/.6 acceptance
-and dependencies remain OPEN. Hardware resolution switching remains the explicitly
-classified separate renderer option, not the in-game viewport. Root serializes
-Cargo/RCH/push/install; owners remain through real consumer failures. Preserve
-unrelated Modern/browser work and fixed ABI extents.
+Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
+the source in-game viewport and Player Names are implemented, verified, committed,
+pushed and installed. Do not restart their delivered checkpoints below. Next
+concrete mandatory input gaps are source bare F4 speech and F5 sound: F4 is absent
+from current runtime dispatch, while F5 incorrectly uses replay save. Complete
+their real source admission, preference/audio consumers and type3/50 notices;
+reuse the operational Options controls and retain current save/load acceptance.
+Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
+resolution switching remains the explicitly classified separate renderer option,
+not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
+through real consumer failures. Preserve unrelated Modern/browser work and fixed
+ABI extents.
+
+Player Names checkpoint: canonical1a83f09b is pushed as Originalb2123b87;
+all31 owned blobs match. Original build-02d3en9v/native
+2063859fda7d0a8773b6509658a19b1d33de3192eff1119eabfeecd83fcc53f0 is installed;
+--check-installed passes. Actual source case17/auxiliary byte207 drives the
+existing current class3/model0|1 A4/name/life carrier, original selected FONT1,
+normal primary painter callback and real label/health pixels. No GUI name overlay
+or asset-inferred actor was introduced. Names default visible, remain outside
+GAME/CONFIG/SLEV and gameplay hash, retain receiving process state on retry/mission/
+warm load, and cold-default only after actual saved receipts verify. The actual
+local402/403 type3/50 notice and its reset digest/history still replay exactly.
+
+Real unfiltered Level2 entry plus354 existing public flight/look commands reaches
+living Nyphur112, PlayerState1/life3085. Strict cold replay/resave and actual FONT1
+raster pass17.399s; no inventory/cast/actor-pose staging. Eleven affected native
+checks pass, including actual Day3/Cave12 viewport, label cache/missing-font
+recovery, rival cleanup, Default Keys, source glyph traversal and CABI guards.
+The source clears the surround BEFORE DrawWorld; canonical writer and streaming
+mode26 now clip terrain before writes, allowing source lowres inset labels to
+remain in the surround. Native and GPU exit history preserve current exterior
+pixels rather than resurrecting prior MAIN. Workspace all-targets and strict
+native build pass; all627 source/header/upstream inputs and Rig/returned/Editor/
+installed plugin hashes match. These627 inputs are provenance, not tests.
+
+Actual managed Options/lifetime passes106.17s; exact GPU history passes0.526s.
+Actual selected FONT1/current Nyphur GPU glyph and health check passes36.486s:
+native and GPU match243 changed pixels in [128,51..154,59], exact on/off/on
+reversal and query/replay purity. The initial new assertion compared the wrong
+hash domain; it now checks actual ResetReceipt notice digest changes and unchanged
+public gameplay hash. Initial GPU checks had an inactive presentation parent;
+the corrected host activates only the real presentation hierarchy and retains
+all glyph/health assertions. No receipt/assertion weakening or injected pixels.
+The real restored-client route now binds existing preferences/locale BEFORE first
+world composition. Canonical116-source runtime typecheck passes. UBS has no added
+critical finding; whole-file legacy and partial C#/shader analysis remain limits.
+Evidence: generated/player-names-20261116.
+
+Root viewed canonical --load-save of that genuine public-flight replay with all30
+resource roles, actual Payahandra scene/HUD and source Player Names ON/OFF Options;
+matching mapped native, no retry/error, owned player/display stopped. The pause/
+Options overlay covers most of the rival label, so full installed glyph visibility
+is not claimed separately from the exact matching managed GPU proof. This is a
+declared Level2 entry, not earned campaign progress, human combat, FPS, hardware
+audio, full missions or historical-save proof. No owner art/Unity asset import.
 
 Viewport checkpoint: canonical f0e11884 is pushed as Original81233f67; all20
-owned blobs match. Original build-_rry9xbm/native
-74ccbbf0c5260639c6be18c8079ee0281e52d46cb817889d20c9e2c04dd6e3c5 is installed;
---check-installed passes. Source Options index7 and physical brackets drive a
+owned blobs match. Superseded Original build-_rry9xbm/native
+74ccbbf0c5260639c6be18c8079ee0281e52d46cb817889d20c9e2c04dd6e3c5 was installed;
+--check-installed passed. Source Options index7 and physical brackets drive a
 guarded GAME viewport16..40: menu clamps, '[' enlarges and ']' shrinks only above17.
 The saved size survives cold/warm load, retry, mission and Default Keys; omitted40
 preserves old save bytes. No CONFIG field, fake gameplay operation, notice or
