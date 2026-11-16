@@ -878,16 +878,17 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): complete source Shift+F6 and pause option13 panel
-transparency through actual indexed panels, source440/441 notices, GAME save/cold
-restore and LevelInit/retry defaults. QuietIsland owns the connected managed
-consumers; BoldForge owns native state/replay/lifetime joins. Root implements
-ABI/transport joins and serializes checks, push and installation. The installed
+Current capability (2026-11-16): complete source actions31/32's eight-update
+hand-selection visibility through authoritative state, full/render observations
+and full-map indexed hands, independently of the ordinary topbar predicate.
+BoldForge owns native production/update/lifetime and receipt-compatible replay;
+QuietIsland owns real managed consumers; PearlBay owns CAPI/C#/TS transport.
+Root implements sim-session joins and serializes checks/push/installation. The installed
 spell-menu, Default Keys and secret announcement checkpoints below are delivered;
 do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
 Modern work. Shift+F7 is flat shading, a separate source control.
 
-The connected panel-transparency candidate is implemented and verified, not yet
+The connected panel-transparency batch is implemented, verified, committed and
 installed: Shift+F6/Options13 share one guarded Rust GAME setting and local
 440/441 type3 notice. Real save/cold restore preserves it; successful normal
 LevelInit/retry resets Day/Night to transparent and Cave to opaque. Old GAME
@@ -915,6 +916,19 @@ test was extended but not executed; its historical fixture is not new runtime
 proof. Fresh bounded minimap review found no defect. UBS is partial for C#
 analysis, with no critical/new changed-hunk warning; legacy Surface warnings
 remain. Evidence: generated/panel-transparency-20261116.
+
+Canonicalc123114d is pushed as Originalbb6a71a8, excluding unrelated Modern
+ancestry; all33 owned code blobs match. Matching Original build-r2ejdd67/native
+8cbb514708623c0468c5ae086c88218268863a7f4d3f982348d2d375cb39008c is installed
+and --check-installed passes. Root viewed the normal map/loading/NightSpire
+route and physical P, both Shift+F6 variants, source Options13 and resume:
+actual original440/441 notices and indexed panel changes are visible. One
+portal,30 resource roles, matching mapped native, zero retries/no runtime errors;
+owned player/display stopped. Pixel comparison falsified an initial visual
+suspicion of outside-world changes: paired paused and Options world pixels
+outside the exact HUD/minimap/notice/option-label regions are identical. This
+is installed display-control/launch-load proof, not human combat/FPS/hardware
+audio/full missions or old saves. Full settings/HUD/help acceptance remains open.
 
 Next confirmed HUD gap is source actions31/32's eight-update hand-selection
 visibility on full map. Ordinary world HUD/topbar and map hand visibility have
