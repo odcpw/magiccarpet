@@ -803,21 +803,59 @@ acceptance open; a working control panel alone does not finish the environment.
 
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
 the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
-flight assistance, F1 Help Mode and Shift+F1/F2/F3/F4 graphics are implemented,
-verified, committed, pushed and installed. Do not restart delivered checkpoints.
-Next is existing mc-5r5.3: source title Exit confirmation/cancel, cursor39 and
-idle help cycling. Current source bypasses Exit's scroll dialog, never consumes
-title cursor39 and only produces immediate hover help. Reuse actual source
-scroll/art/timing and input release ownership. Existing four fire/incense loops
-are source-driven; the pinned table has no separate active dragon loop. New Game
-is the existing map route, not an invented confirmation. BoldForge owns the
-connected frontend capability; root serializes builds/push/install. Keep exact
-shared-file windows and workers responsible through consumer failures.
+flight assistance, F1 Help Mode, Shift+F1/F2/F3/F4 graphics and original Title
+Exit/cursor/idle-help/F1 are implemented, verified, committed, pushed and installed.
+Finite mc-5r5.3 is CLOSED on its original acceptance; do not restart its checks.
+Next is existing ready mc-paj.5: finish destination-bound loading and failed-open
+resource/carry ownership. Inspect current source and saved connected evidence
+before assigning a real missing producer/consumer; the old three-cue assessment
+is not current authority. If this finite family is already implemented, assess
+its original acceptance with bounded evidence rather than inventing a defect or
+replaying all30 missions. BoldForge owns this connected capability; root keeps
+sole build/push/install dispatch and exact shared-file windows. Tutorial/help
+mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites; do not bypass them.
 Full mc-5r5.2/mc-oi6.5/.6 acceptance and dependencies remain OPEN. Hardware
 resolution switching remains the explicitly classified separate renderer option,
 not the in-game viewport. Root serializes Cargo/RCH/push/install; owners remain
 through real consumer failures. Preserve unrelated Modern/browser work and fixed
 ABI extents.
+
+Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
+dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
+build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
+--check-installed passes. This C# batch needed no Cargo rebuild. Source Exit
+button/Escape now opens the actual x352/y26/height80/record407 scroll; only a
+confirmed, fully closed dialog emits Quit. Cancel preserves Title and preferences,
+and held/repeated keys cannot activate the next modal. Cursor39 yields to existing
+Keys110/Language37 owners and restores visibility. Original nine-row idle/hover
+help follows source100Hz clocks, unsigned199/200 boundary, one advance per source
+draw, delayed gold and blank cooldown. Source Title F1 now applies the retained
+help flag before drawing, including inside Exit, while respecting media/settings
+ownership. The actual SDL/key-buffer producer preserves scan59 with modifiers;
+Title Shift/Control F1 work without changing in-game graphics shortcuts. Existing
+four fire/incense loops remain; no extra dragon loop or New Game confirmation
+was invented.
+
+Canonical116-source typecheck and changed-path/gate reviews pass; UBS remains
+partial, with no new production warning/critical reported. Actual Title GUI,
+profile/F1/modifiers/release, source clock and Exit check passes7.239s; existing
+named-slot scroll passes13.641s; required full menu/NewGame/loading/save/load/
+Title/attract check passes29.952s. Old fixture defaults initially selected legacy
+packages/menu/media and omitted the real50ms media-release step. Only actual
+resource arguments and ordinary release servicing were corrected; guards and
+assertions remain intact. Root viewed normal installed Title, original popup,
+cursors and Exit. Physical F1/ShiftF1/ControlF1 and Exit F1 retain exact private
+profile restoration; Cancel stays usable; confirmed Exit is reaped by waitpid
+with status0 and clean shutdown. Owned display/player cleanup is complete.
+
+The first UI script wrongly used Escape during Keys capture; that edits a key
+rather than closing, and affected only an ignored private fixture profile. The
+corrected run used Keys Done unchanged and isolated profiles. Another checker
+mistook an unreaped process entry for a running player despite earlier clean
+shutdown; the final actual waitpid result replaces that inconclusive gate.
+Evidence: generated/title-dialogs-20261116 (installed-2 cursor/held-Escape captures
+and installed-3 final F1/Exit proof). This is not human combat, FPS, hardware audio,
+full missions or unavailable-language proof. Broader open acceptance stays open.
 
 Graphics checkpoint: canonical4b22ef80 is pushed as Original75d4acd4; all18
 owned blobs and627 native inputs match. Original build-ce2k54te/native
