@@ -384,10 +384,18 @@ namespace MagicCarpet.Native
                 var input = Event.current;
                 if (input.type == EventType.KeyUp) titleHeldKeys.Remove(input.keyCode);
                 else if (input.type == EventType.KeyDown &&
-                    (input.keyCode is KeyCode.Escape or KeyCode.Return or KeyCode.KeypadEnter or KeyCode.Space))
+                    (input.keyCode is KeyCode.Escape or KeyCode.Return or KeyCode.KeypadEnter or KeyCode.Space or KeyCode.F1))
                 {
                     var firstPress = titleHeldKeys.Add(input.keyCode);
                     if (!firstPress && preferences?.IsOpen != true) input.Use();
+                    else if (firstPress && input.keyCode == KeyCode.F1 && preferences != null &&
+                        !preferences.IsOpen && identity.frontend_media?.clear_input != true)
+                    {
+                        // MainMenu_76FA0 handles F1 before drawing, including
+                        // while the nonblocking Exit scroll is selected.
+                        preferences.ApplySource(value => value.show_help = !value.show_help);
+                        input.Use();
+                    }
                 }
             }
             if (preferences?.IsOpen == true)
