@@ -10175,6 +10175,45 @@ impl Mc2Simulation {
         })
     }
 
+    /// Observational DrawTopStatusBar inputs from this exact live owner.
+    /// Stage zero still owns the balloon panel; it does not own Castle bars.
+    #[must_use]
+    pub fn source_top_status(&self, mana_goal_percent: i16) -> sim_session::SourceTopStatus {
+        use sim_session::{SourceBalloonStatus, SourceCastleStatus, SourceTopStatus};
+        let live = &self.session.state.live;
+        let owner = live.core.state.entity_index;
+        let [mana, mana_max, _] = campaign_hud_palette_indices(
+            live.shared_spells.local_player.player_color_index(), self.canonical_terrain().map_type(),
+        ).expect("validated current source HUD palette");
+        let mut result = SourceTopStatus { mana_goal_percent,
+            goal_palette_index: if self.session.state.scratch.level2_day_hud_color_phase_2 == 0 { mana } else { mana_max },
+            ..SourceTopStatus::default() };
+        let Some(castle) = live.economy.castle_for_owner(owner) else { return result; };
+        result.castle = Some(SourceCastleStatus { stage: castle.level,
+            panel_selector: if castle.level == 0 { 54 } else {
+                match self.session.state.scratch.source_castle_panel_selector { 55 => 55, _ => 41 }
+            },
+            icon_selector: if castle.level == 0 { 0 } else { u16::from(castle.level) + 43 },
+            life: castle.life, max_life: castle.max_life,
+            mana: castle.mana, max_mana: castle.mana_capacity,
+            owner_mana_aggregate: live.economy.owner_mana_aggregate(owner),
+        });
+        result.balloon_panel_selector = match self.session.state.scratch.source_balloon_panel_selector { 55 => 55, _ => 41 };
+        let count = match castle.level { 1..=3 => 1, 4..=5 => 2, 6..=7 => 3, _ => 0 };
+        result.balloon_icon_selector = 50 + count;
+        for index in 0..usize::from(count) {
+            let slot = castle.defender_slots[index];
+            let Some(child) = live.economy.castle_children().iter().find(|child|
+                slot != 0 && child.active && child.source_entity_index == slot
+                && child.source_class == 3 && child.model == 3 && child.owner_entity_index == owner
+                && live.economy.live_arena_kind(slot) == Some(Level2DynamicArenaKind::CastleDefender))
+            else { continue; };
+            result.balloons[index] = SourceBalloonStatus { present: true, life: child.life,
+                max_life: child.max_life, mana: child.mana, max_mana: child.max_mana };
+        }
+        result
+    }
+
     /// Focused reset/replay digest for the typed Nyphur participant chain.
     pub fn nyphur_state_hash(&self) -> Result<String> {
         Ok(level2_nyphur_state_hash(&self.nyphur_participant()?))
@@ -29390,6 +29429,12 @@ impl Mc2Simulation {
                 .level2_day_hud_player_panel_selector
                 .to_le_bytes(),
         );
+        let status = [self.session.state.scratch.source_castle_panel_selector,
+            self.session.state.scratch.source_balloon_panel_selector];
+        if status != [0; 2] {
+            hasher.update(b"source-top-status-draw-v1");
+            for selector in status { hasher.update(selector.to_le_bytes()); }
+        }
         hasher.update(self.session.state.live.core.runtime.bytes());
         self.session
             .state
@@ -29447,6 +29492,7 @@ impl Mc2Simulation {
             .shared_spells
             .local_player
             .hit_frame_time;
+        let balloon_hit_frame_time = self.session.state.live.shared_spells.local_player.balloon_hit_frame_time;
         if let Some(player) = self
             .session
             .state
@@ -29459,6 +29505,7 @@ impl Mc2Simulation {
             player.turn = turn;
             player.record[8..12].copy_from_slice(&turn.to_le_bytes());
             player.hit_frame_time = hit_frame_time;
+            player.balloon_hit_frame_time = balloon_hit_frame_time;
         }
     }
 
@@ -29513,7 +29560,38 @@ impl Mc2Simulation {
     /// DrawTopStatus selects the hit panel from the pre-decrement timer, then
     /// decrements only when colorIndex[1] is set.  Store that final panel
     /// decision so repeated ABI reads are idempotent.
-    pub(super) fn finish_level2_day_hud_frame(&mut self) {
+    pub(crate) fn configure_source_hud_tail(&mut self, deferred: bool, legacy: bool) {
+        self.session.state.scratch.source_hud_tail_deferred = deferred;
+        self.session.state.scratch.source_hud_tail_legacy = legacy;
+    }
+
+    /// The actual DrawTopStatusBar tail: it runs after objective/menu state is
+    /// published, and only the world view with TopBar enabled consumes clocks.
+    pub(crate) fn finish_source_hud_frame(&mut self, top_bar: bool) {
+        if !top_bar || !matches!(self.level2_player_menu_state(), 0 | 3 | 5 | 9 | 10 | 13) { return; }
+        let live = &mut self.session.state.live;
+        let root = live.economy.castle_for_owner(live.core.state.entity_index).map(|castle| castle.level);
+        let phase = self.session.state.scratch.level2_day_hud_color_phase_1 != 0;
+        self.session.state.scratch.source_castle_panel_selector = if root.is_some_and(|stage| stage != 0) {
+            if phase && live.economy.economy.consume_castle_hud_hit_frame() { 55 } else { 41 }
+        } else { 54 };
+        self.session.state.scratch.source_balloon_panel_selector = if root.is_some() {
+            let remaining = live.shared_spells.local_player.balloon_hit_frame_time;
+            if remaining > 0 && phase {
+                let owner = live.shared_spells.local_player.entity_index;
+                live.shared_spells.local_player.balloon_hit_frame_time = remaining - 1;
+                for player in &mut live.shared_spells.players {
+                    if player.entity_index == owner { player.balloon_hit_frame_time = remaining - 1; }
+                }
+                55
+            } else { 41 }
+        } else { 54 };
+        self.finish_level2_day_hud_frame_legacy();
+    }
+
+    // Pre-source-HUD replay history retains this exact player-only clock and
+    // its original position before objective service. New frames use above.
+    fn finish_level2_day_hud_frame_legacy(&mut self) {
         let hit_frame_time = self
             .session
             .state
@@ -30710,7 +30788,7 @@ impl Mc2Simulation {
         self.session.state.scratch.nyphur_dispatch_traces.clear();
         self.session.state.live.economy.advance_global_rng();
         self.advance_source_player_events_phase();
-        self.finish_level2_day_hud_frame();
+        if self.session.state.scratch.source_hud_tail_legacy { self.finish_level2_day_hud_frame_legacy(); }
         let class5_model_present = self
             .session
             .state
@@ -30734,6 +30812,9 @@ impl Mc2Simulation {
             return;
         }
         self.flush_shared_effects();
+        if !self.session.state.scratch.source_hud_tail_deferred && !self.session.state.scratch.source_hud_tail_legacy {
+            self.finish_source_hud_frame(true);
+        }
     }
 
     pub(crate) fn secret_announcement(&self) -> crate::campaign::objective_speech::SecretAnnouncementState {
@@ -31125,7 +31206,7 @@ impl Mc2Simulation {
                 });
             return Vec::new();
         }
-        self.finish_level2_day_hud_frame();
+        if self.session.state.scratch.source_hud_tail_legacy { self.finish_level2_day_hud_frame_legacy(); }
         // remc2 evaluates objectives after the complete entity update and
         // before the next outer turn's authored switch pass.  Keep that
         // ordering so model-32 sees the newly completed stage only on the
@@ -31145,6 +31226,9 @@ impl Mc2Simulation {
             return Vec::new();
         }
         self.flush_shared_effects();
+        if !self.session.state.scratch.source_hud_tail_deferred && !self.session.state.scratch.source_hud_tail_legacy {
+            self.finish_source_hud_frame(true);
+        }
         evidence
     }
 
@@ -31204,6 +31288,232 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paid_castle_and_collector_publish_source_top_status_and_admitted_hit_clocks() {
+        fn frame(campaign: &mut CampaignSession, command: PlayerCommand, top_bar: bool,
+            menu: Option<sim_session::AbandonAction>) {
+            let simulation = campaign.simulation_mut();
+            simulation.configure_source_hud_tail(true, false);
+            let mut command = command;
+            let admitted = menu.is_some_and(|action| simulation.prepare_source_menu_action(action, &mut command));
+            campaign.step(command, 0);
+            assert!(campaign.events().iter().all(|row| !matches!(row, Mc2DispatchEvent::Error { .. })));
+            campaign.simulation_mut().finish_source_menu_action(menu, admitted);
+            campaign.simulation_mut().finish_source_hud_frame(top_bar);
+        }
+        let package = std::env::var_os("MC_CASTLE_HUD_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap()).unwrap();
+        let goal = campaign.inspection().source_mana_goal_percent();
+        assert_eq!(goal, 100, "the signed goal is read from this actual source4 header");
+        assert!(campaign.simulation().source_top_status(goal).castle.is_none());
+        // Explicit carried inventory and travel/aim controls. Mana, Castle,
+        // children, damage and source draw clocks are not fabricated.
+        campaign.simulation_mut().apply_carried_spell_families(&[0, 1, 2], Some(0)).unwrap();
+        let owner = campaign.simulation().state.entity_index;
+        let goat = campaign.simulation().goats().iter().find(|row| row.active && row.entity_index == 94).unwrap().clone();
+        let mut launch = Position { x: goat.position.x.wrapping_add(2_304),
+            y: goat.position.y.wrapping_add(4_096), z: 0 };
+        launch.z = campaign.simulation().canonical_terrain().ground_height(launch).wrapping_add(512);
+        campaign.simulation_mut().set_level2_entity_position(owner, launch).unwrap();
+        campaign.simulation_mut().set_level2_player_aim_for_test(0, 0);
+        let mana_before = campaign.simulation().shared_spells().player_entity().mana;
+        let holder_slot = campaign.simulation().shared_spells().local_player().enabled_spell_holders[2];
+        let cost = campaign.simulation().shared_spells().pickup(holder_slot).unwrap().max_mana;
+        assert_eq!((mana_before, cost), (1_000, 1_000));
+        let mut no_cast = campaign.clone();
+        frame(&mut no_cast, PlayerCommand::default(), true, None);
+        frame(&mut no_cast, PlayerCommand::default(), true, None);
+        let castle_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 2).unwrap() as i8;
+        frame(&mut campaign, PlayerCommand { opcode: 6, argument_1: castle_ui,
+            flags: 0x40, ..Default::default() }, true, None);
+        let mut saw_flyer = campaign.simulation().economy().castle_projectiles().iter()
+            .any(|row| row.owner_entity_index == owner);
+        // sub_68DE0 queues -cost in manaRegen at the holder's numeric visit;
+        // the next player upkeep applies it. A single post-input mana read
+        // can precede that source payment even though activation was accepted.
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        assert_eq!(no_cast.simulation().shared_spells().player_entity().mana, mana_before);
+        assert_eq!(campaign.simulation().shared_spells().player_entity().mana, mana_before - cost,
+            "two matching real source passes apply exactly the ordinary Castle price; player={:?}, holder={:?}, projectiles={:?}",
+            campaign.simulation().shared_spells().player_entity(),
+            campaign.simulation().shared_spells().pickup(holder_slot),
+            campaign.simulation().economy().castle_projectiles());
+        for _ in 0..512 {
+            saw_flyer |= campaign.simulation().economy().castle_projectiles().iter()
+                .any(|row| row.owner_entity_index == owner);
+            if campaign.simulation().economy().castle_for_owner(owner)
+                .is_some_and(|root| root.level == 1 && root.action == 4) { break; }
+            frame(&mut campaign, PlayerCommand::default(), true, None);
+        }
+        assert!(saw_flyer, "the paid cast must use the real flyer/root constructor");
+        let root = *campaign.simulation().economy().castle_for_owner(owner)
+            .filter(|root| root.level == 1 && root.action == 4).expect("source Castle completes stage one");
+        let root_handle = campaign.simulation().source_arena().handle(root.source_entity_index).unwrap();
+        // The action5->4 transition is not sub_5FF50. EndOfCastleProjectile
+        // creates collectors at its next even byte3E visit, at most two real
+        // callbacks later; do not assume a relation at construction completion.
+        for _ in 0..2 {
+            if campaign.simulation().economy().castle_for_owner(owner)
+                .is_some_and(|root| root.defender_slots[0] != 0) { break; }
+            frame(&mut campaign, PlayerCommand::default(), true, None);
+        }
+        assert_eq!(campaign.simulation().source_arena().handle(root.source_entity_index), Some(root_handle));
+        let root = *campaign.simulation().economy().castle_for_owner(owner).unwrap();
+        let collector_slot = root.defender_slots[0];
+        let collector = *campaign.simulation().economy().castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == collector_slot && row.source_class == 3 && row.model == 3)
+            .unwrap_or_else(|| panic!("the actual even-phase root must construct its first collector: root={root:?}, free={}",
+                campaign.simulation().economy().free_slot_count()));
+        let status = campaign.simulation().source_top_status(goal);
+        let castle = status.castle.unwrap();
+        assert_eq!((castle.stage, castle.icon_selector, status.balloon_icon_selector), (1, 44, 51));
+        assert_eq!((castle.life, castle.max_life, castle.mana, castle.max_mana),
+            (root.life, root.max_life, root.mana, root.mana_capacity));
+        assert_eq!(castle.owner_mana_aggregate, campaign.simulation().economy().owner_mana_aggregate(owner));
+        assert_eq!(status.balloons[0], sim_session::SourceBalloonStatus { present: true,
+            life: collector.life, max_life: collector.max_life, mana: collector.mana, max_mana: collector.max_mana });
+        assert!(!status.balloons[1].present && !status.balloons[2].present);
+        let before = campaign.simulation().campaign_state_hash();
+        for _ in 0..4 { assert_eq!(campaign.simulation().source_top_status(goal), status); }
+        assert_eq!(campaign.simulation().campaign_state_hash(), before, "observation never clocks a hit");
+
+        // Independent source shape controls on a clone, not earned upgrades.
+        // Stage zero still admits the balloon panel, and source pointer holes
+        // keep their array position rather than compacting live collectors.
+        let mut shape = campaign.simulation().clone();
+        shape.economy_mut().castle_at_mut(root.source_entity_index).unwrap().level = 0;
+        let zero = shape.source_top_status(goal);
+        assert_eq!((zero.castle.unwrap().panel_selector, zero.castle.unwrap().icon_selector), (54, 0));
+        assert_eq!(zero.balloon_icon_selector, 50);
+        assert!(zero.balloons.iter().all(|row| !row.present));
+        assert!(matches!(zero.balloon_panel_selector, 41 | 55));
+        {
+            let mut economy = shape.economy_mut();
+            let row = economy.castle_at_mut(root.source_entity_index).unwrap();
+            row.level = 6;
+            row.defender_slots = [0, collector_slot, 0];
+        }
+        let holes = shape.source_top_status(goal);
+        assert_eq!(holes.balloon_icon_selector, 53);
+        assert!(!holes.balloons[0].present && holes.balloons[1].present && !holes.balloons[2].present);
+        // Explicit local-A4 alias control only: ordinary NewEvent balloons
+        // use shared A4, so their damage cannot establish this local byte.
+        shape.session.state.live.shared_spells.local_player.balloon_hit_frame_time = 4;
+        shape.finish_source_hud_frame(false);
+        assert_eq!(shape.shared_spells().local_player().balloon_hit_frame_time, 4);
+        for _ in 0..2 {
+            shape.service_paused_outer_frame();
+            shape.finish_source_hud_frame(true);
+            if shape.session.state.scratch.level2_day_hud_color_phase_1 != 0 { break; }
+        }
+        assert_eq!(shape.shared_spells().local_player().balloon_hit_frame_time, 3);
+        assert_eq!(shape.source_top_status(goal).balloon_panel_selector, 55);
+        shape.session.state.live.shared_spells.local_player.balloon_hit_frame_time = -1;
+        shape.finish_source_hud_frame(true);
+        assert_eq!(shape.shared_spells().local_player().balloon_hit_frame_time, -1);
+        assert_eq!(shape.source_top_status(goal).balloon_panel_selector, 41,
+            "source signed negative byte is not an unsigned hit countdown");
+
+        // Exact source-id alias control; normal imported/local constructors
+        // bind id and owner equally. Do not fabricate such a replay history.
+        let mut alias = campaign.simulation().clone();
+        alias.economy_mut().castle_at_mut(root.source_entity_index).unwrap().source_id_entity_index = 266;
+        assert!(alias.economy_mut().submit_damage(root.source_entity_index, 1, 266));
+        assert_eq!(alias.economy_mut().resolve_damage(root.source_entity_index), Some(false));
+        assert_eq!(alias.economy().player_castle_aux_flags(), 0,
+            "sub_609E0 selects local A4 by source id, not Castle ownership");
+
+        // Feed the real damage mailbox/consumer. This is declared contact,
+        // not a claim of earning a projectile hit during controlled travel.
+        assert!(campaign.simulation_mut().economy_mut().submit_damage(root.source_entity_index, 1, 266));
+        assert_eq!(campaign.simulation_mut().economy_mut().resolve_damage(root.source_entity_index), Some(false));
+        assert_eq!(campaign.simulation().economy().player_castle_aux_flags(), 4);
+        for (top_bar, menu, admitted) in [
+            (false, None, false),
+            (true, Some(sim_session::AbandonAction::ToggleGameplayMap), false),
+            (true, None, false),
+            (true, Some(sim_session::AbandonAction::ToggleGameplayMap), true),
+        ] {
+            let remaining = campaign.simulation().economy().player_castle_aux_flags();
+            frame(&mut campaign, PlayerCommand::default(), top_bar, menu);
+            let phase = campaign.simulation().session.state.scratch.level2_day_hud_color_phase_1 != 0;
+            let consume = admitted && phase && remaining > 0;
+            assert_eq!(campaign.simulation().economy().player_castle_aux_flags(), remaining - u8::from(consume));
+            if admitted {
+                assert_eq!(campaign.simulation().source_top_status(goal).castle.unwrap().panel_selector,
+                    if consume { 55 } else { 41 });
+            }
+        }
+        let tick = campaign.simulation().state.tick;
+        // colorIndex[1]=Turn&1: eight actual paused outer frames contain
+        // exactly four admitted hit draws, regardless of the initial phase.
+        for _ in 0..8 {
+            let remaining = campaign.simulation().economy().player_castle_aux_flags();
+            campaign.paused_frame();
+            campaign.simulation_mut().finish_source_hud_frame(true);
+            let phase = campaign.simulation().session.state.scratch.level2_day_hud_color_phase_1 != 0;
+            let consume = phase && remaining > 0;
+            assert_eq!(campaign.simulation().economy().player_castle_aux_flags(), remaining - u8::from(consume));
+            assert_eq!(campaign.simulation().source_top_status(goal).castle.unwrap().panel_selector,
+                if consume { 55 } else { 41 });
+            assert_eq!(campaign.simulation().state.tick, tick);
+        }
+        assert_eq!(campaign.simulation().economy().player_castle_aux_flags(), 0);
+
+        {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            area_damage::contact(&mut live.economy, None, collector_slot, 1, 266).unwrap();
+            assert_eq!(area_damage::source_bounty(&live.economy, None, collector_slot).unwrap(), (1, 266));
+        }
+        let collector_life = campaign.simulation().economy().castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == collector_slot).unwrap().life;
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        assert_eq!(campaign.simulation().source_top_status(goal).balloons[0].life, collector_life - 1,
+            "the ordinary scheduled collector consumes its actual typed contact mailbox");
+        assert_eq!(campaign.simulation().shared_spells().global_special_state.damage_flash_ticks, 4,
+            "NewEvent's balloon A4 is the shared source context");
+        assert_eq!(campaign.simulation().shared_spells().local_player().balloon_hit_frame_time, 0,
+            "ordinary balloon damage must not invent a local A4 alias");
+        {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            area_damage::contact(&mut live.economy, None, collector_slot, u16::MAX, 266).unwrap();
+        }
+        // One collector damage visit, up to two root visits to reach even
+        // maintenance, then the following-pass reclaim boundary.
+        for _ in 0..4 {
+            frame(&mut campaign, PlayerCommand::default(), true, None);
+            if !campaign.simulation().source_top_status(goal).balloons[0].present { break; }
+        }
+        assert!(!campaign.simulation().source_top_status(goal).balloons[0].present,
+            "source balloon destruction/reclaim removes its HUD row");
+
+        // A lethal root hit does not retrigger the nonlethal A4 byte195.
+        assert!(campaign.simulation().economy().free_slot_count() > 0,
+            "sub_5FCA0's real free-slot gate must admit stage destruction");
+        assert!(campaign.simulation_mut().economy_mut().submit_damage(root.source_entity_index, root.max_life + 1, 266));
+        assert_eq!(campaign.simulation_mut().economy_mut().resolve_damage(root.source_entity_index), Some(true));
+        assert_eq!(campaign.simulation().economy().player_castle_aux_flags(), 0);
+        // One action4 callback selects action6; its following callback runs
+        // the actual stage-one final-loss operation. No visual timer is set.
+        for _ in 0..2 {
+            if campaign.simulation().source_top_status(goal).castle.is_none() { break; }
+            frame(&mut campaign, PlayerCommand::default(), true, None);
+        }
+        let removed = campaign.simulation().source_top_status(goal);
+        assert!(removed.castle.is_none(), "real source destruction removes the owner relation");
+        assert_eq!((removed.balloon_panel_selector, removed.balloon_icon_selector), (54, 0));
+        assert!(removed.balloons.iter().all(|row| !row.present));
+        assert!(campaign.simulation().source_arena().resolve(root_handle).is_none()
+            || campaign.simulation().economy().castle_for_owner(owner).is_none(),
+            "a retained/reused old source address cannot retain the HUD relation");
+        campaign.simulation_mut().reset();
+        assert!(campaign.simulation().source_top_status(goal).castle.is_none());
+        assert_eq!(campaign.simulation().shared_spells().local_player().balloon_hit_frame_time, 0);
+    }
 
     #[test]
     fn spell_menu_help_reads_source_holders_costs_and_progress_without_advancing() {

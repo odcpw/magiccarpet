@@ -646,6 +646,10 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             self.player_preferences.reset_input();
             return Err(PreferenceStepError::Unavailable);
         }
+        self.session().ok_or(PreferenceStepError::Unavailable)?
+            .completion_status(guard)
+            .map_err(|error| PreferenceStepError::Session(sim_session::GameSessionError::Guard(error)))?;
+        let top_bar = self.display_settings.top_bar;
         let previous_assistance = self.player_preferences.assistance.clone();
         let previous_sequence = self.player_preferences.assistance_sequence;
         let previous_generation = self.player_preferences.input_generation;
@@ -677,10 +681,9 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         ) {
             command.recenter = true;
         }
-        let result = self
-            .session_mut()
-            .ok_or(PreferenceStepError::Unavailable)?
-            .advance(guard, command)
+        let session = self.session_mut().ok_or(PreferenceStepError::Unavailable)?;
+        session.backend_mut().prepare_hud_frame(top_bar);
+        let result = session.advance(guard, command)
             .map_err(PreferenceStepError::Session);
         if result.is_err() {
             self.player_preferences.assistance = previous_assistance;

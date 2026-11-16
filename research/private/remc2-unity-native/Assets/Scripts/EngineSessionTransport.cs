@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Json;
 using System.Text;
 using UnityEngine;
 
@@ -191,6 +192,31 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class SourceCastleStatus
+        {
+            public byte stage;
+            public ushort panel_selector, icon_selector;
+            public int life, max_life, mana, max_mana, owner_mana_aggregate;
+        }
+
+        [Serializable]
+        internal sealed class SourceBalloonStatus
+        {
+            public bool present;
+            public int life, max_life, mana, max_mana;
+        }
+
+        [Serializable]
+        internal sealed class SourceTopStatus
+        {
+            public SourceCastleStatus[] castle_rows;
+            public ushort balloon_panel_selector, balloon_icon_selector;
+            public SourceBalloonStatus[] balloons;
+            public short mana_goal_percent;
+            public byte goal_palette_index;
+        }
+
+        [Serializable]
         internal class CampaignRenderValue
         {
             public string tick;
@@ -212,6 +238,7 @@ namespace MagicCarpet.Native
             public bool spell_menu_panels_opaque;
             // Source selection clocks in left/right order; advanced by gameplay, not reads.
             public byte[] player_hand_selection_flash_ticks;
+            public SourceTopStatus source_top_status;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
             // Zero represents the native optional record's null value. The
@@ -1158,6 +1185,7 @@ namespace MagicCarpet.Native
                 value.player_hand_selection_flash_ticks.Length != 2 ||
                 value.player_hand_selection_flash_ticks.Any(ticks => ticks > 8))
                 throw new InvalidOperationException("hand selection requires two source clocks in range 0..8");
+            ValidateSourceTopStatus(value.source_top_status);
             if (value.player_vitals.max_life <= 0 || value.player_vitals.max_mana <= 0 ||
                 value.player_vitals.life > value.player_vitals.max_life ||
                 value.player_vitals.mana > value.player_vitals.max_mana)
@@ -1221,6 +1249,87 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal static void ValidateSourceTopStatus(SourceTopStatus top)
+        {
+            if (top == null || top.castle_rows == null || top.castle_rows.Length > 1 ||
+                top.castle_rows.Any(row => row == null || row.stage > 7) ||
+                top.balloons == null || top.balloons.Length != 3 ||
+                top.balloons.Any(row => row == null))
+                throw new InvalidOperationException("invalid source Castle and balloon status");
+        }
+
+        // JsonUtility normalizes null/missing arrays; DataContractJsonSerializer
+        // also accepts an object as an empty array. Inspect the original JSON
+        // token types with the built-in streaming reader before either can lose
+        // that distinction. This does not materialize the surrounding snapshot.
+        private static void ValidateTopStatusJsonShape(byte[] bytes, bool envelope)
+        {
+            const string message = "invalid source Castle and balloon status JSON";
+            if (bytes == null || bytes.Length == 0 || bytes.Length > 16 * 1024 * 1024)
+                throw new InvalidOperationException(message);
+            try {
+                using var reader = JsonReaderWriterFactory.CreateJsonReader(bytes, System.Xml.XmlDictionaryReaderQuotas.Max);
+                var topDepth = envelope ? 2 : 0;
+                bool root = false, valueSeen = false, inValue = false, topSeen = false, inTop = false;
+                bool castleSeen = false, balloonsSeen = false, stageSeen = false, stageValid = false, readingStage = false;
+                var castleCount = 0; var balloonCount = 0; string array = null;
+                while (reader.Read()) {
+                    var depth = reader.Depth;
+                    if (reader.NodeType == System.Xml.XmlNodeType.Element) {
+                        var type = reader.GetAttribute("type");
+                        if (depth == 0) {
+                            if (root || type != "object") throw new InvalidOperationException(message);
+                            root = true;
+                            if (!envelope) { topSeen = true; inTop = true; }
+                        } else if (envelope && depth == 1 && reader.LocalName == "value") {
+                            if (valueSeen || type != "object") throw new InvalidOperationException(message);
+                            valueSeen = true; inValue = true;
+                        } else if (envelope && inValue && depth == 2 && reader.LocalName == "source_top_status") {
+                            if (topSeen || type != "object") throw new InvalidOperationException(message);
+                            topSeen = true; inTop = true;
+                        } else if (inTop && depth == topDepth + 1 &&
+                                   (reader.LocalName == "castle_rows" || reader.LocalName == "balloons")) {
+                            var isCastle = reader.LocalName == "castle_rows";
+                            if (type != "array" || (isCastle ? castleSeen : balloonsSeen))
+                                throw new InvalidOperationException(message);
+                            if (isCastle) castleSeen = true; else balloonsSeen = true;
+                            array = reader.LocalName;
+                        } else if (inTop && array != null && depth == topDepth + 2) {
+                            if (type != "object") throw new InvalidOperationException(message);
+                            if (array == "castle_rows") { castleCount++; stageSeen = false; stageValid = false; }
+                            else balloonCount++;
+                        } else if (inTop && array == "castle_rows" && depth == topDepth + 3 && reader.LocalName == "stage") {
+                            if (stageSeen || type != "number") throw new InvalidOperationException(message);
+                            stageSeen = true; readingStage = true;
+                        }
+                    } else if (reader.NodeType == System.Xml.XmlNodeType.Text && readingStage) {
+                        stageValid = byte.TryParse(reader.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var stage) && stage <= 7;
+                        readingStage = false;
+                    } else if (reader.NodeType == System.Xml.XmlNodeType.EndElement) {
+                        if (inTop && array == "castle_rows" && depth == topDepth + 2 && (!stageSeen || !stageValid))
+                            throw new InvalidOperationException(message);
+                        if (inTop && array != null && depth == topDepth + 1 && reader.LocalName == array) array = null;
+                        if (inTop && depth == topDepth) inTop = false;
+                        if (envelope && inValue && depth == 1 && reader.LocalName == "value") inValue = false;
+                    }
+                }
+                if (!root || (envelope && !valueSeen) || !topSeen || !castleSeen || !balloonsSeen ||
+                    castleCount > 1 || balloonCount != 3)
+                    throw new InvalidOperationException(message);
+            } catch (Exception error) when (error is System.Xml.XmlException || error is FormatException || error is ArgumentException) {
+                throw new InvalidOperationException(message, error);
+            }
+        }
+
+        internal static SourceTopStatus DecodeSourceTopStatusJson(string json)
+        {
+            if (json == null) throw new InvalidOperationException("missing source top status JSON");
+            ValidateTopStatusJsonShape(Encoding.UTF8.GetBytes(json), false);
+            var top = JsonUtility.FromJson<SourceTopStatus>(json);
+            ValidateSourceTopStatus(top);
+            return top;
+        }
+
         internal static T ReadJson<T>(JsonRead read, string operation) where T : class
         {
             var nativeStart = ModernCapture.BeginMeasurement();
@@ -1249,6 +1358,8 @@ namespace MagicCarpet.Native
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
                 if (nativeStart != 0) ModernCapture.EndMeasurement("engine_native_" + typeof(T).Name, nativeStart);
                 var decodeStart = ModernCapture.BeginMeasurement();
+                if (typeof(T) == typeof(CampaignSnapshotObservation) || typeof(T) == typeof(CampaignRenderObservation))
+                    ValidateTopStatusJsonShape(bytes, true);
                 var value = JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes));
                 if (decodeStart != 0) ModernCapture.EndMeasurement("engine_decode_" + typeof(T).Name, decodeStart);
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");

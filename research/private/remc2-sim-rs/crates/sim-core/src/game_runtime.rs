@@ -1724,6 +1724,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         else {
             unreachable!("validated Paused mode owns a paused gameplay session")
         };
+        session.completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)
+            .map_err(PausedFrameError::Transition)?;
+        session.backend_mut().prepare_hud_frame(self.display_settings.top_bar);
         session
             .paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
             .map_err(PausedFrameError::Session)?;
@@ -3905,24 +3910,39 @@ mod tests {
 
     #[test]
     fn corrected_day_recipe_replay_restores_its_exact_package() {
-        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
+        ).join("generated");
         for (external, relative) in [
             (2, "level2-day-block32-campaign-v2"),
             (3, "level3-day-block32-campaign-recipe-v2"),
         ] {
             let package = generated.join(relative);
+            // Opt-in actual source role, bound before construction. A full
+            // environment owns the source animation catalog; adding it only
+            // at cold load would correctly refuse a no-owner state receipt.
+            let source_owner = (external == 3)
+                .then(|| std::env::var_os("MC_CORRECTED_DAY_SOURCE_OWNER").map(PathBuf::from))
+                .flatten();
             let resolver = Mc2RuntimePackageResolver::load([
                 Mc2CampaignInputs::new(if external == 2 {
                     package.clone()
                 } else {
                     level_two_package()
                 }),
-                Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
+                source_owner.as_ref().map_or_else(
+                    || Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
+                    |owner| Mc2CampaignInputs::with_owner_cache(&package, owner),
+                ),
                 Mc2CampaignInputs::new(level_one_package()),
             ])
             .unwrap();
-            let definition =
-                Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+            let definition = Arc::new(match &source_owner {
+                Some(owner) => crate::campaign::backend::load_mc2_campaign_with_owner_cache(
+                    &package, owner, &default_catalog().unwrap(),
+                ).unwrap(),
+                None => load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap(),
+            });
             // Stage only the incoming Loading boundary for this rendering probe;
             // this is not evidence of playing through the preceding levels.
             let mut source = GameRuntime {
@@ -3943,6 +3963,10 @@ mod tests {
             };
             let guard = source.identity().guard();
             resolver.open_pending(&mut source, guard, 523).unwrap();
+            if source_owner.is_some() {
+                assert!(source.session().unwrap().backend().campaign_presentation_source()
+                    .simulation().source_animations.is_bound(), "initial Level3 constructor has the actual source catalog");
+            }
             if external == 3 {
                 // Independent owner-level play needs the earlier spells for
                 // combat, sphere claims, Castle building and movement. This
@@ -3977,8 +4001,9 @@ mod tests {
                 );
                 assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
             }
-            // Desktop replay supplies presentation components. They must not
-            // be interpreted as gameplay caches or change replayed authority.
+            // The default check still admits the legacy terrain-only adapter
+            // without changing authority. The opt-in full role must remain
+            // identical to the source role installed before construction.
             let cached_resolver = Mc2RuntimePackageResolver::load([
                 if external == 2 {
                     Mc2CampaignInputs::with_owner_cache(
@@ -3990,7 +4015,8 @@ mod tests {
                 },
                 Mc2CampaignInputs::with_owner_cache(
                     generated.join("level3-day-block32-campaign-recipe-v2"),
-                    generated.join("level3-day-minimap-owner-cache-v3/components/material"),
+                    source_owner.clone().unwrap_or_else(||
+                        generated.join("level3-day-minimap-owner-cache-v3/components/material")),
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
             ])

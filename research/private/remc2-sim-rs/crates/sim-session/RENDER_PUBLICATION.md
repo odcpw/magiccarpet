@@ -1,4 +1,4 @@
-# Render publication v4
+# Render publication v5
 
 `sim_session::render_publication::RenderPublication` encodes a complete live
 presentation observation as MCPO. The native entry point
@@ -33,7 +33,7 @@ contract. Do not convert 64-bit counters to JavaScript `number`.
 | Offset | Field |
 | --- | --- |
 | 0 | Four literal bytes `MCPO` |
-| 4 | Version `u32` = 4 |
+| 4 | Version `u32` = 5 |
 | 8 | Total packet byte length `u32` |
 | 12 | Runtime ID `u64` |
 | 20 | Runtime generation `u64` |
@@ -80,14 +80,30 @@ The variable portion is:
    and `z,yaw,pitch i16`, logical height `u16`, asset ID and content-address
    strings.
 9. Two `u8` source hand-selection visibility counters, left then right, each
-   in `0..=8`. End of packet immediately follows these bytes. These are an
+   in `0..=8`. These are an
    eight-PlayerEvents-update visibility window, not an alternating blink or
    client timer; pure reads never decrement them. A same-hand accepted source
    assignment retriggers eight. The encoder rejects out-of-range counters
    before writing any destination bytes.
 
-Version4 extends the previous v3 packet by these final two bytes. Decoders
-reject earlier versions; native and client artifacts must be installed together.
+10. Source top status: optional Castle flag; when present, stage `u8` (0–7),
+    panel and icon selectors `u16`, then life/max-life/mana/max-mana/owner-mana-
+    aggregate as five `i32`. Follow with balloon panel/icon selectors `u16`,
+    exactly three ordered balloon rows (present boolean, life/max-life/mana/
+    max-mana as four `i32`), raw authored mana-goal percentage `i16` and goal
+    palette index `u8`. End of packet immediately follows this block. A linked
+    stage-zero Castle is distinct from no Castle; missing balloon slots retain
+    their row positions. Negative life and signed raw values are retained for
+    source draw admission/arithmetic; readers must not substitute client state.
+    JSON represents the optional Castle as required `castle_rows` with zero or
+    one item. This preserves the distinction in Unity JsonUtility, whose null
+    class handling otherwise produces a default stage-zero object. Binary
+    readers project the optional flag/row into the same zero/one-item array.
+
+Version4 added the hand counters to v3; version5 appends source top status.
+Decoders reject earlier versions; native and client artifacts must be installed
+together. The encoder rejects a Castle stage above seven before touching the
+destination buffer.
 
 A native caller owns its destination buffer. For WASM, a JS view into linear
 memory is valid only while its allocation is retained and the memory has not

@@ -228,6 +228,12 @@ fn read_arena_bounty(arena: &SourceArena, slot: u16) -> Result<(i32, u16), Strin
     }
     smoke_bounty!(economy.model59_smoke_children);
     smoke_bounty!(economy.model13_spawned_children);
+    if economy.live_arena_kind(slot) == Some(super::Level2DynamicArenaKind::CastleDefender)
+        && let Some(row) = economy.castle_children.iter()
+            .find(|row| row.active && row.source_entity_index == slot && row.source_class == 3 && row.model == 3)
+    {
+        return Ok((row.pending_damage, row.pending_attacker_entity_index));
+    }
     if let Some(row) = economy
         .authored_trees
         .iter()
@@ -2137,6 +2143,14 @@ impl ArenaTargets<'_, '_> {
         }
         smoke_bounty!(economy.model59_smoke_children);
         smoke_bounty!(economy.model13_spawned_children);
+        if economy.live_arena_kind(slot) == Some(super::Level2DynamicArenaKind::CastleDefender)
+            && let Some(row) = economy.castle_children.iter_mut()
+                .find(|row| row.active && row.source_entity_index == slot && row.source_class == 3 && row.model == 3)
+        {
+            // The real sub_60EA0 balloon owns this mailbox. A raw packet at
+            // its address is only a projection and must never receive damage.
+            return Ok(edit(&mut row.pending_damage, &mut row.pending_attacker_entity_index));
+        }
         if let Some(row) = economy
             .authored_trees
             .iter_mut()

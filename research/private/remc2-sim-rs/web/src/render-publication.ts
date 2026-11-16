@@ -1,5 +1,5 @@
 /**
- * MCPO v4 is one copied, coherent native publication. Decode before retaining
+ * MCPO v5 is one copied, coherent native publication. Decode before retaining
  * the result: a WebAssembly memory view can be overwritten or detached on growth.
  * No references to the supplied bytes survive this call.
  */
@@ -87,7 +87,7 @@ const availability = ['ready', 'not_acquired', 'invalid_holder', 'invalid_caster
 export function decodeRenderPublication(bytes: Uint8Array) {
   const r = new Reader(bytes);
   if (r.u8() !== 0x4d || r.u8() !== 0x43 || r.u8() !== 0x50 || r.u8() !== 0x4f) throw new Error('invalid render publication magic');
-  if (r.u32() !== 4) throw new Error('unsupported render publication version');
+  if (r.u32() !== 5) throw new Error('unsupported render publication version');
   if (r.u32() !== bytes.byteLength) throw new Error('render publication length mismatch');
   const runtime_id = r.u64();
   const runtime_generation = r.u64();
@@ -158,6 +158,17 @@ export function decodeRenderPublication(bytes: Uint8Array) {
   const player_hand_selection_flash_ticks = [r.u8(), r.u8()];
   if (player_hand_selection_flash_ticks.some(ticks => ticks > 8))
     throw new Error('invalid hand selection flash ticks');
+  const castle = r.option(() => {
+    const stage = r.u8();
+    if (stage > 7) throw new Error('invalid Castle stage');
+    return { stage, panel_selector: r.u16(), icon_selector: r.u16(),
+      life: r.i32(), max_life: r.i32(), mana: r.i32(), max_mana: r.i32(), owner_mana_aggregate: r.i32() };
+  });
+  const balloon_panel_selector = r.u16(), balloon_icon_selector = r.u16();
+  const balloons = Array.from({ length: 3 }, () => ({ present: r.bool(), life: r.i32(),
+    max_life: r.i32(), mana: r.i32(), max_mana: r.i32() }));
+  const source_top_status = { castle_rows: castle === null ? [] : [castle], balloon_panel_selector, balloon_icon_selector, balloons,
+    mana_goal_percent: r.i16(), goal_palette_index: r.u8() };
   r.end();
   return freeze({ runtime_id, runtime_generation, runtime_mode, identity, terrain_mutation_sequence,
     value: { tick, effect_head, player_pose, player_motion, player_vitals,
@@ -166,7 +177,7 @@ export function decodeRenderPublication(bytes: Uint8Array) {
       player_immobilized_ticks, source_camera_pose,
       source_camera_fov, spell_menu_has_any_spell, spell_menu_wizard_colors, spell_menu_panels_opaque,
       player_spells, objective_progress, objective_textbox_ticks,
-      objective_secret_announcement_record, exit_sequence_active, player_hand_selection_flash_ticks,
+      objective_secret_announcement_record, exit_sequence_active, player_hand_selection_flash_ticks, source_top_status,
       presentation_entities } });
 }
 
