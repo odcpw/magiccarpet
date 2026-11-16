@@ -1,5 +1,34 @@
 # Shared-engine delivery plan
 
+## Browser-local Original rendering — 2026-11-16
+
+Oliver now authorizes actual Three.js world rendering in the browser with the
+existing native Rust backend. Render terrain and original source sprites/effects
+locally from native world state and owner assets; do not implement WASM or a
+second gameplay simulation. Preserve the indexed streamed PoC for comparison.
+Root owns the renderer, HUD integration and usable desktop/touch controls;
+browser_world_bridge owns the geometry publication and lifecycle bridge;
+browser_world_assets owns the source terrain/TMAP bundle. Reuse native source
+selectors, exact scene identity and terrain revisions. Check actual gameplay,
+inspect representative frames and measure real browser frame distributions;
+prove the geometry route does not fetch streamed world frames. Keep the existing
+Modern/Voxel experiment and ongoing Original port work untouched.
+
+Delivered geometry feed `9d187125`/`017c8b0d` and source asset bundle
+`918712f3`/`63cf5cc8`; the browser now renders source terrain and sprites locally,
+with GPU indexed blending, wrapped-map/frustum culling, ordered particle batches
+and partial GPU copies. Root checked live desktop gameplay, hand assignment,
+casting, maps, mouse capture, pause/reset/save/load and touch steering/casting/
+assignment. Request tracing confirms no streamed world-image endpoints in
+geometry mode. The final 1280×960 3090 sample averaged 56.9 FPS with 16.8 ms p95
+on the 60 Hz desktop; phone checks use emulation, not a physical-phone FPS claim.
+Portrait HUD duplication and a pending-control/read race found during checks
+are fixed with browser regressions. Live geometry is on port 8882, the retained
+indexed PoC on 8883, served by separate transient user services and saves.
+Source shadow/reflection passes, dynamic palette effects, full map symbols,
+audio and some original menus remain open; exact SS2 global timing and original
+fixed-point raster parity are not claimed. Full mission acceptance remains open.
+
 ## Original Level 1 browser adapter — 2026-11-16
 
 Oliver explicitly requests playable Level 1 with original assets in Three.js,
@@ -18,7 +47,7 @@ The first integrated Three.js/native browser route now shows source terrain,
 sprites, palette, HUD, objective and maps. Actual 3090 Chrome checks pass flight,
 spell-grid hand assignment, casting with native mana use, pause tick stability,
 and persistent save/load restoring tick and pose, with no browser errors. The
-private static route is `http://3090.bumblebee-hue.ts.net:8882/`; exact launch and
+retained streamed route is `http://3090.bumblebee-hue.ts.net:8883/`; exact launch and
 verification commands are in `web/ORIGINAL_BROWSER.md` under the Rust workspace.
 This route displays Rust's existing software world renderer through Three.js;
 it is not yet a Three.js geometry renderer or standalone WASM. Audio, original

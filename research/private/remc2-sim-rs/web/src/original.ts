@@ -3,6 +3,8 @@ import { decodeOriginalFrame, ORIGINAL_HEIGHT, ORIGINAL_WIDTH, OriginalSceneHist
   type OriginalFrame, type IndexedBlendTables } from './original-adapter';
 import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-hud';
 import { decodeRenderPublication } from './render-publication';
+import { decodeWorldFrame, decodeTerrain, type WorldFrame } from './original-world-data';
+import { OriginalWorldRenderer } from './original-world-renderer';
 
 const API = '/original-api';
 const DISPLAY_WIDTH = 640, DISPLAY_HEIGHT = 480;
@@ -24,12 +26,15 @@ let inputSequence = 0, controlVersion = 0;
 let connected = false;
 let leavingPage = false;
 let polling = false;
-let lastFrame: OriginalFrame | null = null;
+let lastFrame: OriginalFrame | WorldFrame | null = null;
+let terrainIdentity = '';
+const emptyScene = new Uint8Array(64000), hudCoverage = new Uint8Array(640 * 480);
 let tables: IndexedBlendTables | undefined;
 let hud: OriginalHud;
 let spellMenu: SpellMenu | null = null;
 let nativeMenus = { map_open: false, spells_open: false };
 let hoveredSlot = 0, hoveredTier = 0, intentionalUnlock = false;
+let touchHand: 'left' | 'right' = 'left';
 const history = new OriginalSceneHistory();
 
 class IndexedDisplay {
@@ -86,6 +91,7 @@ class IndexedDisplay {
 
 interface BridgeStatus {
   ready: boolean;
+  renderer?: 'indexed' | 'geometry';
   error?: string | null;
   running?: boolean;
   paused?: boolean;
@@ -136,14 +142,17 @@ function showMenu(text: string): void {
   for (const id of ['save', 'load', 'reset']) element(id).hidden = !started;
   menuButton.hidden = !started;
   element('touch').hidden = true;
+  element('look-hint').hidden = true;
 }
 function hideMenu(): void {
   curtain.hidden = true; menuButton.hidden = false; element('hint').hidden = false; element('touch').hidden = false;
+  element('look-hint').hidden = false;
 }
 function fail(error: unknown): void {
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
   if (leavingPage) return;
   playing = false; connected = false; clearInput();
+  if (display instanceof OriginalWorldRenderer) display.setPlaying(false);
   showMenu(error instanceof Error ? error.message : String(error));
   element('retry').hidden = false;
   console.error(error);
@@ -168,6 +177,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       if (playing) hideMenu();
     }
     if (action !== 'start' && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
+    if (display instanceof OriginalWorldRenderer) display.setPlaying(playing);
   } catch (error) {
     // A refused save/selection leaves the existing native owner intact.
     message.textContent = error instanceof Error ? error.message : String(error);
@@ -177,17 +187,22 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   finally { controlsPending--; busy = controlsPending > 0; }
 }
 
-let display: IndexedDisplay;
+let display: IndexedDisplay | OriginalWorldRenderer;
 let packetCount = 0, bytesReceived = 0, lastArrival = 0;
 const intervals: number[] = [];
 async function pollFrame(): Promise<void> {
   const version = controlVersion;
   const before = performance.now();
   try {
-    const response = await fetch(API + '/frame', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    // A lifecycle request may be queued behind an input POST. Do not start a
+    // read in that window: it can return the previous paused publication after
+    // resume has already acknowledged. Older reads are rejected by version.
+    if (busy) return;
+    const geometry = display instanceof OriginalWorldRenderer;
+    const response = await fetch(API + (geometry ? '/world-frame' : '/frame'), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (!response.ok) { await responseJson(response); return; }
     const data = await response.arrayBuffer();
-    const frame = decodeOriginalFrame(data);
+    const frame = geometry ? decodeWorldFrame(data) : decodeOriginalFrame(data);
     if (version !== controlVersion) return;
     if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) return;
     const query = '?sequence=' + frame.sequence;
@@ -206,6 +221,9 @@ async function pollFrame(): Promise<void> {
     if (version !== controlVersion) return;
     lastFrame = frame;
     nativeMenus = state.source_menu_admission ?? { map_open: false, spells_open: false };
+    document.body.dataset.gameMenu = element('touch').dataset.menu = nativeMenus.spells_open ? 'spells' : 'flight';
+    element('touch-hand').hidden = !nativeMenus.spells_open;
+    element('touch-spells').textContent = nativeMenus.spells_open ? 'Close spells' : 'Spells';
     const source = observation.value;
     spellMenu = { open: nativeMenus.spells_open, hovered_slot: hoveredSlot, hovered_tier: hoveredTier,
       mana: source.player_vitals.mana, wizard_colors: source.spell_menu_wizard_colors,
@@ -217,8 +235,28 @@ async function pollFrame(): Promise<void> {
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu };
     // Flight history is independent of map presentation and remains at the
     // correct native revision while the source split map is displayed.
-    const scene = history.compose(frame, tables);
-    let visible = frame;
+    if (display instanceof OriginalWorldRenderer) {
+      const worldFrame = frame as WorldFrame;
+      const epoch = `${frame.runtimeGeneration}:${frame.sessionGeneration}:${worldFrame.terrainRevision}`;
+      if (epoch !== terrainIdentity) {
+        const terrainResponse = await fetch(API + '/terrain' + query, { signal: AbortSignal.timeout(10000) });
+        if (terrainResponse.status === 410) return;
+        if (!terrainResponse.ok) { await responseJson(terrainResponse); return; }
+        const terrain = decodeTerrain(await terrainResponse.arrayBuffer());
+        if (version !== controlVersion) return;
+        display.updateTerrain(terrain); terrainIdentity = epoch;
+      }
+      if (state.minimap) hudState.minimap = { ...state.minimap, terrain: display.minimap(source.source_camera_pose) };
+      if (nativeMenus.map_open) { hudState.minimap = undefined; hudState.top_bar_visible = false; }
+      // Source art stays indexed. Opaque panels avoid flattening a translucent
+      // HUD against an invented background; the 3D world is never read to CPU.
+      hudState.panels_opaque = true;
+      const overlay = hud.compose(emptyScene, frame.palette, hudState, hudCoverage);
+      display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused);
+    } else {
+    const sceneFrame = frame as OriginalFrame;
+    const scene = history.compose(sceneFrame, tables);
+    let visible = sceneFrame;
     if (nativeMenus.map_open) {
       const mapResponse = await fetch(API + '/world-map' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
       if (mapResponse.status === 410) return;
@@ -229,6 +267,7 @@ async function pollFrame(): Promise<void> {
     }
     if (version !== controlVersion) return;
     display.present(hud.compose(nativeMenus.map_open ? visible.indices : scene, visible.palette, hudState), visible.palette);
+    }
     Object.assign(window, { originalState: state, originalObservation: observation });
     if (started && !busy && source.source_menu_admission?.spells_open && document.pointerLockElement === canvas) {
       intentionalUnlock = true; document.exitPointerLock();
@@ -239,7 +278,7 @@ async function pollFrame(): Promise<void> {
     const sorted = [...intervals].sort((a,b) => a-b);
     Object.assign(window, { originalMetrics: { gpu: display.gpu, render_tick: frame.tick.toString(),
       runtime_generation: frame.runtimeGeneration.toString(), session_generation: frame.sessionGeneration.toString(),
-      sequence: frame.sequence.toString(), scene_revision: frame.sceneRevision.toString(), packets: packetCount,
+      sequence: frame.sequence.toString(), scene_revision: ('sceneRevision' in frame ? frame.sceneRevision : frame.terrainRevision).toString(), packets: packetCount,
       received_hz: intervals.length ? intervals.length * 1000 / intervals.reduce((a,b) => a+b, 0) : 0,
       delivery_p95_ms: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * .95))] ?? 0,
       bytes_received: bytesReceived, source_width: ORIGINAL_WIDTH, source_height: ORIGINAL_HEIGHT,
@@ -270,24 +309,41 @@ element('fullscreen').addEventListener('click', () => {
   else void element('stage').requestFullscreen().catch(error => { message.textContent = String(error); });
 });
 canvas.addEventListener('contextmenu', event => event.preventDefault());
+const touches = new Map<number, { x: number; y: number }>();
+const hudPoint = (x: number, y: number): [number, number] => {
+  if (display instanceof OriginalWorldRenderer) return display.hudPoint(x, y);
+  const rect = canvas.getBoundingClientRect(); return [(x - rect.left) * 640 / rect.width, (y - rect.top) * 480 / rect.height];
+};
 canvas.addEventListener('pointerdown', event => {
   if (!playing) return;
   if (nativeMenus.spells_open && spellMenu) {
     event.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const hit = hud.hitTest((event.clientX-rect.left)*640/rect.width, (event.clientY-rect.top)*480/rect.height, spellMenu);
+    const hit = hud.hitTest(...hudPoint(event.clientX, event.clientY), spellMenu);
     if (hit) { hoveredSlot = hit.hoveredSlot; hoveredTier = hit.hoveredTier; }
     if (hit?.spellId != null && hit.tier != null && (event.button === 0 || event.button === 2))
-      void control('assign_spell', { spell_id: hit.spellId, tier: hit.tier, hand: event.button === 0 ? 'left' : 'right' });
+      void control('assign_spell', { spell_id: hit.spellId, tier: hit.tier, hand: event.pointerType === 'touch' ? touchHand : event.button === 0 ? 'left' : 'right' });
     return;
   }
   canvas.focus();
+  if (event.pointerType === 'touch') {
+    event.preventDefault(); canvas.setPointerCapture(event.pointerId);
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY }); return;
+  }
   if (event.pointerType === 'mouse' && !new URLSearchParams(location.search).has('automation') && document.pointerLockElement !== canvas) {
     void canvas.requestPointerLock().catch(() => undefined);
     return;
   }
   mouseButtons.add(event.button);
 });
+canvas.addEventListener('pointermove', event => {
+  const prior = touches.get(event.pointerId);
+  if (!prior || !playing || nativeMenus.spells_open) return;
+  mouseX = Math.max(-64, Math.min(64, mouseX + (event.clientX - prior.x) * .65));
+  mouseY = Math.max(-64, Math.min(64, mouseY + (event.clientY - prior.y) * .65));
+  prior.x = event.clientX; prior.y = event.clientY;
+});
+canvas.addEventListener('pointerup', event => touches.delete(event.pointerId));
+canvas.addEventListener('pointercancel', event => touches.delete(event.pointerId));
 let hadPointerLock = false;
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
@@ -298,8 +354,7 @@ document.addEventListener('pointerlockchange', () => {
 window.addEventListener('pointerup', event => mouseButtons.delete(event.button));
 window.addEventListener('mousemove', event => {
   if (playing && nativeMenus.spells_open && spellMenu) {
-    const rect = canvas.getBoundingClientRect();
-    const hit = hud.hitTest((event.clientX-rect.left)*640/rect.width, (event.clientY-rect.top)*480/rect.height, spellMenu);
+    const hit = hud.hitTest(...hudPoint(event.clientX, event.clientY), spellMenu);
     if (hit) { hoveredSlot = hit.hoveredSlot; hoveredTier = hit.hoveredTier; }
     return;
   }
@@ -329,6 +384,9 @@ window.addEventListener('keyup', event => {
 window.addEventListener('blur', () => { clearInput(); if (playing) void control('pause'); });
 window.addEventListener('beforeunload', () => { leavingPage = true; connected = false; playing = false; clearInput(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (playing) void control('pause'); } });
+element('touch-map').addEventListener('click', () => void control('map'));
+element('touch-hand').addEventListener('click', () => { touchHand = touchHand === 'left' ? 'right' : 'left'; element('touch-hand').textContent = touchHand === 'left' ? 'Left hand' : 'Right hand'; });
+element('touch-spells').addEventListener('click', () => void control('menu', { menu_action: nativeMenus.spells_open ? 'close_spell_menu' : 'open_spell_menu' }));
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-key],[data-cast]')) {
   button.addEventListener('pointerdown', event => {
     event.preventDefault(); button.setPointerCapture(event.pointerId);
@@ -340,7 +398,6 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-key],[d
 
 async function boot(): Promise<void> {
   try {
-    display = new IndexedDisplay();
     let status: BridgeStatus | null = null;
     for (let attempt = 0; attempt < 600; attempt++) {
       status = await responseJson<BridgeStatus>(await fetch(API + '/status', { cache: 'no-store', signal: AbortSignal.timeout(10000) }));
@@ -349,6 +406,11 @@ async function boot(): Promise<void> {
       await new Promise(resolve => window.setTimeout(resolve, 300));
     }
     if (!status?.ready) throw new Error('The original game did not finish loading.');
+    if (status.renderer === 'geometry') {
+      document.body.dataset.renderer = 'geometry';
+      display = await OriginalWorldRenderer.load(canvas, API);
+      display.onError = fail;
+    } else display = new IndexedDisplay();
     hud = await OriginalHud.load(API); tables = hud.tables;
     inputSequence = status.next_sequence ?? 0; connected = true;
     playButton.disabled = false; message.textContent = 'The original world is ready.';

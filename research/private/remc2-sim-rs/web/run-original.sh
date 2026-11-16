@@ -9,4 +9,4 @@ fi
 cd "$web_dir"
 # This entry uses the native Rust backend and does not build WASM.
 pnpm exec vite build --mode original --outDir "$client_dir" --emptyOutDir
-exec python3 "$web_dir/original_bridge.py" --web-root "$client_dir" "$@"
+exec python3 "$web_dir/original_bridge.py" --renderer geometry --web-root "$client_dir" "$@"

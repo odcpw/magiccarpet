@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 
 // This checks the real installed native backend, never a mocked game.
 const output = process.env.ORIGINAL_PROOF;
 if (!output?.startsWith('/')) throw new Error('Set ORIGINAL_PROOF to an absolute disk-backed output directory');
 await mkdir(output, { recursive: true });
-const errors = [], checks = [];
+const errors = [], checks = [], routes = [];
+let rendering = null;
+let mobile = null;
+let pendingControls = 0;
+const readsDuringControl = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME ?? '/opt/google/chrome/chrome',
   headless: process.env.HEADLESS === '1', args: ['--ozone-platform=x11', '--disable-dev-shm-usage'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 960 }, deviceScaleFactor: 1 });
@@ -14,6 +19,13 @@ page.on('pageerror', e => errors.push(String(e)));
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('response', r => { if (r.status() >= 400) errors.push(`${r.status()} ${r.url()}`); });
 page.on('request', r => { if (r.url().endsWith('/control')) console.log('CONTROL', r.postData()); });
+page.on('request', r => { if (r.url().includes('/original-api/')) routes.push(new URL(r.url()).pathname); });
+page.on('request', r => {
+  if (r.url().endsWith('/original-api/control')) pendingControls++;
+  else if (pendingControls && /\/original-api\/(world-frame|frame)(\?|$)/.test(r.url())) readsDuringControl.push(r.url());
+});
+const finished = r => { if (r.url().endsWith('/original-api/control')) pendingControls--; };
+page.on('requestfinished', finished); page.on('requestfailed', finished);
 const wait = async (fn, arg) => page.waitForFunction(fn, arg, { timeout: 15000 });
 const state = () => page.evaluate(() => window.originalState);
 const key = async (code, duration = 150) => {
@@ -31,6 +43,13 @@ try {
   if (await page.locator('#curtain').isVisible()) await page.locator('#pause').click();
   await wait(() => window.originalMetrics?.playing);
   await capture('opening');
+  if (await page.evaluate(() => !!window.originalWorldMetrics)) {
+    await wait(() => window.originalWorldMetrics?.samples > 180);
+    rendering = await page.evaluate(() => window.originalWorldMetrics);
+    await capture('local-world');
+    assert.ok(rendering.triangles > 100 && rendering.sprites > 0);
+    checks.push('local terrain and sprite geometry renders');
+  }
   const initial = await state();
   await page.keyboard.down('w'); await key('ArrowRight', 650); await page.keyboard.up('w');
   await page.waitForTimeout(200);
@@ -95,10 +114,73 @@ try {
     const r = el.getBoundingClientRect(); return r.width <= innerWidth + 1 && r.height <= innerHeight + 1;
   });
   assert.ok(fits); checks.push('phone viewport fits');
+  if (rendering) {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+    await context.addCookies(await page.context().cookies());
+    const phone = await context.newPage();
+    phone.on('pageerror', e => errors.push(String(e)));
+    phone.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+    phone.on('request', r => { if (r.url().includes('/original-api/')) routes.push(new URL(r.url()).pathname); });
+    await phone.goto(process.env.ORIGINAL_URL ?? 'http://127.0.0.1:8878/original.html');
+    await phone.waitForFunction(() => !document.querySelector('#play').disabled);
+    await phone.locator('#play').tap();
+    await phone.waitForFunction(() => window.originalMetrics?.packets > 3);
+    const sourceYaw = await phone.evaluate(() => window.originalState.player_pose.yaw);
+    const cdp = await context.newCDPSession(phone);
+    const touch = async (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y, id: 1 }] });
+    await touch('touchStart', 260, 390);
+    for (let i = 1; i <= 6; i++) { await touch('touchMove', 260 + i * 8, 390 - i * 3); await phone.waitForTimeout(40); }
+    await touch('touchEnd', 308, 372);
+    await phone.waitForFunction(yaw => window.originalState.player_pose.yaw !== yaw, sourceYaw);
+    checks.push('touch drag changes authoritative steering');
+    const mana = await phone.evaluate(() => window.originalState.hud.local_player_mana);
+    const fire = await phone.locator('[data-cast]').boundingBox(); assert.ok(fire);
+    await touch('touchStart', fire.x + fire.width / 2, fire.y + fire.height / 2); await phone.waitForTimeout(300); await touch('touchEnd', 0, 0);
+    await phone.waitForFunction(mana => window.originalState.hud.local_player_mana < mana, mana);
+    checks.push('touch Cast spends native mana');
+    await phone.locator('#touch-spells').tap();
+    await phone.waitForFunction(() => window.originalState.source_menu_admission?.spells_open);
+    await phone.screenshot({ path: `${output}/phone-spells.png` });
+    const canvasRect = await phone.locator('#original').boundingBox(); assert.ok(canvasRect);
+    const logicalHeight = canvasRect.height * 640 / canvasRect.width;
+    await phone.touchscreen.tap(canvasRect.x + 80 * canvasRect.width / 640, canvasRect.y + (logicalHeight - 480 + 424) * canvasRect.width / 640);
+    await phone.waitForFunction(() => window.originalState.hud.left.raw_spell_selector === 1);
+    await phone.locator('#touch-spells').tap();
+    await phone.waitForFunction(() => !window.originalState.source_menu_admission?.spells_open);
+    checks.push('touch source grid assigns Possession to left hand');
+    const phoneImage = await phone.screenshot({ path: `${output}/phone-playing.png` });
+    // Regression for the portrait shader repeating the source HUD halfway
+    // down the display. Decode the actual compositor capture, not mock pixels.
+    const rgb = execFileSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+      { input: phoneImage, maxBuffer: 2 * 1024 * 1024 });
+    let repeated = 0;
+    for (let middle = 273; middle <= 279; middle++) {
+      let equal = 0;
+      for (let y = 1; y < 28; y++) for (let x = 80; x < 390; x++) {
+        const a = (y * 390 + x) * 3, b = ((middle + y) * 390 + x) * 3;
+        if (rgb[a] === rgb[b] && rgb[a + 1] === rgb[b + 1] && rgb[a + 2] === rgb[b + 2]) equal++;
+      }
+      repeated = Math.max(repeated, equal / (27 * 310));
+    }
+    assert.ok(repeated < .8, `Portrait HUD repeated into the scene (${repeated})`);
+    checks.push('portrait screenshot has one top HUD');
+    await phone.waitForTimeout(1000);
+    mobile = await phone.evaluate(() => window.originalWorldMetrics);
+    await phone.locator('#menu').tap();
+    await phone.waitForFunction(() => !window.originalMetrics.playing);
+    await context.close();
+  }
+  if (rendering) {
+    assert.ok(routes.includes('/original-api/world-frame'));
+    assert.ok(!routes.includes('/original-api/frame') && !routes.includes('/original-api/world-map'));
+    checks.push('network trace contains no streamed world image requests');
+  }
   assert.deepEqual(errors, []);
+  assert.deepEqual(readsDuringControl, [], 'scene reads must wait for pending lifecycle controls');
+  checks.push('scene polling waits for lifecycle acknowledgement');
   const metrics = await page.evaluate(() => window.originalMetrics);
-  await writeFile(`${output}/result.json`, JSON.stringify({ checks, errors, metrics }, null, 2));
-  console.log(JSON.stringify({ checks, errors, metrics }));
+  await writeFile(`${output}/result.json`, JSON.stringify({ checks, errors, metrics, rendering, mobile, routes: [...new Set(routes)] }, null, 2));
+  console.log(JSON.stringify({ checks, errors, metrics, rendering, mobile }));
 } catch (error) {
   await capture('failure');
   console.error(error);

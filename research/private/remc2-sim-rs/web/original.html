@@ -11,6 +11,7 @@
     body{display:grid;place-items:center}button{font:inherit;color:inherit;min-height:44px;padding:.65rem 1rem;border:1px solid #877758;background:#242722;cursor:pointer;border-radius:3px}
     button:hover{background:#393d30}button:disabled{opacity:.45;cursor:wait}button:focus-visible{outline:2px solid #e8ca87;outline-offset:3px}
     #stage{width:min(100vw,133.3333vh);aspect-ratio:4/3;position:relative;background:#000}
+    body[data-renderer=geometry] #stage{width:100vw;height:100dvh;aspect-ratio:auto}
     canvas{display:block;width:100%;height:100%;image-rendering:pixelated;outline:none;touch-action:none}
     #curtain{position:absolute;inset:0;display:grid;place-items:center;background:#060909dd;padding:20px}
     #curtain[hidden], [hidden]{display:none!important}.panel{max-width:510px;text-align:center;padding:28px;background:#101612f2;border:1px solid #665c43;box-shadow:0 12px 60px #0008}
@@ -18,10 +19,17 @@
     #message{white-space:pre-wrap;line-height:1.5;margin:.7rem 0 1.1rem}.actions{display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
     #controls{line-height:1.7;color:#aab5a6;font-size:13px;margin:18px 0 0}#menu{position:fixed;right:max(10px,env(safe-area-inset-right));bottom:10px;z-index:3;background:#101912b8}
     #hint{position:fixed;bottom:9px;left:10px;right:70px;font-size:12px;color:#bbb9a5;pointer-events:none;text-shadow:0 1px 3px #000}
-    #touch{position:fixed;bottom:14px;left:14px;right:14px;display:none;justify-content:space-between;pointer-events:none;gap:8px}
+    #touch{position:fixed;bottom:max(14px,env(safe-area-inset-bottom));left:max(14px,env(safe-area-inset-left));right:max(14px,env(safe-area-inset-right));display:none;justify-content:space-between;pointer-events:none;gap:8px;align-items:end}
     #touch button{pointer-events:auto;min-width:46px;touch-action:none;background:#102017bb;padding:.5rem}
     #touch .pad{display:grid;grid-template-columns:repeat(3,46px);gap:4px}#touch .cast{align-self:end;min-width:70px}
+    #touch .tools{display:flex;flex-direction:column;gap:6px}#look-hint{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#eee4ca8c;font-size:12px;pointer-events:none;display:none}
     @media(pointer:coarse){#touch{display:flex}#hint{display:none}.panel{padding:18px}#menu{padding:.4rem .8rem;bottom:110px}}
+    @media(pointer:coarse){#look-hint{display:block}}
+    @media(pointer:coarse){#menu{right:50%;transform:translateX(50%);bottom:max(14px,env(safe-area-inset-bottom))}#look-hint{bottom:74px}}
+    #touch[data-menu=spells] .pad,#touch[data-menu=spells] .cast,#touch[data-menu=spells] #touch-map{display:none}
+    #touch[data-menu=spells] .tools{position:fixed;bottom:140px;right:14px;flex-direction:row}
+    body[data-game-menu=spells] #menu,body[data-game-menu=spells] #look-hint{display:none}
+    @media(max-height:500px){.panel{padding:14px}#controls{display:none}h1{font-size:25px}h2{margin:.2rem 0 .4rem}#message{margin:.4rem 0 .6rem}#touch .tools{flex-direction:row}#menu{bottom:126px}}
   </style>
 </head>
 <body>
@@ -51,8 +59,9 @@
       <span></span><button data-key="KeyW" aria-label="Accelerate">▲</button><span></span>
       <button data-key="ArrowLeft" aria-label="Turn left">◀</button><button data-key="KeyS" aria-label="Slow down">▼</button><button data-key="ArrowRight" aria-label="Turn right">▶</button>
     </div>
-    <button class="cast" data-cast="selected">Cast</button>
+    <div class="tools"><button id="touch-map" aria-label="Toggle map">Map</button><button id="touch-hand" hidden>Left hand</button><button id="touch-spells" aria-label="Toggle spells">Spells</button><button class="cast" data-cast="selected">Cast</button></div>
   </nav>
+  <span id="look-hint" hidden>Drag the view to steer</span>
   <script type="module" src="/src/original.ts"></script>
 </body>
 </html>

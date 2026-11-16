@@ -121,9 +121,13 @@ export class OriginalHud {
   }
 
   /** Returns a fresh top-down 640×480 indexed frame; never mutates scene history. */
-  compose(scene: Uint8Array, paletteRGB8: Uint8Array, state: OriginalHudState): Uint8Array {
+  compose(scene: Uint8Array, paletteRGB8: Uint8Array, state: OriginalHudState, coverage?: Uint8Array): Uint8Array {
     if (scene.length !== 64000 || paletteRGB8.length !== 768) throw new Error('Invalid Original HUD frame');
+    if (coverage && coverage.length !== 640 * 480) throw new Error('Invalid Original HUD coverage');
+    coverage?.fill(0);
     const result = scene.slice();
+    const sceneCoverage = coverage ? new Uint8Array(64000) : null;
+    const scenePixel = (pos: number, color: number) => { result[pos] = color; if (sceneCoverage) sceneCoverage[pos] = 255; };
     const fullMap = state.world_map;
     const map = fullMap ?? state.minimap;
     const hud = state.hud;
@@ -140,8 +144,8 @@ export class OriginalHud {
         const i = y * 64 + x, pos = y * 320 + x, terrain = minimap.terrain[i]!;
         if (!Number.isInteger(terrain) || terrain < 0 || terrain > 255 || (minimap.coverage[i] !== 0 && minimap.coverage[i] !== 1)) throw new Error('Invalid Original minimap pixels');
         if (aperture(x, y)) {
-          if (state.panels_opaque) result[pos] = terrain;
-          else if (minimap.coverage[i]) result[pos] = this.tables.normal[(result[pos]! << 8) | terrain]!;
+          if (state.panels_opaque) scenePixel(pos, terrain);
+          else if (minimap.coverage[i]) scenePixel(pos, this.tables.normal[(result[pos]! << 8) | terrain]!);
         }
       }
       const bound = (row: { generation: number | string; tick: number | string }) => {
@@ -161,11 +165,11 @@ export class OriginalHud {
           const x = x0 + dx, y = y0 + dy, si = dy * w + dx;
           if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight || (!fullMap && !aperture(x, y)) || (symbol && !this.blob[symbol.mask.offset + si])) continue;
           const pos = y * 320 + x, color = symbol ? this.blob[symbol.indices.offset + si]! : row.palette_index;
-          result[pos] = row.kind === 3 ? this.tables.normal[(result[pos]! << 8) | color]! : color;
+          scenePixel(pos, row.kind === 3 ? this.tables.normal[(result[pos]! << 8) | color]! : color);
         }
       }
       if (fullMap) {
-        const cross = (x: number, y: number) => { const pos = y * 320 + x; result[pos] = this.tables.normal[(this.mapCrossColor << 8) | result[pos]!]!; };
+        const cross = (x: number, y: number) => { const pos = y * 320 + x; scenePixel(pos, this.tables.normal[(this.mapCrossColor << 8) | result[pos]!]!); };
         cross(94, 100);
         for (let arm = 1; arm <= 15; arm++) { cross(94 - arm, 100); cross(94 + arm, 100); cross(94, 100 - arm); cross(94, 100 + arm); }
       }
@@ -185,7 +189,7 @@ export class OriginalHud {
             const dx = Math.abs(x1 - x), sx = x < x1 ? 1 : -1, dy = -Math.abs(y1 - y), sy = y < y1 ? 1 : -1;
             let err = dx + dy;
             for (;;) {
-              if (x >= 0 && x < mapWidth && y >= 0 && y < mapHeight) result[y * 320 + x] = mark.palette_index;
+              if (x >= 0 && x < mapWidth && y >= 0 && y < mapHeight) scenePixel(y * 320 + x, mark.palette_index);
               if (x === x1 && y === y1) break;
               const twice = 2 * err;
               if (twice >= dy) { err += dy; x += sx; }
@@ -200,17 +204,19 @@ export class OriginalHud {
         const sourceY = y * 2, phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
         const half = fullMap ? 0 : (32 * this.aperture[phase * 4]!) >> 8;
         if (!fullMap && (x < 32 - half + 3 || x >= 32 + half - 3)) continue;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) result[(y + dy) * 320 + x + dx] = mark.palette_index;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (dx || dy) scenePixel((y + dy) * 320 + x + dx, mark.palette_index);
       }
     }
     // Unity's source layout is 640×480, scaled against a 320×200 source world.
     const screen = new Uint8Array(640 * 480);
     for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) screen[y * 640 + x] = result[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
+    if (coverage && sceneCoverage) for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) coverage[y * 640 + x] = sceneCoverage[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
     const blend = this.tables.normal;
     const pixel = (x: number, y: number, index: number, transparent = false) => {
       if (x < 0 || x >= 640 || y < 0 || y >= 480) return;
       const pos = y * 640 + x;
       screen[pos] = transparent ? blend[(screen[pos]! << 8) | index]! : index;
+      if (coverage) coverage[pos] = 255;
     };
     const sprite = (selector: number, x: number, y: number, transparent = false, tint?: number) => {
       const row = this.sprites.get(selector);
@@ -367,6 +373,7 @@ export class OriginalHud {
             const pos = y * 640 + x;
             screen[pos] = blend[(this.objectiveBackground << 8) | screen[pos]!]!;
             screen[pos] = blend[(this.objectiveBackground << 8) | screen[pos]!]!;
+            if (coverage) coverage[pos] = 255;
           }
         }
       }
@@ -377,6 +384,7 @@ export class OriginalHud {
       // Source background uses TABLESN[CLRN[0] << 8 | destination].
       for (let y = row.blend_y; y < row.blend_y + row.blend_height; y++) for (let x = row.blend_x; x < row.blend_x + row.blend_width; x++) {
         const at = y * 640 + x; screen[at] = blend[(this.objectiveBackground << 8) | screen[at]!]!;
+        if (coverage) coverage[at] = 255;
       }
       for (let y = 0; y < row.render_height; y++) for (let x = 0; x < row.render_width; x++) {
         const i = y * row.render_width + x;
