@@ -30,24 +30,31 @@ export interface ModernTree {
   renderParameter: number; renderHeight: number; x: number; y: number; z: number;
   life: number; controlFlags: number; classId: number; model: number; action: number; drawing: number;
 }
+export interface ModernManaSphere {
+  sphereId: number; sourceEntityIndex: number; ownerEntityIndex: number; authority: number;
+  active: number; classId: number; model: number; action: number; phase: number; renderMode: number;
+  x: number; y: number; z: number; yaw: number; velocityX: number; velocityY: number; verticalVelocity: number;
+  renderParameterIndex: number; baseTmap: number; logicalHeight: number; mana: number;
+  assignedCarrierId: number; attractionSource: number; radialWords: number; playerRelation: number;
+}
 export interface ModernFrame {
   runtimeGeneration: bigint; sessionGeneration: bigint; tick: bigint; sequence: bigint; epoch: bigint;
-  entities: ModernEntity[]; characters: ModernCharacter[]; buildings: ModernBuilding[]; castleChildren: ModernCastleChild[]; trees: ModernTree[];
+  entities: ModernEntity[]; characters: ModernCharacter[]; buildings: ModernBuilding[]; castleChildren: ModernCastleChild[]; trees: ModernTree[]; manaSpheres: ModernManaSphere[];
 }
 
 /** Reject truncation, unexpected ABI layouts, duplicate slots and stale native rows. */
 export function decodeModernFrame(buffer: ArrayBuffer): ModernFrame {
   const d = new DataView(buffer), len = d.byteLength;
-  if (len < 88 || d.getUint32(0, true) !== 0x3144434d || d.getUint16(4, true) !== 1 || d.getUint16(6, true) !== 88)
+  if (len < 96 || d.getUint32(0, true) !== 0x3144434d || d.getUint16(4, true) !== 1 || d.getUint16(6, true) !== 96)
     throw new Error('invalid MCD1 header');
   const u8 = (o: number) => d.getUint8(o), u16 = (o: number) => d.getUint16(o, true),
     i16 = (o: number) => d.getInt16(o, true), u32 = (o: number) => d.getUint32(o, true),
     i32 = (o: number) => d.getInt32(o, true), u64 = (o: number) => d.getBigUint64(o, true);
   const runtimeGeneration = u64(8), sessionGeneration = u64(16), tick = u64(24), sequence = u64(32), epoch = u64(40);
-  const counts = [u32(48), u32(56), u32(64), u32(72), u32(80)] as const, sizes = [u32(52), u32(60), u32(68), u32(76), u32(84)] as const;
-  if (sizes.some((n, i) => n !== [52, 96, 48, 96, 56][i]) || counts.some(n => n > 65536) ||
-      88 + counts.reduce((sum, n, i) => sum + n * sizes[i]!, 0) !== len) throw new Error('invalid MCD1 bounds');
-  let p = 88;
+  const counts = [u32(48), u32(56), u32(64), u32(72), u32(80), u32(88)] as const, sizes = [u32(52), u32(60), u32(68), u32(76), u32(84), u32(92)] as const;
+  if (sizes.some((n, i) => n !== [52, 96, 48, 96, 56, 64][i]) || counts.some(n => n > 65536) ||
+      96 + counts.reduce((sum, n, i) => sum + n * sizes[i]!, 0) !== len) throw new Error('invalid MCD1 bounds');
+  let p = 96;
   function rows<T>(index: number, keyOffset: number, decode: (o: number) => T): T[] {
     const result: T[] = [], seen = new Set<number>(), size = sizes[index]!;
     for (let i = 0; i < counts[index]!; i++, p += size) {
@@ -80,5 +87,17 @@ export function decodeModernFrame(buffer: ArrayBuffer): ModernFrame {
   const trees = rows(4, 28, o => ({slotGeneration:u32(o+24),entityIndex:u16(o+28),sourceId:u16(o+30),
     authoredIndex:u16(o+32),renderParameter:u16(o+34),renderHeight:u16(o+36),x:u16(o+38),y:u16(o+40),z:i16(o+42),
     life:i32(o+44),controlFlags:u32(o+48),classId:u8(o+52),model:u8(o+53),action:u8(o+54),drawing:u8(o+55)}));
-  return {runtimeGeneration, sessionGeneration, tick, sequence, epoch, entities, characters, buildings, castleChildren, trees};
+  // Mana rows are guarded by their native batch generation/tick rather than
+  // per-row identity. Inactive retained rows are part of the native census.
+  const manaSpheres: ModernManaSphere[] = [];
+  for (let i = 0; i < counts[5]; i++, p += 64) {
+    if (u32(p) !== 2 || u32(p+4) !== 64) throw new Error('invalid MCD1 mana row');
+    manaSpheres.push({sphereId:u32(p+8),sourceEntityIndex:u16(p+12),ownerEntityIndex:u16(p+14),
+      authority:u8(p+16),active:u8(p+17),classId:u8(p+18),model:u8(p+19),action:u8(p+20),phase:u8(p+21),
+      renderMode:u8(p+22),x:u16(p+24),y:u16(p+26),z:i16(p+28),yaw:i16(p+30),velocityX:i16(p+32),
+      velocityY:i16(p+34),verticalVelocity:i16(p+36),renderParameterIndex:u16(p+38),baseTmap:u16(p+40),
+      logicalHeight:u16(p+42),mana:i32(p+44),assignedCarrierId:u32(p+48),attractionSource:u32(p+52),
+      radialWords:u32(p+56),playerRelation:u32(p+60)});
+  }
+  return {runtimeGeneration, sessionGeneration, tick, sequence, epoch, entities, characters, buildings, castleChildren, trees, manaSpheres};
 }

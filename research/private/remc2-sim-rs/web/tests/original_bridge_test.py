@@ -84,9 +84,9 @@ class OriginalBridgeTest(unittest.TestCase):
                 modern = get(f'/original-api/modern-frame?sequence={sequence}')
                 from original_world import MODERN_HEADER
                 header = MODERN_HEADER.unpack_from(modern)
-                self.assertEqual(header[:8], (b'MCD1', 1, 88, outer, generation, tick, sequence, header[7]))
-                self.assertEqual(header[9::2], (52, 96, 48, 96, 56))
-                self.assertEqual(len(modern), 88 + sum(header[i] * header[i + 1] for i in (8, 10, 12, 14, 16)))
+                self.assertEqual(header[:8], (b'MCD1', 1, 96, outer, generation, tick, sequence, header[7]))
+                self.assertEqual(header[9::2], (52, 96, 48, 96, 56, 64))
+                self.assertEqual(len(modern), 96 + sum(header[i] * header[i + 1] for i in (8, 10, 12, 14, 16, 18)))
                 self.assertGreater(header[10], 0)
                 self.assertGreater(header[12], 0)
                 state['modern_epoch'] = header[7]

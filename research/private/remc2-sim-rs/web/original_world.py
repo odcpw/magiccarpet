@@ -141,8 +141,26 @@ class AuthoredTree(c.Structure):
                 ('action', c.c_uint8), ('drawing', c.c_uint8)]
 
 
-MODERN_HEADER = struct.Struct('<4sHHQQQQQIIIIIIIIII')
-if tuple(map(c.sizeof, (CampaignEntity, CharacterBase, Character, Building, CastleChild, AuthoredTree))) != (52, 80, 96, 48, 96, 56):
+class ManaSphere(c.Structure):
+    _fields_ = [('abi', c.c_uint32), ('size', c.c_uint32), ('sphere_id', c.c_uint32),
+                ('source_entity_index', c.c_uint16), ('owner_entity_index', c.c_uint16),
+                ('authority', c.c_uint8), ('active', c.c_uint8), ('class_id', c.c_uint8), ('model', c.c_uint8),
+                ('action', c.c_uint8), ('phase', c.c_uint8), ('render_mode', c.c_uint8), ('reserved_0', c.c_uint8),
+                ('x', c.c_uint16), ('y', c.c_uint16), ('z', c.c_int16), ('yaw', c.c_int16),
+                ('velocity_x', c.c_int16), ('velocity_y', c.c_int16), ('vertical_velocity', c.c_int16),
+                ('render_parameter_index', c.c_uint16), ('base_tmap', c.c_uint16), ('logical_height', c.c_uint16),
+                ('mana', c.c_int32), ('assigned_carrier_id', c.c_uint32), ('source_fields', c.c_uint32 * 3)]
+
+
+class ManaBatch(c.Structure):
+    _fields_ = [('abi', c.c_uint32), ('size', c.c_uint32), ('generation', c.c_uint64), ('tick', c.c_uint64),
+                ('live_world_hash', c.c_uint64), ('start', c.c_uint32), ('written', c.c_uint32),
+                ('total', c.c_uint32), ('has_more', c.c_uint8), ('reserved_0', c.c_uint8 * 3),
+                ('reserved', c.c_uint32 * 4)]
+
+
+MODERN_HEADER = struct.Struct('<4sHHQQQQQIIIIIIIIIIII')
+if tuple(map(c.sizeof, (CampaignEntity, CharacterBase, Character, Building, CastleChild, AuthoredTree, ManaSphere, ManaBatch))) != (52, 80, 96, 48, 96, 56, 64, 64):
     raise RuntimeError('unsupported modern native ABI layout')
 
 
@@ -160,10 +178,11 @@ class ModernWorld:
             'mc_game_runtime_buildings_copy_v1': [u64, u64, u64, ptr, u32, u32, ptr],
             'mc_native_campaign_castle_children_copy_v1': [u64, u64, u64, ptr, u32, u32, ptr],
             'mc_native_campaign_authored_trees_copy_v1': [u64, u64, u64, ptr, u32, u32, ptr],
+            'mc_native_campaign_mana_spheres_copy': [u64, u64, u32, ptr, u32, u32, ptr, u32],
         }
         for name, args in signatures.items():
             fn = getattr(native.lib, name); fn.argtypes = args; fn.restype = c.c_int32
-        self.buffers = [(kind * self.LIMIT)() for kind in (CampaignEntity, Character, Building, CastleChild, AuthoredTree)]
+        self.buffers = [(kind * self.LIMIT)() for kind in (CampaignEntity, Character, Building, CastleChild, AuthoredTree, ManaSphere)]
 
     def read(self, outer, generation, tick, sequence, epoch):
         native = self.native
@@ -192,7 +211,16 @@ class ModernWorld:
                 key = base.source_slot if i == 2 else base.entity_index
                 if key in seen: raise RuntimeError('duplicate modern observation slot')
                 seen.add(key)
-        sizes = (52, 96, 48, 96, 56)
+        batch = ManaBatch()
+        native.check(native.lib.mc_native_campaign_mana_spheres_copy(native.handle, generation, 0, self.buffers[5],
+                     self.LIMIT, c.sizeof(ManaSphere), c.byref(batch), c.sizeof(batch)), 'modern mana spheres')
+        if ((batch.abi, batch.size, batch.generation, batch.tick, batch.start) != (2, 64, generation, tick, 0)
+                or batch.written > self.LIMIT or batch.written != batch.total or batch.has_more):
+            raise RuntimeError('stale or incomplete modern mana census')
+        for row in self.buffers[5][:batch.written]:
+            if (row.abi, row.size) != (2, 64): raise RuntimeError('modern mana ABI mismatch')
+        counts.append(batch.written)
+        sizes = (52, 96, 48, 96, 56, 64)
         # The C Castle-child struct ends at byte 92 and has four alignment
         # bytes. Native struct copies need not initialize padding; never expose it.
         for index in range(counts[3]):
