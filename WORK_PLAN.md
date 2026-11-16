@@ -810,9 +810,10 @@ Finite mc-5r5.3 remains CLOSED; do not restart its checks.
 Finite mc-paj.5 is now CLOSED on its original bounded Night/Day loading,
 recovery and resource-lifecycle acceptance. Canonical1fb4e497 includes
 ac574add/020a9d41; Original302965a9 includes cb53b978. Original build-5a4ygxbx
-with native8c862188 is installed and --check-installed passes. All627 current
-inputs match local/Rig/published source at its recorded receipt. Later Rust
-changes are only the cfg(test) Spider/backend modules; release native is reused.
+was installed with native8c862188. The current native is now f3bf7893 after the
+semantic spell batch below; the same player is retained. All627 inputs match
+local/Rig/published source at each recorded native receipt. Spider/backend
+qualification additions were cfg(test)-only and reused their release native.
 Unrelated Modern/browser work is preserved; main was not pushed.
 
 Implemented fixes: retain the real campaign frontier on Title/NewGameMap;
@@ -857,7 +858,7 @@ explicit; no unstaged live encounter or same-owner replay claim. PearlBay's
 actual admitted Day exit through native GTD2/blur/phase12 and reset history
 passes10.38s on the real Day2 owner table after the focused Rig compile.
 Canonical16f3a83d is pushed as Originala22863b5; only cfg(test) code changed,
-so native8c862188/player5a4ygxbx stay current. No fabricated exit phase, new ABI,
+so that checkpoint reused native8c862188/player5a4ygxbx. No fabricated exit phase, new ABI,
 automated player or second receipt bridge. UBS's whole backend totals are legacy
 scope; none of the130 added test lines has a critical finding. No concrete
 missing producer/current-client consumer remains in that finite inspected scope.
@@ -867,13 +868,43 @@ controlled-component evidence does not establish live C ABI/Unity Day exit or
 next-mission teardown by itself; the exact GPU LUT and actual installed Day2
 teardown/reopen remain separately identified evidence. These limits and the
 assembled campaign acceptance are preserved rather than claimed from a fixture.
-Next ready capability is existing mc-b9s.2: ordinary pickup/holder authority ->
-advertised semantic spell ID/tier/cost/hand/readiness -> actual select/cast ->
-reset/transition carry and unavailable states. QuietIsland owns it through the
-real consumer; root/Sol implement shared joins as needed. Inspect current source
-and prior acquired-spell evidence before changing code; the bead's old eight-kind
-assessment is not current authority. Use the canonical family descriptor mapping,
-no additional private Unity selector switch, bots or new observation platform.
+Finite mc-b9s.2 is CLOSED after fresh bounded independent consumer assessment and
+root inspection. Canonical1ce609de is pushed as Original08852538; nativef3bf7893
+is installed by native-only refresh build-l818_b3q into player5a4ygxbx. All627
+local/Rig/published inputs match and --check-installed passes; no Unity rebuild.
+One shared26-family mapping now uses the identical current-holder/incarnation
+predicate for observation, selection, assignment, marking and cycling. The old
+cached-slot semantic selection bypass reproduced before repair. Remembered marks,
+ordinary movement, source scan order and low-mana selection/cycling are preserved;
+no cost or activation prerequisite changed. Existing per-tier source affordability
+fields remain the actual menu's consumer, without a new generic readiness overlay.
+
+Actual controlled BeyondSight pickup -> ID/tier/cost/hand/read purity -> public
+select/cast/expiry plus stale generation guards passes0.198s; required semantic
+API0.20s; mark/cycle and2 cold replays/full snapshots0.50s; learned release/reclaim
+and next entry4.09s; progression/two-entry save1.88s; matching managed inventory/
+selection/cast/reset0.234s. The replay fixture initially omitted actual HUD-policy
+history; it now copies the real sidecar and all5 strict receipts remain. The old
+released lighting-OFF save loads/exactly resaves. Root viewed normal canonical
+Night map/loading/world with mapped f3bf native, one portal, zero retries, then
+stopped owned processes. Source scans remain legacy-scope; no added production
+finding. Evidence: generated/semantic-spells-20261116. Native pickup pose/Castle/
+mana and stale reuse are declared controls; the managed UI uses a separate owner.
+This is not one continuous unstaged physical pickup/UI route or earned campaign.
+The historical Nov10 Castle save was rejected for incompatible runtime_flow,
+remains untouched and is not positive evidence. Full parents remain OPEN.
+Next ready capability is existing mc-oi6.2: actual package map type/graphics
+flags -> source material profile/decoder -> validated banks/palette/tables/
+textures/masks -> current native/Unity pixels -> rejected wrong-bank recovery
+and generation disposal/rebind. Current native team: CobaltBridge owns the
+connected capability and importer/cache production; NavyFinch owns Rust frame
+consumption; LilacWolf owns Unity material binding/disposal. All three are
+Terra6.1/high per Oliver's current choice; root owns integration, sole builds,
+publication and installation. Previous workers remain stopped.
+The old three-level/no-Cave assessment is not current truth. Reuse all30 current
+resource bindings and existing owner/pixel evidence before changing code. Actual
+fire-Night admission must be established; no fabricated producer/profile. Keep
+default32, dormant16 and optional enhanced128/replacements explicitly distinct.
 Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
 do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
 remain OPEN. Hardware resolution switching remains the explicitly separate
