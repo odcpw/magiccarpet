@@ -184,6 +184,7 @@ fn qualified_owner_reset_and_low_water_frames_are_deterministic() {
         TerrainFrameStats {
             reflected_triangles: 0,
             primary_mode5_triangles: 578,
+            primary_mode7_triangles: 0,
             primary_mode26_triangles: 0,
             terrain_pixel_writes: 37_174,
         }
@@ -297,6 +298,7 @@ fn qualified_owner_reset_and_low_water_frames_are_deterministic() {
         TerrainFrameStats {
             reflected_triangles: 36,
             primary_mode5_triangles: 0,
+            primary_mode7_triangles: 0,
             primary_mode26_triangles: 300,
             terrain_pixel_writes: 7_885,
         }
@@ -327,6 +329,7 @@ fn qualified_owner_reset_and_low_water_frames_are_deterministic() {
         TerrainFrameStats {
             reflected_triangles: 36,
             primary_mode5_triangles: 0,
+            primary_mode7_triangles: 0,
             primary_mode26_triangles: 300,
             terrain_pixel_writes: 7_932,
         }

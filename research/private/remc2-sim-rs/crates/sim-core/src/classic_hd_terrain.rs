@@ -214,6 +214,25 @@ pub struct ClassicHdTerrainRender {
 }
 
 impl ClassicHdTerrainRender {
+    /// Apply source GAME flat_2199 before rasterization. Reflected terrain
+    /// remains mode5; reflective primary material keeps mode26 precedence.
+    /// An off setting leaves every existing command/hash byte untouched.
+    pub(crate) fn apply_flat_shading(&mut self, enabled: bool) {
+        if !enabled { return; }
+        for vertex in self.projected.iter_mut().flatten() {
+            vertex.feature_flags |= TERRAIN_FEATURE_FLAT_SHADE;
+        }
+        for triangle in &mut self.submissions.primary {
+            if triangle.raster_selector == MODE5_TERRAIN_SELECTOR {
+                triangle.raster_selector = MODE7_FLAT_TERRAIN_SELECTOR;
+            }
+        }
+        let mut input = self.input_hash.to_le_bytes().to_vec();
+        input.extend_from_slice(b"source-flat-terrain-mode7");
+        self.input_hash = byte_hash(&input);
+        self.command_hash = hash_submissions(&self.submissions);
+    }
+
     /// Source painter ranks for terrain anchors and their billboard buckets.
     /// A bucket follows its own cell, even when that cell's material is clipped.
     pub fn source_painter_orders(&self, yaw: i16) -> (Vec<u16>, Vec<u16>) {

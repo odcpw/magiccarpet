@@ -55,6 +55,7 @@ pub mod mode26_raster {
 pub mod mode5_raster {
     pub use sim_terrain_raster::mode5_raster::{
         Mode5FramePixel, Mode5Pixel, Mode5Scanline, Mode5Span, Mode5TriangleSetup, Mode5Vertex,
+        rasterize_mode7_triangle_from_tile_atlas, source_flat_terrain_shade,
         mode5_horizontal_increment, rasterize_mode5_span, rasterize_mode5_span_from_atlas,
         rasterize_mode5_triangle, rasterize_mode5_triangle_from_atlas, setup_mode5_triangle,
     };

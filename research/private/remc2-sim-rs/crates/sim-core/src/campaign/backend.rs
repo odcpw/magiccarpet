@@ -896,30 +896,34 @@ struct StoredDisplaySettings {
     top_bar: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     panels_opaque: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flat_shading: Option<bool>,
 }
 
 impl Default for StoredDisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None } }
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: None, flat_shading: None } }
 }
 
 impl StoredDisplaySettings {
     fn is_default(&self) -> bool { *self == Self::default() }
     fn resolve(self, map_default: bool) -> crate::game_runtime::DisplaySettings {
         crate::game_runtime::DisplaySettings { minimap: self.minimap, top_bar: self.top_bar,
-            panels_opaque: self.panels_opaque.unwrap_or(map_default) }
+            panels_opaque: self.panels_opaque.unwrap_or(map_default), flat_shading: self.flat_shading.unwrap_or(false) }
     }
     fn toggled(self) -> Self { Self { minimap: !self.minimap, top_bar: !self.top_bar, ..self } }
     fn for_map(value: crate::game_runtime::DisplaySettings, map_default: bool) -> Self {
         // Preserve unchanged legacy map bytes only when the omitted value
         // resolves to the same admitted map default.
         Self { minimap: value.minimap, top_bar: value.top_bar,
-            panels_opaque: (value.panels_opaque != map_default).then_some(value.panels_opaque) }
+            panels_opaque: (value.panels_opaque != map_default).then_some(value.panels_opaque),
+            flat_shading: value.flat_shading.then_some(true) }
     }
 }
 
 impl From<crate::game_runtime::DisplaySettings> for StoredDisplaySettings {
     fn from(value: crate::game_runtime::DisplaySettings) -> Self {
-        Self { minimap: value.minimap, top_bar: value.top_bar, panels_opaque: Some(value.panels_opaque) }
+        Self { minimap: value.minimap, top_bar: value.top_bar, panels_opaque: Some(value.panels_opaque),
+            flat_shading: value.flat_shading.then_some(true) }
     }
 }
 
@@ -2373,6 +2377,12 @@ impl Mc2RuntimePackageResolver {
             if matches!(operation, crate::game_runtime::ReplayOperation::TogglePanelTransparency) {
                 save.initial_display_settings.panels_opaque = save.initial_display_settings.panels_opaque.map(|value| !value);
             }
+            if matches!(operation, crate::game_runtime::ReplayOperation::ToggleFlatShading) {
+                save.initial_display_settings.flat_shading = Some(!save.initial_display_settings.flat_shading.unwrap_or(false));
+            }
+        }
+        if save.initial_display_settings.flat_shading == Some(false) {
+            save.initial_display_settings.flat_shading = None;
         }
         save.initial_final_reward = session.backend().initial_final_reward.then_some(true);
         save.played_cutscenes = (runtime.played_cutscenes() != 0).then(|| runtime.played_cutscenes());
@@ -3026,6 +3036,7 @@ impl Mc2RuntimePackageResolver {
                 |candidate, notice| match notice {
                     crate::game_runtime::DisplayNotice::IconsMap(visible) => candidate.backend_mut().publish_display_notice(visible),
                     crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => candidate.backend_mut().publish_panel_transparency_notice(opaque),
+                    crate::game_runtime::DisplayNotice::FlatShading(enabled) => candidate.backend_mut().publish_flat_shading_notice(enabled),
                 },
                 observe,
             )
@@ -3669,6 +3680,15 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_panel_transparency_notice(opaque)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::TogglePanelTransparency);
+        Ok(())
+    }
+
+    pub(crate) fn publish_flat_shading_notice(&mut self, enabled: bool)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation_mut().publish_flat_shading_notice(enabled)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::ToggleFlatShading);
         Ok(())
     }
 
@@ -6778,6 +6798,7 @@ pub(crate) mod tests {
             };
             let invalid = sim_session::SessionGuard { session_id: title.runtime_id, generation: 1, expected_tick: 0 };
             assert!(runtime.toggle_panel_transparency(loading.guard(), invalid).is_err());
+            assert!(runtime.toggle_flat_shading(loading.guard(), invalid).is_err());
             assert_eq!(runtime.identity(), loading);
             resolver.open_pending(runtime, loading.guard(), title.runtime_id).unwrap()
         };
@@ -6786,9 +6807,11 @@ pub(crate) mod tests {
             let title = runtime.identity();
             let invalid = sim_session::SessionGuard { session_id: title.runtime_id, generation: 1, expected_tick: 0 };
             assert!(runtime.toggle_panel_transparency(title.guard(), invalid).is_err());
+            assert!(runtime.toggle_flat_shading(title.guard(), invalid).is_err());
             assert_eq!(runtime.identity(), title);
             let playing = start(&mut runtime, index);
             assert_eq!(playing.display_settings.panels_opaque, map_default);
+            assert!(!playing.display_settings.flat_shading);
             let initial_save = resolver.save_replay(&runtime).unwrap();
             // Format control for an old omitted panel field: retain all real
             // owner bytes/receipts except the new optional header field.
@@ -6799,7 +6822,15 @@ pub(crate) mod tests {
             let title = old_cold.identity();
             resolver.load_replay(&mut old_cold, title.guard(), title.runtime_id, &serde_json::to_vec(&legacy).unwrap()).unwrap();
             assert_eq!(old_cold.identity().display_settings.panels_opaque, map_default);
+            assert!(!old_cold.identity().display_settings.flat_shading);
             let nested = runtime.session().unwrap().identity().guard();
+            runtime.toggle_flat_shading(playing.guard(), nested).unwrap();
+            assert!(runtime.identity().display_settings.flat_shading);
+            assert_eq!(runtime.identity().session, playing.session);
+            let flat_notice = runtime.session().unwrap().backend().participant_notifications();
+            assert_eq!(flat_notice.len(), 1);
+            assert_eq!(flat_notice[0].kind.as_str(), "participant.flat_shading_on");
+            assert_eq!(flat_notice[0].remaining_frames, 50);
             runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
             let icons = runtime.identity().display_settings;
             runtime.toggle_panel_transparency(playing.guard(), nested).unwrap();
@@ -6816,6 +6847,9 @@ pub(crate) mod tests {
             assert_eq!(simulation.player_lifecycle_notifications().entries()[color].state, 3);
             let paused = runtime.pause(playing.guard()).unwrap();
             let nested = runtime.session().unwrap().identity().guard();
+            runtime.toggle_flat_shading(paused.guard(), nested).unwrap();
+            assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(), "participant.flat_shading_off");
+            runtime.toggle_flat_shading(paused.guard(), nested).unwrap();
             runtime.toggle_panel_transparency(paused.guard(), nested).unwrap();
             runtime.toggle_panel_transparency(paused.guard(), nested).unwrap();
             let before = runtime.identity();
@@ -6836,6 +6870,7 @@ pub(crate) mod tests {
                 (before.guard(), sim_session::SessionGuard { expected_tick: nested.expected_tick + 1, ..nested }),
             ] {
                 assert!(runtime.toggle_panel_transparency(outer, inner).is_err());
+                assert!(runtime.toggle_flat_shading(outer, inner).is_err());
                 assert_eq!(runtime.identity(), before);
                 assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
             }
@@ -6861,6 +6896,7 @@ pub(crate) mod tests {
             session.reset(session.identity().guard()).unwrap();
             cold.reset_panel_transparency_to_level_default();
             assert_eq!(cold.identity().display_settings.panels_opaque, map_default);
+            assert!(cold.identity().display_settings.flat_shading, "LevelInit/retry preserves flat GAME byte");
             assert_eq!((cold.identity().display_settings.minimap, cold.identity().display_settings.top_bar),
                 (icons.minimap, icons.top_bar));
             assert_eq!(cold.identity().session.as_ref().unwrap().tick, 0);
@@ -6882,11 +6918,13 @@ pub(crate) mod tests {
             assert_eq!(map_cold.identity().display_settings.panels_opaque, !map_default);
             let map = map_cold.identity();
             assert!(map_cold.toggle_panel_transparency(map.guard(), invalid).is_err());
+            assert!(map_cold.toggle_flat_shading(map.guard(), invalid).is_err());
             assert_eq!(map_cold.identity(), map);
             assert_eq!(resolver.save_replay(&map_cold).unwrap(), map_bytes);
             let loading = resolver.campaign_menu_command(&mut map_cold, map.guard(), CampaignMenuCommand::StartMission).unwrap();
             resolver.open_pending(&mut map_cold, loading.guard(), map.runtime_id).unwrap();
             assert_eq!(map_cold.identity().display_settings.panels_opaque, map_default);
+            assert!(map_cold.identity().display_settings.flat_shading, "mission entry preserves flat GAME byte");
         }
     }
 
@@ -6919,7 +6957,7 @@ pub(crate) mod tests {
         runtime.toggle_icons_and_map(initial.guard(), session_guard).unwrap();
         assert_eq!(runtime.identity().generation, initial.generation);
         assert_eq!(runtime.identity().session, initial.session);
-        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false });
+        assert_eq!(runtime.identity().display_settings, DisplaySettings { minimap: false, top_bar: false, panels_opaque: false, flat_shading: false });
         let notices = runtime.session().unwrap().backend().participant_notifications();
         assert_eq!(notices.len(), 1);
         assert!(notices[0].is_local);
@@ -23015,6 +23053,11 @@ pub(crate) mod tests {
                 ReplayOperation::TogglePanelTransparency => {
                     display_settings.panels_opaque = !display_settings.panels_opaque;
                     current.backend_mut().publish_panel_transparency_notice(display_settings.panels_opaque)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::ToggleFlatShading => {
+                    display_settings.flat_shading = !display_settings.flat_shading;
+                    current.backend_mut().publish_flat_shading_notice(display_settings.flat_shading)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {

@@ -692,6 +692,7 @@ pub struct WorldRenderOptions {
     pub reflections: bool,
     pub sky: bool,
     pub shadows: bool,
+    pub flat_shading: bool,
 }
 
 impl WorldRenderOptions {
@@ -701,6 +702,7 @@ impl WorldRenderOptions {
             reflections: true,
             sky: true,
             shadows: true,
+            flat_shading: false,
         }
     }
 }
@@ -1073,7 +1075,7 @@ fn render_environment_indexed_frame(
         Outdoor(ClassicHdTerrainRender),
         Cave(CaveTerrainPlan),
     }
-    let terrain = if inspection.metadata().map_type == MapType::Cave {
+    let mut terrain = if inspection.metadata().map_type == MapType::Cave {
         let clear_index = assets
             .materials
             .profile
@@ -1149,6 +1151,10 @@ fn render_environment_indexed_frame(
             })?,
         )
     };
+    match &mut terrain {
+        Terrain::Outdoor(plan) => plan.apply_flat_shading(render_options.flat_shading),
+        Terrain::Cave(plan) => plan.apply_flat_shading(render_options.flat_shading),
+    }
     let extent = profile.extent();
     let (mut indices, terrain_input_hash, terrain_command_hash) = match &terrain {
         Terrain::Outdoor(plan) => (plan.sky.clone(), plan.input_hash, plan.command_hash),
@@ -2246,6 +2252,17 @@ mod tests {
             )
             .unwrap()
             .to_vec();
+        carrier.set_render_options(WorldRenderOptions { flat_shading: true, ..WorldRenderOptions::default() });
+        let flat = render(&mut carrier);
+        assert_eq!(flat.tick, enabled.tick);
+        assert!(flat.scene_revision > enabled.scene_revision);
+        assert_ne!(flat.indices, enabled.indices, "real outdoor owner terrain consumes source mode7");
+        assert_eq!(flat.palette_rgb8, enabled.palette_rgb8);
+        assert_eq!(render(&mut carrier), flat, "same-tick repeated query reuses the exact committed flat frame");
+        let flat_map = carrier.render_map_world(campaign.inspection(), campaign.simulation(), &assets,
+            campaign.generation()).unwrap().to_vec();
+        assert_ne!(flat_map, original_map, "the narrow map world also consumes the same flag");
+        assert_eq!(campaign.state_hash(), before, "flat scene publication is observational");
         carrier.set_render_options(WorldRenderOptions {
             reflections: false,
             ..WorldRenderOptions::default()
@@ -3251,6 +3268,62 @@ mod tests {
         assert_eq!(carrier.current_frame(), Some(&frame));
     }
 
+    #[test]
+    fn flat_shading_consumes_real_cave_floor_and_ceiling_before_overpaint() {
+        let cache = generated_path("mc-oi62-environment-level12-v1");
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("mc-bhq6-ordinary-20261025-zclu5fjj/level12"), &cache,
+            crate::campaign::spec::CampaignSelection { external_level: 12, internal_level: 11, map_type_id: 2 },
+        ).unwrap();
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let reset = campaign.simulation();
+        let before = campaign.state_hash();
+        let camera = camera_from_session(reset).unwrap();
+        let planes = reset.canonical_terrain().planes();
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let plan = build_cave_terrain(&profile, camera, CaveTerrainResources {
+            terrain_types: &planes.terrain_types, ground_heights: &planes.ground_heights,
+            ceiling_heights: &planes.secondary_heights, shading: &planes.shading, angles: &planes.angles,
+            clear_index: assets.environment_resources().profile.as_ref().unwrap().key_color_1,
+        }).unwrap();
+        // Isolate the two real material submissions to observe roof samples
+        // before source floor overpaint; this is a declared raster control.
+        for (ceiling, smooth) in [(false, plan.without_ceiling_submissions_for_test()),
+            (true, plan.without_floor_submissions_for_test())] {
+            let mut flat = smooth.clone();
+            flat.apply_flat_shading(true);
+            assert_ne!(flat.command_hash, smooth.command_hash);
+            let render = |plan: &CaveTerrainPlan| {
+                let mut pixels = plan.initial_indices(&profile);
+                let mut provenance = vec![0; profile.extent()];
+                let mut writer = ClassicHdFrameWriter::from_planes(&profile, &mut pixels, &mut provenance,
+                    campaign.generation(), 0, plan.input_hash, 0).unwrap();
+                let receipt = plan.rasterize(&mut writer, assets.terrain_atlas(), assets.tablesd(), DAY_TERRAIN_PROVENANCE).unwrap();
+                writer.finish();
+                if ceiling { assert!(receipt.ceiling_pixels_written > 0); assert_eq!(receipt.floor_pixels_written, 0); }
+                else { assert!(receipt.floor_pixels_written > 0); assert_eq!(receipt.ceiling_pixels_written, 0); }
+                (pixels, provenance, receipt)
+            };
+            let smooth_pixels = render(&smooth);
+            let flat_pixels = render(&flat);
+            assert_eq!(flat_pixels.1, smooth_pixels.1, "same source material coverage");
+            assert_eq!(flat_pixels.2, smooth_pixels.2, "same submitted floor/ceiling writes");
+            assert_ne!(flat_pixels.0, smooth_pixels.0, "real owner {ceiling:?} material changes shade, not geometry");
+        }
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        let smooth = carrier.render_current(campaign.inspection(), reset, &assets, campaign.generation()).unwrap();
+        carrier.set_render_options(WorldRenderOptions { flat_shading: true, ..WorldRenderOptions::default() });
+        let flat = carrier.render_current(campaign.inspection(), reset, &assets, campaign.generation()).unwrap();
+        assert_eq!(flat.tick, smooth.tick);
+        assert_ne!(flat.indices, smooth.indices);
+        assert!(flat.scene_revision > smooth.scene_revision);
+        assert_eq!(carrier.render_current(campaign.inspection(), reset, &assets, campaign.generation()).unwrap(), flat);
+        carrier.set_render_options(WorldRenderOptions::default());
+        assert_eq!(carrier.render_current(campaign.inspection(), reset, &assets, campaign.generation()).unwrap().indices, smooth.indices);
+        assert_eq!(campaign.state_hash(), before);
+        assert_eq!(reset.state.tick, 0);
+    }
+
     struct TempDirectory(PathBuf);
 
     impl Drop for TempDirectory {
@@ -3260,8 +3333,8 @@ mod tests {
     }
 
     fn generated_path(relative: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
+        std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."))
             .join("generated")
             .join(relative)
     }

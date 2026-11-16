@@ -17,6 +17,7 @@ use crate::{
     },
     mode5_raster::{
         Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas, visit_mode5_triangle_from_tile_atlas,
+        source_flat_terrain_shade,
     },
     mode26_raster::{
         NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
@@ -57,6 +58,7 @@ pub struct ClassicHdHistoryKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClassicHdRasterReceipt {
     pub mode5_triangles: u32,
+    pub mode7_triangles: u32,
     pub mode26_triangles: u32,
     pub source_pixels: u64,
     pub written_pixels: u64,
@@ -70,6 +72,7 @@ impl ClassicHdRasterReceipt {
     pub const fn empty() -> Self {
         Self {
             mode5_triangles: 0,
+            mode7_triangles: 0,
             mode26_triangles: 0,
             source_pixels: 0,
             written_pixels: 0,
@@ -155,6 +158,7 @@ pub fn rasterize_classic_hd_mode5_triangle(
     }
     Ok(ClassicHdRasterReceipt {
         mode5_triangles: 1,
+        mode7_triangles: 0,
         mode26_triangles: 0,
         source_pixels,
         written_pixels,
@@ -221,6 +225,7 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
     );
     Ok(ClassicHdRasterReceipt {
         mode5_triangles: 1,
+        mode7_triangles: 0,
         mode26_triangles: 0,
         source_pixels,
         written_pixels,
@@ -231,6 +236,20 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
         output_hash: 0,
         provenance_hash: 0,
     })
+}
+
+/// Source mode7 shares coverage/UV scan conversion with mode5 and fixes its
+/// TABLES row from the complete four-corner cell before triangle clipping.
+pub fn rasterize_classic_hd_mode7_triangle(
+    writer: &mut ClassicHdFrameWriter<'_>, mut vertices: [Mode5Vertex; 3],
+    texture_atlas: &[u8], texture_base: usize, tablesn: &[u8], provenance: u8, shade: u8,
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    for vertex in &mut vertices { vertex.pnt5 = i32::from(shade) << 16; }
+    let mut receipt = rasterize_classic_hd_mode5_triangle(writer, vertices,
+        texture_atlas, texture_base, tablesn, provenance)?;
+    receipt.mode5_triangles = 0;
+    receipt.mode7_triangles = 1;
+    Ok(receipt)
 }
 
 pub fn rasterize_classic_hd_mode26_triangle(
@@ -280,6 +299,7 @@ pub fn rasterize_classic_hd_mode26_triangle(
     }
     Ok(ClassicHdRasterReceipt {
         mode5_triangles: 0,
+        mode7_triangles: 0,
         mode26_triangles: 1,
         source_pixels,
         written_pixels,
@@ -356,6 +376,7 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
     }
     Ok(ClassicHdRasterReceipt {
         mode5_triangles: 0,
+        mode7_triangles: 0,
         mode26_triangles: 1,
         source_pixels,
         written_pixels,
@@ -549,7 +570,7 @@ fn rasterize_terrain_inner(
             continue;
         }
         let triangle = triangle.expect("terrain or billboard step");
-        let vertices = triangle_vertices(triangle, terrain)?;
+        let mut vertices = triangle_vertices(triangle, terrain)?;
         let texture_base = terrain_texture_base(triangle.texture_index)?;
         let stamp = orders.as_mut().map(|(owners, plane)| {
             let rank = if triangle.pass == TerrainPass::Primary {
@@ -560,6 +581,20 @@ fn rasterize_terrain_inner(
             (&mut **plane, rank)
         });
         let stage = match triangle.raster_selector {
+            7 => {
+                let owner = triangle.owner_index;
+                let columns = terrain.lattice.columns;
+                let corners = [owner, owner + 1, owner + 1 - columns, owner - columns];
+                let shade = source_flat_terrain_shade(corners.map(|index|
+                    terrain.lattice.vertices[index].pnt5.expect("submitted cell has four source shades")));
+                for vertex in &mut vertices { vertex.pnt5 = i32::from(shade) << 16; }
+                let mut stage = rasterize_classic_hd_mode5_triangle_streaming(
+                    writer, vertices, terrain_atlas, texture_base, &tablesn[..CLASSIC_HD_TABLESN_BYTES],
+                    provenance_for(triangle.pass, provenance), stamp)?;
+                stage.mode5_triangles = 0;
+                stage.mode7_triangles = 1;
+                stage
+            }
             5 if stream_mode5 || stamp.is_some() => rasterize_classic_hd_mode5_triangle_streaming(
                 writer,
                 vertices,
@@ -595,6 +630,7 @@ fn rasterize_terrain_inner(
             }
         };
         receipt.mode5_triangles = receipt.mode5_triangles.wrapping_add(stage.mode5_triangles);
+        receipt.mode7_triangles = receipt.mode7_triangles.wrapping_add(stage.mode7_triangles);
         receipt.mode26_triangles = receipt
             .mode26_triangles
             .wrapping_add(stage.mode26_triangles);
@@ -925,15 +961,15 @@ fn validate_submission_plan(
     terrain: &ClassicHdTerrainRender,
 ) -> Result<(), ClassicHdRasterError> {
     for triangle in plan.reflected.iter().chain(plan.primary.iter()) {
-        if !matches!(triangle.raster_selector, 5 | 26) {
+        if !matches!(triangle.raster_selector, 5 | 7 | 26) {
             return Err(ClassicHdRasterError(format!(
                 "Classic HD terrain selector {} is unsupported",
                 triangle.raster_selector
             )));
         }
-        if triangle.raster_selector == 26 && triangle.pass != TerrainPass::Primary {
+        if matches!(triangle.raster_selector, 7 | 26) && triangle.pass != TerrainPass::Primary {
             return Err(ClassicHdRasterError(
-                "Classic HD mode 26 is valid only for primary terrain".to_owned(),
+                format!("Classic HD mode {} is valid only for primary terrain", triangle.raster_selector),
             ));
         }
         let _ = triangle_vertices(triangle, terrain)?;

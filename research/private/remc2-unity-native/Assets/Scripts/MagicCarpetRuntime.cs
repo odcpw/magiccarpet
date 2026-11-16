@@ -3676,6 +3676,7 @@ namespace MagicCarpet.Native
                 {
                     DispatchGameRuntimeF5Input(modifierOnly: true);
                     DispatchGameRuntimeF6Input();
+                    DispatchGameRuntimeF7Input();
                 }
                 if (!AutomatedInput && !gameRuntimeAbandonConfirmationOpen &&
                     !gameRuntimeSourceMenus.HasPendingAction &&
@@ -10680,6 +10681,9 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.TogglePanelTransparency:
                         ToggleGameRuntimePanelTransparency();
                         break;
+                    case CampaignMenuPresenter.Action.ToggleFlatShading:
+                        ToggleGameRuntimeFlatShading();
+                        break;
                     case CampaignMenuPresenter.Action.Save:
                         if (saveSlot != null)
                             SourceCampaignSaveSlots.Write(gameRuntimeReplaySavePath, saveSlot.Index,
@@ -11546,6 +11550,22 @@ namespace MagicCarpet.Native
             ToggleGameRuntimePanelTransparency();
         }
 
+        private void DispatchGameRuntimeF7Input()
+        {
+            var pressed = playerPreferences?.KeyPressed(KeyCode.F7) ?? Input.GetKeyDown(KeyCode.F7);
+            var physicalShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            var admittedShift = (playerPreferences?.KeyHeld(KeyCode.LeftShift) ?? Input.GetKey(KeyCode.LeftShift)) ||
+                (playerPreferences?.KeyHeld(KeyCode.RightShift) ?? Input.GetKey(KeyCode.RightShift));
+            var physicalAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            ApplyGameRuntimeF7Input(pressed, physicalShift, admittedShift, physicalAlt);
+        }
+
+        private void ApplyGameRuntimeF7Input(bool pressed, bool physicalShift, bool admittedShift, bool physicalAlt)
+        {
+            if (!pressed || !physicalShift || !admittedShift || physicalAlt || !CanToggleGameRuntimeIconsAndMap()) return;
+            ToggleGameRuntimeFlatShading();
+        }
+
         private bool CanToggleGameRuntimeIconsAndMap()
         {
             if (!gameRuntimeMode || session == null || !session.UsesGameRuntimeContract ||
@@ -11585,6 +11605,23 @@ namespace MagicCarpet.Native
         {
             var after = session.GameRuntimeTogglePanelTransparency();
             SetGameRuntimePanelsOpaque(after.display_settings.panels_opaque);
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
+        }
+
+        private void ToggleGameRuntimeFlatShading()
+        {
+            var after = session.GameRuntimeToggleFlatShading();
+            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+            if (level2Mode)
+                UpdateGameRuntimeLevel2Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (level3Mode)
+                UpdateGameRuntimeLevel3Presentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeSecretSurface != null)
+                UpdateGameRuntimeSecretPresentation(after, gameRuntimeCampaignSnapshot);
+            else if (gameRuntimeNightSurface != null || modernEnvironment != null)
+                UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
             gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
             gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
