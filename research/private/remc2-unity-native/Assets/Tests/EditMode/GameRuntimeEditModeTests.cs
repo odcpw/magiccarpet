@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Json;
 using System.Text;
@@ -8839,6 +8840,174 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(campaignSessionsBefore));
         }
 
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AbandonConfirmationIgnoresRepeatedEscapeWithoutChangingOtherDialogs()
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var result = SourcePauseMenu.ConfirmationResult.None;
+            var cursor = Vector2.zero;
+            var view = new Rect();
+            var windowOrigin = Vector2.zero;
+            var mouseDownCount = 0;
+            try
+            {
+                // Controlled component input reaches the real source renderer;
+                // the installed player separately proves fresh key admission.
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2,
+                        (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
+                    windowOrigin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var input = Event.current; var previous = input.mousePosition;
+                    try {
+                        input.mousePosition = view.position + cursor * scale;
+                        if (input.type == EventType.MouseDown) mouseDownCount++;
+                        var drawn = cache.PauseMenu.DrawAbandonConfirmation("day", false, true, false);
+                        if (drawn != SourcePauseMenu.ConfirmationResult.None) result = drawn;
+                    }
+                    finally { input.mousePosition = previous; }
+                };
+                gui.minSize = new Vector2(640, 480);
+                gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true;
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (gui.DrawCount == 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Event input)
+                {
+                    result = SourcePauseMenu.ConfirmationResult.None;
+                    var before = gui.DrawCount;
+                    var mouseDownsBefore = mouseDownCount;
+                    var mouseDown = input.type == EventType.MouseDown;
+                    if (input.isMouse)
+                        input.mousePosition = view.position + cursor * (view.width / 640f) + windowOrigin;
+                    gui.SendEvent(input);
+                    Assert.That(gui.DrawCount, Is.GreaterThan(before));
+                    if (mouseDown)
+                        Assert.That(mouseDownCount, Is.EqualTo(mouseDownsBefore + 1),
+                            "the EditorWindow delivers MouseDown to the actual confirmation renderer");
+                }
+                for (var repeat = 0; repeat < 4; repeat++)
+                {
+                    Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.None),
+                        "raw IMGUI repeats cannot cancel the source Escape confirmation");
+                }
+                Send(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Confirm));
+                Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.KeypadEnter });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Confirm));
+                cursor = new Vector2(335, 120);
+                Send(new Event { type = EventType.MouseDown, button = 0 });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Cancel),
+                    "the actual source Cancel button remains operational");
+                Assert.That(SourcePauseMenu.ConfirmationInput(EventType.KeyDown, KeyCode.Escape,
+                    0, Vector2.zero, new Rect(270, 104, 50, 32), new Rect(320, 104, 50, 32)),
+                    Is.EqualTo(SourcePauseMenu.ConfirmationResult.Cancel),
+                    "generic Save/Load confirmation keeps its Escape cancellation");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProgressedDayTwoTitleReopensItsRetainedMapAndLoadsOnce()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT") ??
+                Path.Combine(generated, "player-names-20261116/real-nyphur-view.mcs");
+            var bytes = File.ReadAllBytes(input);
+            var saved = ReadReplayDocument(bytes);
+            var completed = saved.SelectNodes("/root/completed_levels/item").Cast<System.Xml.XmlNode>()
+                .Select(row => row.InnerText).ToArray();
+            const string dayTwo = "level.magic_carpet_2.payahandra_ruins";
+            const string nightOne = "level.magic_carpet_2.night_spire";
+            Assert.That(saved.SelectSingleNode("/root/definition/runtime_flow/bound_level_id").InnerText,
+                Is.EqualTo(dayTwo));
+            Assert.That(completed, Is.EqualTo(new[] { nightOne }),
+                "this real replay declares an incoming L2 frontier; it does not prove earned L1 progress");
+            GameRuntimeTransport.InstalledPackageResource[] resources;
+            using (var stream = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(generated, "continuity-20261115/installed-full-resources.json")))
+                resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                    typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(stream);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var root = new GameObject("retained Day 2 loading frontier");
+            try
+            {
+                using var owner = NativeSession.OpenGameRuntimeReplay(bytes, resources);
+                using var presenter = new CampaignTransitionPresenter(root.transform,
+                    Path.Combine(generated, "mc2-loading-asset-cache"));
+                var incoming = owner.GameRuntimeIdentity();
+                Assert.That(incoming.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(incoming.active_runtime_flow.bound_level_id, Is.EqualTo(dayTwo));
+                var catalog = incoming.active_runtime_flow.entries.Select(row => row.level_id).ToArray();
+                var previousSessionGeneration = ulong.Parse(incoming.session.generation);
+                for (var visit = 0; visit < 2; visit++)
+                {
+                    var title = owner.GameRuntimeClose();
+                    Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                    Assert.That(title.session?.session_id, Is.Null.Or.Empty);
+                    var map = owner.GameRuntimeBeginNewGame();
+                    Assert.That(map.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                    Assert.That(map.runtime_id, Is.EqualTo(incoming.runtime_id));
+                    Assert.That(map.session?.session_id, Is.Null.Or.Empty);
+                    Assert.That(map.campaign_menu.phase, Is.EqualTo("mission_select"));
+                    Assert.That(map.campaign_menu.completed_level_id, Is.Null.Or.Empty);
+                    Assert.That(map.campaign_menu.completed_levels, Is.EqualTo(completed));
+                    Assert.That(map.campaign_menu.available_levels, Is.EqualTo(new[] { nightOne, dayTwo }));
+                    Assert.That(map.campaign_menu.selected_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(map.campaign_menu.briefing_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(map.active_runtime_flow.entries.Select(row => row.level_id), Is.EqualTo(catalog));
+
+                    var loading = owner.GameRuntimeCampaignMenuAction("start_mission");
+                    presenter.Present(loading);
+                    var binding = presenter.Destination;
+                    Assert.That((binding.level_id, binding.environment, binding.artwork_profile),
+                        Is.EqualTo((dayTwo, "day", "ordinary")));
+                    Assert.That((binding.source_selection.external_level, binding.source_selection.internal_level,
+                        binding.source_selection.map_type_id), Is.EqualTo(((ushort)2, (ushort)1, (byte)0)));
+                    CampaignTransitionPresenter.PreflightDestination(binding, resources);
+                    Assert.That(presenter.IsVisible, Is.True);
+                    var gate = new CampaignTransitionPresenter.LoadingGate();
+                    gate.Begin(loading, dayTwo);
+                    Assert.That(gate.TryClaimOpen(loading, presenter.IsVisible), Is.False);
+                    Assert.That(owner.GameRuntimeIdentity().session?.session_id, Is.Null.Or.Empty);
+                    // This is the existing controlled presentation-boundary seam;
+                    // the installed player separately proves actual visible art.
+                    gate.Observe(loading, presenter.IsVisible);
+                    Assert.That(gate.TryClaimOpen(loading, presenter.IsVisible), Is.True);
+                    var playing = owner.GameRuntimeOpenLevel();
+                    gate.Complete(playing);
+                    presenter.Present(playing);
+                    Assert.That(playing.runtime_id, Is.EqualTo(incoming.runtime_id));
+                    Assert.That(playing.active_runtime_flow.bound_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(playing.session.tick, Is.EqualTo("0"));
+                    Assert.That(ulong.Parse(playing.generation), Is.EqualTo(ulong.Parse(loading.generation) + 1));
+                    Assert.That(ulong.Parse(playing.session.generation), Is.GreaterThan(previousSessionGeneration));
+                    previousSessionGeneration = ulong.Parse(playing.session.generation);
+                    Assert.That(presenter.IsVisible, Is.False);
+                    Assert.That(gate.IsPending, Is.False);
+                    var duplicate = Assert.Throws<GameRuntimeTransport.TransitionException>(() => owner.GameRuntimeOpenLevel());
+                    Assert.That(duplicate.Status, Is.EqualTo(3));
+                    Assert.That(owner.GameRuntimeIdentity().session.generation, Is.EqualTo(playing.session.generation));
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+            Assert.That(File.ReadAllBytes(input), Is.EqualTo(bytes), "the incoming receipt is never rewritten");
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [Test]
         [Timeout(180000)]
         public void ProductionLoadingGateWaitsForVisibleFrameBeforeRealRustOpen()
@@ -8863,7 +9032,7 @@ namespace MagicCarpet.Native.Tests
                 var loading = transport.BootstrapPackageSet(ResolverPackages());
                 GameRuntimeTransport.ValidateIdentity(loading, transport.Handle);
                 Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
-                Assert.That(loading.session.session_id, Is.Null.Or.Empty);
+                Assert.That(loading.session, Is.Null, "Loading has no opened nested session");
                 presenter.Present(loading);
                 gate.Begin(
                     loading,

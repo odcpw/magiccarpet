@@ -968,16 +968,31 @@ namespace MagicCarpet.Native
 
         internal Identity ShowNewGameMap()
         {
-            if (Current?.mode != LoadingMode)
+            var before = Current;
+            if (before?.mode != LoadingMode || !HasDefinitionIdentity(before) ||
+                HasSessionIdentityData(before.session) || HasRuntimeFlowData(before.active_runtime_flow) ||
+                before.pending_definition.runtime_flow.bound_level_id !=
+                    before.pending_definition.runtime_flow.entry_level_id)
                 throw new InvalidOperationException("new-game map requires the resolver entry loading state");
+            var generation = ParseCounter(before.generation, "generation");
             Check(NativeSim.mc_game_runtime_show_new_game_map_v1(RequireHandle(),
-                ParseCounter(Current.generation, "generation")), "show source new-game map");
+                generation), "show source new-game map");
             var map = IdentitySnapshot();
-            if (map.mode != CampaignMode || map.campaign_menu.phase != "mission_select" ||
+            // NewGameDialog reopens the retained frontier. Only ResetCampaign
+            // clears completed missions; a new map selects the first unfinished.
+            var frontier = map.mode == CampaignMode
+                ? before.pending_definition.runtime_flow.entries.FirstOrDefault(entry =>
+                    !map.campaign_menu.completed_levels.Contains(entry.level_id))?.level_id : null;
+            if (map.mode != CampaignMode || map.runtime_id != before.runtime_id ||
+                ParseCounter(map.generation, "generation") != checked(generation + 1) ||
+                HasSessionIdentityData(map.session) || HasDefinitionIdentityData(map.pending_definition) ||
+                !SameRuntimeFlow(before.pending_definition.runtime_flow, map.active_runtime_flow) ||
+                !SameSecretCampaign(before.secret_campaign, map.secret_campaign) ||
+                map.campaign_menu.phase != "mission_select" ||
                 !string.IsNullOrEmpty(map.campaign_menu.completed_level_id) ||
-                map.campaign_menu.completed_levels.Length != 0 ||
-                map.campaign_menu.selected_level_id != map.active_runtime_flow.entry_level_id)
-                throw new InvalidOperationException("new-game map must precede all earned completions");
+                (string.IsNullOrEmpty(map.campaign_menu.selected_level_id) ? null : map.campaign_menu.selected_level_id) != frontier ||
+                (string.IsNullOrEmpty(map.campaign_menu.briefing_level_id) ? null : map.campaign_menu.briefing_level_id) != frontier)
+                throw new InvalidOperationException("new-game map did not preserve its resolver-bound frontier");
             return map;
         }
 

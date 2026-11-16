@@ -3513,8 +3513,13 @@ mod tests {
         else {
             panic!("real L1 open must reject a reordered semantic flow")
         };
-        assert_eq!(error.code, DefinitionErrorCode::HashMismatch);
-        assert_eq!(error.path_or_id, "definition.runtime_flow");
+        // Canonical source-order validation rejects the flow before hashes.
+        assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
+        assert_eq!(error.path_or_id, "mc2_campaign.runtime_flow");
+        assert_eq!(
+            error.message,
+            "definition does not match its canonical source-selected catalog"
+        );
         assert_eq!(tampered_runtime.identity(), tampered_loading);
         assert!(tampered_runtime.session().is_none());
 
@@ -3556,8 +3561,14 @@ mod tests {
         else {
             panic!("L1 definition paired with L2 package must fail semantic identity validation")
         };
-        assert_eq!(error.code, DefinitionErrorCode::HashMismatch);
-        assert_eq!(error.path_or_id, "definition.package_graph_hash");
+        // The package's L2 selection cannot admit an L1-bound source catalog;
+        // this validation precedes the package-graph comparison as well.
+        assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
+        assert_eq!(error.path_or_id, "mc2_campaign.runtime_flow");
+        assert_eq!(
+            error.message,
+            "definition does not match its canonical source-selected catalog"
+        );
         assert_eq!(runtime.identity(), before_mismatch);
         assert!(runtime.session().is_none());
 

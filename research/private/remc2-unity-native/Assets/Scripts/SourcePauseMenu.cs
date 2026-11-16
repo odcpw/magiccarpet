@@ -169,11 +169,12 @@ namespace MagicCarpet.Native
             var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
                 640 * scale, 480 * scale);
             return DrawConfirmation(profile, 2, view, mapOpen || !alive ? 6 : 132,
-                mapOpen || !alive ? 6 : 50, flash, acceptInput);
+                mapOpen || !alive ? 6 : 50, flash, acceptInput, escapeCancels: false);
         }
 
         private ConfirmationResult DrawConfirmation(Profile profile, int textSelector,
-            Rect view, int textX, int textY, bool flash, bool acceptInput = true)
+            Rect view, int textX, int textY, bool flash, bool acceptInput = true,
+            bool escapeCancels = true)
         {
             var scale = view.width / 640f;
             Rect At(Rect rect) => new(view.x + rect.x * scale, view.y + rect.y * scale,
@@ -186,6 +187,10 @@ namespace MagicCarpet.Native
                 GUI.DrawTexture(At(new Rect(x, 104, texture.width, texture.height)), texture);
             }
             if (!acceptInput) return ConfirmationResult.None;
+            // Abandon's source key 1 is handled by the runtime's fresh key
+            // edge. IMGUI may repeat the opening key while it remains held.
+            if (!escapeCancels && Event.current.type == EventType.KeyDown &&
+                Event.current.keyCode == KeyCode.Escape) return ConfirmationResult.None;
             var result = ConfirmationInput(Event.current, At(new Rect(270, 104, 50, 32)),
                 At(new Rect(320, 104, 50, 32)));
             if (result != ConfirmationResult.None) Event.current.Use();
