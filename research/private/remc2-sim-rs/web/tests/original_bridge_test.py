@@ -128,6 +128,8 @@ class OriginalBridgeTest(unittest.TestCase):
             self.assertTrue(save_path.is_file())
             self.assertTrue(json.loads(get("/original-api/status"))["has_save"])
             post("/original-api/control", {"sequence": 20, "action": "resume"})
+            self.assertFalse(json.loads(get("/original-api/state"))["paused"],
+                             "resume must publish unpaused state before acknowledgement")
             for sequence in range(21, 27):
                 post("/original-api/input", {"sequence": sequence, "command": move})
                 time.sleep(.06)
@@ -143,7 +145,9 @@ class OriginalBridgeTest(unittest.TestCase):
             # Identical retry is acknowledged, not executed twice.
             retry = post("/original-api/control", {"sequence": 29, "action": "reset"})
             self.assertEqual(retry["next_sequence"], 30)
-            post("/original-api/control", {"sequence": 30, "action": "resume"})
+            post("/original-api/control", {"sequence": 30, "action": "start"})
+            self.assertFalse(json.loads(get("/original-api/state"))["paused"],
+                             "start from pause must publish unpaused state before acknowledgement")
             time.sleep(2)
             watchdog = json.loads(get("/original-api/status"))
             self.assertTrue(watchdog["paused"]); self.assertFalse(watchdog["running"])

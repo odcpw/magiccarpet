@@ -359,12 +359,14 @@ class Bridge:
                             if action == "start":
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
+                                publish()
                             elif action == "pause":
                                 if not self.paused: native.control("pause", saved); self.paused = True
                                 self.running = False; command = dict(NEUTRAL); publish()
                             elif action == "resume":
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
+                                publish()
                             elif action in ("map", "menu", "select_spell", "assign_spell"):
                                 if not self.running or self.paused: raise ValueError("game must be playing")
                                 if action == "map": extra = {"abandon_action": "toggle_gameplay_map"}
