@@ -5527,15 +5527,22 @@ impl Mc2CampaignBackend {
         spell_id: &SemanticId,
         expected: Option<RuntimeActorId>,
     ) -> Result<(), CampaignBackendError> {
-        let Some(expected) = expected else {
-            return Ok(());
-        };
-        let holder = semantic_spell_kind(spell_id)
-            .and_then(mc2_spell_family)
-            .and_then(|family| {
-                spells::acquired_holder(self.campaign.simulation().shared_spells(), family)
+        let kind = semantic_spell_kind(spell_id).ok_or_else(|| {
+            CampaignBackendError::StepRejected {
+                message: format!("unknown spell {}", spell_id.as_str()),
+            }
+        })?;
+        let family = mc2_spell_family(kind).ok_or_else(|| CampaignBackendError::StepRejected {
+            message: "unbound spell family".to_owned(),
+        })?;
+        let shared = self.campaign.simulation().shared_spells();
+        if spells::acquired_holder(shared, family).is_none() {
+            return Err(CampaignBackendError::StepRejected {
+                message: format!("spell {} has not been acquired", spell_id.as_str()),
             });
-        if holder.is_none_or(|holder| self.spell_holder_actor(holder) != Some(expected)) {
+        }
+        let holder = spells::current_holder(shared, family, |holder| self.spell_holder_actor(holder));
+        if holder.is_none_or(|(_, actor)| expected.is_some_and(|expected| actor != expected)) {
             return Err(CampaignBackendError::StepRejected {
                 message: format!(
                     "spell {} holder binding is stale or unavailable",
@@ -5682,6 +5689,10 @@ impl Mc2CampaignBackend {
                 self.campaign.simulation().shared_spells(),
                 command,
                 player_command,
+                |family| {
+                    spells::current_holder(self.campaign.simulation().shared_spells(), family,
+                        |holder| self.spell_holder_actor(holder)).is_some()
+                },
             )
             .map_err(|message| CampaignBackendError::StepRejected { message });
         }
@@ -5721,6 +5732,14 @@ impl Mc2CampaignBackend {
             return Err(CampaignBackendError::StepRejected {
                 message: format!(
                     "spell selection {} is not acquired by the local player",
+                    selection.as_str()
+                ),
+            });
+        }
+        if spells::current_holder(shared, family, |holder| self.spell_holder_actor(holder)).is_none() {
+            return Err(CampaignBackendError::StepRejected {
+                message: format!(
+                    "spell selection {} holder binding is stale or unavailable",
                     selection.as_str()
                 ),
             });
