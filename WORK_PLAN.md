@@ -878,14 +878,76 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): complete real Castle/balloon top-status HUD
-through actual owner/stage/ordered live slots, source hit/goal lifetimes and
-indexed icons/bars/removal. BoldForge owns native producer/projection/lifetime;
-QuietIsland owns indexed consumers/assets; root owns ABI integration and sole
-build/push/install. Do not extend an existing fixed ABI struct in place. The installed
+Current capability (2026-11-16): the Castle/balloon top-status batch below is
+implemented, verified, committed, pushed and installed. Continue the existing
+shared display/settings acceptance with the actual Shift+F7/Options15 flat-shading
+producer and Original renderer consumers, then the next concrete unmet path.
+Root owns serialized integration/build/push/install; workers retain their connected
+capability through consumer failure. Do not extend a fixed ABI struct in place. The installed
 spell-menu, Default Keys and secret announcement checkpoints below are delivered;
 do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
 Modern work. Shift+F7 is flat shading, a separate source control.
+
+Castle/balloon checkpoint: canonical0c081394 is pushed as Original2572257b;
+all22 owned code blobs match. Original build-fsmin12b/native
+f583f3671a86d4a6e7fc998717bc4ea87e59506d1a60a0683a5e8254f5ae8835 is installed;
+--check-installed passes. Real owner/stage and ordered live collector slots now
+reach the original44–53 icons, signed wrapping bars, owner-mana aggregate and
+raw authored goal ticks. Stage zero retains its distinct balloon admission;
+missing slots are not compacted. The actual shared contact/area-damage path now
+writes the collector's canonical mailbox. Castle hit selection uses source ID,
+not merely ownership. Normal balloons retain their source shared-A4 hit carrier;
+no local-player flash producer was invented.
+
+The admitted source HUD tail follows objective/menu publication and consumes
+clocks only in the source world/TopBar path. Accepted frame-policy history
+replays that boundary; missing-history v9/v8/v7 retains the old verified prefix.
+A genuine released-writer v9 save passes exact receipt migration. Full JSON
+and MCPOv5 share typed status. Required zero/one castle_rows avoids Unity's
+null-class-to-stage-zero normalization; original-byte streaming validation
+preserves missing/null/shape refusal before JsonUtility normalizes it. No fixed
+DayHud ABI extension, client clock, shortened lifetime or weakened receipt.
+
+Root's real source4 paid Castle→flyer→completed root→natural collector→contact/
+life→death/removal/reset check passes0.32s, including admitted hit clocks and
+pure reads. Incoming carry/travel and detached alias/stage/scalar controls are
+declared, not earned campaign proof. Source queues the1000-mana debit for the
+following player visit; the matched neutral control remains1000 while the cast
+reaches0. Collector maintenance follows the actual next even-phase callback.
+The genuine old-v9/new-boundary/cold/rejection check passes13.89s. Workspace
+all-target, strict Rig native and source-closure checks pass; all626 input hashes
+and returned/Editor/installed native bytes match. These are inputs, not tests.
+
+Actual Original managed paid-Castle/collector/cold/HUD check passes11.49s. It uses
+a declared incoming Level3 carry/Loading control,38 fixed public reverse inputs
+and real FullStop into a source-admissible site, then ordinary casting, build and
+collector callbacks. It cold-loads with the same full source-animation role and
+checks original icons and every collector life/mana bar pixel. Rare stage/holes/
+negative-life/full-mana/goal controls remain detached component checks. Repaint
+and normal Editor cadence preserve the native tick and replay. Wrong old BUILD
+and cache fixtures were corrected; switching an absent animation catalog to a
+full one was correctly refused, not bypassed. The actual integration defect was
+startup preferences advancing the restored epoch1→3 while the scene/HUD stayed1;
+the accepted boundary now republishes existing presentation owners at the same
+gameplay tick, preserving all epoch guards and audio's no-extra-fade policy.
+
+Both native full/compact and exact canonical C#/TypeScript decoders agree on the
+actual paid-owner/collector status; all five browser codec checks pass. The
+canonical Editor runtime assembly compiles offline with its original116sources,
+266references/132defines/analyzers, zero errors/warnings; this checks canonical
+optimized APIs separately from Original's older full-snapshot cohort. UBS has
+no added-line critical Rust finding; C# analysis is partial, not a clean scan.
+Root independently reviewed the source/gates and executed the connected checks.
+Evidence: generated/top-status-20261116.
+
+Root viewed the installed original Castle/balloon/player icons and bars in the
+actual Day3 scene and physical-P pause menu through the canonical Original
+launcher, using the exact three-package full-role saved control. Matching mapped
+native, zero retries/runtime errors; owned player/display stopped. This proves
+installed cold load/render, not earned campaign traversal, human combat, FPS,
+hardware audio, complete missions or historical saves. Normal all30 resources
+remain available, but this smoke did not re-run their campaign paths. Full
+mc-oi6.5/mc-oi6.6/mc-5r5.2 acceptance/dependencies remain OPEN.
 
 The connected panel-transparency batch is implemented, verified, committed and
 installed: Shift+F6/Options13 share one guarded Rust GAME setting and local
