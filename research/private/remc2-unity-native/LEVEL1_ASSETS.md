@@ -5,6 +5,28 @@ constructors and the installed Presentation client's source bindings.
 Use the playable Rust level as the behavior baseline. This work owns art,
 animation and presentation integration, not another mission implementation.
 
+## Native-backed Three.js assets — 2026-11-16
+
+The approved Modern masters now have owner-local browser derivatives: twelve
+rigged character GLBs, eight world GLBs, source mana colours, terrain textures,
+all 17 building profiles and seven Castle profiles. Export recipes are in
+`research/private/character-pipeline/export_browser_{characters,world}.py` from
+the repository root. No paid 3D generation. Voxel masters remain unchanged.
+
+The integrated browser consumes real Rust observations. Desktop/touch controls,
+save/load/reset and the opening 33 Goats/28 residents/41 buildings pass live
+checks; close views cover moving Goats/residents and lit masonry buildings.
+The loaded Archer rig's bow morphs and horizontal arrow release pass staged
+art checks, not native firing qualification. The measured opening village
+holds 60.0 FPS with 16.8 ms p95 after warmup on 3090/1280×960/60 Hz.
+
+Native conditional spawns, per-hoof IK, dynamic Castle placement, live mana
+collection and low shoreline foundations remain open in this consumer. This
+does not close full Level 1 or Unity/Voxel runtime acceptance below. Launch,
+pipeline and exact verification details live in
+`research/private/remc2-sim-rs/web/ORIGINAL_BROWSER.md`; live Modern browser:
+<http://3090.bumblebee-hue.ts.net:8884/?visual=modern>.
+
 ## Art readiness alongside OG completion — 2026-11-15
 
 Oliver requests finishing these assets and the environment in parallel with the

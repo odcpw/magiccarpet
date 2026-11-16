@@ -1,5 +1,41 @@
 # Shared-engine delivery plan
 
+## Level 1 Modern assets in the browser — 2026-11-16
+
+Oliver confirms the browser-rendered Original PoC and asks to commit/push it
+and make Level 1's 3D assets. Original renderer `0d38268e` is already pushed.
+Reuse the approved Modern masters and source bindings from LEVEL1_ASSETS.md;
+export portable meshes/materials/animations and connect them to native state
+in the Three.js client. Preserve both Original browser routes, Voxel masters,
+the older Modern experiment and ongoing OG work. No paid 3D generation.
+Root owns the browser environment/renderer and integrated visual/gameplay checks;
+modern_browser_characters owns character export and animation consumer;
+modern_browser_world_assets owns props/architecture/world asset export and
+placement; modern_browser_bridge owns typed native observations and allowlisted
+asset delivery. Retain source scale, gait, arrow release and lifetime. Missing
+runtime admissions stay explicit; do not invent gameplay or add canned actors
+to claim a complete Level 1. Inspect real browser frames and check performance
+before handing over the installed result.
+
+Delivered portable Modern art through `0bedf0de`/`c8506de0`: twelve rigged
+character GLBs, eight world GLBs, source colours/textures, 17 building and seven
+Castle profiles. Integrated native-backed Three.js presents the opening 33
+Goats, 28 residents and 41 matched buildings on 8884 (`?visual=modern`), retaining
+Original on 8882/8883. Root reviewed real frames and corrected terrain/water
+artifacts; workers corrected bow morphs/shaft aim, grounded character tilt,
+material tints and masonry. Source terrain publication fix `e41b9668` compares
+actual plane bytes; renderer caches reconstruction/scatter without reducing
+detail. Real desktop/touch flight, cast, map, pause, reset and save/load pass,
+as does the shared Original browser regression. The measured opening village
+after seven-second warmup holds 60.0 FPS, 16.8 ms p95/p99 at 1280×960 on the
+3090/60 Hz desktop; startup stalls are outside that sample. Native binary is
+pinned to SHA889b4704 for these checks, not the independently moving OG source.
+Conditional creature spawns, Archer native firing cadence, per-hoof IK, dynamic
+Castle/construction, live mana collection, burning and low shoreline foundations
+remain unqualified here. Staged art reviews do not close those paths or a full
+mission. No Unity/Voxel installation or physical-phone FPS claim. Recipes,
+launch and focused checks are in web/ORIGINAL_BROWSER.md; masters stay local.
+
 ## Browser-local Original rendering — 2026-11-16
 
 Oliver now authorizes actual Three.js world rendering in the browser with the

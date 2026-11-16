@@ -9,7 +9,8 @@ composes the source HUD, spell grid, objectives and minimap. There is no Unity
 process, streamed world image, WASM build, or second gameplay simulation.
 
 The prior streamed PoC is retained with `--renderer indexed`. It shares controls
-and uses Rust's software world renderer. Modern/Voxel art remains separate work.
+and uses Rust's software world renderer. The optional Modern mesh consumer is
+described below; Voxel browser rendering remains separate work.
 
 From this directory, after `pnpm install --frozen-lockfile`:
 
@@ -126,3 +127,81 @@ approximation (one transition per four native ticks). Native creature frame
 selection remains authoritative. HUD panels are opaque in geometry mode.
 This route does not establish a complete mission playthrough or full Original
 port completion. Existing Rust gameplay defects remain with the Original team.
+
+## Modern Level 1 assets
+
+Open <http://3090.bumblebee-hue.ts.net:8884/?visual=modern>. This separate service
+keeps the Original routes on 8882/8883 and the Unity/Voxel masters intact. It
+uses the same native Rust gameplay and source HUD/controls, with local Three.js
+PBR meshes, terrain, vegetation, water and night lighting. It needs the backend
+on 3090; it is not a standalone WASM game.
+
+The owner-local pack at `../../generated/browser-level1-assets` contains twelve
+rigged character GLBs (Goat, Archer, four residents, Builder, Trader, Firefly,
+Worm head/segment and Collector), eight world GLBs, source mana colours, terrain
+textures, 17 building profiles and seven Castle profiles. Textures are bounded
+browser derivatives; approved masters remain unchanged. Reproduce the exports
+with `../../character-pipeline/export_browser_characters.py --help` and
+`../../character-pipeline/export_browser_world.py --help`. Both are free local
+Blender conversions. No paid generation is needed. Generated owner assets must
+not be committed or distributed with the source repository.
+
+Build and start a separate Modern client from this directory:
+
+```sh
+pnpm exec vite build --mode original --outDir ../../generated/modern-browser-client --emptyOutDir
+python3 original_bridge.py --renderer geometry --modern \
+  --web-root ../../generated/modern-browser-client --port 8884 \
+  --save ../../generated/modern-web-20261116/save.json
+```
+
+Append the `--host` and matching `--allow-host` options above for tailnet access.
+The installed 8884 service additionally pins `--library` to the already tested
+native binary SHA-256 `889b470467245f07a552d3e67133b3679db62a297adaa9633cbbdfb909a75d39`.
+It is a transient user service named `magiccarpet-browser-modern.service`.
+It loads the native library directly; a Unity process is unnecessary.
+
+Native MCD1 character/building/tree/mana rows and MCW1 geometry must have the
+same publication identity. Source controls determine births, actions, shots,
+collection and removal. The browser only interpolates positions and drives
+rig clips. Native terrain planes are compared byte-for-byte; revisions and
+compressed payloads change only when bytes change or reset/load creates a new
+epoch. Visual landform/scatter also cache their actual inputs. This removes
+repeated terrain reconstruction without reducing geometry or texture quality.
+The shoreline uses the source reflective-material table and actual atlas water
+pixels, including calm water outside the wave flag. Smoothing and submerged
+banks affect presentation only; Rust collision stays authoritative.
+
+Focused Modern checks, in addition to the shared tests above:
+
+```sh
+node --test tests/modern-runtime.test.ts tests/modern-characters.test.ts tests/modern-world-objects.test.ts tests/modern-environment.test.ts
+MODERN_PROOF=/absolute/disk/path DISPLAY=:1 node tests/modern-browser.mjs
+MODERN_PROOF=/absolute/disk/path DISPLAY=:1 node tests/modern-render-profile.mjs
+```
+
+The interaction test resets the real session and uses its save slot. It checks
+33 native opening Goats, 41 matched architectural buildings, flight/casting,
+map, pause, save/load identity and portrait touch controls. The profile check
+uses a seven-second warmup followed by a six-second actual animation-frame
+sample; `MODERN_CPU=1` adds Chrome CPU sampling. On the 3090 at 1280×960 the
+checked opening village sample was 60.0 FPS, 16.8 ms p95/p99 on a 60 Hz desktop.
+Startup/reset stalls are excluded from that steady sample; the interaction
+run including those stalls averaged about 49–52 FPS. This is not maximum GPU
+throughput, a full-mission benchmark, or physical-phone FPS. The shared Original
+browser regression also passes against this integrated source build.
+
+Live close-ups covered moving Goat/Villager meshes, masonry, roof surfaces and
+lit windows. Archer bow morphs and the arrow shaft/release were inspected with
+the actual loaded rig in a staged art check; that is not native Archer firing
+proof. `inspect=Goat`/`inspect=Villager` and `inspectBuilding=1` are read-only
+art-review cameras; `modernMetrics.camera_mode` labels these inspections.
+
+Still open: native-spawned Archer/Firefly/Worm/Collector visual qualification,
+per-hoof contact IK, dynamic Castle/construction placement, live mana collection,
+tree burning and low shoreline foundations. The full building library is
+prepared, but only the 41 unchanged opening stamps are admitted by the current
+building presenter. Water/cloud shaders are inexpensive browser presentation,
+not parity with Unity's spectral-water/steam system. Shared audio/menu omissions
+and unfinished Original gameplay remain open. No complete Level 1 mission or
+finished Voxel browser consumer is claimed.

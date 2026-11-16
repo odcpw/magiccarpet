@@ -5,8 +5,11 @@ import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-h
 import { decodeRenderPublication } from './render-publication';
 import { decodeWorldFrame, decodeTerrain, type WorldFrame } from './original-world-data';
 import { OriginalWorldRenderer } from './original-world-renderer';
+import { ModernWorldRenderer } from './modern-world-renderer';
+import { decodeModernFrame } from './modern-runtime';
 
 const API = '/original-api';
+const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
 const DISPLAY_WIDTH = 640, DISPLAY_HEIGHT = 480;
 const element = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -89,6 +92,10 @@ class IndexedDisplay {
   }
 }
 
+type GeometryDisplay = OriginalWorldRenderer | ModernWorldRenderer;
+function isGeometryDisplay(value: IndexedDisplay | GeometryDisplay): value is GeometryDisplay {
+  return value instanceof OriginalWorldRenderer || value instanceof ModernWorldRenderer;
+}
 interface BridgeStatus {
   ready: boolean;
   renderer?: 'indexed' | 'geometry';
@@ -152,7 +159,7 @@ function fail(error: unknown): void {
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
   if (leavingPage) return;
   playing = false; connected = false; clearInput();
-  if (display instanceof OriginalWorldRenderer) display.setPlaying(false);
+  if (isGeometryDisplay(display)) display.setPlaying(false);
   showMenu(error instanceof Error ? error.message : String(error));
   element('retry').hidden = false;
   console.error(error);
@@ -177,7 +184,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       if (playing) hideMenu();
     }
     if (action !== 'start' && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
-    if (display instanceof OriginalWorldRenderer) display.setPlaying(playing);
+    if (isGeometryDisplay(display)) display.setPlaying(playing);
   } catch (error) {
     // A refused save/selection leaves the existing native owner intact.
     message.textContent = error instanceof Error ? error.message : String(error);
@@ -187,7 +194,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   finally { controlsPending--; busy = controlsPending > 0; }
 }
 
-let display: IndexedDisplay | OriginalWorldRenderer;
+let display: IndexedDisplay | GeometryDisplay;
 let packetCount = 0, bytesReceived = 0, lastArrival = 0;
 const intervals: number[] = [];
 async function pollFrame(): Promise<void> {
@@ -198,7 +205,7 @@ async function pollFrame(): Promise<void> {
     // read in that window: it can return the previous paused publication after
     // resume has already acknowledged. Older reads are rejected by version.
     if (busy) return;
-    const geometry = display instanceof OriginalWorldRenderer;
+    const geometry = isGeometryDisplay(display);
     const response = await fetch(API + (geometry ? '/world-frame' : '/frame'), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (!response.ok) { await responseJson(response); return; }
     const data = await response.arrayBuffer();
@@ -206,11 +213,12 @@ async function pollFrame(): Promise<void> {
     if (version !== controlVersion) return;
     if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) return;
     const query = '?sequence=' + frame.sequence;
-    const [stateResponse, observationResponse] = await Promise.all([
+    const [stateResponse, observationResponse, modernResponse] = await Promise.all([
       fetch(API + '/state' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
       fetch(API + '/observation' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
+      display instanceof ModernWorldRenderer ? fetch(API + '/modern-frame' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }) : Promise.resolve(null),
     ]);
-    if (stateResponse.status === 410 || observationResponse.status === 410) return;
+    if (stateResponse.status === 410 || observationResponse.status === 410 || modernResponse?.status === 410) return;
     const state = await responseJson<BridgeState>(stateResponse);
     if (!observationResponse.ok) { await responseJson(observationResponse); return; }
     const observation = decodeRenderPublication(new Uint8Array(await observationResponse.arrayBuffer()));
@@ -235,7 +243,7 @@ async function pollFrame(): Promise<void> {
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu };
     // Flight history is independent of map presentation and remains at the
     // correct native revision while the source split map is displayed.
-    if (display instanceof OriginalWorldRenderer) {
+    if (isGeometryDisplay(display)) {
       const worldFrame = frame as WorldFrame;
       const epoch = `${frame.runtimeGeneration}:${frame.sessionGeneration}:${worldFrame.terrainRevision}`;
       if (epoch !== terrainIdentity) {
@@ -252,7 +260,13 @@ async function pollFrame(): Promise<void> {
       // HUD against an invented background; the 3D world is never read to CPU.
       hudState.panels_opaque = true;
       const overlay = hud.compose(emptyScene, frame.palette, hudState, hudCoverage);
-      display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused);
+      if (display instanceof ModernWorldRenderer) {
+        if (!modernResponse?.ok) throw new Error('This backend has no Modern asset observations; start it with --modern.');
+        const modern = decodeModernFrame(await modernResponse.arrayBuffer());
+        if (version !== controlVersion) return;
+        display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, modern);
+        Object.assign(window, { modernState: modern });
+      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused);
     } else {
     const sceneFrame = frame as OriginalFrame;
     const scene = history.compose(sceneFrame, tables);
@@ -311,7 +325,7 @@ element('fullscreen').addEventListener('click', () => {
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 const touches = new Map<number, { x: number; y: number }>();
 const hudPoint = (x: number, y: number): [number, number] => {
-  if (display instanceof OriginalWorldRenderer) return display.hudPoint(x, y);
+  if (isGeometryDisplay(display)) return display.hudPoint(x, y);
   const rect = canvas.getBoundingClientRect(); return [(x - rect.left) * 640 / rect.width, (y - rect.top) * 480 / rect.height];
 };
 canvas.addEventListener('pointerdown', event => {
@@ -408,12 +422,22 @@ async function boot(): Promise<void> {
     if (!status?.ready) throw new Error('The original game did not finish loading.');
     if (status.renderer === 'geometry') {
       document.body.dataset.renderer = 'geometry';
-      display = await OriginalWorldRenderer.load(canvas, API);
+      if (modernRequested) {
+        document.title = 'Magic Carpet II · Modern Level 1';
+        document.querySelector('h2')!.textContent = 'Modern · Level 1';
+        message.textContent = 'Loading the Level 1 models and environment…';
+        display = await ModernWorldRenderer.load(canvas, API);
+      } else display = await OriginalWorldRenderer.load(canvas, API);
       display.onError = fail;
     } else display = new IndexedDisplay();
     hud = await OriginalHud.load(API); tables = hud.tables;
     inputSequence = status.next_sequence ?? 0; connected = true;
-    playButton.disabled = false; message.textContent = 'The original world is ready.';
+    if (display instanceof ModernWorldRenderer) {
+      polling = true; await pollFrame();
+      if (!connected) return;
+      await display.ready;
+    }
+    playButton.disabled = false; message.textContent = modernRequested ? 'The world is ready.' : 'The original world is ready.';
     window.setInterval(() => void sendInput(), 1000 / 30);
   } catch (error) { fail(error); }
 }
