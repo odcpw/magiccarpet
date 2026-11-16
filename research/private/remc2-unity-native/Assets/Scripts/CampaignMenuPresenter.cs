@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames, ToggleSound, ToggleMusic, ToggleSpeech, ToggleFlightAssistance }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign, ToggleIconsAndMap, TogglePanelTransparency, ToggleFlatShading, IncreaseBrightness, DecreaseBrightness, SpeedPrimary, SpeedSecondary, ViewportDecrease, ViewportIncrease, TogglePlayerNames, ToggleSound, ToggleMusic, ToggleSpeech, ToggleFlightAssistance, ToggleHelpMode }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -260,7 +260,7 @@ namespace MagicCarpet.Native
                 Action.SpeedPrimary or Action.SpeedSecondary => mode == GameRuntimeTransport.PausedMode,
                 Action.ViewportDecrease or Action.ViewportIncrease => mode == GameRuntimeTransport.PausedMode,
                 Action.TogglePlayerNames => mode == GameRuntimeTransport.PausedMode,
-                Action.ToggleSound or Action.ToggleMusic or Action.ToggleSpeech or Action.ToggleFlightAssistance => mode == GameRuntimeTransport.PausedMode,
+                Action.ToggleSound or Action.ToggleMusic or Action.ToggleSpeech or Action.ToggleFlightAssistance or Action.ToggleHelpMode => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
                     mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,

@@ -28,6 +28,8 @@ pub(crate) enum PlayerLifeNoticeKind {
     SpeechOff,
     FlightAssistanceOn,
     FlightAssistanceOff,
+    HelpModeOn,
+    HelpModeOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -54,6 +56,8 @@ impl PlayerLifeNoticeKind {
             Self::SpeechOff => "participant.speech_off",
             Self::FlightAssistanceOn => "participant.flight_assistance_on",
             Self::FlightAssistanceOff => "participant.flight_assistance_off",
+            Self::HelpModeOn => "participant.help_mode_on",
+            Self::HelpModeOff => "participant.help_mode_off",
         }
     }
 }
@@ -108,7 +112,8 @@ impl PlayerLifecycleNotifications {
                     | PlayerLifeNoticeKind::SoundOn | PlayerLifeNoticeKind::SoundOff
                     | PlayerLifeNoticeKind::MusicOn | PlayerLifeNoticeKind::MusicOff
                     | PlayerLifeNoticeKind::SpeechOn | PlayerLifeNoticeKind::SpeechOff
-                    | PlayerLifeNoticeKind::FlightAssistanceOn | PlayerLifeNoticeKind::FlightAssistanceOff => 3,
+                    | PlayerLifeNoticeKind::FlightAssistanceOn | PlayerLifeNoticeKind::FlightAssistanceOff
+                    | PlayerLifeNoticeKind::HelpModeOn | PlayerLifeNoticeKind::HelpModeOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -178,6 +183,8 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::SpeechOff) => 19,
                 Some(PlayerLifeNoticeKind::FlightAssistanceOn) => 20,
                 Some(PlayerLifeNoticeKind::FlightAssistanceOff) => 21,
+                Some(PlayerLifeNoticeKind::HelpModeOn) => 22,
+                Some(PlayerLifeNoticeKind::HelpModeOff) => 23,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -217,7 +224,8 @@ mod tests {
             PlayerLifeNoticeKind::SoundOn, PlayerLifeNoticeKind::SoundOff,
             PlayerLifeNoticeKind::MusicOn, PlayerLifeNoticeKind::MusicOff,
             PlayerLifeNoticeKind::SpeechOn, PlayerLifeNoticeKind::SpeechOff,
-            PlayerLifeNoticeKind::FlightAssistanceOn, PlayerLifeNoticeKind::FlightAssistanceOff] {
+            PlayerLifeNoticeKind::FlightAssistanceOn, PlayerLifeNoticeKind::FlightAssistanceOff,
+            PlayerLifeNoticeKind::HelpModeOn, PlayerLifeNoticeKind::HelpModeOff] {
             notices.publish(0, 111, kind, 50).unwrap();
             assert_eq!(notices.entries()[0].kind, Some(kind));
             assert_eq!(notices.entries()[0].state, 3);

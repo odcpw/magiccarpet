@@ -1472,7 +1472,10 @@ int32_t mc_game_runtime_campaign_menu_command_json_v1(
 int32_t mc_game_runtime_media_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
-/* source_brightness/source_audio/source_flight_assistance use the exact
+/* source_help_mode uses the same exact decimal-string session_guard and
+ * atomically toggles help preference/native policy/local notice. Help data is
+ * admitted by the pinned source; there is no host-availability argument.
+ * source_brightness/source_audio/source_flight_assistance use the exact
  * decimal-string session_guard. source_flight_assistance toggles the supported
  * single-player preference and its local source notice without advancing time.
  * MC_STATUS_SOURCE_ACTION_BLOCKED leaves preferences, notices and replay

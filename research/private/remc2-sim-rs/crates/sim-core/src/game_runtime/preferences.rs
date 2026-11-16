@@ -216,6 +216,10 @@ fn optional_locale<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreferencesCommand {
+    SourceHelpMode {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+    },
     SourceFlightAssistance {
         #[serde(deserialize_with = "deserialize_brightness_guard")]
         session_guard: sim_session::SessionGuard,
@@ -319,6 +323,8 @@ pub struct PreferencesSnapshot {
     pub source_audio_admitted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_flight_assistance_admitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_help_mode_admitted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -336,6 +342,19 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    /// SwitchHelpMode_18AA0. Pinned sub_871E0 always returns1; there is no
+    /// ordinary host capability to guess from assets or audio state.
+    pub fn source_help_mode_toggle(&mut self) -> Result<Option<bool>, String> {
+        if self.audio_preview.is_some() { return Ok(None); }
+        let mut preferences = self.current.clone();
+        preferences.show_help = !preferences.show_help;
+        self.write_profile(&preferences)?;
+        let enabled = preferences.show_help;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
+    }
+
     /// Source case5 changes only the operational flag. The excluded idle
     /// observations retain their sample/counter until assistance runs again.
     pub fn source_flight_assistance_toggle(&mut self) -> Result<Option<bool>, String> {
@@ -440,11 +459,13 @@ impl PreferenceStore {
             source_brightness_admitted: None,
             source_audio_admitted: None,
             source_flight_assistance_admitted: None,
+            source_help_mode_admitted: None,
         }
     }
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
+            PreferencesCommand::SourceHelpMode { .. } => return Err("source help mode requires a guarded active campaign".into()),
             PreferencesCommand::SourceFlightAssistance { .. } => return Err("source flight assistance requires a guarded active campaign".into()),
             PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
             PreferencesCommand::SourceAudio { .. } => return Err("source audio requires a guarded active campaign".into()),
@@ -1612,6 +1633,52 @@ mod tests {
             serde_json::json!([0]),serde_json::json!([0,0,0]),serde_json::json!([-1,0])] {
             assert!(serde_json::from_value::<GameCommand>(serde_json::json!({"steering_observation":bits})).is_err());
         }
+    }
+
+    #[test]
+    fn source_help_mode_toggle_is_atomic_and_preserves_unrelated_preferences() {
+        let profile = std::env::temp_dir().join(format!("mc-help-mode-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap();
+        let install = || PreferencesCommand::Install { profile_dir:profile.to_string_lossy().into_owned() };
+        let mut store = PreferenceStore::default();
+        let uninstalled = store.snapshot();
+        assert!(store.source_help_mode_toggle().is_err());
+        assert_eq!(store.snapshot(),uninstalled);
+        store.command(install()).unwrap();
+        let request = serde_json::json!({"operation":"source_help_mode","session_guard":
+            {"session_id":"1","generation":"2","expected_tick":"3"}});
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(request.clone()).unwrap(),
+            PreferencesCommand::SourceHelpMode { .. }));
+        assert!(store.command(serde_json::from_value(request.clone()).unwrap()).is_err());
+        let mut invented_capability = request;
+        invented_capability["help_available"] = false.into();
+        assert!(serde_json::from_value::<PreferencesCommand>(invented_capability).is_err(),
+            "the pinned source does not expose a host-help availability branch");
+        let before = store.current.clone();
+        assert_eq!(store.source_help_mode_toggle().unwrap(),Some(false));
+        let mut expected = before.clone(); expected.show_help=false;
+        assert_eq!(store.current,expected);
+        let bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        let mut cold = PreferenceStore::default();
+        assert_eq!(cold.command(install()).unwrap().preferences,expected);
+        store.command(PreferencesCommand::PreviewAudio { sound_enabled:false,music_enabled:false,
+            speech_enabled:false,sound_volume:0,music_volume:0 }).unwrap();
+        let preview=store.snapshot();
+        assert_eq!(store.source_help_mode_toggle().unwrap(),None);
+        assert_eq!(store.snapshot(),preview);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(),bytes);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        let destination=store.path.clone().unwrap(); store.path=Some(profile.clone());
+        let retained=store.snapshot();
+        assert!(store.source_help_mode_toggle().is_err());
+        assert_eq!(store.snapshot(),retained);
+        assert_eq!(fs::read(&destination).unwrap(),bytes);
+        store.path=Some(destination);
+        assert_eq!(store.source_help_mode_toggle().unwrap(),Some(true));
+        assert_eq!(store.current,before);
+        assert!(serde_json::to_value(store.snapshot()).unwrap().get("source_help_mode_admitted").is_none());
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

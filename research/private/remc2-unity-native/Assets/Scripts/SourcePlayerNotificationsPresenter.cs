@@ -67,6 +67,8 @@ namespace MagicCarpet.Native
                     "participant.speech_off" => 470,
                     "participant.flight_assistance_on" => 398,
                     "participant.flight_assistance_off" => 399,
+                    "participant.help_mode_on" => 400,
+                    "participant.help_mode_off" => 401,
                     _ => throw new InvalidDataException("unbound participant notification kind: " + notice.kind)
                 };
                 // Presence is authoritative. Zero is the final visible frame;

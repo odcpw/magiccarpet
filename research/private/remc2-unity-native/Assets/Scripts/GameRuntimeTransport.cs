@@ -537,6 +537,13 @@ namespace MagicCarpet.Native
             public SourceBrightnessGuard session_guard;
         }
 
+        [Serializable]
+        private sealed class SourceHelpModeCommand
+        {
+            public string operation = "source_help_mode";
+            public SourceBrightnessGuard session_guard;
+        }
+
         internal static PlayerPreferencesSnapshot PreferencesCommand(
             ulong handle, Identity identity, string json)
         {
@@ -1361,6 +1368,41 @@ namespace MagicCarpet.Native
             if (ParseCounter(after.session.tick, "tick") != expectedTick)
                 throw new InvalidDataException("campaign step did not advance its source speed passes");
             return expectedTick;
+        }
+
+        internal bool SourceHelpMode(out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source help mode");
+            var before = Current;
+            var request = new SourceHelpModeCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                }
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source help mode");
+            var after = IdentitySnapshot();
+            var expected = JsonUtility.FromJson<PlayerPreferences>(
+                JsonUtility.ToJson(before.player_preferences.preferences));
+            expected.show_help = !expected.show_help;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                JsonUtility.ToJson(after.player_preferences.preferences) != JsonUtility.ToJson(expected))
+                throw new InvalidDataException("source help mode changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceFlightAssistance(out Identity identity)

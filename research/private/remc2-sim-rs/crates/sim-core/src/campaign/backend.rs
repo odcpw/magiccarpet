@@ -3112,6 +3112,7 @@ impl Mc2RuntimePackageResolver {
                     crate::game_runtime::DisplayNotice::PlayerNames(visible) => candidate.backend_mut().publish_player_names_notice(visible),
                     crate::game_runtime::DisplayNotice::SourceAudio(action, enabled) => candidate.backend_mut().publish_source_audio_notice(action, enabled),
                     crate::game_runtime::DisplayNotice::FlightAssistance(enabled) => candidate.backend_mut().publish_flight_assistance_notice(enabled),
+                    crate::game_runtime::DisplayNotice::HelpMode(enabled) => candidate.backend_mut().publish_help_mode_notice(enabled),
                 },
                 observe,
             )
@@ -3825,6 +3826,29 @@ impl Mc2CampaignBackend {
         self.campaign.simulation_mut().publish_player_names_notice(visible)
             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
         self.replay_operations.push(crate::game_runtime::ReplayOperation::PlayerNamesNotice { visible });
+        Ok(())
+    }
+
+    pub(crate) fn prepare_help_mode_notice(&self, enabled: bool)
+        -> Result<crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+            crate::game_runtime::RuntimeTransitionError>
+    {
+        self.campaign.simulation().prepare_help_mode_notice(enabled)
+            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })
+    }
+
+    pub(crate) fn commit_help_mode_notice(&mut self, enabled: bool,
+        notices: crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    ) {
+        self.campaign.simulation_mut().commit_help_mode_notice(notices);
+        self.replay_operations.push(crate::game_runtime::ReplayOperation::HelpModeNotice { enabled });
+    }
+
+    pub(crate) fn publish_help_mode_notice(&mut self, enabled: bool)
+        -> Result<(), crate::game_runtime::RuntimeTransitionError>
+    {
+        let notices = self.prepare_help_mode_notice(enabled)?;
+        self.commit_help_mode_notice(enabled, notices);
         Ok(())
     }
 
@@ -6977,6 +7001,121 @@ pub(crate) mod tests {
             actual.expected_terrain_hash, actual.expected_effect_head, &actual.expected_effect_journal_sha256));
         assert_eq!(ticks(&actual_cold), [0, 0]);
         assert_eq!(fs::read(path).unwrap(), actual_bytes, "historical input is never rewritten");
+    }
+
+    #[test]
+    fn source_help_mode_commits_policy_notice_and_immediate_cold_replay() {
+        use crate::game_runtime::{GameRuntime,RuntimeGuard,preferences::PreferencesCommand};
+        let resolver=Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let profile=std::env::temp_dir().join(format!("mc-help-mode-runtime-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install=||PreferencesCommand::Install { profile_dir:profile.to_string_lossy().into_owned() };
+        let mut runtime=GameRuntime::<Mc2CampaignBackend>::title(8970).unwrap();
+        runtime.preferences_command(runtime.identity().guard(),install()).unwrap();
+        let title=runtime.identity();
+        let invalid=sim_session::SessionGuard {session_id:8970,generation:0,expected_tick:0};
+        assert!(runtime.source_help_mode_preferences(title.guard(),invalid).is_err());
+        assert_eq!(runtime.identity(),title);
+        let loading=resolver.new_game(&mut runtime,title.guard()).unwrap();
+        assert!(runtime.source_help_mode_preferences(loading.guard(),invalid).is_err());
+        assert_eq!(runtime.identity(),loading);
+        resolver.open_pending(&mut runtime,loading.guard(),8970).unwrap();
+        let before=runtime.identity(); let nested=runtime.session().unwrap().identity().guard();
+        let saved_before=resolver.save_replay(&runtime).unwrap();
+        for (outer,inner) in [(RuntimeGuard {generation:before.generation+1,..before.guard()},nested),
+            (before.guard(),sim_session::SessionGuard {generation:nested.generation+1,..nested}),
+            (before.guard(),sim_session::SessionGuard {expected_tick:nested.expected_tick+1,..nested})] {
+            assert!(runtime.source_help_mode_preferences(outer,inner).is_err());
+            assert_eq!(runtime.identity(),before);
+            assert_eq!(resolver.save_replay(&runtime).unwrap(),saved_before);
+            assert!(!profile.join("player-preferences.json").exists());
+        }
+        assert!(runtime.preferences_command(before.guard(),PreferencesCommand::Apply {
+            preferences:before.player_preferences.preferences.clone() }).is_err());
+        let snapshot_before=runtime.session().unwrap().backend().snapshot();
+        let (reset_before,conformance_before)={
+            let simulation=runtime.session().unwrap().backend().campaign.simulation();
+            let core=&simulation.session.state.live.core;
+            (ResetReceipt::from_state(&ResetState::from_simulation(simulation)).digest(),
+                crate::conformance_hash_v2(&core.state,&core.context))
+        };
+        assert!(runtime.session().unwrap().backend().help_enabled());
+        let accepted=runtime.source_help_mode_preferences(before.guard(),nested).unwrap();
+        assert_eq!(accepted.source_help_mode_admitted,Some(true));
+        assert!(!accepted.preferences.show_help);
+        let after=runtime.identity();
+        let mut expected_preferences=before.player_preferences.preferences.clone(); expected_preferences.show_help=false;
+        assert_eq!(after.player_preferences.preferences,expected_preferences);
+        assert_eq!(after.session,before.session); assert_eq!(after.display_settings,before.display_settings);
+        let backend=runtime.session().unwrap().backend(); assert!(!backend.help_enabled());
+        let snapshot=backend.snapshot();
+        assert_eq!(snapshot.state_hash,snapshot_before.state_hash,
+            "the public campaign hash excludes the source HELP policy and notice domains");
+        let simulation=backend.campaign.simulation(); let core=&simulation.session.state.live.core;
+        assert_ne!(ResetReceipt::from_state(&ResetState::from_simulation(simulation)).digest(),reset_before,
+            "the full native receipt includes actual help policy and local notice");
+        assert_ne!(crate::conformance_hash_v2(&core.state,&core.context),conformance_before,
+            "HELP changes the flight-context conformance hash independently of the separate notice owner");
+        let notice=backend.participant_notifications();
+        assert_eq!(notice.len(),1);
+        assert_eq!((notice[0].kind.as_str(),notice[0].remaining_frames),("participant.help_mode_off",50));
+        let mut expected_snapshot=snapshot_before;
+        expected_snapshot.participant_notifications=notice.clone();
+        assert_eq!(snapshot,expected_snapshot,"only the independently checked local notice changes the public observation");
+        let disabled=resolver.save_replay(&runtime).unwrap();
+        let packet:Mc2CampaignReplaySave=serde_json::from_slice(&disabled).unwrap();
+        assert!(matches!(packet.operations.last(),Some(crate::game_runtime::ReplayOperation::HelpModeNotice {enabled:false})));
+        assert_eq!(packet.help_preference_changes.last().unwrap().before_operation,packet.operations.len()-1);
+        assert!(!packet.help_preference_changes.last().unwrap().enabled);
+        let mut cold=GameRuntime::<Mc2CampaignBackend>::title(8971).unwrap();
+        cold.preferences_command(cold.identity().guard(),install()).unwrap(); let title=cold.identity();
+        resolver.load_replay(&mut cold,title.guard(),8971,&disabled).unwrap();
+        assert!(!cold.identity().player_preferences.preferences.show_help);
+        assert!(!cold.session().unwrap().backend().help_enabled());
+        assert_eq!(cold.session().unwrap().backend().snapshot(),snapshot);
+        assert_eq!(resolver.save_replay(&cold).unwrap(),disabled);
+        let bytes=fs::read(profile.join("player-preferences.json")).unwrap();
+        let path=profile.join("player-preferences.json"); let retained=profile.join("retained.json");
+        fs::rename(&path,&retained).unwrap(); fs::create_dir(&path).unwrap();
+        assert!(runtime.source_help_mode_preferences(after.guard(),nested).is_err());
+        assert_eq!(runtime.identity(),after); assert_eq!(resolver.save_replay(&runtime).unwrap(),disabled);
+        assert_eq!(fs::read(&retained).unwrap(),bytes);
+        fs::remove_dir(&path).unwrap(); fs::rename(&retained,&path).unwrap();
+        let paused=runtime.pause(after.guard()).unwrap(); let nested=runtime.session().unwrap().identity().guard();
+        runtime.preferences_command(paused.guard(),PreferencesCommand::PreviewAudio {
+            sound_enabled:false,music_enabled:false,speech_enabled:false,sound_volume:0,music_volume:0 }).unwrap();
+        let preview=runtime.identity(); let preview_save=resolver.save_replay(&runtime).unwrap();
+        assert_eq!(runtime.source_help_mode_preferences(paused.guard(),nested).unwrap().source_help_mode_admitted,Some(false));
+        assert_eq!(runtime.identity(),preview); assert_eq!(resolver.save_replay(&runtime).unwrap(),preview_save);
+        assert_eq!(fs::read(&path).unwrap(),bytes);
+        runtime.preferences_command(paused.guard(),PreferencesCommand::Cancel).unwrap();
+        let enabled=runtime.source_help_mode_preferences(paused.guard(),nested).unwrap();
+        assert!(enabled.preferences.show_help); assert!(runtime.session().unwrap().backend().help_enabled());
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].kind.as_str(),"participant.help_mode_on");
+        let enabled_save=resolver.save_replay(&runtime).unwrap();
+        let mut enabled_cold=GameRuntime::<Mc2CampaignBackend>::title(8972).unwrap();
+        enabled_cold.preferences_command(enabled_cold.identity().guard(),install()).unwrap(); let title=enabled_cold.identity();
+        resolver.load_replay(&mut enabled_cold,title.guard(),8972,&enabled_save).unwrap();
+        assert!(enabled_cold.session().unwrap().backend().help_enabled());
+        assert_eq!(resolver.save_replay(&enabled_cold).unwrap(),enabled_save);
+        runtime.presentation_frame(paused.guard(),nested,false).unwrap();
+        assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames,50);
+        for remaining in (0..50).rev() {
+            runtime.presentation_frame(paused.guard(),nested,true).unwrap();
+            assert_eq!(runtime.session().unwrap().backend().participant_notifications()[0].remaining_frames,remaining);
+        }
+        runtime.presentation_frame(paused.guard(),nested,true).unwrap();
+        assert!(runtime.session().unwrap().backend().participant_notifications().is_empty());
+        runtime.resume(paused.guard()).unwrap(); let session=runtime.session_mut().unwrap();
+        session.reset(session.identity().guard()).unwrap();
+        assert!(runtime.identity().player_preferences.preferences.show_help);
+        assert!(runtime.session().unwrap().backend().help_enabled());
+        assert!(runtime.session().unwrap().backend().participant_notifications().is_empty());
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -24139,6 +24278,10 @@ pub(crate) mod tests {
                 }
                 ReplayOperation::FlightAssistanceNotice { enabled } => {
                     current.backend_mut().publish_flight_assistance_notice(enabled)
+                        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+                }
+                ReplayOperation::HelpModeNotice { enabled } => {
+                    current.backend_mut().publish_help_mode_notice(enabled)
                         .map_err(Mc2CampaignReplaySaveError::Runtime)?;
                 }
                 ReplayOperation::PresentationFrame { notifications_visible } => {

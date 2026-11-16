@@ -2448,6 +2448,25 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceHelpMode { session_guard } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                let result = record.runtime.source_help_mode_preferences(
+                    RuntimeGuard { runtime_id: handle, generation }, session_guard,
+                ).map_err(map_transition_error)?;
+                return match result.source_help_mode_admitted {
+                    Some(true) => { record.campaign_presentation_dirty = true; Ok(()) }
+                    Some(false) => Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                        "source help mode is blocked by the current settings dialog")),
+                    None => Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                        "source help mode returned no admission result")),
+                };
+            }
             sim_core::game_runtime::preferences::PreferencesCommand::SourceFlightAssistance { session_guard } => {
                 let entry = runtime_arc(handle)?;
                 let mut guard = entry.lock().map_err(|_| AbiError::new(
@@ -4437,6 +4456,69 @@ mod tests {
             "the failed active-resource binding can return through normal guarded recovery");
         assert_eq!(identity(invalid)["mode"], "title");
         assert_eq!(mc_game_runtime_destroy_v1(invalid), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn source_help_mode_controls_policy_notices_and_cold_replay() {
+        let packages=installed_package_set_json(&[level_one_package(),level_two_package(),level_three_package()]);
+        let profile=std::env::temp_dir().join(format!("mc-help-mode-abi-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install=serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        let mut handle=0; assert_eq!(mc_game_runtime_create_v1(&raw mut handle),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        let send=|owner:u64,outer:u64,nested:u64,tick:u64| {
+            let request=serde_json::to_vec(&serde_json::json!({"operation":"source_help_mode","session_guard":
+                {"session_id":owner.to_string(),"generation":nested.to_string(),"expected_tick":tick.to_string()}})).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner,outer,request.as_ptr(),request.len() as u32)
+        };
+        let title=identity(handle); assert_eq!(send(handle,1,1,0),MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle),title);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle,1,packages.as_ptr(),packages.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle,2),MC_STATUS_OK);
+        let save=|owner,outer,nested|read_bytes(|buffer,capacity,length|
+            mc_game_runtime_save_replay_json_v1(owner,outer,nested,0,buffer,capacity,length));
+        let notices=|owner|read_json(|buffer,capacity,length|
+            mc_game_runtime_participant_notifications_json_v1(owner,buffer,capacity,length));
+        let before=identity(handle); let original=save(handle,3,1);
+        for (outer,nested,tick,status) in [(2,1,0,MC_STATUS_GENERATION_MISMATCH),
+            (3,2,0,MC_STATUS_GENERATION_MISMATCH),(3,1,1,MC_STATUS_INVALID_ARGUMENT)] {
+            assert_eq!(send(handle,outer,nested,tick),status); assert_eq!(identity(handle),before);
+            assert_eq!(save(handle,3,1),original);
+        }
+        assert_eq!(send(handle,3,1,0),MC_STATUS_OK);
+        let disabled=identity(handle);
+        assert_eq!(disabled["session"],before["session"]); assert_eq!(disabled["generation"],before["generation"]);
+        assert_eq!(disabled["display_settings"],before["display_settings"]);
+        assert_eq!(disabled["player_preferences"]["preferences"]["show_help"],false);
+        with_runtime(handle,|record|{assert!(!record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.help_mode_off");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        let saved=save(handle,3,1); let mut cold=0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold,1,packages.as_ptr(),packages.len() as u32,
+            saved.as_ptr(),saved.len() as u32),MC_STATUS_OK,"{}",LAST_ERROR.with(|value|value.borrow().clone()));
+        assert_eq!(identity(cold)["player_preferences"]["preferences"]["show_help"],false);
+        assert_eq!(notices(cold)["value"],notices(handle)["value"]);
+        with_runtime(cold,|record|{assert!(!record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        let id=identity(cold); let outer=id["generation"].as_str().unwrap().parse().unwrap();
+        let nested=id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(save(cold,outer,nested),saved);
+        assert_eq!(mc_game_runtime_pause_v1(handle,3),MC_STATUS_OK);
+        let preview=br#"{"operation":"preview_audio","sound_enabled":false,"music_enabled":false,"speech_enabled":false,"sound_volume":0,"music_volume":0}"#;
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,4,preview.as_ptr(),preview.len() as u32),MC_STATUS_OK);
+        let before=identity(handle); let bytes=save(handle,4,2);
+        assert_eq!(send(handle,4,2,0),MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(identity(handle),before); assert_eq!(save(handle,4,2),bytes);
+        let cancel=br#"{"operation":"cancel"}"#;
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,4,cancel.as_ptr(),cancel.len() as u32),MC_STATUS_OK);
+        assert_eq!(send(handle,4,2,0),MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["show_help"],true);
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.help_mode_on");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        with_runtime(handle,|record|{assert!(record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle),MC_STATUS_OK); std::fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

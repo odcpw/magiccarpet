@@ -3688,6 +3688,7 @@ namespace MagicCarpet.Native
                 {
                     DispatchGameRuntimeF5Input(modifierOnly: true);
                     DispatchGameRuntimeF5Input(modifierOnly: false);
+                    DispatchGameRuntimeF1Input();
                     DispatchGameRuntimeF2Input();
                     DispatchGameRuntimeF4Input();
                     DispatchGameRuntimeF6Input();
@@ -10716,6 +10717,9 @@ namespace MagicCarpet.Native
                     case CampaignMenuPresenter.Action.TogglePlayerNames:
                         ToggleGameRuntimePlayerNames();
                         break;
+                    case CampaignMenuPresenter.Action.ToggleHelpMode:
+                        ApplyGameRuntimeSourceHelpMode();
+                        break;
                     case CampaignMenuPresenter.Action.ToggleFlightAssistance:
                         ApplyGameRuntimeSourceFlightAssistance();
                         break;
@@ -11595,6 +11599,20 @@ namespace MagicCarpet.Native
             else if (admittedShift) ToggleGameRuntimePanelTransparency();
         }
 
+        private void DispatchGameRuntimeF1Input()
+        {
+            var pressed = playerPreferences?.KeyPressed(KeyCode.F1) ?? Input.GetKeyDown(KeyCode.F1);
+            var shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            var alt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+            ApplyGameRuntimeF1Input(pressed, shift, alt);
+        }
+
+        private void ApplyGameRuntimeF1Input(bool pressed, bool shift, bool alt)
+        {
+            if (!pressed || shift || alt || !CanToggleGameRuntimeIconsAndMap()) return;
+            ApplyGameRuntimeSourceHelpMode();
+        }
+
         private void DispatchGameRuntimeF2Input()
         {
             var pressed = playerPreferences?.KeyPressed(KeyCode.F2) ?? Input.GetKeyDown(KeyCode.F2);
@@ -11787,6 +11805,17 @@ namespace MagicCarpet.Native
             else if (gameRuntimeNightSurface != null || modernEnvironment != null)
                 UpdateGameRuntimeNightPresentation(after, gameRuntimeCampaignSnapshot);
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
+        }
+
+        private void ApplyGameRuntimeSourceHelpMode()
+        {
+            if (!session.GameRuntimeSourceHelpMode(out var after)) return;
+            campaignSession?.SynchronizeGameRuntimeIdentity(after);
+            playerPreferences?.Synchronize(after.player_preferences);
+            gameRuntimeMenu?.ClearPauseHoverHelp();
+            ApplyGameRuntimeHelpMode(after.player_preferences.preferences.show_help);
+            gameRuntimeParticipantNotifications = session.GameRuntimeParticipantNotifications();
+            gameRuntimeNoticeObservationRuntimeGeneration = after.generation;
         }
 
         private void ApplyGameRuntimeSourceFlightAssistance()

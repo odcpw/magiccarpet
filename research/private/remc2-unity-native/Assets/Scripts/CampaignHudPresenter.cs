@@ -68,9 +68,14 @@ namespace MagicCarpet.Native
                 internal RowState(OwnerCampaignMenuCache.GameplayHelpBinding binding)
                 {
                     Binding = binding ?? throw new InvalidDataException("Missing source help row");
-                    Age = binding.AgeThreshold;
+                    Reset();
+                }
+
+                internal void Reset()
+                {
+                    Age = Binding.AgeThreshold;
                     // sub_88B20 initially promotes source type7 context rows.
-                    Priority = binding.Row >= 72 && binding.Row <= 80 ? 6 : binding.Priority;
+                    Priority = Binding.Row >= 72 && Binding.Row <= 80 ? 6 : Binding.Priority;
                 }
             }
 
@@ -106,6 +111,30 @@ namespace MagicCarpet.Native
                 rows = new RowState[ids.Length];
                 for (var index = 0; index < ids.Length; index++) rows[index] = new RowState(rowFor(ids[index]));
                 mana = rows[3];
+            }
+
+            internal void ApplyHelpMode(bool enabled)
+            {
+                Visible = false;
+                VisibleRow = 0;
+                SpellVisible = false;
+                VisibleSpellRecords = null;
+                VisibleSpellHighlight = -1;
+                if (!enabled) return;
+                // SetTextBoxMinMaxSizes clears the shared popup carrier and
+                // restores every retained source row before help resumes.
+                foreach (var row in rows) row.Reset();
+                pollDelay = 0;
+                remaining = 0;
+                currentRow = null;
+                pendingRow = 0;
+                spellMode = false;
+                spellSlot = spellTier = -1;
+                spellCycle = 0;
+                spellRecords = null;
+                spellHighlight = -1;
+                AnchorX = 540;
+                AnchorY = 0;
             }
 
             internal void Promote(int hint, int priority)
@@ -637,6 +666,12 @@ namespace MagicCarpet.Native
         private void CloseGameRuntimeHelpHint(bool showHelp)
         {
             gameRuntimeManaHint?.CloseCurrent(showHelp);
+        }
+
+        private void ApplyGameRuntimeHelpMode(bool enabled)
+        {
+            Require(gameRuntimeManaHint != null, "materialized campaign help text");
+            gameRuntimeManaHint.ApplyHelpMode(enabled);
         }
 
         private void RequestGameRuntimeContextHelpHint(int row, bool showHelp)

@@ -426,6 +426,11 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 0)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.ToggleHelpMode;
+                    }
                     if (index is 1 or 2 or 3)
                     {
                         Event.current.Use();
@@ -484,7 +489,6 @@ namespace MagicCarpet.Native
                     var option = index;
                     preferences.ApplySource(draft => {
                         switch (option) {
-                            case 0: draft.show_help = !draft.show_help; break;
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;
                             case 10: draft.shadows = !draft.shadows; break;

@@ -311,6 +311,13 @@ namespace MagicCarpet.Native
             return gameRuntime.SourceBrightness(action, out identity);
         }
 
+        internal bool GameRuntimeSourceHelpMode(out GameRuntimeTransport.Identity identity)
+        {
+            if (gameRuntime == null)
+                throw new InvalidOperationException("session does not own a game runtime");
+            return gameRuntime.SourceHelpMode(out identity);
+        }
+
         internal bool GameRuntimeSourceFlightAssistance(out GameRuntimeTransport.Identity identity)
         {
             if (gameRuntime == null)

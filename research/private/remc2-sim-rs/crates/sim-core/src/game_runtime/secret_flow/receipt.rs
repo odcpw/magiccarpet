@@ -408,6 +408,7 @@ mod tests {
                 source_brightness_admitted: None,
                 source_audio_admitted: None,
                 source_flight_assistance_admitted: None,
+                source_help_mode_admitted: None,
             },
             presentation: RuntimePresentationCue {
                 cue_id: SemanticPresentationCueId::parse("presentation.receipt.current").unwrap(),

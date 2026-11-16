@@ -3049,6 +3049,52 @@ namespace MagicCarpet.Native.Tests
                     "current-scene sampling and the wrong-scene negative remain purely observational");
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
                 Assert.That(speech.PlayCount, Is.EqualTo(playCount));
+                var f1 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF1Input", flags);
+                void F1(bool shift = false, bool alt = false) => f1.Invoke(runtime, new object[] { true, shift, alt });
+                var helpOwner = Hint();
+                var abilityNotice = Field("gameRuntimeAbilityNotification");
+                var abilityRemaining = abilityNotice == null ? 0 :
+                    (int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice);
+                F1(true); F1(false, true);
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "modifier branches do not toggle bare help");
+                F1();
+                Assert.That(preferences.Current.preferences.show_help, Is.False);
+                Assert.That(Hint(), Is.SameAs(helpOwner));
+                Assert.That(Hint().Visible, Is.False, "F1 hides the actual selected-font popup immediately");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                var helpNotice = ((NativeSession)Field("session")).GameRuntimeParticipantNotifications().value;
+                Assert.That((helpNotice[0].kind, helpNotice[0].remaining_frames), Is.EqualTo(("participant.help_mode_off", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(helpNotice, false, false, false, 14, menu.GameplayLanguageText)[0].Text,
+                    Is.EqualTo(accepted.Record(401)));
+                Assert.That(Field("gameRuntimeAbilityNotification"), Is.SameAs(abilityNotice));
+                if (abilityNotice != null)
+                    Assert.That((int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice),
+                        Is.EqualTo(abilityRemaining), "help does not consume the ability notice");
+                F1();
+                Assert.That(preferences.Current.preferences.show_help, Is.True);
+                Assert.That(Hint(), Is.SameAs(helpOwner));
+                Assert.That(Hint().Visible, Is.False);
+                Assert.That(Hint().Priority, Is.EqualTo(2), "source ON resets retained hint rows");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                helpNotice = ((NativeSession)Field("session")).GameRuntimeParticipantNotifications().value;
+                Assert.That((helpNotice[0].kind, helpNotice[0].remaining_frames), Is.EqualTo(("participant.help_mode_on", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(helpNotice, false, false, false, 14, menu.GameplayLanguageText)[0].Text,
+                    Is.EqualTo(accepted.Record(400)));
+                Assert.That(Field("gameRuntimeAbilityNotification"), Is.SameAs(abilityNotice));
+                if (abilityNotice != null)
+                    Assert.That((int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice),
+                        Is.EqualTo(abilityRemaining), "help ON also preserves the ability notice");
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                for (var pass = 0; pass < 21 && !Hint().Visible; pass++) runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Hint().Visible, Is.True, "ordinary failed casting selects the real popup after ON");
+                RenderCurrentScene();
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter),
+                    Is.EqualTo(menu.GameplayLanguageText(menu.GameplayHelpForRow(Hint().VisibleRow).TextRecord)),
+                    "reinitialized help reaches the selected-locale source glyph consumer");
+                remaining = Remaining();
                 cursor = ulong.Parse(runtime.GameRuntimeProductionSemanticEventCursor);
                 Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.volcano"), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -3183,11 +3229,11 @@ namespace MagicCarpet.Native.Tests
                         "source timer zero is the last drawn frame");
                     Assert.That(coldHidden.GameRuntimeIdentity().session.tick, Is.EqualTo(coldIdentity.session.tick));
                 }
-                F5(false, false);
-                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its save edge");
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "explicit save retains its pending edge");
                 typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
                 Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False);
-                CollectionAssert.AreEqual(hiddenReplay, File.ReadAllBytes(save), "bare F5 publishes the real hidden-display replay");
+                CollectionAssert.AreEqual(hiddenReplay, File.ReadAllBytes(save), "explicit save publishes the real hidden-display replay");
                 F5(true, true);
                 Assert.That((runtime.GameRuntimeProductionIdentity.display_settings.minimap,
                     runtime.GameRuntimeProductionIdentity.display_settings.top_bar), Is.EqualTo((true, true)));
@@ -4093,7 +4139,8 @@ namespace MagicCarpet.Native.Tests
                     (2, CampaignMenuPresenter.Action.ToggleMusic, "participant.music_off", 393),
                     (1, CampaignMenuPresenter.Action.ToggleSound, "participant.sound_off", 391),
                     (3, CampaignMenuPresenter.Action.ToggleSpeech, "participant.speech_off", 470),
-                    (4, CampaignMenuPresenter.Action.ToggleFlightAssistance, "participant.flight_assistance_on", 398) })
+                    (4, CampaignMenuPresenter.Action.ToggleFlightAssistance, "participant.flight_assistance_on", 398),
+                    (0, CampaignMenuPresenter.Action.ToggleHelpMode, "participant.help_mode_off", 401) })
                 {
                     Send(new Vector2(320, 67 + choice.Item1 * 18 + 9));
                     Assert.That(action, Is.EqualTo(choice.Item2));
@@ -4107,6 +4154,12 @@ namespace MagicCarpet.Native.Tests
                 Assert.That((cold.Current.preferences.sound_enabled, cold.Current.preferences.music_enabled,
                     cold.Current.preferences.speech_enabled), Is.EqualTo((false, false, false)), "source audio choices persist in the cold profile");
                 Assert.That(cold.Current.preferences.flight_assistance, Is.True, "source assistance persists in the cold profile");
+                Assert.That(cold.Current.preferences.show_help, Is.False, "source help mode persists in the cold profile");
+                Send(new Vector2(320, 67 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleHelpMode), "Options remains open after toggling help");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                Notice("participant.help_mode_on", 400);
                 Assert.That(initial.session.session_id, Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
             }
             finally
@@ -8758,34 +8811,38 @@ namespace MagicCarpet.Native.Tests
         {
             var nativeSessions = NativeSession.ActiveSessionCount;
             var campaignSessions = NativeCampaignSession.ActiveSessionCount;
-            var save = Path.Combine(Path.GetTempPath(), $"mc-paused-reload-{Guid.NewGuid():N}.json");
+            var temporary = Path.Combine(Path.GetTempPath(), $"mc-paused-reload-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(temporary);
+            var save = Path.Combine(temporary, "save.json");
             var root = new GameObject("paused menu replay with live audio owner");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             try
             {
-                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
-                    "-mc-game-runtime", "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/mc-bhq8-level1-collision-v5-night"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level1-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/mc2-level1-night-cache-v2"),
-                    "-mc-runtime-loading-cache", Path.Combine(PrivateRoot,
-                        "generated/mc2-level1-night-cache-v2"),
-                    "-mc-runtime-replay-save", save,
-                    "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/mc-level2-vault-successor-closure-20261025"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level2-vault-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/level2-vault-successor-owner-cache-20261025"),
-                    "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/level3-day-block32-campaign-recipe-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level3-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/level3-day-spell-owner-cache-audio-v4") });
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var arguments = new System.Collections.Generic.List<string> {
+                    "-mc-game-runtime",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-speech-cache", CampaignSpeechCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile"),
+                    "-mc-runtime-replay-save", save
+                };
+                using (var input = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                    Path.Combine(generated, "continuity-20261115/installed-full-resources.json")))
+                {
+                    var resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                        typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(input);
+                    Assert.That(resources.Length, Is.GreaterThanOrEqualTo(3));
+                    for (var index = 0; index < 3; index++)
+                    {
+                        arguments.Add("-mc-runtime-package"); arguments.Add(resources[index].package_dir);
+                        arguments.Add("-mc-runtime-owner-cache"); arguments.Add(resources[index].owner_cache_path);
+                        arguments.Add("-mc-runtime-presentation-cache"); arguments.Add(resources[index].presentation_cache_path);
+                    }
+                }
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
                 runtime.QualificationDriveGameRuntimeFrames(3);
                 var saved = runtime.GameRuntimeProductionCampaignSnapshot;
                 runtime.QualificationSaveGameRuntimeProductionReplayToPath(save);
@@ -8845,7 +8902,7 @@ namespace MagicCarpet.Native.Tests
             {
                 runtime.QualificationDisposeNativeOwners();
                 UnityEngine.Object.DestroyImmediate(root);
-                if (File.Exists(save)) File.Delete(save);
+                Directory.Delete(temporary, true);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));

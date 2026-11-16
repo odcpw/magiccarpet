@@ -109,6 +109,7 @@ pub(crate) enum ReplayOperation<C> {
     /// Only the local notice is GAME history; audio flags remain CONFIG.
     SourceAudioNotice { action: preferences::SourceAudioAction, enabled: bool },
     FlightAssistanceNotice { enabled: bool },
+    HelpModeNotice { enabled: bool },
     Step {
         command: C,
     },
@@ -234,6 +235,7 @@ pub(crate) enum DisplayNotice {
     PlayerNames(bool),
     SourceAudio(preferences::SourceAudioAction, bool),
     FlightAssistance(bool),
+    HelpMode(bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1407,6 +1409,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     display_notice(&mut candidate, DisplayNotice::FlightAssistance(enabled))
                         .map_err(RestorePlayingError::Transition)?;
                 }
+                ReplayOperation::HelpModeNotice { enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::HelpMode(enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -2048,6 +2054,33 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// SwitchHelpMode_18AA0: source Help data is unconditionally admitted by
+    /// sub_871E0. The presentation owner clears its selector and reinitializes
+    /// row ages on ON only after this complete transaction succeeds.
+    pub fn source_help_mode_preferences(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let enabled = !self.player_preferences.snapshot().preferences.show_help;
+        let notice = session.backend().prepare_help_mode_notice(enabled)?;
+        let accepted = self.player_preferences.source_help_mode_toggle()
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            // The existing policy sidecar records this exact boundary even
+            // when the user saves immediately without another source frame.
+            session.backend_mut().set_help_enabled(enabled);
+            session.backend_mut().commit_help_mode_notice(enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_help_mode_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
     /// Source ChangeSettings case5 in the supported offline campaign. AI
     /// participant rows and replay recording are not multiplayer admission.
     /// Prepare the complete local notice before the atomic profile write.
