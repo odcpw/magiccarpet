@@ -2,9 +2,11 @@
 import hashlib
 import json
 import math
+import struct
 from pathlib import Path
 
 import bpy
+import yaml
 from mathutils import Vector
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -68,3 +70,11 @@ for part in parts.values():
     assert part.data.polygons and part.data.uv_layers and part.data.materials
     assert any(node.type == 'TEX_IMAGE' and node.image for node in part.data.materials[0].node_tree.nodes)
 print('WORLD_NATURE', bounds(), {name:len(obj.data.polygons) for name,obj in parts.items()})
+yaml.SafeLoader.add_constructor('tag:unity3d.com,2011:43',
+                                lambda loader, node: loader.construct_mapping(node, deep=True))
+source = yaml.safe_load((RES / 'ModernNature/rock_mid.asset').read_text())['Mesh']
+raw = bytes.fromhex(source['m_VertexData']['_typelessdata'])
+x,y,z = struct.unpack_from('<3f',raw)
+expected = Vector((x,-z,y))
+assert min((vertex.co-expected).length for vertex in parts['nature_rock'].data.vertices) < 1e-5
+print('WORLD_NATURE_AXIS', tuple(expected))

@@ -157,13 +157,13 @@ def export_tree(destination, scratch):
                 t = max(0, min(1, (y-minimum-.5)/1.8))
                 scale = 3.2 + (1.15-3.2)*t
                 derivative = (1.15-3.2)/1.8 if 0 < t < 1 else 0
-                n = Vector((nx/scale, nz/scale, ny-derivative/scale*(x*nx+z*nz)))
+                n = Vector((nx/scale, -nz/scale, ny-derivative/scale*(x*nx+z*nz)))
             else:
                 scale = 1.15 if part == 'branches' else 1.2
-                n = Vector((nx/scale,nz/scale,ny))
-            converted.append((x*scale, z*scale, y))
+                n = Vector((nx/scale,-nz/scale,ny))
+            converted.append((x*scale, -z*scale, y))
             converted_normals.append(n.normalized())
-        faces = [(indices[i],indices[i+2],indices[i+1]) for i in range(0,len(indices),3)]
+        faces = [(indices[i],indices[i+1],indices[i+2]) for i in range(0,len(indices),3)]
         mesh = bpy.data.meshes.new('tree_' + part)
         mesh.from_pydata(converted, [], faces)
         mesh.update()
@@ -224,11 +224,11 @@ def export_nature(destination, scratch):
         if len(data['m_SubMeshes']) != 1 or data['m_SubMeshes'][0]['indexCount'] != len(indices) or len(indices)%3:
             raise ValueError('unexpected nature index layout')
         mesh = bpy.data.meshes.new(part)
-        mesh.from_pydata([(x,z,y) for x,y,z in verts], [],
-                         [(indices[i],indices[i+2],indices[i+1]) for i in range(0,len(indices),3)])
+        mesh.from_pydata([(x,-z,y) for x,y,z in verts], [],
+                         [(indices[i],indices[i+1],indices[i+2]) for i in range(0,len(indices),3)])
         mesh.update()
         for polygon in mesh.polygons: polygon.use_smooth = True
-        mesh.normals_split_custom_set_from_vertices([(x,z,y) for x,y,z in normals])
+        mesh.normals_split_custom_set_from_vertices([(x,-z,y) for x,y,z in normals])
         layer = mesh.uv_layers.new(name='UVMap')
         for loop in mesh.loops: layer.data[loop.index].uv = uv[loop.vertex_index]
         obj = bpy.data.objects.new('nature_' + part, mesh); bpy.context.collection.objects.link(obj)
