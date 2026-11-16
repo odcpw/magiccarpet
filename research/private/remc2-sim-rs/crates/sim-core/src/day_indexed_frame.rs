@@ -950,6 +950,9 @@ impl DayIndexedFrameState {
                 self.generation
             )));
         }
+        // Cached observations must enforce the same owner binding as a new
+        // render; a matching camera and tick do not identify a package.
+        validate_day_route(inspection, session, assets)?;
         let tick = session.state.tick;
         let view = FrameView::current(session, self.render_options, self.player_label_revision)?;
         if self.current_tick.is_some_and(|current| tick < current) {
@@ -1007,6 +1010,7 @@ impl DayIndexedFrameState {
                 "map world generation differs from its frame owner",
             ));
         }
+        validate_day_route(inspection, session, assets)?;
         let view = FrameView::current(session, self.render_options, self.player_label_revision)?;
         let tick = session.state.tick;
         if self
@@ -3416,6 +3420,34 @@ mod tests {
     }
 
     #[test]
+    fn admitted_fire_night_renders_selected_owner_materials() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("mc-bhq10-owner-v3-level25-20261029"));
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("dragon-bee-20261105-integration/current-level25-environment"));
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            package, &cache, crate::campaign::spec::CampaignSelection::ordinary(25).unwrap(),
+        ).expect("real fire-Night package is admitted");
+        let assets = DayIndexedFrameAssets::load(cache).unwrap();
+        let profile = assets.environment_resources().profile.as_ref().unwrap();
+        assert_eq!(profile.terrain_graphics_flags & 2, 2);
+        assert_eq!((profile.palette.as_str(), profile.blocks.as_str(), profile.tables.as_str()),
+            ("PALF-0", "BL32F0-0", "TABLESN"));
+        assert_eq!((profile.key_color_1, profile.key_color_2), (0, 255));
+        assert_eq!(profile.texture_size, 32);
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        let frame = carrier.render_current(
+            campaign.inspection(), campaign.simulation(), &assets, campaign.generation(),
+        ).expect("admitted fire-Night reaches native indexed frame");
+        assert_eq!(frame.palette_rgb8, assets.palette_rgb8());
+        assert!(frame.source_sprites_composited);
+        assert!(frame.cave_terrain_orders.as_ref().unwrap().iter().any(|&rank| rank != 0));
+        assert_eq!(carrier.render_current(
+            campaign.inspection(), campaign.simulation(), &assets, campaign.generation(),
+        ).unwrap(), frame);
+    }
+
+    #[test]
     fn real_cave12_reset_consumes_floor_ceiling_and_no_sky_materials() {
         let cache = generated_path("mc-oi62-environment-level12-v1");
         let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
@@ -3528,6 +3560,27 @@ mod tests {
             .render_current(campaign.inspection(), reset, &assets, campaign.generation())
             .unwrap();
         assert_eq!(repeated, frame);
+        let day = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("level2-day-block32-campaign-v2"),
+            generated_path("mc-oi62-environment-level2-v2"),
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .unwrap();
+        // A same-view cache hit must not bypass package/session validation.
+        assert!(carrier
+            .render_current(day.inspection(), reset, &assets, campaign.generation())
+            .is_err());
+        assert_eq!(carrier.current_frame(), Some(&frame));
+        let map = carrier
+            .render_map_world(campaign.inspection(), reset, &assets, campaign.generation())
+            .unwrap()
+            .to_vec();
+        assert!(carrier
+            .render_map_world(day.inspection(), reset, &assets, campaign.generation())
+            .is_err());
+        assert_eq!(carrier
+            .render_map_world(campaign.inspection(), reset, &assets, campaign.generation())
+            .unwrap(), map);
         let wrong =
             DayIndexedFrameAssets::load(generated_path("mc-oi62-environment-level2-v2")).unwrap();
         assert!(
@@ -3536,6 +3589,13 @@ mod tests {
                 .is_err()
         );
         assert_eq!(carrier.current_frame(), Some(&frame));
+        carrier.reset(day.generation());
+        assert!(carrier.current_frame().is_none());
+        let rebound = carrier
+            .render_current(day.inspection(), day.simulation(), &wrong, day.generation())
+            .unwrap();
+        assert_eq!(rebound.profile.map_type_id, 0);
+        assert_eq!(rebound.palette_rgb8, wrong.palette_rgb8());
     }
 
     #[test]

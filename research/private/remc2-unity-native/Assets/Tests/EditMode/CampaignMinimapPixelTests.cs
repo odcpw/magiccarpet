@@ -257,6 +257,33 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void EnvironmentOutputChangedAfterOpenIsRejected()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var source = Path.Combine(generated, "mc-oi62-environment-level1-v2");
+            var package = Path.Combine(generated, "mc-bhq8-level1-collision-v5-night");
+            var copy = Path.Combine(Path.GetTempPath(), "mc-environment-read-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+                    Directory.CreateDirectory(Path.Combine(copy, Path.GetRelativePath(source, directory)));
+                foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+                    File.Copy(file, Path.Combine(copy, Path.GetRelativePath(source, file)));
+                var cache = OwnerAssetCache.OpenAndValidateEnvironment(copy, package);
+                var relative = cache.EnvironmentMaterials.tables.path;
+                var bytes = cache.ReadOutput(relative);
+                bytes[0] ^= 1;
+                File.WriteAllBytes(Path.Combine(copy, relative), bytes);
+                Assert.Throws<InvalidDataException>(() => cache.ReadOutput(relative));
+                Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidateEnvironment(copy, package));
+            }
+            finally
+            {
+                if (Directory.Exists(copy)) Directory.Delete(copy, true);
+            }
+        }
+
+        [Test]
         public void PackageEnvironmentMaterialsReachRealNightAndDaySurfaces()
         {
             var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
@@ -285,6 +312,37 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(surface.FrameHash, Is.EqualTo(first));
                     Assert.That(surface.WorldReady, Is.True, "wrong environment preserves current visible scene");
                 }
+            }
+        }
+
+        [Test]
+        public void AdmittedFireNightMaterialsReachNativeAndUnitySurface()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var package = Path.Combine(generated, "mc-bhq10-owner-v3-level25-20261029");
+            var cachePath = Path.Combine(generated, "dragon-bee-20261105-integration/current-level25-environment");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            var profile = cache.EnvironmentMaterials.profile;
+            Assert.That(profile.terrain_graphics_flags & 2, Is.EqualTo(2));
+            Assert.That(profile.palette, Is.EqualTo("PALF-0"));
+            Assert.That(profile.blocks, Is.EqualTo("BL32F0-0"));
+            Assert.That(profile.dormant_blocks16, Is.EqualTo("BL16F0-0"));
+            Assert.That(profile.tables, Is.EqualTo("TABLESN"));
+            Assert.That(profile.texture_size, Is.EqualTo(32));
+            using (var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(25, 24, 1), cachePath))
+            using (var surface = new CampaignPresentationSurface())
+            {
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                Assert.That(surface.CacheContentHash, Is.EqualTo(cache.ContentHash));
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                CollectionAssert.AreEqual(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path),
+                    session.DayIndexedFramePalette, "native frame uses the selected PALF palette");
+                CollectionAssert.AreEqual(session.DayIndexedFramePalette, surface.FramePaletteRgb8,
+                    "Unity consumes the native indexed palette");
+                CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray(),
+                    "Unity receives the native indexed scene pixels");
             }
         }
 
