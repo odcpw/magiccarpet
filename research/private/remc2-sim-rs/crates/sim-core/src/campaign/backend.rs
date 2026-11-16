@@ -20594,6 +20594,136 @@ pub(crate) mod tests {
         complete_controlled_payahandra_vault_boundary_for_test(&mut session);
     }
 
+    #[test]
+    fn payahandra_admitted_exit_drives_day_indexed_history_and_reset() {
+        use crate::day_indexed_frame::{DayIndexedFrameAssets, DayIndexedFrameState};
+
+        // Installed package/owner roles are the same as the managed client.
+        // Prior objective/carry/mana/pose are controlled by the existing
+        // helper; paid vault callbacks and group31 remain ordinary producers.
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+            .join("generated");
+        let package = std::env::var_os("MC_DAY_EXIT_PACKAGE").map_or_else(
+            || generated.join("mc-level2-vault-successor-closure-20261025"), PathBuf::from);
+        let cache = std::env::var_os("MC_DAY_EXIT_OWNER_CACHE").map_or_else(
+            || generated.join("mc-b9s2-cursor-level2-vault-20261029"), PathBuf::from);
+        let definition = load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, Arc::new(definition), 74,
+            Mc2CampaignInputs::with_owner_cache(&package, &cache),
+        ).unwrap();
+        session.backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[0], Some(0)).unwrap();
+        complete_controlled_payahandra_vault_boundary_for_test(&mut session);
+
+        let (player, trigger, trigger_position, portal) = {
+            let sim = session.backend().campaign.simulation();
+            let trigger = sim.economy().authored_switch_producers().iter()
+                .find(|row| row.authored_index == 209 && row.active)
+                .expect("group31 publishes the actual Level2 exit trigger");
+            let portal = sim.economy().authored_class14().iter()
+                .find(|row| row.authored_index == 244 && row.active)
+                .expect("group31 publishes the actual Level2 portal");
+            (sim.state.entity_index, trigger.source_entity_index, trigger.position,
+                portal.source_entity_index)
+        };
+        // Declared arrived contact, not a fabricated exit phase or result.
+        session.backend_mut().campaign.simulation_mut()
+            .set_level2_entity_position(player, trigger_position).unwrap();
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let gtd2 = std::fs::read(cache.join("palette/day-exit-gtd2.dat")).unwrap();
+        assert_eq!(gtd2.len(), 65536);
+        let generation = session.backend().campaign.generation();
+        let mut frames = DayIndexedFrameState::new(generation);
+        let render = |owner: &GameSession<Mc2CampaignBackend>, frames: &mut DayIndexedFrameState| {
+            let campaign = &owner.backend().campaign;
+            frames.render_current(campaign.inspection(), campaign.simulation(), &assets,
+                campaign.generation()).unwrap()
+        };
+        let initial = render(&session, &mut frames);
+        assert_eq!((initial.scene_blur_mode, initial.scene_use_exit_tables), (0, false));
+
+        let mut saw_start = false;
+        let mut phase5 = None;
+        let mut selected = None;
+        let mut blurred = None;
+        let mut completed = None;
+        for _ in 0..700 {
+            session.advance(guard(&session), GameCommand::default()).unwrap();
+            let sim = session.backend().campaign.simulation();
+            saw_start |= sim.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::LevelExitSequenceStarted { trigger_entity_index, portal_entity_index, .. }
+                    if *trigger_entity_index == trigger && *portal_entity_index == portal));
+            let exit = sim.level_exit_sequence();
+            if exit.phase == 5 && phase5.is_none() {
+                let frame = render(&session, &mut frames);
+                assert_eq!((frame.scene_blur_mode, frame.scene_use_exit_tables), (0, false));
+                phase5 = Some(frame);
+            }
+            if exit.phase >= 6 && selected.is_none() {
+                let frame = render(&session, &mut frames);
+                assert!(frame.scene_use_exit_tables, "phase5 expiry selects owner GTD2");
+                selected = Some(frame);
+            }
+            if exit.blur_mode == 2 && blurred.is_none() {
+                let prior = frames.current_frame().unwrap().clone();
+                let frame = render(&session, &mut frames);
+                assert_eq!((frame.scene_blur_mode, frame.scene_use_exit_tables), (2, true));
+                assert!(frame.scene_revision > prior.scene_revision);
+                let mut changed = 0;
+                // Source minimap occupies x<64; compare the untouched scene.
+                for y in 0..200 {
+                    for x in 80..320 {
+                        let i = y * 320 + x;
+                        let expected = gtd2[(usize::from(frame.scene_indices[i]) << 8)
+                            | usize::from(prior.indices[i])];
+                        assert_eq!(frame.indices[i], expected, "GTD2 current-high/prior-low pixel {x},{y}");
+                        changed += usize::from(expected != frame.scene_indices[i]);
+                    }
+                }
+                assert!(changed > 0, "actual GTD2 history changes source scene pixels");
+                assert_eq!(render(&session, &mut frames), frame,
+                    "same-view reads do not advance indexed history");
+                blurred = Some(frame);
+            }
+            if exit.complete {
+                assert_eq!((exit.phase, exit.result_code, exit.blur_mode), (12, 10, 0));
+                let frame = render(&session, &mut frames);
+                assert_eq!(frame.scene_blur_mode, 0);
+                for y in 0..200 {
+                    for x in 80..320 {
+                        let i = y * 320 + x;
+                        assert_eq!(frame.indices[i], frame.scene_indices[i],
+                            "phase12 no longer blends previous-frame history");
+                    }
+                }
+                completed = Some(frame);
+                break;
+            }
+        }
+        assert!(saw_start && phase5.is_some() && selected.is_some() && blurred.is_some()
+            && completed.is_some(), "actual Day exit must traverse trigger, GTD2, blur and phase12");
+
+        session.reset(guard(&session)).unwrap();
+        let next_generation = session.backend().campaign.generation();
+        assert_ne!(next_generation, generation);
+        frames.reset(next_generation);
+        let reset = render(&session, &mut frames);
+        assert_eq!(reset.scene_revision, 1);
+        assert_eq!((reset.scene_blur_mode, reset.scene_use_exit_tables), (0, false));
+        for y in 0..200 {
+            for x in 80..320 {
+                let i = y * 320 + x;
+                assert_eq!(reset.indices[i], reset.scene_indices[i],
+                    "reset generation starts without previous exit history");
+            }
+        }
+        // Component boundary only: C ABI, Unity and a next-mission owner are
+        // separately qualified; this declares the arrived contact above.
+    }
+
     /// Stage the prior objective only; the group-8 producer, both paid
     /// demolition chains, rewards and group-31 gate execute normally.
     pub(crate) fn complete_controlled_payahandra_vault_boundary_for_test(
