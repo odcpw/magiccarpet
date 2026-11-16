@@ -2639,6 +2639,40 @@ pub extern "C" fn mc_game_runtime_campaign_menu_command_json_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_player_menu_state_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    out_menu_state: *mut u8,
+) -> i32 {
+    boundary(|| {
+        require_output(out_menu_state, "current source player menu state")?;
+        with_runtime(handle, |record| {
+            let mode = record.runtime.identity().mode;
+            record.validate_transition(handle, runtime_generation, mode)?;
+            if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+                return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Playing, actual: mode,
+                }));
+            }
+            let session = record.session()?;
+            session.completion_status(SessionGuard {
+                session_id: handle,
+                generation: session_generation,
+                expected_tick,
+            }).map_err(|error| {
+                map_transition_error(RuntimeTransitionError::SessionGuard(Box::new(error)))
+            })?;
+            let menu_state = session.backend().campaign_presentation_source()
+                .simulation().level2_player_menu_state();
+            write_output(out_menu_state, menu_state);
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_participant_notifications_json_v1(
     handle: u64,
     buffer: *mut u8,
@@ -4462,6 +4496,119 @@ mod tests {
             "the failed active-resource binding can return through normal guarded recovery");
         assert_eq!(identity(invalid)["mode"], "title");
         assert_eq!(mc_game_runtime_destroy_v1(invalid), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn current_source_menu_read_is_guarded_pure_and_restores_real_menu_state() {
+        let packages = installed_package_set_json(&[level_one_package(), level_two_package(), level_three_package()]);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let mut output = 0xa5;
+        assert_eq!(mc_game_runtime_player_menu_state_v1(handle, 1, 0, 0, &raw mut output), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(output, 0xa5);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let banishment_state = |owner| with_runtime(owner, |record| {
+            let simulation = record.session()?.backend().campaign_presentation_source().simulation();
+            Ok(simulation.players()[usize::from(simulation.runtime().local_player_slot)].banishment_state_0x006)
+        }).unwrap();
+        assert_eq!(banishment_state(handle), None,
+            "the real Level1 compact record's omitted initial value stays unknown");
+        let counters = |owner| {
+            let value = identity(owner);
+            (value["generation"].as_str().unwrap().parse::<u64>().unwrap(),
+             value["session"]["generation"].as_str().unwrap().parse::<u64>().unwrap(),
+             value["session"]["tick"].as_str().unwrap().parse::<u64>().unwrap())
+        };
+        let read = |owner, expected| {
+            let (outer, nested, tick) = counters(owner);
+            let before = identity(owner);
+            let saved = read_bytes(|buffer, capacity, length|
+                mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length));
+            for _ in 0..3 {
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, &raw mut value), MC_STATUS_OK);
+                assert_eq!(value, expected);
+            }
+            for (outer, nested, tick, status) in [
+                (outer + 1, nested, tick, MC_STATUS_GENERATION_MISMATCH),
+                (outer, nested + 1, tick, MC_STATUS_GENERATION_MISMATCH),
+                (outer, nested, tick + 1, MC_STATUS_INVALID_ARGUMENT),
+            ] {
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, &raw mut value), status);
+                assert_eq!(value, 0xa5, "refused reads never write the output byte");
+            }
+            assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, std::ptr::null_mut()), MC_STATUS_NULL_POINTER);
+            assert_eq!(identity(owner), before);
+            assert_eq!(read_bytes(|buffer, capacity, length|
+                mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length)), saved);
+            saved
+        };
+        read(handle, 0);
+        let (_, nested, tick) = counters(handle);
+        let open = br#"{"abandon_action":"open_abandon_confirmation"}"#;
+        assert_eq!(mc_game_session_step_json_v1(handle, nested, tick, open.as_ptr(), open.len() as u32), MC_STATUS_OK);
+        read(handle, 13);
+        let (_, nested, tick) = counters(handle);
+        assert_eq!(mc_game_session_step_json_v1(handle, nested, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert!(with_runtime(handle, |record| Ok(record.session()?.snapshot().value.source_menu_admission.is_none())).unwrap(),
+            "ordinary current state is independent of the optional command receipt");
+        read(handle, 13);
+        let (outer, _, _) = counters(handle);
+        assert_eq!(mc_game_runtime_pause_v1(handle, outer), MC_STATUS_OK);
+        let saved = read(handle, 13);
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32,
+            saved.as_ptr(), saved.len() as u32), MC_STATUS_OK);
+        read(cold, 13);
+        let (outer, _, _) = counters(cold);
+        assert_eq!(mc_game_runtime_resume_v1(cold, outer), MC_STATUS_OK);
+        let (_, nested, tick) = counters(cold);
+        let cancel = br#"{"abandon_action":"cancel_abandon_confirmation"}"#;
+        assert_eq!(mc_game_session_step_json_v1(cold, nested, tick, cancel.as_ptr(), cancel.len() as u32), MC_STATUS_OK);
+        read(cold, 0);
+        for action in ["toggle_gameplay_map", "open_abandon_confirmation"] {
+            let (_, nested, tick) = counters(cold);
+            let command = serde_json::to_vec(&serde_json::json!({"abandon_action": action})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(cold, nested, tick, command.as_ptr(), command.len() as u32), MC_STATUS_OK);
+        }
+        for (owner, menu) in [(handle, 13), (cold, 14)] {
+            if identity(owner)["mode"] == "paused" {
+                let (outer, _, _) = counters(owner);
+                assert_eq!(mc_game_runtime_resume_v1(owner, outer), MC_STATUS_OK);
+            }
+            read(owner, menu);
+            let (_, nested, tick) = counters(owner);
+            let confirm = br#"{"abandon_action":"confirm_abandon"}"#;
+            assert_eq!(mc_game_session_step_json_v1(owner, nested, tick, confirm.as_ptr(), confirm.len() as u32), MC_STATUS_OK,
+                "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+            assert_eq!(banishment_state(owner), Some(0), "actual action29 establishes the source-written value");
+            assert!(with_runtime(owner, |record| Ok(record.session()?.snapshot().value.return_to_title_requested)).unwrap());
+            // Action29 changes the result word, not MenuState_0x3DF. Its
+            // confirmation state remains readable until the outer return.
+            let saved = read(owner, menu);
+            let mut replayed = 0;
+            assert_eq!(mc_game_runtime_create_v1(&raw mut replayed), MC_STATUS_OK);
+            assert_eq!(mc_game_runtime_load_replay_json_v1(replayed, 1, packages.as_ptr(), packages.len() as u32,
+                saved.as_ptr(), saved.len() as u32), MC_STATUS_OK,
+                "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+            assert_eq!(banishment_state(replayed), Some(0));
+            assert!(with_runtime(replayed, |record| Ok(record.session()?.snapshot().value.return_to_title_requested)).unwrap());
+            read(replayed, menu);
+            for returning in [owner, replayed] {
+                let (outer, nested, tick) = counters(returning);
+                assert_eq!(mc_game_runtime_close_v1(returning, outer, nested, tick), MC_STATUS_OK);
+                assert_eq!(identity(returning)["mode"], "title");
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(returning, outer + 1, nested + 1, tick, &raw mut value), MC_STATUS_INVALID_ARGUMENT);
+                assert_eq!(value, 0xa5);
+            }
+            assert_eq!(mc_game_runtime_destroy_v1(replayed), MC_STATUS_OK);
+        }
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]

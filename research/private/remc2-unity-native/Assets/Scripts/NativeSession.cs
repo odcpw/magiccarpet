@@ -240,6 +240,12 @@ namespace MagicCarpet.Native
         private static readonly bool FreshRuntimeIdentities =
             System.Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-fresh-runtime-identities") >= 0;
 
+        internal byte GameRuntimePlayerMenuState(EngineSessionTransport.Identity observed)
+        {
+            return gameRuntime?.PlayerMenuState(observed) ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignSnapshot()
         {
             return gameRuntime?.CampaignSnapshot() ?? throw new InvalidOperationException(

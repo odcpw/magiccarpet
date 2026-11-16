@@ -126,6 +126,44 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void CurrentSourceMenuStateClearsModalWithoutInferringPlayerLife()
+        {
+            var menus = new SourceCampaignMenus();
+            foreach (var state in new byte[] { 13, 14 })
+            {
+                menus.SynchronizeSourceState(state);
+                Assert.That(menus.AbandonConfirmationPending, Is.True);
+                Assert.That(menus.MapOpen, Is.EqualTo(state == 14));
+                Assert.That(menus.TryRequestBanishFromSourceKey1(true), Is.True);
+                // The input is an authoritative menu observation, independent
+                // of actor life. The real dying callback's integrated check
+                // separately supplies this ordinary menu0 transition.
+                menus.SynchronizeSourceState(0);
+                Assert.That(menus.AbandonConfirmationPending, Is.False);
+                Assert.That(menus.HasPendingAction, Is.False);
+                Assert.That(menus.TryGetPendingBanish(out _), Is.False);
+                Assert.That(menus.TryRequestBanishFromSourceKey1(true), Is.False);
+                Assert.That((menus.MapOpen, menus.SpellOpen, menus.PlayerInformationOpen),
+                    Is.EqualTo((false, false, false)));
+            }
+            foreach (var state in new byte[] { 5, 6, 7, 8 })
+            {
+                menus.SynchronizeSourceState(state);
+                Assert.That(menus.SpellOpen, Is.EqualTo(state is 5 or 8));
+                Assert.That(menus.MapOpen, Is.EqualTo(state is 6 or 7 or 8));
+                Assert.That(menus.PlayerInformationOpen, Is.EqualTo(state == 7));
+            }
+            menus.SynchronizeSourceState(0);
+            var open = menus.Step(false, false, true, false, false, true);
+            Assert.That(open.RequestAbandonConfirmation, Is.True,
+                "a later fresh control follows the new native flight state");
+            Assert.That(menus.QueueAction("open_abandon_confirmation", false, null, null), Is.True);
+            menus.SynchronizeSourceState(0);
+            Assert.That(menus.PendingAction, Is.EqualTo("open_abandon_confirmation"),
+                "a live observation does not pretend an unsubmitted command was admitted");
+        }
+
+        [Test]
         public void SourceConfirmationUsesBothButtonsAndReturnEscapeWithinItsExactHitRegions()
         {
             var okay = new Rect(270, 104, 50, 32);

@@ -1128,6 +1128,19 @@ namespace MagicCarpet.Native
             return identity;
         }
 
+        internal byte PlayerMenuState(EngineSessionTransport.Identity observed)
+        {
+            RequireSessionMode(allowPaused: true, "current source player menu state");
+            if (observed == null || observed.session_id != Current.session.session_id ||
+                observed.generation != Current.session.generation || observed.tick != Current.session.tick)
+                throw new InvalidDataException("source menu state requires the current accepted observation");
+            Check(NativeSim.mc_game_runtime_player_menu_state_v1(RequireHandle(),
+                ParseCounter(Current.generation, "generation"),
+                ParseCounter(observed.generation, "session_generation"),
+                ParseCounter(observed.tick, "tick"), out var menuState), "read current source player menu state");
+            return menuState;
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignSnapshot()
         {
             RequireSessionMode(allowPaused: true, "campaign snapshot");

@@ -1448,6 +1448,12 @@ int32_t mc_game_runtime_source_viewport_v1(
 int32_t mc_game_runtime_toggle_player_names_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
     uint64_t expected_tick);
+/* Pure current source MenuState_0x3DF read, including ordinary lifecycle writes.
+ * Playing/Paused only; both generations and tick must match. On error the
+ * output byte is unchanged. No frame, menu action or presentation clock runs. */
+int32_t mc_game_runtime_player_menu_state_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick, uint8_t *out_menu_state);
 int32_t mc_game_runtime_participant_notifications_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_runtime_resume_v1(

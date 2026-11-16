@@ -2809,6 +2809,7 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedRenderFrame(
                     TakeGameRuntimeElapsedCentiseconds(), Input.GetKey(KeyCode.O));
+                SynchronizeGameRuntimeSourceMenus(gameRuntimeCampaignSnapshot.identity, paused: true);
                 DrainGameRuntimeSemanticEvents();
                 if (level2Mode || level3Mode || gameRuntimeNightSurface != null || modernEnvironment != null ||
                     gameRuntimeSecretSurface != null)
@@ -2921,23 +2922,11 @@ namespace MagicCarpet.Native
                     admission.tick == gameRuntimeCampaignSnapshot.identity.tick &&
                     admission.tick == gameRuntimeCampaignSnapshot.value.tick,
                     "source menu admission does not bind the ordinary command turn");
-                var wasSpellMenuOpen = gameRuntimeSpellMenuOpen;
-                var wasConfirmationOpen = gameRuntimeAbandonConfirmationOpen;
                 gameRuntimeSourceMenus.CompleteAction(admission);
                 Require(!gameRuntimeSourceMenus.HasPendingAction,
                     "source menu admission has a valid authoritative state");
-                gameRuntimeSpellMenuOpen = gameRuntimeSourceMenus.SpellOpen;
-                gameRuntimeAbandonConfirmationOpen = gameRuntimeSourceMenus.AbandonConfirmationPending;
-                if (wasSpellMenuOpen != gameRuntimeSpellMenuOpen)
-                {
-                    gameRuntimeSourceSpellMenu.Close();
-                    playerPreferences?.Center();
-                }
-                if (!wasConfirmationOpen && gameRuntimeAbandonConfirmationOpen)
-                    gameRuntimeAbandonConfirmationFrame = Time.frameCount;
-                if (gameRuntimeSpellMenuOpen || gameRuntimeAbandonConfirmationOpen) ReleaseMouse();
-                else if (!Application.isBatchMode) CaptureMouse();
             }
+            SynchronizeGameRuntimeSourceMenus(gameRuntimeCampaignSnapshot.identity);
             preferenceRecenterRequested = preferenceFullStopRequested = false;
             if (gameRuntimeRecoverPlayerRequested && gameRuntimeCampaignSnapshot.value.player_vitals.life >= 0)
             {
@@ -10287,7 +10276,7 @@ namespace MagicCarpet.Native
             gameRuntimeTransitionPresenter.ClearFailure();
             PresentGameRuntimeTransition(identity);
             Debug.Log($"MC_LOADING_OPEN level={destination} runtime={identity.runtime_id} generation={identity.generation} session_generation={identity.session.generation} tick={identity.session.tick} definition={identity.session.definition_hash}");
-            if (!Application.isBatchMode) CaptureMouse();
+            if (!Application.isBatchMode && !gameRuntimeSpellMenuOpen && !gameRuntimeAbandonConfirmationOpen) CaptureMouse();
         }
 
         private void ComposeGameRuntimeActivePresentation(GameRuntimeTransport.Identity identity,
@@ -10327,6 +10316,7 @@ namespace MagicCarpet.Native
             }
             else
                 throw new InvalidDataException("The selected source package has no validated environment presentation cache.");
+            SynchronizeGameRuntimeSourceMenus(observation.identity, identity.mode == GameRuntimeTransport.PausedMode);
         }
 
         private void BeginGameRuntimeLoadingPresentation(GameRuntimeTransport.Identity loading)
@@ -10924,6 +10914,30 @@ namespace MagicCarpet.Native
             return applied;
         }
 
+        private void SynchronizeGameRuntimeSourceMenus(EngineSessionTransport.Identity observed, bool paused = false)
+        {
+            var wasSpellMenuOpen = gameRuntimeSpellMenuOpen;
+            var wasConfirmationOpen = gameRuntimeAbandonConfirmationOpen;
+            var menuState = session.GameRuntimePlayerMenuState(observed);
+            gameRuntimeSourceMenus.SynchronizeSourceState(menuState);
+            gameRuntimeSpellMenuOpen = gameRuntimeSourceMenus.SpellOpen;
+            gameRuntimeAbandonConfirmationOpen = gameRuntimeSourceMenus.AbandonConfirmationPending;
+            if (wasSpellMenuOpen != gameRuntimeSpellMenuOpen)
+            {
+                gameRuntimeSourceSpellMenu.Close();
+                playerPreferences?.Center();
+            }
+            if (!wasConfirmationOpen && gameRuntimeAbandonConfirmationOpen)
+                gameRuntimeAbandonConfirmationFrame = Time.frameCount;
+            if (wasSpellMenuOpen == gameRuntimeSpellMenuOpen && wasConfirmationOpen == gameRuntimeAbandonConfirmationOpen)
+                return;
+            Debug.Log($"MC_SOURCE_MENU_STATE menu={menuState} session={observed.session_id} generation={observed.generation} tick={observed.tick} spells={wasSpellMenuOpen}->{gameRuntimeSpellMenuOpen} confirmation={wasConfirmationOpen}->{gameRuntimeAbandonConfirmationOpen}");
+            if (wasSpellMenuOpen && !gameRuntimeSpellMenuOpen || wasConfirmationOpen && !gameRuntimeAbandonConfirmationOpen)
+                FreezeGameRuntimeFlightInput();
+            if (paused || gameRuntimeSpellMenuOpen || gameRuntimeAbandonConfirmationOpen) ReleaseMouse();
+            else if (!Application.isBatchMode) CaptureMouse();
+        }
+
         private void FreezeGameRuntimeFlightInput(bool preserveReplaySave = false)
         {
             playerPreferences?.Center();
@@ -11408,6 +11422,7 @@ namespace MagicCarpet.Native
                 "restarted presentation is bound to the new nested session");
             ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
             gameRuntimeCampaignSnapshot = observation;
+            SynchronizeGameRuntimeSourceMenus(observation.identity);
             gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
@@ -11472,6 +11487,7 @@ namespace MagicCarpet.Native
             gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
             var identity = session.GameRuntimeIdentity();
+            SynchronizeGameRuntimeSourceMenus(gameRuntimeCampaignSnapshot.identity, identity.mode == GameRuntimeTransport.PausedMode);
             if (level2Mode)
             {
                 UpdateGameRuntimeLevel2Presentation(

@@ -31207,7 +31207,8 @@ impl Mc2Simulation {
                     .core
                     .players
                     .get_mut(slot)
-                    .is_some_and(|player| player.set_banishment_state(0));
+                    .map(|player| player.record_player_event_29_banishment())
+                    .is_some();
             if !valid {
                 self.session.state = state_before;
                 self.session.state.scratch.dispatch_events.clear();
