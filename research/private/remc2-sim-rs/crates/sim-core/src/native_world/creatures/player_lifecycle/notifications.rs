@@ -11,6 +11,8 @@ pub(crate) enum PlayerLifeNoticeKind {
     Banished,
     IconsMapHidden,
     IconsMapVisible,
+    PanelTransparencyOn,
+    PanelTransparencyOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -20,6 +22,8 @@ impl PlayerLifeNoticeKind {
             Self::Banished => "participant.banished",
             Self::IconsMapHidden => "participant.icons_map_hidden",
             Self::IconsMapVisible => "participant.icons_map_visible",
+            Self::PanelTransparencyOn => "participant.panel_transparency_on",
+            Self::PanelTransparencyOff => "participant.panel_transparency_off",
         }
     }
 }
@@ -65,7 +69,8 @@ impl PlayerLifecycleNotifications {
             kind: Some(kind),
             source_owner,
             state: match kind {
-                PlayerLifeNoticeKind::IconsMapHidden | PlayerLifeNoticeKind::IconsMapVisible => 3,
+                PlayerLifeNoticeKind::IconsMapHidden | PlayerLifeNoticeKind::IconsMapVisible
+                    | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -118,6 +123,8 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::Banished) => 2,
                 Some(PlayerLifeNoticeKind::IconsMapHidden) => 3,
                 Some(PlayerLifeNoticeKind::IconsMapVisible) => 4,
+                Some(PlayerLifeNoticeKind::PanelTransparencyOn) => 5,
+                Some(PlayerLifeNoticeKind::PanelTransparencyOff) => 6,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -152,6 +159,21 @@ mod tests {
         notices.publish(0, 111, PlayerLifeNoticeKind::IconsMapVisible, 50).unwrap();
         assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_visible");
         assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (3, 50));
+        for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff] {
+            notices.publish(0, 111, kind, 50).unwrap();
+            assert_eq!(notices.entries()[0].kind, Some(kind));
+            assert_eq!(notices.entries()[0].state, 3);
+            let retained = notices.clone();
+            notices.presentation_frame(false);
+            assert_eq!(notices, retained);
+            for remaining in (0..50).rev() {
+                notices.presentation_frame(true);
+                assert_eq!(notices.entries()[0].remaining_frames, remaining);
+                assert_eq!(notices.entries()[0].state, 3);
+            }
+            notices.presentation_frame(true);
+            assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (0, -1));
+        }
     }
 
     #[test]

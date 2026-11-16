@@ -102,6 +102,7 @@ impl RuntimePresentationCue {
 pub(crate) enum ReplayOperation<C> {
     Pause,
     ToggleIconsMap,
+    TogglePanelTransparency,
     Step {
         command: C,
     },
@@ -174,23 +175,29 @@ pub struct RuntimeGuard {
 }
 
 /// Source GAME settings, distinct from CONFIG/profile preferences. Both
-/// display bytes are retained across mission and retry boundaries.
+/// icon/map bytes survive mission/retry; LevelInit resets panel opacity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DisplaySettings {
     pub minimap: bool,
     pub top_bar: bool,
+    pub panels_opaque: bool,
 }
 
 impl Default for DisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true } }
+    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false } }
 }
 
 impl DisplaySettings {
-    pub(crate) fn is_default(&self) -> bool { *self == Self::default() }
     pub(crate) fn toggled(self) -> Self {
-        Self { minimap: !self.minimap, top_bar: !self.top_bar }
+        Self { minimap: !self.minimap, top_bar: !self.top_bar, ..self }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DisplayNotice {
+    IconsMap(bool),
+    PanelTransparency(bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
@@ -1267,7 +1274,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
         S: FnMut(&mut GameSession<B>, bool, bool),
-        T: FnMut(&mut GameSession<B>, bool) -> Result<(), RuntimeTransitionError>,
+        T: FnMut(&mut GameSession<B>, DisplayNotice) -> Result<(), RuntimeTransitionError>,
         X: FnMut(&mut GameSession<B>, usize) -> Result<(), RuntimeTransitionError>,
     {
         self.validate_guard(guard)
@@ -1332,7 +1339,12 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             match operation {
                 ReplayOperation::ToggleIconsMap => {
                     display_settings = display_settings.toggled();
-                    display_notice(&mut candidate, display_settings.minimap)
+                    display_notice(&mut candidate, DisplayNotice::IconsMap(display_settings.minimap))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::TogglePanelTransparency => {
+                    display_settings.panels_opaque = !display_settings.panels_opaque;
+                    display_notice(&mut candidate, DisplayNotice::PanelTransparency(display_settings.panels_opaque))
                         .map_err(RestorePlayingError::Transition)?;
                 }
                 ReplayOperation::SpeechPreference {
@@ -1966,6 +1978,33 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Source ChangeSettings case14, independent of CONFIG preferences and
+    /// the help-popup close performed only by case13.
+    pub fn toggle_panel_transparency(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard)
+            .map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let opaque = !self.display_settings.panels_opaque;
+        session.backend_mut().publish_panel_transparency_notice(opaque)?;
+        self.display_settings.panels_opaque = opaque;
+        Ok(self.identity())
+    }
+
+    /// Called only after a successful source LevelInit/open or borrowed
+    /// campaign reset. Failed opens/resets never publish a different setting.
+    pub fn reset_panel_transparency_to_level_default(&mut self) {
+        if let RuntimeState::Playing { session, .. } = &self.state {
+            self.display_settings.panels_opaque = session.backend().compatibility_campaign()
+                .simulation().canonical_terrain().map_type() == crate::native_world::MapType::Cave;
+        }
+    }
+
     /// Source ChangeSettings case13. Both guards are checked before either
     /// the global display bytes or the local type3 notice can be published.
     pub fn toggle_icons_and_map(

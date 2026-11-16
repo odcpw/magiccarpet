@@ -167,6 +167,7 @@ impl RuntimeRecord {
     ) -> AbiResult<sim_session::SessionObservation<sim_session::CampaignSnapshot>> {
         let session = self.session()?;
         let mut observation = session.snapshot();
+        observation.value.spell_menu_panels_opaque = self.runtime.identity().display_settings.panels_opaque;
         self.apply_local_presentation_name(
             &mut observation.value.source_scoreboard,
             &mut observation.value.participant_notifications,
@@ -235,6 +236,10 @@ impl RuntimeRecord {
                 ),
             )
         })
+    }
+
+    pub(super) fn reset_panel_transparency_to_level_default(&mut self) {
+        self.runtime.reset_panel_transparency_to_level_default();
     }
 
     pub(super) fn step_with_preferences(
@@ -2075,6 +2080,27 @@ pub extern "C" fn mc_game_runtime_toggle_icons_map_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_toggle_panel_transparency_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |record| {
+            record.runtime.toggle_panel_transparency(
+                RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+                sim_session::SessionGuard {
+                    session_id: handle, generation: session_generation, expected_tick,
+                },
+            ).map_err(map_transition_error)?;
+            record.campaign_presentation_dirty = true;
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     handle: u64,
     runtime_generation: u64,
@@ -3373,6 +3399,7 @@ mod tests {
         fs::remove_dir(profile).unwrap();
         assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+
     }
 
     #[test]
@@ -3892,8 +3919,11 @@ mod tests {
         let mut handle = 0;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
         let title = identity(handle);
-        assert_eq!(title["display_settings"], serde_json::json!({"minimap": true, "top_bar": true}));
+        assert_eq!(title["display_settings"]["minimap"], true);
+        assert_eq!(title["display_settings"]["top_bar"], true);
+        assert_eq!(title["display_settings"]["panels_opaque"], false);
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(identity(handle), title);
         assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
             handle, 1, packages.as_ptr(), packages.len() as u32,
@@ -3903,6 +3933,7 @@ mod tests {
         assert_eq!(identity(handle), loading);
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
         let before = identity(handle);
+        assert_eq!(before["display_settings"]["panels_opaque"], false, "Night default");
         let before_snapshot = read_json(|buffer, capacity, length| {
             mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
         });
@@ -3915,6 +3946,7 @@ mod tests {
             (3, 1, 1, MC_STATUS_INVALID_ARGUMENT),
         ] {
             assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, outer, nested, tick), expected);
+            assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, outer, nested, tick), expected);
             assert_eq!(identity(handle), before);
             assert_eq!(read_json(|buffer, capacity, length| {
                 mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
@@ -3925,7 +3957,9 @@ mod tests {
         }
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 3, 1, 0), MC_STATUS_OK);
         assert_eq!(identity(handle)["session"], before["session"]);
-        assert_eq!(identity(handle)["display_settings"], serde_json::json!({"minimap": false, "top_bar": false}));
+        assert_eq!(identity(handle)["display_settings"]["minimap"], false);
+        assert_eq!(identity(handle)["display_settings"]["top_bar"], false);
+        assert_eq!(identity(handle)["display_settings"]["panels_opaque"], false);
         let notices = read_json(|buffer, capacity, length| {
             mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
         });
@@ -3934,7 +3968,43 @@ mod tests {
         assert_eq!(notices["value"][0]["remaining_frames"], 50);
         assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 4, 2, 0), MC_STATUS_OK);
-        assert_eq!(identity(handle)["display_settings"], serde_json::json!({"minimap": true, "top_bar": true}));
+        assert_eq!(identity(handle)["display_settings"]["minimap"], true);
+        assert_eq!(identity(handle)["display_settings"]["top_bar"], true);
+        let icons_notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(icons_notices["value"][0]["kind"], "participant.icons_map_visible");
+        assert_eq!(icons_notices["value"][0]["remaining_frames"], 50);
+        let icons_saved = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        let mut icons_cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut icons_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            icons_cold, 1, packages.as_ptr(), packages.len() as u32,
+            icons_saved.as_ptr(), icons_saved.len() as u32,
+        ), MC_STATUS_OK);
+        let cold_icons_notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(icons_cold, buffer, capacity, length)
+        });
+        assert_eq!(cold_icons_notices["value"][0]["kind"], "participant.icons_map_visible");
+        assert_eq!(cold_icons_notices["value"][0]["remaining_frames"], 50);
+        assert_eq!(mc_game_runtime_destroy_v1(icons_cold), MC_STATUS_OK);
+        let before_panel = identity(handle);
+        assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        let after_panel = identity(handle);
+        assert_eq!(after_panel["session"], before_panel["session"]);
+        assert_eq!(after_panel["display_settings"]["minimap"], true);
+        assert_eq!(after_panel["display_settings"]["top_bar"], true);
+        assert_eq!(after_panel["display_settings"]["panels_opaque"], true);
+        let full_panel = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let render_panel = read_json(|buffer, capacity, length| {
+            mc_game_runtime_render_observation_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(full_panel["value"]["spell_menu_panels_opaque"], true);
+        assert_eq!(render_panel["value"]["spell_menu_panels_opaque"], true);
         let saved = read_bytes(|buffer, capacity, length| {
             mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
         });
@@ -3956,15 +4026,108 @@ mod tests {
         let cold_notices = read_json(|buffer, capacity, length| {
             mc_game_runtime_participant_notifications_json_v1(cold, buffer, capacity, length)
         });
-        assert_eq!(cold_notices["value"][0]["kind"], "participant.icons_map_visible");
+        assert_eq!(cold_notices["value"].as_array().unwrap().len(), 1);
+        assert_eq!(cold_notices["value"][0]["kind"], "participant.panel_transparency_off");
         assert_eq!(cold_notices["value"][0]["remaining_frames"], 50);
         let outer = cold_identity["generation"].as_str().unwrap().parse().unwrap();
         let nested = cold_identity["session"]["generation"].as_str().unwrap().parse().unwrap();
         assert_eq!(read_bytes(|buffer, capacity, length| {
             mc_game_runtime_save_replay_json_v1(cold, outer, nested, 0, buffer, capacity, length)
         }), saved);
+        assert_eq!(mc_game_runtime_resume_v1(cold, outer), MC_STATUS_OK);
+        let resumed = identity(cold);
+        let resumed_nested = resumed["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_reset_v1(cold, resumed_nested + 1, 0), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(identity(cold), resumed);
+        assert_eq!(mc_game_session_reset_v1(cold, resumed_nested, 0), MC_STATUS_OK);
+        assert_eq!(identity(cold)["display_settings"]["panels_opaque"], false, "Night retry default");
         assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+
+        // A real transferred Pav save predates this optional GAME setting.
+        // Load it unchanged through its installed resolver to test Cave's
+        // fallback and retry default as well as a newly saved explicit value.
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            PathBuf::from,
+        ).join("generated");
+        let resources: Value = serde_json::from_slice(&fs::read(
+            generated.join("campaign-original-environments/installed-campaign-resources.json")
+        ).unwrap()).unwrap();
+        let cave_packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": resources.as_array().unwrap().iter().map(|item| serde_json::json!({
+                "package_dir": item["package"], "owner_cache_path": item["owner"]
+            })).collect::<Vec<_>>()
+        })).unwrap();
+        let cave_save = fs::read(generated.join("secret-announcement-20261115/fresh-pav-3.mcs")).unwrap();
+        let mut cave = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cave), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            cave, 1, cave_packages.as_ptr(), cave_packages.len() as u32,
+            cave_save.as_ptr(), cave_save.len() as u32,
+        ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cave_before = identity(cave);
+        assert_eq!(cave_before["display_settings"]["panels_opaque"], true, "Cave legacy-save default");
+        let cave_outer = cave_before["generation"].as_str().unwrap().parse().unwrap();
+        let cave_nested = cave_before["session"]["generation"].as_str().unwrap().parse().unwrap();
+        let cave_tick = cave_before["session"]["tick"].as_str().unwrap().parse().unwrap();
+        let mut coverage = vec![0xa5; 64 * 64];
+        let mut coverage_len = 77;
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested + 1, cave_tick, coverage.as_mut_ptr(), coverage.len() as u32, &raw mut coverage_len,
+        ), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(coverage_len, 77);
+        assert!(coverage.iter().all(|value| *value == 0xa5));
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested, cave_tick + 1, coverage.as_mut_ptr(), coverage.len() as u32, &raw mut coverage_len,
+        ), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(coverage_len, 77);
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested, cave_tick, coverage.as_mut_ptr(), coverage.len() as u32 - 1, &raw mut coverage_len,
+        ), MC_STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(coverage_len, 4096);
+        assert!(coverage.iter().all(|value| *value == 0xa5));
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested, cave_tick, std::ptr::null_mut(), 4096, &raw mut coverage_len,
+        ), MC_STATUS_NULL_POINTER);
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested, cave_tick, coverage.as_mut_ptr(), coverage.len() as u32, &raw mut coverage_len,
+        ), MC_STATUS_OK);
+        assert_eq!(coverage_len, 4096);
+        assert!(coverage.iter().all(|value| *value <= 1));
+        assert!(coverage.contains(&1));
+        let before_coverage = coverage.clone();
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_minimap_terrain_coverage_copy(
+            cave, cave_nested, cave_tick, coverage.as_mut_ptr(), coverage.len() as u32, &raw mut coverage_len,
+        ), MC_STATUS_OK);
+        assert_eq!(coverage, before_coverage);
+
+        assert_eq!(identity(cave), cave_before);
+        assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(cave, cave_outer, cave_nested, cave_tick), MC_STATUS_OK);
+        assert_eq!(identity(cave)["display_settings"]["panels_opaque"], false);
+        let cave_notice = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(cave, buffer, capacity, length)
+        });
+        assert_eq!(cave_notice["value"][0]["kind"], "participant.panel_transparency_on");
+        assert_eq!(cave_notice["value"][0]["remaining_frames"], 50);
+        let cave_saved = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(cave, cave_outer, cave_nested, cave_tick, buffer, capacity, length)
+        });
+        let mut cave_cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cave_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            cave_cold, 1, cave_packages.as_ptr(), cave_packages.len() as u32,
+            cave_saved.as_ptr(), cave_saved.len() as u32,
+        ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cave_restored = identity(cave_cold);
+        assert_eq!(cave_restored["display_settings"]["panels_opaque"], false);
+        let cave_restored_nested = cave_restored["session"]["generation"].as_str().unwrap().parse().unwrap();
+        let cave_restored_tick = cave_restored["session"]["tick"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_reset_v1(cave_cold, cave_restored_nested, cave_restored_tick), MC_STATUS_OK);
+        assert_eq!(identity(cave_cold)["display_settings"]["panels_opaque"], true, "Cave retry default");
+        assert_eq!(mc_game_runtime_destroy_v1(cave_cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(cave), MC_STATUS_OK);
     }
 
     #[test]

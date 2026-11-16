@@ -801,15 +801,49 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-15): the same team is completing original spell-menu
-help through actual Ctrl/hover, source hint cycling, selected original glyphs,
-indexed menu bars/transparency and cleanup. The missing SourceSpellMenu help
-consumer and source bars are implemented and being qualified. QuietIsland owns managed/assets; BoldForge owns
-authoritative tier text, affordability, experience and raw menu admission joins.
-Root implements shared DTO/transport joins and serializes checks/push/installation.
-Default Keys and special secret announcements below are delivered; do not restart
-them. Keep the complete original acceptance and remaining help/audio/presentation
-work open.
+Current capability (2026-11-16): complete source Shift+F6 and pause option13 panel
+transparency through actual indexed panels, source440/441 notices, GAME save/cold
+restore and LevelInit/retry defaults. QuietIsland owns the connected managed
+consumers; BoldForge owns native state/replay/lifetime joins. Root implements
+ABI/transport joins and serializes checks, push and installation. The installed
+spell-menu, Default Keys and secret announcement checkpoints below are delivered;
+do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
+Modern work. Shift+F7 is flat shading, a separate source control.
+
+The connected panel-transparency candidate is implemented and verified, not yet
+installed: Shift+F6/Options13 share one guarded Rust GAME setting and local
+440/441 type3 notice. Real save/cold restore preserves it; successful normal
+LevelInit/retry resets Day/Night to transparent and Cave to opaque. Old GAME
+absence resolves the map default only after validating the old receipt. CONFIG
+and Default Keys remain independent. JSON/MCPO carry accepted state; minimap
+admission is a pure guarded query. The indexed compositor preserves arbitrary
+ordered minimap blends over current world/WEB, then source HUD backgrounds,
+opaque icons/glyphs/bars and recursive objective/help. Cave minimap and full map
+remain opaque. No CPU world readback or RGBA approximation supplies this path.
+
+Real native Night/Cave save/reset/notice checks pass1.764s; CABI old-save,
+guarded coverage/purity and reset check passes51.014s; MCPO lifecycle passes0.366s.
+Workspace all-targets and strict Rig native build pass; all626 captured inputs
+and native8cbb514708623c0468c5ae086c88218268863a7f4d3f982348d2d375cb39008c
+match. These626 are source/header/data hashes, not tests. Actual Cave indexed
+minimap invariance/HUD change passes34.15s; the actual Day paused F6/help-retention,
+same-tick indexed pixel, save/cold/retry check passes82.77s. Pause-help recursion
+passes41.90s; the held-control release barrier and GPU indexed HUD/minimap/WEB
+orientation controls pass. Two test-only defects were corrected without changing
+expected gameplay/pixels: a ushort boxed key missed its int-keyed descriptor;
+the pause test used a retired v3 package instead of the qualified installed
+resource set. Only those two failed checks were rerun. Detached GPU data proves
+component composition, not earned gameplay. The old loaded-v1 minimap refusal
+test was extended but not executed; its historical fixture is not new runtime
+proof. Fresh bounded minimap review found no defect. UBS is partial for C#
+analysis, with no critical/new changed-hunk warning; legacy Surface warnings
+remain. Evidence: generated/panel-transparency-20261116.
+
+Next confirmed HUD gap is source actions31/32's eight-update hand-selection
+visibility on full map. Ordinary world HUD/topbar and map hand visibility have
+distinct predicates; do not invent a GUI timer or derive flash from holder
+validity. Detailed Castle/balloon HUD parity also remains incomplete. Full
+mc-oi6.5, mc-oi6.6 and mc-5r5.2 acceptance stays open.
 
 The spell-menu trace exposed14 genuine Castle-mana threshold errors across
 Fireball, Possession, Speed, Morph, Shield, Invisibility and Beyond Sight. Loaded
@@ -829,11 +863,11 @@ Actual fresh-Pav JSON/compact parity passes29.34s; existing HUD-tier/publication
 lifecycle/menu purity and Beyond Sight public acquisition/readiness checks pass.
 The final workspace all-target check passes44.8s; strict Rig native build passes
 171.4s and all626 captured inputs/native bytes match. These626 are input hashes,
-not tests. Candidate nativee51b38785177e6de53b8f27214c1a7a1b764a7dab963942c94d27ab946630274
-is not yet installed. Original source glyphs/three-line highlight and chained
+not tests. Nativee51b38785177e6de53b8f27214c1a7a1b764a7dab963942c94d27ab946630274
+is installed in the checkpoint below. Original source glyphs/three-line highlight and chained
 indexed TABLES recursion pass0.50s; actual controlled Results->Uluth tier drag
-passes54.96s. The isolated Ctrl-hover/shared-clock check remains pending after an
-Editor pointer-delivery failure; no gameplay expectation was weakened. Menu
+passes54.96s. The Ctrl-hover/shared-clock failure was resolved below without
+weakening gameplay expectations. Menu
 transparency currently projects the supported map default; Shift+F6 remains an
 explicit unfinished control. Full help/language/audio acceptance stays open.
 Independent source review caught two new renderer defects before delivery: tier
@@ -860,7 +894,7 @@ Temporary diagnostic draws/logs are removed. Final changed-source UBS is partial
 for C# compilation/taint limits with no critical/warning in the changed regions.
 All previous passing native/codec/tier-drag/GPU checks were reused; no native
 rebuild was needed for these managed/test corrections. Installed physical input
-remains the next delivery gate, not a claim made by this Editor-window test.
+is separately verified below; the Editor-window check proves its covered component path.
 
 Spell-menu batch is now committed canonical9152adcb and pushed/remote-verified
 Originalccd69323, excluding unrelated Modern ancestry. Matching Original

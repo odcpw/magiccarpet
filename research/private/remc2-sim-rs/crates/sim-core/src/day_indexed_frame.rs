@@ -1406,6 +1406,50 @@ fn draw_minimap_terrain(
     cave: bool,
     tables: &[u8],
 ) {
+    for_each_minimap_terrain_tile(camera, tables, |pixel, tile| {
+        target[(pixel / 64) * stride + pixel % 64] = if cave && angles[tile] & 8 != 0 {
+            0
+        } else {
+            let base = usize::from(tables[0x14000 + usize::from(terrain_types[tile])]);
+            tables[(usize::from(shading[tile]) << 8) + base]
+        };
+    });
+}
+
+/// Current source terrain write admission, distinct from terrain colour and
+/// subsequent entity writes. Full-map presentation bypasses this circular
+/// minimap layer. This query neither renders nor advances any source clock.
+pub fn minimap_terrain_admission_mask(
+    inspection: &NativeWorldInspection,
+    session: &Mc2Simulation,
+    assets: &DayIndexedFrameAssets,
+    panels_opaque: bool,
+) -> Result<Vec<u8>, DayIndexedFrameError> {
+    validate_day_route(inspection, session, assets)?;
+    if !assets.source_minimap {
+        return Err(DayIndexedFrameError::new(
+            "minimap terrain admission requires the source minimap producer",
+        ));
+    }
+    let planes = session.canonical_terrain().planes();
+    validate_terrain_planes(&planes.terrain_types, &planes.ground_heights, &planes.shading, &planes.angles)?;
+    Ok(minimap_terrain_mask_from_planes(camera_from_session(session)?, &planes.angles,
+        inspection.metadata().map_type == MapType::Cave, panels_opaque, assets.tablesd()))
+}
+
+fn minimap_terrain_mask_from_planes(
+    camera: Level1TerrainFrameCamera, angles: &[u8], cave: bool, panels_opaque: bool, tables: &[u8],
+) -> Vec<u8> {
+    let mut mask = vec![0; 64 * 64];
+    for_each_minimap_terrain_tile(camera, tables, |pixel, tile| {
+        mask[pixel] = u8::from(cave || panels_opaque || angles[tile] & 8 == 0);
+    });
+    mask
+}
+
+fn for_each_minimap_terrain_tile(
+    camera: Level1TerrainFrameCamera, tables: &[u8], mut visit: impl FnMut(usize, usize),
+) {
     const SOURCE_SIDE: i32 = 128;
     const SIDE: usize = 64;
     let angle = usize::from(camera.yaw.cast_unsigned() & 0x7ff);
@@ -1429,12 +1473,7 @@ fn draw_minimap_terrain(
             let world_x = origin_x - source_y * sin + source_x * cos;
             let world_y = origin_y + source_y * cos + source_x * sin;
             let tile = (((world_y >> 8) & 255) * 256 + ((world_x >> 8) & 255)) as usize;
-            target[y * stride + x] = if cave && angles[tile] & 8 != 0 {
-                0
-            } else {
-                let base = usize::from(tables[0x14000 + usize::from(terrain_types[tile])]);
-                tables[(usize::from(shading[tile]) << 8) + base]
-            };
+            visit(y * SIDE + x, tile);
         }
     }
 }
@@ -2923,6 +2962,13 @@ mod tests {
             );
             assert_eq!(indices[32 * usize::from(DAY_FRAME_WIDTH) + 32], expected);
             assert_eq!(indices[100 * usize::from(DAY_FRAME_WIDTH) + 100], 42);
+            for opaque in [false, true] {
+                let mask = minimap_terrain_mask_from_planes(camera, &angles, cave, opaque, &tables);
+                assert_eq!(mask.len(), 4096);
+                assert!(mask.iter().all(|&value| value <= 1));
+                assert_eq!(mask[32 * 64 + 32], u8::from(cave || opaque || angle & 8 == 0));
+                assert_eq!(mask[0], 0, "outside circular source terrain span is never admitted");
+            }
         }
     }
 
@@ -3435,7 +3481,19 @@ mod tests {
             assets.tablesd()[(usize::from(planes.shading[tile]) << 8) + usize::from(base)],
             "map center samples the authoritative player's terrain tile"
         );
+        assert_eq!(
+            minimap_terrain_admission_mask(campaign.inspection(), session, &assets, false)
+                .expect("source minimap assets expose terrain admission")
+                .len(),
+            64 * 64
+        );
         assets.source_minimap = false;
+        assert!(
+            minimap_terrain_admission_mask(campaign.inspection(), session, &assets, false)
+                .unwrap_err()
+                .to_string()
+                .contains("requires the source minimap producer")
+        );
         let terrain_only =
             render_level2_day_indexed_frame(campaign.inspection(), session, &assets, 0).unwrap();
         assert_eq!(

@@ -8,6 +8,126 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class CampaignMinimapPixelTests
     {
+        [Test]
+        public void IndexedMinimapComposesSourceTerrainAndOrderedWritesBeforeHud()
+        {
+            // Component controls use the real selected TABLESN. They do not
+            // claim an earned campaign or naturally overlapping map entities.
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(generated, "mc-oi62-environment-level1-v2"),
+                Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"));
+            var tables = cache.ReadOutput(cache.EnvironmentMaterials.tables.path);
+            var host = new GameObject("source minimap indexed control");
+            host.SetActive(false);
+            var overlay = host.AddComponent<CampaignMinimapOverlay>();
+            var scene = new Texture2D(320, 200, TextureFormat.R8, false, true) {
+                filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp
+            };
+            var readback = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var gpuWorld = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
+                filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp
+            };
+            Assert.That(gpuWorld.Create(), Is.True);
+            var world = new byte[64000]; var terrain = new byte[64000]; var mask = new byte[4096];
+            for (var y = 0; y < 200; y++)
+            for (var x = 0; x < 320; x++)
+            {
+                world[y * 320 + x] = unchecked((byte)(x + 13 * y));
+                terrain[y * 320 + x] = unchecked((byte)(17 * x + 31 * y));
+            }
+            for (var y = 0; y < 64; y++)
+            {
+                var phase = y * 2 < 64 ? 63 - y * 2 : y * 2 - 64;
+                var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+                for (var x = 0; x < 64; x++)
+                    mask[y * 64 + x] = (byte)(x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan ? 1 : 0);
+            }
+            // Every world index occurs inside the true source circular aperture.
+            for (var y = 24; y < 40; y++)
+            for (var x = 24; x < 40; x++)
+            {
+                Assert.That(mask[y * 64 + x], Is.EqualTo(1));
+                world[y * 320 + x] = (byte)((y - 24) * 16 + x - 24);
+            }
+            mask[30 * 64 + 30] = 0; // declared outdoor angle8 transparent hole
+            scene.LoadRawTextureData(world); scene.Apply(false, false);
+            Color32[] Read(RenderTexture target)
+            {
+                var previous = RenderTexture.active;
+                try { RenderTexture.active = target; readback.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); readback.Apply(); }
+                finally { RenderTexture.active = previous; }
+                return readback.GetPixels32();
+            }
+            byte At(Color32[] pixels, int x, int y) => pixels[(199 - y) * 320 + x].r;
+            byte Blend(byte prior, byte next) => tables[0x4000 + (prior << 8) + next];
+            try
+            {
+                overlay.BeginIndexedFrame(terrain, tables, mask, false, false);
+                var opOffset = 32 * 320 + 32;
+                overlay.RecordPixel(opOffset, 77, false);
+                for (var operation = 0; operation < 6; operation++)
+                    overlay.RecordPixel(opOffset, (byte)(91 + operation), true);
+                var labels = new bool[64000]; labels[20 * 320 + 80] = true;
+                terrain[20 * 320 + 80] = 44;
+                overlay.RecordLabels(terrain, labels);
+                var result = Read(overlay.Compose(scene, true, 1, 1));
+                for (var y = 24; y < 40; y++)
+                for (var x = 24; x < 40; x++)
+                {
+                    if (x == 32 && y == 32) continue;
+                    var expected = mask[y * 64 + x] != 0 ? Blend(world[y * 320 + x], terrain[y * 320 + x]) : world[y * 320 + x];
+                    Assert.That(At(result, x, y), Is.EqualTo(expected), $"source terrain/world index at {x},{y}");
+                }
+                byte ordered = 77;
+                for (var operation = 0; operation < 6; operation++) ordered = Blend(ordered, (byte)(91 + operation));
+                Assert.That(At(result, 32, 32), Is.EqualTo(ordered), "no three-blend truncation or flattened-world approximation");
+                Assert.That(At(result, 80, 20), Is.EqualTo(44), "opaque label outside map aperture");
+                Assert.That(At(result, 0, 0), Is.EqualTo(world[0]), "outside aperture retains world");
+                overlay.SetPanelsOpaque(true);
+                result = Read(overlay.Compose(scene, true, 1, 1));
+                Assert.That(At(result, 30, 30), Is.EqualTo(terrain[30 * 320 + 30]), "same-tick opaque mode draws source angle8 cell");
+                Assert.That(At(result, 32, 32), Is.EqualTo(ordered), "later opaque/blended marks keep source order");
+                overlay.BeginIndexedFrame(terrain, tables, mask, false, true);
+                overlay.SetPanelsOpaque(false);
+                var cave = Read(overlay.Compose(scene, true, 1, 1));
+                overlay.SetPanelsOpaque(true);
+                CollectionAssert.AreEqual(cave, Read(overlay.Compose(scene, true, 1, 1)), "Cave minimap stays opaque");
+                overlay.BeginIndexedFrame(terrain, tables, null, true, false);
+                overlay.SetPanelsOpaque(false);
+                var full = Read(overlay.Compose(scene, true, 1, 1));
+                Assert.That(At(full, 32, 32), Is.EqualTo(world[32 * 320 + 32]), "full-map scene is already opaque, no circular second layer");
+                var previous = RenderTexture.active; var srgb = GL.sRGBWrite;
+                try { GL.sRGBWrite = false; Graphics.Blit(overlay.Compose(scene, true, 1, 1), gpuWorld); }
+                finally { GL.sRGBWrite = srgb; RenderTexture.active = previous; }
+                overlay.BeginIndexedFrame(terrain, tables, mask, false, false);
+                result = Read(overlay.Compose(gpuWorld, false, 1, 2));
+                for (var y = 24; y < 40; y++)
+                for (var x = 24; x < 40; x++)
+                {
+                    var expected = mask[y * 64 + x] != 0 ? Blend(world[y * 320 + x], terrain[y * 320 + x]) : world[y * 320 + x];
+                    Assert.That(At(result, x, y), Is.EqualTo(expected), "GPU scene history has the same source orientation");
+                }
+                var webIndices = new byte[64000]; var webMask = new byte[64000];
+                webIndices[31 * 320 + 32] = 223; webMask[31 * 320 + 32] = 255;
+                overlay.SetIndexedWeb(webIndices, webMask, 320, 200); overlay.PresentWeb(null, true);
+                result = Read(overlay.Compose(gpuWorld, false, 1, 2));
+                Assert.That(At(result, 32, 31), Is.EqualTo(Blend(223, terrain[31 * 320 + 32])), "WEB is below transparent terrain");
+                overlay.SetIconsAndMapVisible(false);
+                Assert.That(At(Read(overlay.Compose(gpuWorld, false, 1, 2)), 32, 31), Is.EqualTo(223), "hidden minimap preserves independent WEB");
+                overlay.BeginIndexedFrame(terrain, tables, null, true, false);
+                Assert.That(At(Read(overlay.Compose(gpuWorld, false, 1, 2)), 32, 31), Is.EqualTo(world[31 * 320 + 32]), "opaque full map covers WEB");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(readback);
+                gpuWorld.Release(); UnityEngine.Object.DestroyImmediate(gpuWorld);
+                UnityEngine.Object.DestroyImmediate(scene);
+                overlay.ReleaseResources(); // inactive component has no OnDestroy lifecycle guarantee
+                UnityEngine.Object.DestroyImmediate(host);
+            }
+        }
+
         [Serializable]
         private sealed class CacheIdentity { public string cache_content_sha256; }
 

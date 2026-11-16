@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         private RenderTexture output;
         private Texture2D priorOverlay;
         private RenderTexture priorOutput;
+        private RenderTexture indexedOutput;
         private RectInt priorRect;
         private ulong priorGeneration;
         private ObjectiveTextboxCompositor.Raster raster;
@@ -145,6 +146,29 @@ namespace MagicCarpet.Native
             material.SetFloat("_PriorEnabled", 0);
         }
 
+        // Compose the prior into a complete indexed scene for later source
+        // consumers. This is presentation only and never reads back the GPU.
+        internal RenderTexture RenderPriorIndices(Texture sceneIndices, ulong sceneGeneration, bool sceneTopDown = false)
+        {
+            if (priorOverlay == null || sceneIndices == null || priorGeneration != sceneGeneration) return null;
+            if (indexedOutput == null)
+            {
+                indexedOutput = new RenderTexture(640, 480, 0, RenderTextureFormat.R8, RenderTextureReadWrite.Linear)
+                    { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+                indexedOutput.Create();
+            }
+            material.SetTexture("_SceneIndices", sceneIndices);
+            material.SetFloat("_SceneTopDown", sceneTopDown ? 1f : 0f);
+            material.SetVector("_Raster", new Vector4(0, 0, 640, 480));
+            material.SetFloat("_PriorEnabled", 1);
+            material.SetFloat("_RenderIndex", 1);
+            var callerTarget = RenderTexture.active;
+            var callerSrgb = GL.sRGBWrite;
+            try { GL.sRGBWrite = false; Graphics.Blit(null, indexedOutput, material); }
+            finally { GL.sRGBWrite = callerSrgb; RenderTexture.active = callerTarget; material.SetFloat("_RenderIndex", 0); }
+            return indexedOutput;
+        }
+
         internal RenderTexture RenderPausePrior(Texture sceneIndices, ulong sceneGeneration,
             byte[] currentPaletteRgb8, bool sceneTopDown = false)
         {
@@ -243,6 +267,9 @@ namespace MagicCarpet.Native
             }
             material.SetTexture("_SceneIndices", sceneIndices);
             material.SetFloat("_SceneTopDown", sceneTopDown ? 1f : 0f);
+            material.SetVector("_Raster", new Vector4(raster.X, raster.Y, raster.Width, raster.Height));
+            material.SetVector("_BlendRect", new Vector4(raster.BlendX - raster.X, raster.BlendY - raster.Y,
+                raster.BlendWidth, raster.BlendHeight));
             material.SetFloat("_PriorEnabled", priorOverlay != null && priorGeneration == sceneGeneration ? 1f : 0f);
             material.SetFloat("_RenderPrior", 0);
             // Render from the current source even for a valid map revision of zero.
@@ -266,7 +293,7 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             ReleaseTexture(output); ReleaseTexture(foreground); ReleaseTexture(blendRow); ReleaseTexture(fullBlend);
-            ReleaseTexture(priorOutput); ReleaseTexture(priorOverlay);
+            ReleaseTexture(priorOutput); ReleaseTexture(priorOverlay); ReleaseTexture(indexedOutput);
             ReleaseTexture(palette); ReleaseTexture(material);
             output = null; foreground = null; raster = null; currentText = null; currentAnchor = -1;
         }

@@ -150,6 +150,7 @@ namespace MagicCarpet.Native
         private Texture2D hudPalette;
         private byte[] minimapTables;
         private CampaignMinimapOverlay minimapOverlay;
+        private bool panelsOpaque, presentedFullMap;
         private readonly byte[] presentedIndices = new byte[320 * 200];
         private readonly SourceMinimapLabels sourceMinimapLabels = new();
         private byte fullMapCrossColor;
@@ -194,6 +195,31 @@ namespace MagicCarpet.Native
         internal byte[] FramePaletteRgb8 => worldPaletteSource;
         internal ulong SceneHistoryGeneration => hasSceneHistory ? historyGeneration : 0;
         internal ulong SceneHistoryRevision => hasSceneHistory ? historyRevision : 0;
+        internal ulong HudUnderlayGeneration => presentedFullMap || sceneTarget == null ? Generation : SceneHistoryGeneration;
+        internal ulong HudUnderlayRevision => presentedFullMap || sceneTarget == null ? Tick : SceneHistoryRevision;
+        internal RenderTexture HudUnderlayIndices
+        {
+            get
+            {
+                if (disposed || minimapOverlay == null || worldIndices == null) return null;
+                if (!presentedFullMap && sceneTarget != null &&
+                    (!hasSceneHistory || historyGeneration != Generation || historyRevision != pendingSceneRevision)) return null;
+                Texture scene = presentedFullMap || sceneTarget == null ? worldIndices : composedHistory;
+                return minimapOverlay.Compose(scene, presentedFullMap || sceneTarget == null,
+                    HudUnderlayGeneration, HudUnderlayRevision);
+            }
+        }
+
+        private void EnsureMinimapOverlay()
+        {
+            if (minimapOverlay != null) return;
+            var overlay = root.gameObject.AddComponent<CampaignMinimapOverlay>() ??
+                throw new InvalidOperationException("source minimap presenter could not be created");
+            minimapOverlay = overlay;
+            overlay.SceneProvider = () => HudUnderlayIndices;
+            overlay.SetPanelsOpaque(panelsOpaque);
+            if (webIndices != null) overlay.SetIndexedWeb(webIndices, webMask, webTexture.width, webTexture.height);
+        }
 
         private void PrepareComposedScene(NativeCampaignSession session, OwnerAssetCache cache)
         {
@@ -453,6 +479,8 @@ namespace MagicCarpet.Native
                 hudPalette.Apply(false, false);
             }
             if (entityPaletteSource != null) RefreshWebPalette(entityPaletteSource);
+            if (minimapOverlay != null && worldPaletteSource != null)
+                minimapOverlay.SetPalette(TransformPalette(worldPaletteSource));
         }
 
         private byte[] TransformPalette(byte[] source) => paletteTransform?.Invoke(source) ?? source;
@@ -506,6 +534,11 @@ namespace MagicCarpet.Native
         internal string CacheContentHash { get; private set; }
 
         internal void SetIconsAndMapVisible(bool visible) => minimapOverlay?.SetIconsAndMapVisible(visible);
+        internal void SetPanelsOpaque(bool value)
+        {
+            panelsOpaque = value;
+            minimapOverlay?.SetPanelsOpaque(value);
+        }
         internal bool MinimapVisible => minimapOverlay?.MapVisible == true;
 
         internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw, bool fullMap = false)
@@ -675,6 +708,7 @@ namespace MagicCarpet.Native
             }
             if (frame.generation != generation || frame.tick != tick)
                 throw new InvalidOperationException("environment native frame identity differs");
+            presentedFullMap = fullMap;
             if (environmentCache == null)
             {
                 environmentCache = cache;
@@ -698,13 +732,19 @@ namespace MagicCarpet.Native
                 foreach (var row in presentations)
                     if (!materialRows.ContainsKey(row.selectedTmap))
                         throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
-            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols, fullMap);
+            EnsureMinimapOverlay();
+            minimapOverlay.BeginIndexedFrame(presentedIndices, minimapTables,
+                fullMap ? null : session.MinimapTerrainCoverage(tick), fullMap, profile.map_type.id == 2);
+            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols,
+                fullMap, minimapOverlay.RecordPixel);
             // The native map plan reads the current physical Beyond Sight
             // holder and returns no labels when its source effect is inactive.
             // Do not apply a second, independently cached status gate here.
             sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick, fullMap);
+            minimapOverlay.RecordLabels(presentedIndices, sourceMinimapLabels.Coverage);
             if (fullMap) MaterializeMapCross(presentedIndices, minimapTables, fullMapCrossColor);
-            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick, fullMap);
+            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick,
+                fullMap, minimapOverlay.RecordPixel);
             EnsureWorld(fullMap ? presentedIndices : session.SceneFrameIndices, palette);
             if (!fullMap)
             {
@@ -718,8 +758,7 @@ namespace MagicCarpet.Native
                 hudPalette.LoadRawTextureData(TransformPalette(palette));
                 hudPalette.Apply(false, false);
             }
-            minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
-            minimapOverlay.Present(presentedIndices, palette, minimapTables, sourceMinimapLabels.Coverage, fullMap);
+            minimapOverlay.Present(presentedIndices, TransformPalette(palette), minimapTables, sourceMinimapLabels.Coverage, fullMap);
             RefreshWebPalette(palette);
             minimapOverlay.PresentWeb(webTexture, webVisible);
             if (!fullMap && !session.SceneSpritesComposited)
@@ -737,7 +776,8 @@ namespace MagicCarpet.Native
         internal static int MaterializeMinimapPixels(
             byte[] frame, NativeSim.CampaignMinimapEntity[] commands,
             byte[] tables, ulong generation, ulong tick,
-            IReadOnlyDictionary<int, MinimapSymbolPixels> symbols = null, bool fullMap = false)
+            IReadOnlyDictionary<int, MinimapSymbolPixels> symbols = null, bool fullMap = false,
+            Action<int, byte, bool> pixelWritten = null)
         {
             if (frame.Length != 320 * 200 || tables.Length != 83456)
                 throw new InvalidOperationException("Campaign minimap pixel inputs have invalid extents");
@@ -782,6 +822,8 @@ namespace MagicCarpet.Native
                     frame[offset] = command.kind == 3
                         ? tables[0x4000 + (frame[offset] << 8) + command.paletteIndex]
                         : symbol != null ? symbol.Indices[source] : command.paletteIndex;
+                    pixelWritten?.Invoke(offset, symbol != null ? symbol.Indices[source] : command.paletteIndex,
+                        command.kind == 3);
                     written++;
                 }
             }
@@ -789,7 +831,8 @@ namespace MagicCarpet.Native
         }
 
         internal static int MaterializeMinimapMarks(byte[] frame,
-            NativeSim.CampaignMinimapMark[] marks, byte[] tables, ulong generation, ulong tick, bool fullMap = false)
+            NativeSim.CampaignMinimapMark[] marks, byte[] tables, ulong generation, ulong tick, bool fullMap = false,
+            Action<int, byte, bool> pixelWritten = null)
         {
             if (frame.Length != 320 * 200 || tables.Length != 83456)
                 throw new InvalidOperationException("Campaign minimap mark inputs have invalid extents");
@@ -828,6 +871,7 @@ namespace MagicCarpet.Native
                         {
                             if (!mask[pixel]) continue;
                             frame[(pixel / mapWidth) * 320 + pixel % mapWidth] = pixels[pixel];
+                            pixelWritten?.Invoke((pixel / mapWidth) * 320 + pixel % mapWidth, pixels[pixel], false);
                             written++;
                         }
                     }
@@ -851,6 +895,7 @@ namespace MagicCarpet.Native
                 {
                     if (dx == 0 && dy == 0) continue;
                     frame[(y + dy) * 320 + x + dx] = mark.paletteIndex;
+                    pixelWritten?.Invoke((y + dy) * 320 + x + dx, mark.paletteIndex, false);
                     written++;
                 }
             }
@@ -1240,6 +1285,7 @@ namespace MagicCarpet.Native
             DestroyObject(worldPalette);
             DestroyObject(hudPalette);
             DestroyObject(webTexture);
+            minimapOverlay?.ReleaseResources();
             DestroyObject(caveOrdersTexture);
             foreach (var texture in hudTextures) DestroyObject(texture);
             foreach (var material in entityMaterials.Values) DestroyObject(material);

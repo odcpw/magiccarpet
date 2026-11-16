@@ -2972,7 +2972,10 @@ mod tests {
                 Ok(())
             },
             |_, _, _| {},
-            |session, minimap| session.backend_mut().publish_display_notice(minimap),
+            |session, notice| match notice {
+                crate::game_runtime::DisplayNotice::IconsMap(visible) => session.backend_mut().publish_display_notice(visible),
+                crate::game_runtime::DisplayNotice::PanelTransparency(opaque) => session.backend_mut().publish_panel_transparency_notice(opaque),
+            },
             |_| {},
         ).expect("controlled admission of the unchanged completed session");
         let playing = runtime.identity();

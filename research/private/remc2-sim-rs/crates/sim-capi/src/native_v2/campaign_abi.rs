@@ -1691,6 +1691,49 @@ pub extern "C" fn mc_native_campaign_minimap_state(
     })
 }
 
+/// Copy the source transparent-minimap terrain admission plane. This is a
+/// read of the current camera and terrain, independent of the display toggle.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_minimap_terrain_coverage_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_length, "minimap terrain coverage length")?;
+        with_campaign_session(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale minimap generation"));
+            }
+            let CampaignSessionKind::Campaign { inspection, reset, day_frame_assets, .. } = &session.kind else {
+                return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "minimap coverage requires a campaign"));
+            };
+            if expected_tick != reset.state.tick {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale minimap tick"));
+            }
+            let assets = day_frame_assets.as_ref().ok_or_else(|| AbiError::new(
+                MC_STATUS_VALIDATION_FAILED, "minimap coverage requires a qualified owner cache"))?;
+            let mask = sim_core::day_indexed_frame::minimap_terrain_admission_mask(
+                inspection, reset, assets, false,
+            ).map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            let required = u32::try_from(mask.len()).expect("minimap coverage length fits u32");
+            write_output(out_length, required);
+            if capacity < required {
+                return Err(AbiError::new(MC_STATUS_BUFFER_TOO_SMALL, "minimap coverage buffer is too small"));
+            }
+            if buffer.is_null() {
+                return Err(AbiError::new(MC_STATUS_NULL_POINTER, "minimap coverage buffer is null"));
+            }
+            // SAFETY: the caller supplies at least `required` writable bytes.
+            unsafe { buffer.copy_from_nonoverlapping(mask.as_ptr(), mask.len()) };
+            Ok(())
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_minimap_entities_copy(
     handle: u64,

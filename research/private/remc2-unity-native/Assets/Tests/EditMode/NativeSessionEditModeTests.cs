@@ -340,6 +340,22 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(pixels[0], Is.EqualTo(Colour(Blend(Blend(Blend(37, 11), 23), 47))));
                 Assert.That(pixels[1], Is.EqualTo(Colour(Blend(51, 72))));
                 Assert.That(pixels[2].a, Is.Zero, "uncovered pixels retain the actual current scene");
+                var callerTarget = RenderTexture.active;
+                var callerSrgb = GL.sRGBWrite;
+                var indexed = presenter.RenderPriorIndices(scene, 9, true);
+                Assert.That(indexed, Is.Not.Null);
+                Assert.That(RenderTexture.active, Is.SameAs(callerTarget), "indexed composition restores its GUI caller target");
+                Assert.That(GL.sRGBWrite, Is.EqualTo(callerSrgb), "indexed composition restores its caller's colour-write state");
+                RenderTexture.active = indexed;
+                readback.ReadPixels(new Rect(0, 480 - 1 - 400, 3, 1), 0, 0); readback.Apply();
+                var indexedPixels = readback.GetPixels32();
+                Assert.That((indexedPixels[0].r, indexedPixels[1].r, indexedPixels[2].r),
+                    Is.EqualTo(((byte)220, (byte)103, (byte)37)),
+                    "the full-scene indexed result preserves source blend order and untouched world");
+                Assert.That(presenter.RenderPriorIndices(scene, 10, true), Is.Null,
+                    "the full-scene prior cannot cross a native generation");
+                Assert.That(presenter.RenderPausePrior(scene, 9, assets.PaletteRgb8, true), Is.Not.Null,
+                    "indexed output does not leave the existing RGBA path in index mode");
                 Assert.That(presenter.RenderPausePrior(scene, 10, assets.PaletteRgb8, true), Is.Null,
                     "a prior indexed layer cannot cross a native generation");
             }

@@ -1212,14 +1212,20 @@ namespace MagicCarpet.Native.Tests
                 // This component check uses the supported headless resource
                 // binding. The retained, receipt-qualified source frame below
                 // is explicit input, not a claimed fresh native world capture.
-                native = NativeSession.OpenGameRuntime(ResolverPackages());
+                var resourcePath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/installed-full-resources.json");
+                GameRuntimeTransport.InstalledPackageResource[] installed;
+                using (var resources = File.OpenRead(resourcePath))
+                    installed = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                        typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(resources);
+                Assert.That(installed, Is.Not.Empty);
+                native = NativeSession.OpenGameRuntime(installed);
                 native.GameRuntimePause();
                 var preferences = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
                     native.Handle, native.GameRuntimeIdentity(), json), Path.Combine(temporary, "profile"));
-                var ownerRoot = Path.Combine(PrivateRoot, "generated/settlement-20261105-integration/owner-closed-v6");
-                var owner = OwnerAssetCache.OpenAndValidate(Path.Combine(ownerRoot, "night-presentation-v6"),
+                var owner = OwnerAssetCache.OpenAndValidate(installed[0].presentation_cache_path,
                     MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
-                    Path.Combine(ownerRoot, "level1"));
+                    installed[0].package_dir);
                 menu = new CampaignMenuPresenter(owner, CampaignMenuCache);
                 preferences.BindLanguages(menu.LocaleCache);
                 menu.AttachPreferences(preferences);
@@ -1387,6 +1393,25 @@ namespace MagicCarpet.Native.Tests
                     "the options submenu remains open after the first toggle");
                 native.GameRuntimeToggleIconsAndMap();
                 Assert.That(native.GameRuntimeIdentity().display_settings.minimap, Is.True);
+                var beforePanel = native.GameRuntimeIdentity();
+                Assert.That(beforePanel.display_settings.panels_opaque, Is.False, "Night LevelInit starts with transparent panels");
+                Send(EventType.MouseDown, new Vector2(320, 67 + 13 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.TogglePanelTransparency),
+                    "source Options row13 requests the same native transparency action");
+                var opaquePanel = native.GameRuntimeTogglePanelTransparency();
+                Assert.That(opaquePanel.display_settings.panels_opaque, Is.True);
+                Assert.That((opaquePanel.generation, opaquePanel.session.generation, opaquePanel.session.tick),
+                    Is.EqualTo((beforePanel.generation, beforePanel.session.generation, beforePanel.session.tick)));
+                var panelNotice = native.GameRuntimeParticipantNotifications().value;
+                Assert.That(panelNotice, Has.Length.EqualTo(1));
+                Assert.That((panelNotice[0].kind, panelNotice[0].remaining_frames),
+                    Is.EqualTo(("participant.panel_transparency_off", (short)50)));
+                var panelRows = SourcePlayerNotificationsPresenter.Rows(panelNotice, false, false, false, 14, menu.GameplayLanguageText);
+                Assert.That(panelRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(441)));
+                Send(EventType.MouseDown, new Vector2(320, 67 + 13 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.TogglePanelTransparency));
+                Assert.That(native.GameRuntimeTogglePanelTransparency().display_settings.panels_opaque, Is.False,
+                    "the Options submenu remains live and toggles the real owner back");
                 stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
                 menu.ResetPauseHoverHelp();
                 Hover(SourcePauseMenu.IconRect(174).center);
@@ -3111,6 +3136,239 @@ namespace MagicCarpet.Native.Tests
         }
 
         [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourcePanelsFollowShiftF6AndPausedColdReplay()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-panel-setting-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source panel transparency");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var save = Path.Combine(temporary, "save.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), save);
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                yield return StartReturnedParentFromNormalMap(runtime);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False,
+                    "the actual Day LevelInit default is transparent");
+                Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.volcano"), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.volcano", 0, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                for (var frame = 0; frame < 240 && !hint.Visible; frame++) runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.Visible, Is.True, "a real source popup is active before the display action");
+                var remainingField = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                var remaining = (int)remainingField.GetValue(hint);
+                runtime.QualificationPauseGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((int)remainingField.GetValue(hint), Is.EqualTo(remaining), "the ordinary paused frame retains the popup");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var underlay = surface.HudUnderlayIndices;
+                var transparentHud = (RenderTexture)Field("gameRuntimeHudIndices");
+                Assert.That(underlay, Is.Not.Null);
+                Assert.That(transparentHud, Is.Not.Null);
+                Color32[] Read(RenderTexture source)
+                {
+                    var texture = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+                    try
+                    {
+                        RenderTexture.active = source;
+                        texture.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0); texture.Apply();
+                        return texture.GetPixels32();
+                    }
+                    finally { UnityEngine.Object.DestroyImmediate(texture); RenderTexture.active = previousTarget; }
+                }
+                var world = Read(underlay);
+                var transparent = Read(transparentHud);
+                var hud = runtime.Level2ProductionDayHud;
+                var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                var rows = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                var descriptor = rows[(int)hud.minimapPanelSelector];
+                Assert.That(descriptor, Is.Not.Null, "the actual source selector resolves in the int-keyed HUD bank");
+                int Extent(string name) => (int)descriptor.GetType().GetField(name).GetValue(descriptor);
+                var width = Extent("stored_width"); var height = Extent("stored_height");
+                var drawWidth = Extent("runtime_width"); var drawHeight = Extent("runtime_height");
+                var assets = ((CampaignMenuPresenter)Field("gameRuntimeMenu")).ObjectiveForProfile("day");
+                Vector2Int? point = null; byte panelIndex = 0;
+                for (var dy = 0; dy < drawHeight && !point.HasValue; dy++)
+                for (var dx = 0; dx < drawWidth && !point.HasValue; dx++)
+                {
+                    var source = dy * height / drawHeight * width + dx * width / drawWidth;
+                    if (masks[hud.minimapPanelSelector][source] == 0) continue;
+                    var x = 2 + dx; var y = 2 + dy;
+                    var worldX = Mathf.Clamp(Mathf.FloorToInt((x + .5f) / 640f * underlay.width), 0, underlay.width - 1);
+                    var worldY = Mathf.Clamp(Mathf.FloorToInt((1f - (y + .5f) / 480f) * underlay.height), 0, underlay.height - 1);
+                    var previous = world[worldY * underlay.width + worldX].r;
+                    var value = indices[hud.minimapPanelSelector][source];
+                    var blended = assets.Tables[assets.TableOffset + (previous << 8) + value];
+                    if (blended == value) continue;
+                    Assert.That(transparent[(479 - y) * 640 + x].r, Is.EqualTo(blended),
+                        "the actual transparent HUD frame blends the current indexed minimap/world");
+                    point = new Vector2Int(x, y); panelIndex = value;
+                }
+                Assert.That(point.HasValue, Is.True, "the actual source frame contains a discriminating blend pixel");
+                var before = runtime.GameRuntimeProductionIdentity;
+                var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
+                void F6(bool pressed, bool physical, bool admitted, bool alt) => f6.Invoke(runtime, new object[] { pressed, physical, admitted, alt });
+                F6(true, false, false, false); F6(true, true, false, false); F6(true, true, true, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False);
+                F6(true, true, true, false);
+                var after = runtime.GameRuntimeProductionIdentity;
+                Assert.That(after.display_settings.panels_opaque, Is.True);
+                Assert.That((after.generation, after.session.generation, after.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)), "the accepted paused action does not step gameplay");
+                Assert.That((int)remainingField.GetValue(hint), Is.EqualTo(remaining), "source transparency does not close the retained help popup");
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "Shift+F6 does not queue F5 save");
+                var owner = (NativeSession)Field("session");
+                var notices = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo(("participant.panel_transparency_off", (short)50)));
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var opaque = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                Assert.That(opaque[(479 - point.Value.y) * 640 + point.Value.x].r, Is.EqualTo(panelIndex),
+                    "the same actual HUD pixel immediately becomes source-opaque without a fixed step");
+                var bytes = runtime.QualificationSaveGameRuntimeProductionReplay();
+                using (var cold = NativeSession.OpenGameRuntimeReplayFrom(owner, bytes,
+                    (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages")))
+                {
+                    Assert.That(cold.GameRuntimeIdentity().display_settings.panels_opaque, Is.True);
+                    Assert.That(cold.GameRuntimeIdentity().session.tick, Is.EqualTo(after.session.tick));
+                }
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
+                    new object[] { true, false, false, false });
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its independent save edge");
+                typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(save));
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False,
+                    "a real Day retry re-applies source LevelInit default");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator CavePanelToggleKeepsTheActualMinimapOpaque()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-cave-panels-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual Cave panel transparency");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            try
+            {
+                // Retained replay is the real Jaleen→Pav transfer at the
+                // source32 opening boundary; no mission completion is staged.
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                var session = (NativeCampaignSession)Field("campaignSession");
+                Assert.That(session.Selection.mapType, Is.EqualTo(2));
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.True,
+                    "actual Cave LevelInit starts with opaque panels");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Color32[] Read(RenderTexture source)
+                {
+                    Assert.That(source, Is.Not.Null);
+                    var texture = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+                    try
+                    {
+                        RenderTexture.active = source;
+                        texture.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0); texture.Apply();
+                        return texture.GetPixels32();
+                    }
+                    finally { UnityEngine.Object.DestroyImmediate(texture); RenderTexture.active = previousTarget; }
+                }
+                var mapBefore = Read(surface.HudUnderlayIndices);
+                var hudBefore = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                var before = runtime.GameRuntimeProductionIdentity;
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags).Invoke(runtime,
+                    new object[] { true, true, true, false });
+                var after = runtime.GameRuntimeProductionIdentity;
+                Assert.That(after.display_settings.panels_opaque, Is.False);
+                Assert.That((after.generation, after.session.generation, after.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)));
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(mapBefore, Read(surface.HudUnderlayIndices),
+                    "source Cave minimap stays opaque when the shared panel flag changes");
+                var hudAfter = Read((RenderTexture)Field("gameRuntimeHudIndices"));
+                Assert.That(hudAfter.Length, Is.EqualTo(hudBefore.Length));
+                var different = 0;
+                for (var i = 0; i < hudAfter.Length; i++) if (!hudAfter[i].Equals(hudBefore[i])) different++;
+                Assert.That(different, Is.GreaterThan(0), "real Cave HUD panels still follow the accepted transparency setting");
+                yield return null;
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator SourceSpellMenuHoverUsesCurrentOwnerAndSharedClock()
         {
             var activeBefore = NativeSession.ActiveSessionCount;
@@ -3394,9 +3652,12 @@ namespace MagicCarpet.Native.Tests
                 var mapSurface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
                 var mapPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
                 var material = (Material)typeof(SourceObjectiveTextboxPresenter).GetField("material", flags).GetValue(mapPresenter);
-                Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(mapSurface.WorldIndices),
-                    "source map+spell help blends the current top-down map, not old flight history");
-                Assert.That(material.GetFloat("_SceneTopDown"), Is.EqualTo(1));
+                Assert.That(mapSurface.HudUnderlayIndices, Is.Not.Null);
+                var mapHud = (Texture)Field("gameRuntimeHudIndices");
+                Assert.That(mapHud, Is.Not.Null);
+                Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(mapHud),
+                    "source map+spell help blends the current map and indexed HUD in source order");
+                Assert.That(material.GetFloat("_SceneTopDown"), Is.Zero);
                 var closeMapSpells = sourceMenus.Step(false, false, false, false, false, true);
                 Assert.That(sourceMenus.QueueAction(closeMapSpells.Action, sourceMenus.MapOpen,
                     sourceMenus.SpellOpen, sourceMenus.PlayerInformationOpen, closeMapSpells), Is.True);
@@ -4993,10 +5254,14 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(objectiveSurface.WorldIndices, Is.Not.Null);
                     var objectiveMaterial = (Material)typeof(SourceObjectiveTextboxPresenter)
                         .GetField("material", objectiveFlags).GetValue(objectivePresenter);
-                    Assert.That(objectiveMaterial.GetTexture("_SceneIndices"), Is.SameAs(objectiveSurface.WorldIndices),
-                        "the live map textbox samples its map texture, not the previous world history");
-                    Assert.That(objectiveMaterial.GetFloat("_SceneTopDown"), Is.EqualTo(1f),
-                        "native map index rows retain their top-down orientation");
+                    Assert.That(objectiveSurface.HudUnderlayIndices, Is.Not.Null);
+                    var mapHudIndices = (Texture)typeof(MagicCarpetRuntime)
+                        .GetField("gameRuntimeHudIndices", objectiveFlags).GetValue(runtime);
+                    Assert.That(mapHudIndices, Is.Not.Null);
+                    Assert.That(objectiveMaterial.GetTexture("_SceneIndices"), Is.SameAs(mapHudIndices),
+                        "the live map textbox samples the current map and HUD indexed result");
+                    Assert.That(objectiveMaterial.GetFloat("_SceneTopDown"), Is.Zero,
+                        "the composed GPU scene has bottom-up orientation");
                     var objectivePreferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime)
                         .GetField("playerPreferences", objectiveFlags).GetValue(runtime);
                     var objectivePalette = objectivePreferences.ApplyBrightnessToPalette(objectiveSurface.FramePaletteRgb8, 1);

@@ -12,6 +12,7 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
         _PriorEnabled ("Use indexed prior overlay", Float) = 0
         _PriorMode ("Prior overlay format", Float) = 0
         _RenderPrior ("Render indexed prior overlay", Float) = 0
+        _RenderIndex ("Render indexed scene", Float) = 0
         _Raster ("Source raster geometry", Vector) = (0, 0, 0, 0)
         _BlendRect ("Blend geometry", Vector) = (0, 0, 0, 0)
         _SceneTopDown ("Top-down source", Float) = 0
@@ -27,7 +28,7 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
             #include "UnityCG.cginc"
             sampler2D _Foreground, _SceneIndices, _BlendRow, _FullBlend, _Palette, _PriorOverlay;
             float4 _Raster, _BlendRect, _PriorRect;
-            float _SceneTopDown, _PriorEnabled, _PriorMode, _RenderPrior;
+            float _SceneTopDown, _PriorEnabled, _PriorMode, _RenderPrior, _RenderIndex;
             fixed4 frag(v2f_img input) : SV_Target
             {
                 float2 local = float2(floor(input.uv.x * _Raster.z),
@@ -81,6 +82,8 @@ Shader "MagicCarpet/SourceObjectiveTextbox"
                         priorCoverage = max(prior.a, prior.g);
                     }
                 }
+                if (_RenderIndex > 0.5)
+                    return fixed4(index / 255.0, 0, 0, 1);
                 if (_RenderPrior > 0.5)
                 {
                     if (priorCoverage < 0.5) return fixed4(0, 0, 0, 0);
