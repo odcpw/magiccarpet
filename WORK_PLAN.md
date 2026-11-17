@@ -914,7 +914,7 @@ cover the other material profiles. Hardware audio, Cave occlusion and full
 missions retain their separate acceptance.
 
 Shared Original animation source is committed as c8175c10 and pushed as
-a7323502. Original build-wuukj1s5 now runs native 22809f18. The canonical
+a7323502. Its installation used native 22809f18 on build-wuukj1s5. The canonical
 launcher displayed the map, loaded NightSpire through one portal with zero
 retries, and rendered the terrain and HUD with the matching mapped plugin.
 The smoke did not perform creature combat or play a mission.
@@ -924,18 +924,33 @@ selector after an admitted draw. A real Night1 two-Goat selector152 and
 Day2 directional Villager check reached actual composition pixels and
 verified paused frames, repeat reads and generation reset. Cold replay
 restored the same content state and re-serialized byte for byte. The real
-Level25 boss death reached the source animation finish; the creature28
-reset hook is wired and has clock-level coverage. Matching Unity passed the
+Level25 boss death reached the source animation finish. The creature28
+reset hook has clock-level coverage and the real Level14 transformation
+and hit test passes. Matching Unity passed the
 semantic texture identity test and the native scene/no-duplicate world
 test for missions1–4. The broader selected legacy presenter tests failed,
 including 20 failures caused by owner audio descriptor size mismatches
 before a frame was rendered. Keep mc-oi6.1 open for that verification gap.
 Evidence: generated/animation-20261117.
 
-Next, finish mc-oi6.3 outdoor actor and Fireball ordering using the current
-Day/Night indexed consumer. The subsequent mc-oi6.4 Cave work must keep
-texture1 ceilings on source mode5 when floors switch to flat mode7 and
-check actual scheduled corridor changes and actor occlusion.
+Outdoor composition verification is pushed as 3a533792 and aaa48724.
+Real Night1 and Day2 views retain visible actor pixels and overpaint others
+with later terrain. The real Day3 water view verifies reflection, shadows and
+mode5/7/26. A real Night1 Fireball contributes indexed pixels in flight and
+disappears through impact and reclaim. The source camera and ordering ABI
+checks pass. The installed Original renderer contains the verified path.
+
+Cave source 67eca929 and verification f7e0abcf are pushed as 29cf777a and
+0a6ef850. Actual Cave12 flat mode changes floor shading while texture1 ceiling
+commands and pixels retain mode5. The real Cave4 corridor scheduler and
+reset/flight checks pass. The authored Spider600 contributes terrain-covered
+pixels at pinned normal and rolled views, and its visibility changes with
+the actual open and closed corridor206 plane data at a controlled cut.
+Original build-wuukj1s5 now maps native ddca481a from f7e0abcf. All 628
+checked source inputs match Rig. The standalone smoke displayed the map,
+loading frame, NightSpire terrain and HUD, using one portal and zero retries.
+The Spider and Cave shading checks use controlled native frames. Keep
+mc-oi6.3 and mc-oi6.4 open with their original acceptance and dependency chain.
 Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
 do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
 remain OPEN. Hardware resolution switching remains the explicitly separate
