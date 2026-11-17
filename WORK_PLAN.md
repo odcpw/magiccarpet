@@ -1199,6 +1199,37 @@ partial and changed-hunk review found no critical finding on added lines.
 Full mc-oi6.5 remains open for the current Cave acquired-spell path and
 remaining acceptance; these checks do not certify full missions or playtest.
 
+### Original gameplay audio — 2026-11-17
+
+The current installed banks now have connected software playback evidence.
+Ordinary Day3 shore flight in the qualified Original produced both wind/ocean
+crossfades, a paid Fireball and positional impact, Archer arrows and a local hit.
+Owner waveforms correlate with the isolated output; the return used a second
+manually chosen leg in the same process. On new native 15b4e827, ordinary
+NightSpire resume and cast produced Night crickets, Fireball and positional
+impact from bank1. Cave corridor flight used bank2 drips65–69 and the real
+door47 EndLoop. The full 2.214-second door sample matched the owner waveform
+at 0.9989 correlation with steady gain. Its EndLoop carries multiplier4 and
+the finite voice is ineligible for fading, as in source. The actual same
+generation and voice later played Spider32; the captured onset matches the
+owner sample, with capture ending before the rest of that sample.
+
+The new Day3 test uses a cold-valid incoming replay built by the existing Rust
+qualification case, with declared incoming spells. The managed test uses
+ordinary steering and checks both source 60 Hz fades, voice identity, duplicate
+suppression and reset release through the current Unity consumer. It passed
+on native 15b4e827. Existing native sidecar/reset, ten-voice arbitration and
+finite completion/reuse checks passed. This batch changes test sources only.
+An exact installed qualification-input mismatch from editor patch backups was
+repaired by restoring the receipt-owned backup and moving the added backups
+out of Assets. The normal qualification gate remains intact. Captures and
+bounded input records are under generated/gameplay-audio-20261117.
+
+Full mc-oi6.8 stays open. The captured Night route had no identified audible
+creature, Cave spell/impact playback was not exercised, and the real Cave
+finite witness is door47. Capture used a software sink and does not establish
+hardware listening or full mission play.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;

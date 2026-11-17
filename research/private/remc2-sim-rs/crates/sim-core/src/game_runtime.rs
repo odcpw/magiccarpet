@@ -4182,8 +4182,12 @@ mod tests {
             cases.push((4, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"));
         }
         for (external, relative) in cases {
-            let package = if external == 4 {
-                std::env::var_os("MC_CORRECTED_CAVE_PACKAGE")
+            let package = if external == 3 || external == 4 {
+                std::env::var_os(if external == 3 {
+                    "MC_CORRECTED_DAY_PACKAGE"
+                } else {
+                    "MC_CORRECTED_CAVE_PACKAGE"
+                })
                     .map(PathBuf::from)
                     .unwrap_or_else(|| generated.join(relative))
             } else {
@@ -4291,7 +4295,9 @@ mod tests {
                     Mc2CampaignInputs::new(level_two_package())
                 },
                 Mc2CampaignInputs::with_owner_cache(
-                    generated.join("level3-day-block32-campaign-recipe-v2"),
+                    if external == 3 { package.clone() } else {
+                        generated.join("level3-day-block32-campaign-recipe-v2")
+                    },
                     source_owner.clone().filter(|_| external == 3).unwrap_or_else(||
                         generated.join("level3-day-minimap-owner-cache-v3/components/material")),
                 ),
