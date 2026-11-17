@@ -21,7 +21,7 @@ PRIVATE = HERE.parents[1]
 SIM = PRIVATE / "remc2-sim-rs"
 WEB = SIM / "web"
 UNITY_PROJECT = PRIVATE / "remc2-unity-native"
-FIXTURE = SIM / "crates/sim-core/tests/fixtures/custom-synthetic-v1"
+FIXTURE = SIM / "crates/sim-definition/tests/fixtures/custom-synthetic-v1"
 TRANSFORM = SIM / "tools/build_indexed_sprite.py"
 SLOT = "presentation.spell.fireball.projectile_asset"
 BASELINE = "sha256:11200749e51e49d4a9f4be95ffa8f6c0636be87e36781481c89e6a0825232508"
@@ -49,9 +49,10 @@ def publish_variant(sim_cli: Path, root: Path) -> tuple[Path, Path, dict]:
     changes.write_text(
         json.dumps(
             [{
-                "id": SLOT,
-                "value": {"type": "reference", "value": VARIANT},
-                "expected_value": {"type": "reference", "value": BASELINE},
+                "operation": "bind_asset",
+                "slot": SLOT,
+                "artifact": "presentation.projectile_asset_variant",
+                "expected_artifact": "presentation.projectile_asset",
             }],
             separators=(",", ":"),
         ),

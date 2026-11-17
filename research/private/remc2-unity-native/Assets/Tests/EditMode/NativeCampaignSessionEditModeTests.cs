@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -8,6 +10,91 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class NativeCampaignSessionEditModeTests
     {
+        [DataContract] private sealed class AnimationRuntimeScenario
+        {
+            [DataMember] public GameRuntimeTransport.InstalledPackageResource[] packages;
+        }
+
+        [Test]
+        public void RuntimeComposedWorldSurvivesRepeatedReadsPauseResumeAndReset()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType,
+                Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var scenarioPath = Environment.GetEnvironmentVariable("MC_RENDER_OBSERVATION_SCENARIO");
+            if (string.IsNullOrEmpty(scenarioPath)) Assert.Ignore("Requires the qualified installed package scenario");
+            using var scenarioStream = File.OpenRead(scenarioPath);
+            var packages = ((AnimationRuntimeScenario)new DataContractJsonSerializer(
+                typeof(AnimationRuntimeScenario)).ReadObject(scenarioStream)).packages;
+            Assert.That(packages, Is.Not.Null.And.Not.Empty);
+            var package = packages[0].package_dir;
+            var cachePath = packages[0].owner_cache_path;
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            using var runtime = NativeSession.OpenGameRuntime(packages);
+            var profile = Path.Combine(Path.GetTempPath(), "mc-world-lifecycle-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(profile);
+            using var menu = new OwnerCampaignMenuCache(
+                Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE"));
+            runtime.GameRuntimePause();
+            var preferences = new PlayerPreferencesPresenter(
+                json => GameRuntimeTransport.PreferencesCommand(runtime.Handle, runtime.GameRuntimeIdentity(), json),
+                profile);
+            preferences.BindLanguages(menu);
+            runtime.GameRuntimeResume();
+            using var native = NativeCampaignSession.BorrowGameRuntime(runtime.Handle,
+                runtime.GameRuntimeIdentity(), package, NativeSim.CampaignSelection.Create(1, 0, 1));
+            using var surface = new CampaignPresentationSurface();
+            var capture = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                byte[] Present()
+                {
+                    native.SynchronizeGameRuntimeIdentity(runtime.GameRuntimeIdentity());
+                    var view = runtime.GameRuntimeCampaignRenderObservation().value.source_camera_pose;
+                    surface.PresentEnvironment(native, cache, view.yaw);
+                    Assert.That(native.SceneSpritesComposited, Is.True);
+                    Assert.That(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(), Is.Empty);
+                    var indices = (byte[])native.SceneFrameIndices.Clone();
+                    var camera = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .Single(row => row.depth == -100f);
+                    camera.Render();
+                    RenderTexture.active = camera.targetTexture;
+                    capture.ReadPixels(new Rect(0, 0, 320, 200), 0, 0);
+                    capture.Apply();
+                    var pixels = capture.GetPixels32();
+                    var displayed = new byte[indices.Length];
+                    for (var y = 0; y < 200; y++)
+                        for (var x = 0; x < 320; x++)
+                            displayed[(199 - y) * 320 + x] = pixels[y * 320 + x].r;
+                    CollectionAssert.AreEqual(indices, displayed, "Unity displays the native composed scene");
+                    return indices;
+                }
+
+                var initial = Present();
+                var initialState = runtime.GameRuntimeCampaignSnapshot().value.state_hash;
+                CollectionAssert.AreEqual(initial, Present(), "repeated reads preserve the scene");
+                Assert.That(runtime.GameRuntimeCampaignSnapshot().value.state_hash, Is.EqualTo(initialState));
+                runtime.GameRuntimePause();
+                var paused = Present();
+                runtime.GameRuntimeCampaignPausedRenderFrame();
+                CollectionAssert.AreEqual(paused, Present(), "a paused frame preserves the scene");
+                runtime.GameRuntimeResume();
+                runtime.GameRuntimeCampaignRenderStep(0, 0, 1, 0, 0);
+                Present();
+                var oldGeneration = native.Generation;
+                runtime.GameRuntimeCampaignReset();
+                Present();
+                Assert.That(native.Generation, Is.Not.EqualTo(oldGeneration));
+                Assert.That(native.Tick, Is.Zero);
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                UnityEngine.Object.DestroyImmediate(capture);
+                Directory.Delete(profile, true);
+            }
+        }
+
         [Test]
         public void OpeningNativeWorldScenesPresentOnceWithoutASecondSpritePass()
         {

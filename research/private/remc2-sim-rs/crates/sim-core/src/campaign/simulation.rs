@@ -8053,7 +8053,10 @@ impl Mc2Simulation {
                             yaw,
                             camera_yaw,
                         ),
-                        0 | 1 | 11 | 21 | 36 => {
+                        // Direct source modes ignore the entity animation byte;
+                        // mode21 still retains its special pivot downstream.
+                        0 | 1 | 21 => (0, parameter.base_tmap, false),
+                        11 | 36 => {
                             let frame = u16::from(crate::native_world::effects::animation_frame(
                                 &self.session.state.live.economy,
                                 entity_index,
