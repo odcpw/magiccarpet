@@ -913,14 +913,29 @@ The standalone smoke covers NightSpire entry; controlled editor/native checks
 cover the other material profiles. Hardware audio, Cave occlusion and full
 missions retain their separate acceptance.
 
-Next is existing mc-oi6.1, starting with the real Night Goat selector 152.
-The owner cache retains its four-frame stream; the shared campaign material
-bank currently supplies only base pixels to SourceWorldSprites. Trace the
-ordinary draw demand into one selector-owned mutable image advanced on the
-source turn, then prove changed pixels at the current indexed consumer with
-two actors, pause/reset, and repeated-read controls. Use the existing Goat
-decoder and source clock before extending directional Archer/Villager.
-Root coordinates the existing source owners and the sole build/install lane.
+Shared Original animation source is committed as c8175c10 and pushed as
+a7323502. Original build-wuukj1s5 now runs native 22809f18. The canonical
+launcher displayed the map, loaded NightSpire through one portal with zero
+retries, and rendered the terrain and HUD with the matching mapped plugin.
+The smoke did not perform creature combat or play a mission.
+
+The current campaign renderer advances one retained indexed image per
+selector after an admitted draw. A real Night1 two-Goat selector152 and
+Day2 directional Villager check reached actual composition pixels and
+verified paused frames, repeat reads and generation reset. Cold replay
+restored the same content state and re-serialized byte for byte. The real
+Level25 boss death reached the source animation finish; the creature28
+reset hook is wired and has clock-level coverage. Matching Unity passed the
+semantic texture identity test and the native scene/no-duplicate world
+test for missions1–4. The broader selected legacy presenter tests failed,
+including 20 failures caused by owner audio descriptor size mismatches
+before a frame was rendered. Keep mc-oi6.1 open for that verification gap.
+Evidence: generated/animation-20261117.
+
+Next, finish mc-oi6.3 outdoor actor and Fireball ordering using the current
+Day/Night indexed consumer. The subsequent mc-oi6.4 Cave work must keep
+texture1 ceilings on source mode5 when floors switch to flat mode7 and
+check actual scheduled corridor changes and actor occlusion.
 Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
 do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
 remain OPEN. Hardware resolution switching remains the explicitly separate
