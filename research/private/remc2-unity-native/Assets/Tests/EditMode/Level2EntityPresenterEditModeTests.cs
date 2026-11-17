@@ -247,6 +247,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That((beforeView.renderParameterIndex, beforeView.baseTmap), Is.EqualTo(((ushort)3, (ushort)14)));
             Assert.That(beforeView.selectedTmap, Is.EqualTo(Mode17Selector(14, bee.yaw, 0)));
             surface.PresentEnvironment(session, cache);
+            var initialBeeMarker = CurrentMarker();
+            Assert.That(initialBeeMarker.paletteIndex, Is.EqualTo(12));
+            AssertMarkerPixel(initialBeeMarker);
             var surfaceRoot = surface.Root;
             var worldTexture = surface.WorldIndices;
             var player = session.Entities()[session.Players().Single(row => row.slot == 0).entityIndex];
@@ -293,10 +296,88 @@ namespace MagicCarpet.Native.Tests
             Assert.That((afterView.generation, afterView.tick), Is.EqualTo((session.Generation, session.Tick)));
             Assert.That(afterView.renderParameterIndex, Is.EqualTo(3));
             surface.PresentEnvironment(session, cache);
+            NativeSim.CampaignMinimapEntity[] Markers()
+            {
+                var state = session.MinimapState(session.Tick);
+                return session.MinimapEntities(session.Tick, state);
+            }
+            NativeSim.CampaignMinimapEntity CurrentMarker()
+            {
+                var row = Markers().Single(item => item.subjectEntityIndex == bee.entityIndex);
+                Assert.That((row.generation, row.tick, row.sourceOrder, row.visible),
+                    Is.EqualTo((session.Generation, session.Tick, bee.entityIndex, (byte)1)));
+                return row;
+            }
+            void AssertMarkerPixel(NativeSim.CampaignMinimapEntity marker)
+            {
+                Assert.That(marker.kind, Is.EqualTo(1), "the source actor is a minimap dot");
+                var x = marker.x / 2; var y = marker.y / 2;
+                Assert.That(x, Is.InRange(0, 63)); Assert.That(y, Is.InRange(0, 63));
+                var field = typeof(CampaignPresentationSurface).GetField("presentedIndices",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var pixels = (byte[])field.GetValue(surface);
+                Assert.That(pixels[y * 320 + x], Is.EqualTo(marker.paletteIndex),
+                    "the current native marker reaches the actual indexed minimap consumer");
+                Assert.That(surface.LiveMinimapReady, Is.True);
+            }
+            var beeMarker = CurrentMarker();
+            Assert.That(beeMarker.paletteIndex, Is.EqualTo(initialBeeMarker.paletteIndex));
+            // At the real impact, later source effects occupy the same map
+            // pixel. The indexed surface must follow source order here.
+            var laterWriter = Markers().Last(item => item.kind == 1 && item.visible == 1 &&
+                item.sourceOrder > beeMarker.sourceOrder &&
+                item.x / 2 == beeMarker.x / 2 && item.y / 2 == beeMarker.y / 2);
+            Assert.That(laterWriter.paletteIndex, Is.EqualTo(96));
+            AssertMarkerPixel(laterWriter);
             Assert.That(surface.Root, Is.SameAs(surfaceRoot));
             Assert.That(surface.WorldIndices, Is.SameAs(worldTexture));
             Assert.That(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(), Is.Empty);
             CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
+            // Keep the same acquired Fireball held and the same declared
+            // player-relative aim. The source owns all damage, death, reclaim
+            // and subsequent NewEvent allocation; no actor fields are set.
+            var hidden = false;
+            var reused = false;
+            var moved = false;
+            var markerMoved = false;
+            var lastMarker = beeMarker;
+            var lastBee = after;
+            for (var turn = 0; turn < 100 && !reused; turn++)
+            {
+                session.Step(unchecked((ushort)(lastBee.x + 256)),
+                    unchecked((ushort)(lastBee.y + 600)), unchecked((short)(lastBee.z - 9)),
+                    flags: 0x10, pitch: 64);
+                var current = session.Entities()[bee.entityIndex];
+                surface.PresentEnvironment(session, cache);
+                if (current.active != 0 && current.classId == 5 && current.model == 2)
+                {
+                    Assert.That(hidden, Is.False, "the hidden Bee cannot revive as its old source owner");
+                    moved |= current.x != after.x || current.y != after.y || current.z != after.z;
+                    var marker = CurrentMarker();
+                    markerMoved |= marker.x != lastMarker.x || marker.y != lastMarker.y;
+                    lastMarker = marker;
+                    lastBee = current;
+                }
+                else if (current.active == 0)
+                {
+                    hidden = true;
+                    Assert.That(Markers().Any(item => item.subjectEntityIndex == bee.entityIndex), Is.False,
+                        "the hidden source Bee no longer owns a minimap marker");
+                }
+                else
+                {
+                    Assert.That(hidden, Is.True, "a new source occupant follows the observed hidden Bee");
+                    Assert.That((current.classId, current.model), Is.EqualTo(((byte)10, (byte)0)));
+                    var replacementMarker = CurrentMarker();
+                    Assert.That(replacementMarker.paletteIndex, Is.EqualTo(209),
+                        "the current class10 occupant chooses its own source palette");
+                    AssertMarkerPixel(replacementMarker);
+                    reused = true;
+                }
+            }
+            Assert.That(moved, Is.True, "the real Bee moves while its current minimap row is published");
+            Assert.That(markerMoved, Is.True, "the source minimap tracks the moving Bee relative to the player");
+            Assert.That(reused, Is.True, "ordinary source callbacks reuse the reclaimed Bee slot");
         }
         [Test]
         public void Class5MappingsAndHideThenFollowingRemovalAreExact()
@@ -325,6 +406,19 @@ namespace MagicCarpet.Native.Tests
                 using var surface = new CampaignPresentationSurface();
                 var actors = session.Entities();
                 var rows = WorldRows(session, 0);
+                if (test.level == 5)
+                {
+                    var minimap = session.MinimapState(session.Tick);
+                    var markers = session.MinimapEntities(session.Tick, minimap);
+                    foreach (var model in new byte[] { 0, 2, 3, 4 })
+                    {
+                        var admitted = actors.Where(row => row.active != 0 && row.classId == 5 && row.model == model)
+                            .Select(row => row.entityIndex).ToHashSet();
+                        Assert.That(admitted, Is.Not.Empty, $"real Level5 class5/model{model} must exist");
+                        Assert.That(markers.Any(row => admitted.Contains(row.subjectEntityIndex) && row.visible == 1),
+                            Is.True, $"a current class5/model{model} reaches the native minimap");
+                    }
+                }
                 foreach (var expected in test.models)
                 {
                     var source = actors.Where(row => row.active != 0 && row.classId == 5 && row.model == expected.model)

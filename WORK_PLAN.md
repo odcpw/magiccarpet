@@ -1167,6 +1167,38 @@ Evidence: generated/cave-connected-20261117 (final traversal plus failure
 receipts), and the earlier controlled Cave normal/rolled/near/plane checks.
 No full mission, human combat, FPS or hardware-audio claim is made.
 
+### Current Original HUD and minimap — 2026-11-17
+
+The campaign map now reads the current typed Bee, Dragon, dynamic Worm,
+Archer, Castle and balloon owners. Their retired raw rows stay suppressed
+while the typed actor occupies the slot. An ordinary reuse resumes the new
+occupant's source classification. Raw-owned model22 and the existing Firefly
+projection remain on their respective paths. The C ABI is unchanged.
+
+Current-role Unity checks passed NightSpire acquired hands, tiers, indexed
+icons/bars and paid casting; Day3 paid Castle and balloon markers and matching
+indexed status after cold attach; authored class5 markers; and the real
+source34 Bee's paid Fireball hit, movement, hide and next-slot reuse. The
+source34 case controls player aim and position through public input. It
+establishes exact indexed pixels at the unoccluded Bee, later effect painter
+order on impact and the class10 replacement. The Day3 entry declares incoming
+spell carry. The earlier native Night/Day marker checks and the repaired Day
+reset/acquisition/replay test passed. Its old visibility expectation failed
+on the prior native too. The source-order, marks, and replay gates are intact.
+
+Strict rig workspace all-targets check and release build passed. Of 626
+compared rig inputs, only the later cfg(test) visibility assertion differed at
+release capture. Original native
+15b4e827fe4dc2f67b026a7a75190c7a210aaab923b3736cc529fa800a6a7145
+was installed in build-1w4ofvfa without a Unity player rebuild. The qualified
+receipt matches 476 local Rust inputs and both installed plugin copies.
+Ordinary saved NightSpire launched with the new mapped native on the first
+attempt. Exact tests and receipts are in generated/hud-minimap-20261117 and
+generated/gameplay-audio-20261117/installed-night1-audible. The C# scanner was
+partial and changed-hunk review found no critical finding on added lines.
+Full mc-oi6.5 remains open for the current Cave acquired-spell path and
+remaining acceptance; these checks do not certify full missions or playtest.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;

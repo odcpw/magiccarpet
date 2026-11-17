@@ -393,21 +393,43 @@ namespace MagicCarpet.Native.Tests
         private static string[] InstalledOpeningArguments()
         {
             var generated = Path.Combine(PrivateRoot, "generated");
-            return new[] {
+            var arguments = new System.Collections.Generic.List<string> {
                 "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level1-v2"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-level2-vault-successor-closure-20261025"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level2-vault-successor-environment-20261025"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-vault-successor-owner-cache-20261025"),
-                "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level3-environment-exit-20261025"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3")
+                "-mc-runtime-menu-cache", CampaignMenuCache,
+                "-mc-runtime-speech-cache", CampaignSpeechCache,
+                "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded")
             };
+            AppendInstalledPackageArguments(arguments, ReadInstalledCampaignResources(4));
+            return arguments.ToArray();
+        }
+
+        private static GameRuntimeTransport.InstalledPackageResource[] ReadInstalledCampaignResources(int count)
+        {
+            using var input = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(PrivateRoot, "generated/continuity-20261115/installed-full-resources.json"));
+            var resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(input);
+            Assert.That(resources.Length, Is.GreaterThanOrEqualTo(count));
+            var selected = resources.Take(count).ToArray();
+            foreach (var resource in selected)
+            {
+                Assert.That(resource.package_dir, Is.Not.Null.And.Not.Empty);
+                Assert.That(resource.owner_cache_path, Is.Not.Null.And.Not.Empty);
+                Assert.That(resource.presentation_cache_path, Is.Not.Null.And.Not.Empty);
+            }
+            return selected;
+        }
+
+        private static void AppendInstalledPackageArguments(
+            System.Collections.Generic.List<string> arguments,
+            GameRuntimeTransport.InstalledPackageResource[] resources)
+        {
+            foreach (var resource in resources)
+            {
+                arguments.Add("-mc-runtime-package"); arguments.Add(resource.package_dir);
+                arguments.Add("-mc-runtime-owner-cache"); arguments.Add(resource.owner_cache_path);
+                arguments.Add("-mc-runtime-presentation-cache"); arguments.Add(resource.presentation_cache_path);
+            }
         }
 
         [Test]
@@ -480,12 +502,16 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
-        [Test]
-        public void InstalledOpeningAssignsSpellHandsAndRejectsLockedTierBeforeCasting()
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator InstalledOpeningAssignsSpellHandsAndRejectsLockedTierBeforeCasting()
         {
             var root = new GameObject("installed spell hand and tier producer");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            Texture2D pixels = null;
+            var previousTarget = RenderTexture.active;
             try
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
@@ -523,17 +549,124 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").tier, Is.Zero, "a locked choice never mutates its source holder");
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var hud = native.DayHudState(native.Tick);
+                Assert.That((hud.generation, hud.tick), Is.EqualTo((native.Generation, native.Tick)));
+                Assert.That((hud.left.model, hud.left.tier, hud.left.drawAdmitted),
+                    Is.EqualTo(((byte)1, (sbyte)0, (byte)1)), "the actual left holder reaches the source HUD");
+                Assert.That((hud.right.model, hud.right.tier, hud.right.drawAdmitted),
+                    Is.EqualTo(((byte)0, (sbyte)0, (byte)1)), "the actual right holder reaches the source HUD");
+                Assert.That(hud.left.holderEntityIndex, Is.Not.EqualTo(0));
+                Assert.That(hud.right.holderEntityIndex, Is.Not.EqualTo(0));
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeNightSurface");
+                Assert.That(surface, Is.Not.Null);
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                try
+                {
+                    Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in cameras) { camera.targetTexture = display; camera.Render(); }
+                    gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("DrawGameRuntimeIndexedHud", flags)
+                        .Invoke(runtime, new object[] { native.DayHudState(native.Tick), false });
+                    gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                    yield return null;
+                    gui.SendEvent(new Event { type = EventType.Layout });
+                    gui.SendEvent(new Event { type = EventType.Repaint });
+                    var output = (RenderTexture)Field("gameRuntimeHudIndices");
+                    Assert.That(output, Is.Not.Null, "the live source HUD reaches the indexed Unity target");
+                    pixels = new Texture2D(output.width, output.height, TextureFormat.RGBA32, false, true);
+                    RenderTexture.active = output;
+                    pixels.ReadPixels(new Rect(0, 0, output.width, output.height), 0, 0); pixels.Apply();
+                    var raw = pixels.GetPixels32();
+                    var descriptors = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                    var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                    var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                    void AssertIcon(NativeSim.CampaignDayHudSpellSlot slot, int x)
+                    {
+                        var row = descriptors[(int)slot.iconSelector];
+                        int Extent(string name) => (int)row.GetType().GetField(name).GetValue(row);
+                        var sw = Extent("stored_width"); var sh = Extent("stored_height");
+                        var rw = Extent("runtime_width"); var rh = Extent("runtime_height");
+                        var compared = 0;
+                        for (var dy = 16; dy < Math.Min(rh, 36); dy++)
+                        for (var dx = 0; dx < rw; dx++)
+                        {
+                            var source = dy * sh / rh * sw + dx * sw / rw;
+                            if (masks[slot.iconSelector][source] == 0) continue;
+                            Assert.That(raw[(output.height - 1 - (2 + dy)) * output.width + x + dx].r,
+                                Is.EqualTo(indices[slot.iconSelector][source]), "the current source hand icon reaches the indexed target");
+                            compared++;
+                        }
+                        Assert.That(compared, Is.GreaterThan(0), "the source hand icon supplies visible checked pixels");
+                    }
+                    AssertIcon(hud.left, 510);
+                    AssertIcon(hud.right, 574);
+                    var tiers = (System.Collections.IDictionary)Field("level2DayHudTierRows");
+                    var tierTextures = (System.Collections.Generic.Dictionary<int, Texture2D>)Field("ownerSpellTierTextures");
+                    var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                    void AssertTier(NativeSim.CampaignDayHudSpellSlot slot, int x)
+                    {
+                        var frame = descriptors[(int)slot.frameSelector];
+                        var tier = tiers[(int)slot.levelTextSelector];
+                        int Extent(object row, string name) => (int)row.GetType().GetField(name).GetValue(row);
+                        var width = Extent(tier, "runtime_width");
+                        var height = Extent(tier, "runtime_height");
+                        var tierX = x + Extent(frame, "runtime_width") - width - 2;
+                        var texture = tierTextures[slot.levelTextSelector];
+                        var mask = texture.GetPixels32();
+                        var checkedPixels = 0;
+                        for (var dy = 0; dy < height; dy++)
+                        for (var dx = 0; dx < width; dx++)
+                        {
+                            var sx = dx * texture.width / width;
+                            var sy = dy * texture.height / height;
+                            if (mask[(texture.height - 1 - sy) * texture.width + sx].a == 0) continue;
+                            Assert.That(raw[(output.height - 1 - (2 + dy)) * output.width + tierX + dx].r,
+                                Is.EqualTo(menu.ObjectiveForProfile("night").BlendSelector),
+                                "the selected source tier glyph reaches the indexed target");
+                            checkedPixels++;
+                        }
+                        Assert.That(checkedPixels, Is.GreaterThan(0));
+                    }
+                    AssertTier(hud.left, 510);
+                    AssertTier(hud.right, 574);
+                    int PanelWidth(int selector) => (int)descriptors[selector].GetType()
+                        .GetField("runtime_width").GetValue(descriptors[selector]);
+                    var playerX = 2 + PanelWidth(hud.minimapPanelSelector) +
+                        PanelWidth(hud.castlePanelSelector) + PanelWidth(hud.balloonPanelSelector);
+                    var widthMethod = typeof(MagicCarpetRuntime).GetMethod("SourceHudWidth", flags |
+                        System.Reflection.BindingFlags.Static);
+                    Assert.That((int)widthMethod.Invoke(null, new object[] { hud.localPlayerLife, hud.localPlayerMaxLife }), Is.GreaterThan(0));
+                    Assert.That((int)widthMethod.Invoke(null, new object[] { hud.localPlayerMana, hud.globalManaDenominator }), Is.GreaterThan(0));
+                    Assert.That(raw[(output.height - 1 - 10) * output.width + playerX + 58].r,
+                        Is.EqualTo(hud.lifePaletteIndex), "current life reaches the source indexed bar");
+                    Assert.That(raw[(output.height - 1 - 28) * output.width + playerX + 58].r,
+                        Is.EqualTo(hud.manaPaletteIndex), "current mana reaches the source indexed bar");
+                }
+                finally
+                {
+                    foreach (var camera in cameras) camera.targetTexture = null;
+                    display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                }
                 runtime.ApplyGameRuntimeHeldSpellInput(true, false);
                 runtime.QualificationDriveGameRuntimeFrames(2);
                 runtime.ApplyGameRuntimeHeldSpellInput(false, false);
-                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
                 Assert.That(Array.Exists(native.Entities(), row => row.active != 0 &&
                     (row.classId == 9 && row.model == 1 || row.classId == 10 && row.model == 12)), Is.True,
                     "the assigned left hand reaches the actual Possession projectile/effect producer");
+                var afterCast = native.DayHudState(native.Tick);
+                Assert.That(afterCast.localPlayerMana, Is.LessThan(hud.localPlayerMana),
+                    "the real cast's source mana debit reaches the current HUD");
             }
             finally
             {
+                RenderTexture.active = previousTarget;
+                if (pixels != null) UnityEngine.Object.DestroyImmediate(pixels);
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
                 runtime.QualificationDisposeGameRuntimeProduction();
                 UnityEngine.Object.DestroyImmediate(root);
             }
@@ -7888,17 +8021,10 @@ namespace MagicCarpet.Native.Tests
             var levelOneCache = Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_CACHE") ??
                 Path.Combine(generated, "mc2-level1-night-cache-v2");
             // The real Level 3 Loading control declares incoming Castle and
-            // other spell carry. Old v5 receipts are not admissible.
+            // other spell carry. Both loads use the same installed roles.
             var entry = Environment.GetEnvironmentVariable("MC_CORRECTED_DAY_REPLAY_OUTPUT") ??
-                Path.Combine(generated, "top-status-20261116/fresh-level3-full-role-entry.mcs");
-            var second = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL2_PACKAGE") ??
-                Path.Combine(generated, "level2-day-block32-campaign-v2");
-            var package = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PACKAGE") ??
-                Path.Combine(generated, "level3-day-block32-campaign-recipe-v2");
-            var environment = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_OWNER") ??
-                Path.Combine(generated, "mc-level3-environment-exit-20261025");
-            var presentation = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PRESENTATION") ??
-                Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4");
+                Path.Combine(generated, "gameplay-audio-20261117/current-day-entry.mcs");
+            var resources = ReadInstalledCampaignResources(3);
             var temporary = Path.Combine(Path.GetTempPath(), "mc-source-top-status-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(temporary);
             var replayPath = Path.Combine(temporary, "paid-castle.mcs");
@@ -7909,6 +8035,7 @@ namespace MagicCarpet.Native.Tests
             var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             var shown = false;
             byte[] paidReplay = null;
+            ushort sourceCastle = 0, sourceCollector = 0;
             var previousTarget = RenderTexture.active;
             const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
             object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
@@ -7916,11 +8043,7 @@ namespace MagicCarpet.Native.Tests
             {
                 using (var producer = new GameRuntimeTransport())
                 {
-                    producer.LoadReplay(File.ReadAllBytes(entry),
-                        new GameRuntimeTransport.InstalledPackageResource { package_dir = LevelOnePackage,
-                            presentation_cache_path = levelOneCache }, Package(second),
-                        new GameRuntimeTransport.InstalledPackageResource { package_dir = package,
-                            owner_cache_path = environment, presentation_cache_path = presentation });
+                    producer.LoadReplay(File.ReadAllBytes(entry), resources);
                     var initial = producer.CampaignSnapshot().value;
                     Assert.That(initial.source_top_status.castle_rows, Is.Empty, "the qualified entry starts without a linked Castle");
                     Assert.That(initial.player_vitals.mana, Is.EqualTo(1000));
@@ -8036,6 +8159,7 @@ namespace MagicCarpet.Native.Tests
                     var rootRow = CurrentRoot();
                     Assert.That(rootRow.entityIndex, Is.Not.Zero, "the paid Castle has a current source root and player binding");
                     var rootSlot = rootRow.entityIndex;
+                    sourceCastle = rootSlot;
                     // Initial 37BC0 counts 19 down to -1 and then zero (20
                     // visits); one scheduling boundary and one root state2
                     // visit bound its ordinary transition to action4.
@@ -8058,6 +8182,7 @@ namespace MagicCarpet.Native.Tests
                     var collectorRow = Array.Find(CurrentEntities(), row => row.active != 0 && row.classId == 3 &&
                         row.model == 3 && row.sourceId == player.entityIndex);
                     Assert.That(collectorRow.entityIndex, Is.Not.Zero, "the current collector is bound to the same source player");
+                    sourceCollector = collectorRow.entityIndex;
                     Assert.That(bornStatus.balloons[0].max_life, Is.GreaterThan(0));
                     Assert.That(bornStatus.balloons[0].life, Is.InRange(0, bornStatus.balloons[0].max_life));
                     Assert.That(bornStatus.balloons[0].max_mana, Is.GreaterThan(0));
@@ -8074,17 +8199,14 @@ namespace MagicCarpet.Native.Tests
                         diagnostic.Flush(true);
                     }
                 }
-                var arguments = new[] {
+                var coldArguments = new System.Collections.Generic.List<string> {
                     "-mc-game-runtime", "-mc-runtime-loading-cache", levelOneCache,
                     "-mc-runtime-menu-cache", CampaignMenuCache, "-mc-runtime-speech-cache", CampaignSpeechCache,
                     "-mc-preferences-profile", Path.Combine(temporary, "profile"),
-                    "-mc-runtime-package", LevelOnePackage,
-                    "-mc-runtime-presentation-cache", levelOneCache,
-                    "-mc-runtime-package", second,
-                    "-mc-runtime-package", package, "-mc-runtime-owner-cache", environment,
-                    "-mc-runtime-presentation-cache", presentation,
                     "-mc-runtime-replay-load", replayPath
                 };
+                AppendInstalledPackageArguments(coldArguments, resources);
+                var arguments = coldArguments.ToArray();
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
                 typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
                 var full = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
@@ -8108,8 +8230,21 @@ namespace MagicCarpet.Native.Tests
                     "the source int32 shift wraps before division and int16 narrowing");
                 Assert.That((int)sourceWidth.Invoke(null, new object[] { 100, 6400 }), Is.Zero,
                     "DrawBar suppresses an actual source width of one");
-                var surface = (CampaignPresentationSurface)Field("level3PresentationSurface");
-                Assert.That(surface, Is.Not.Null);
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                Assert.That(surface, Is.Not.Null, "the installed Day owner binds the shared environment surface");
+                var mapSession = (NativeCampaignSession)Field("campaignSession");
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((mapSession.Generation, mapSession.Tick)));
+                var mapState = mapSession.MinimapState(mapSession.Tick);
+                var mapRows = mapSession.MinimapEntities(mapSession.Tick, mapState);
+                var castleMarker = mapRows.Single(row => row.subjectEntityIndex == sourceCastle);
+                var collectorMarker = mapRows.Single(row => row.subjectEntityIndex == sourceCollector);
+                Assert.That((castleMarker.generation, castleMarker.tick, castleMarker.visible),
+                    Is.EqualTo((mapSession.Generation, mapSession.Tick, (byte)1)));
+                Assert.That((collectorMarker.generation, collectorMarker.tick, collectorMarker.visible),
+                    Is.EqualTo((mapSession.Generation, mapSession.Tick, (byte)1)));
+                Assert.That(castleMarker.selector, Is.InRange(58, 65), "the paid source Castle owns its map symbol");
+                Assert.That(collectorMarker.selector, Is.InRange(66, 73), "the natural source collector owns its map symbol");
+                Assert.That(surface.LiveMinimapReady, Is.True, "the real indexed surface consumes the current marker batch");
                 var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
                 Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
                 foreach (var camera in cameras)

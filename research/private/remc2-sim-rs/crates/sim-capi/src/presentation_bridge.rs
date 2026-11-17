@@ -565,8 +565,16 @@ fn campaign_map_plan(
     // GameUI's v83 is holder.word_2E, not possession of a family-12 holder.
     let family12_enabled = visibility.beyond_sight_active;
 
+    let typed_owners = session.campaign_minimap_owned_inputs()?;
+    let typed_slots = typed_owners.iter().map(|row| row.source_slot)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut inputs = Vec::new();
     for entity in session.entities() {
+        // A hidden typed owner still suppresses its obsolete raw packet until
+        // the next source reclaim makes the address available to NewEvent.
+        if typed_slots.contains(&entity.index) {
+            continue;
+        }
         if !entity.active || entity.drawing_disabled() {
             continue;
         }
@@ -588,6 +596,8 @@ fn campaign_map_plan(
             })?;
         inputs.push((input, parameter_record_index));
     }
+
+    inputs.extend(typed_owners.into_iter().filter(|row| row.active).map(|row| (row, 0)));
 
     // Imported and newly spawned Fireflies are scheduled through the typed
     // class-5 carrier. Adoption retires the raw row, so observing only the raw

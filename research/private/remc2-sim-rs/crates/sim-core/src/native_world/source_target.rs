@@ -13,6 +13,93 @@ use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
+impl super::Mc2Simulation {
+    /// Current typed actors consumed by both campaign map projections.
+    /// Retain hidden owners in this result so callers suppress their obsolete
+    /// raw packet until the following source reclaim. The specialized
+    /// Firefly path and other raw/current families keep their existing owners.
+    pub fn campaign_minimap_owned_inputs(
+        &self,
+    ) -> Result<Vec<crate::level1_mission::Level1MinimapEntityInput>, String> {
+        use crate::level1_mission::Level1MinimapEntityInput;
+
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let context = Context::from_ordinary(&live.goats, &live.ordinary);
+        let local = self.state.entity_index;
+        let is_player = |index: u16| {
+            self.entities().iter().any(|row| row.index == index && row.active && row.class == 3)
+        };
+        let mut result = Vec::new();
+        for (slot, kind) in arena.economy.live_arena_slots() {
+            let (phase, word_32, parent_id, stage_var_2) = match kind {
+                Kind::BeeCreature => {
+                    let row = arena.economy.bee_creatures.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current Bee {slot} lost its minimap owner"))?;
+                    (row.source_byte_3e, row.linked_peer_entity_index,
+                        row.parent_entity_index, row.stage_var2 as i8)
+                }
+                Kind::AuthoredClass5 => {
+                    let row = arena.economy.authored_class5.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current class5 {slot} lost its minimap owner"))?;
+                    // Model19 retains its specialized Firefly path. Model22
+                    // has additional word94/A4 semantics; it must not inherit
+                    // another family's sidecar or a cold raw packet here.
+                    let (word, parent, stage) = match row.model {
+                        0 => arena.economy.authored_dragons.iter().find(|state|
+                            state.source_entity_index == slot).map(|state|
+                                (state.linked_entity_index, state.parent_entity_index, state.stage_var2)),
+                        3 => arena.economy.authored_class5_model3.iter().find(|state|
+                            state.source_entity_index == slot).map(|state|
+                                (state.word_0x32, state.parent_entity_index, state.stage_var2)),
+                        4 => arena.economy.authored_class5_archer.iter().find(|state|
+                            state.source_entity_index == slot && state.slot_generation == arena.slot_generation(slot))
+                            .map(|state| (state.word_0x32, state.stage.parent, state.stage.mode)),
+                        _ => continue,
+                    }.ok_or_else(|| format!("current class5 {slot} lost its model {} minimap sidecar", row.model))?;
+                    (row.phase, word, parent, stage as i8)
+                }
+                Kind::CastleRoot => {
+                    let row = current_castle_entry(arena, slot)
+                        .filter(|row| row.active)
+                        .ok_or_else(|| format!("current Castle {slot} lost its minimap owner"))?;
+                    // Class3's source map classifier reads neither word32 nor
+                    // parent/stage; its player relation is supplied below.
+                    (row.phase, 0, 0, 0)
+                }
+                Kind::CastleDefender => {
+                    let row = arena.economy.castle_children.iter().find(|row|
+                        row.active && row.source_entity_index == slot && row.model == 3)
+                        .ok_or_else(|| format!("current balloon {slot} lost its minimap owner"))?;
+                    (row.source_byte_3e, row.chain_previous_slot, row.parent_entity_index, 0)
+                }
+                _ => continue,
+            };
+            let view = read(arena, context, slot)?
+                .ok_or_else(|| format!("current class5 {slot} lost its source view"))?;
+            let (class, action) = arena.economy.live_arena_class_action(slot, kind)
+                .ok_or_else(|| format!("current class5 {slot} lost its source action"))?;
+            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3)) {
+                return Err(format!("current owner {slot} changed class/model during minimap projection"));
+            }
+            let player_link = rival_target_relation(arena, context, slot, kind);
+            result.push(Level1MinimapEntityInput {
+                source_slot: slot, class, model: view.model, action, phase,
+                control_flags: view.control_flags, source_id: view.source_id,
+                source_id_is_player: is_player(view.source_id),
+                source_id_is_local_player: view.source_id == local,
+                player_link, player_link_is_player: is_player(player_link),
+                player_link_is_local_player: player_link == local,
+                parent_id, stage_var_2, word_32, position: view.position,
+                active: view.active && !view.drawing_disabled(),
+            });
+        }
+        Ok(result)
+    }
+}
+
 /// The allocated current Castle carrier, including its terminal retained
 /// state. A different live kind, reclaim, or NewEvent generation ends it.
 pub(crate) fn current_castle_entry(
