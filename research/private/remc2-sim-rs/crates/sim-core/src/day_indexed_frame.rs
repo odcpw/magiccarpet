@@ -3708,7 +3708,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_shading_consumes_real_cave_floor_and_ceiling_before_overpaint() {
+    fn flat_shading_changes_real_cave_floor_but_preserves_ceiling_before_overpaint() {
         let cache = generated_path("mc-oi62-environment-level12-v1");
         let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
             generated_path("mc-bhq6-ordinary-20261025-zclu5fjj/level12"), &cache,
@@ -3731,7 +3731,13 @@ mod tests {
             (true, plan.without_floor_submissions_for_test())] {
             let mut flat = smooth.clone();
             flat.apply_flat_shading(true);
-            assert_ne!(flat.command_hash, smooth.command_hash);
+            if ceiling {
+                assert_eq!(flat.command_hash, smooth.command_hash,
+                    "the source ceiling triangles retain interpolated mode5 commands");
+            } else {
+                assert_ne!(flat.command_hash, smooth.command_hash,
+                    "source flat mode7 changes floor shading commands");
+            }
             let render = |plan: &CaveTerrainPlan| {
                 let mut pixels = plan.initial_indices(&profile);
                 let mut provenance = vec![0; profile.extent()];
@@ -3747,7 +3753,13 @@ mod tests {
             let flat_pixels = render(&flat);
             assert_eq!(flat_pixels.1, smooth_pixels.1, "same source material coverage");
             assert_eq!(flat_pixels.2, smooth_pixels.2, "same submitted floor/ceiling writes");
-            assert_ne!(flat_pixels.0, smooth_pixels.0, "real owner {ceiling:?} material changes shade, not geometry");
+            if ceiling {
+                assert_eq!(flat_pixels.0, smooth_pixels.0,
+                    "real owner ceiling mode5 output is byte-identical with flat floors enabled");
+            } else {
+                assert_ne!(flat_pixels.0, smooth_pixels.0,
+                    "real owner floor mode7 changes shade, not geometry");
+            }
         }
         let mut carrier = DayIndexedFrameState::new(campaign.generation());
         let smooth = carrier.render_current(campaign.inspection(), reset, &assets, campaign.generation()).unwrap();
