@@ -2504,6 +2504,86 @@ mod tests {
     }
 
     #[test]
+    fn real_outdoor_actor_pixels_survive_and_are_overpainted_by_later_terrain() {
+        for (package, cache, selection) in [
+            ("mc-bhq8-level1-collision-v5-night", "mc-oi62-environment-level1-v2", crate::campaign::spec::CampaignSelection::LEVEL1),
+            ("level2-day-block32-campaign-v2", "mc-oi62-environment-level2-v2", crate::campaign::spec::CampaignSelection::LEVEL2),
+        ] {
+            let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+                generated_path(package), generated_path(cache), selection,
+            ).unwrap();
+            let assets = DayIndexedFrameAssets::load(generated_path(cache)).unwrap();
+            let rows = campaign.simulation().campaign_entity_presentations(0).unwrap();
+            let candidates: Vec<_> = rows.into_iter().filter(|row| {
+                row.draw_order != u32::MAX && row.logical_height >= 100
+                    && row.control_flags & 0x0080_0000 == 0
+                    && campaign.simulation().session.definition.presentation.particles
+                        [usize::from(row.render_parameter_index)].byte_10 == 0
+            }).take(32).collect();
+            let mut witnessed = None;
+            'views: for row in candidates {
+                let planes = campaign.simulation().canonical_terrain().planes();
+                let ground = crate::legacy_terrain::interpolate_ground(
+                    &planes.ground_heights, row.position.x, row.position.y);
+                for distance in [512_u16, 1024, 2048] {
+                    for altitude in [64_i32, 128, 512] {
+                        for pitch in [0_i16, 64] {
+                            let pose = sim_session::CameraPose {
+                                x: row.position.x, y: row.position.y.wrapping_add(distance),
+                                z: (ground + altitude) as i16, yaw: 0, pitch, roll: 0,
+                            };
+                            campaign.simulation_mut().session.state.scratch.source_camera_pose = Some(pose);
+                            let generation = campaign.generation();
+                            let before = campaign.state_hash();
+                            let mut carrier = DayIndexedFrameState::new(generation);
+                            carrier.set_render_options(WorldRenderOptions {
+                                reflections: false, shadows: false, ..WorldRenderOptions::default()
+                            });
+                            let composed = carrier.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+                            if !composed.animation_sources().iter().any(|source| source.entity_index == row.entity_index) { continue; }
+                            let cell_orders = composed.cave_cell_orders.as_ref().unwrap();
+                            let rank = cell_orders[usize::from(row.position.y >> 8) * 256 + usize::from(row.position.x >> 8)];
+                            if rank == 0 { continue; }
+                            let camera = camera_from_session(campaign.simulation()).unwrap();
+                            let planes = campaign.simulation().canonical_terrain().planes();
+                            let bank = assets.environment_resources().source_tmaps().unwrap();
+                            let mut sprite = SourceWorldSprites::new(
+                                camera, crate::terrain_frame::level1_projection(camera),
+                                campaign.inspection().metadata().map_type, vec![row],
+                                &campaign.simulation().session.definition.presentation.particles,
+                                bank, cell_orders, &planes.ground_heights, 0, false,
+                            ).unwrap();
+                            sprite.set_animation_clocks(&campaign.simulation().source_animation_clocks);
+                            let mut isolated = vec![0_u8; composed.scene_indices.len()];
+                            sprite.draw_cell(crate::terrain_reflection::TerrainPass::Primary, rank, 0,
+                                320, 200, &mut isolated, assets.materials.renderer_tables(campaign.simulation().level_exit_sequence())).unwrap();
+                            let terrain_orders = composed.cave_terrain_orders.as_ref().unwrap();
+                            let mut visible = 0;
+                            let mut overpainted = 0;
+                            for ((&pixel, &result), &terrain_rank) in isolated.iter()
+                                .zip(&composed.scene_indices).zip(terrain_orders) {
+                                if pixel == 0 { continue; }
+                                if terrain_rank <= rank && result == pixel { visible += 1; }
+                                if terrain_rank > rank && result != pixel { overpainted += 1; }
+                            }
+                            if visible > 0 && overpainted > 0 {
+                                let repeated = carrier.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+                                assert!(composed.scene_indices == repeated.scene_indices, "repeated frame pixels changed");
+                                assert_eq!(campaign.state_hash(), before, "view reads must not advance authority");
+                                witnessed = Some((row.entity_index, pose, rank, visible, overpainted));
+                                break 'views;
+                            }
+                        }
+                    }
+                }
+            }
+            let proof = witnessed.unwrap_or_else(|| panic!("no real outdoor actor retained and overpainted: level={}", selection.external_level));
+            eprintln!("real outdoor actor order level={} actor={} camera={:?} rank={} visible={} overpainted={}",
+                selection.external_level, proof.0, proof.1, proof.2, proof.3, proof.4);
+        }
+    }
+
+    #[test]
     fn original_render_options_control_live_world_passes_and_invalidate_both_cached_views() {
         let package = generated_path("level3-day-block32-campaign-recipe-v2");
         let cache = generated_path("mc-level3-environment-exit-20261025");
