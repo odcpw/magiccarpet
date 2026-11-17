@@ -1041,6 +1041,32 @@ Bounded independent review found no new demonstrated production defect. Full
 attributed final reflection pixels/Night water, and the joined installed Cave
 flight/corridor/creature route must not be inferred from representative checks.
 
+Sequential renderer batch1 — animated-sprite acceptance is now CLOSED as
+mc-oi6.1. Fresh bounded selector/lifetime review at41d28f1b found no demonstrated
+reachable mismatch. All30 currently installed owner roles match launcher roles;
+their15,120 decoded payloads match manifest size/hash, with source-bound504-entry
+group tables. A current-source Rust decoder build handles all359 distinct
+animated payloads/2,541 declared transitions, including zero-child and multi-child
+F1FA records, and rejects359 final-truncation controls without changing retained
+pixels. The all30 public reset-world DTO queries pass with6,045 rows. This covers
+actual installed stream shapes and reset admissions, not every conditional spawn,
+original pixel parity or complete missions. Existing real Goat/Villager shared
+draw/pause/replay, two-form Creature28 natural reset, boss finish and current Unity
+consumer/lifetime checks supply the connected representative runtime evidence.
+
+An old returned decoder rlib initially rejected a valid terminal zero-child frame;
+the driver was then pinned directly to current lib.rs and passed unchanged source.
+No production repair or new installation is inferred from that stale-artifact
+negative. Source mode16/particle237 has an asset preload but no demonstrated
+ordinary draw producer; it remains explicitly classified, without invented
+spawning. Actual source draw feedback is an explicit committed operation;
+read-only DTOs/repeated cached frames do not service clocks, while the next
+unpaused turn consumes each selector latch once. No arbitrary draw/no-draw history
+equivalence is claimed. Evidence: generated/animation-acceptance-20261117 plus
+the previously installed842fd4c1 lifecycle checks. Batch2 is actual outdoor
+reflection pixels and batch3 is joined Cave flight/corridor/creature; .3/.4 and
+full campaign acceptance remain OPEN. No Rust/Unity production code changed.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
