@@ -2349,6 +2349,61 @@ pub(crate) mod tests {
             &std::fs::read(package.join("authored-level.bin")).unwrap(),
         )
         .expect("actual Level4 source trigger records");
+        // Keep this separate from the original corridor sequence: the extra
+        // source births legitimately change allocator order and callback timing.
+        let mut actor_campaign = campaign.clone();
+        // Enter the real switch4 region. Its group11 constructs authored
+        // switch577; its ordinary callback in turn publishes group50 and the
+        // authored Spider600. Only the player's approach is controlled.
+        let switch4 = actor_campaign.simulation().entities()[4].clone();
+        assert_eq!((switch4.class, switch4.model, switch4.source_id), (11, 0, 11));
+        let player = actor_campaign.simulation().state.entity_index;
+        let approach = (-8_i16..=8).flat_map(|dy| (-8_i16..=8).map(move |dx| (dx, dy)))
+            .find_map(|(dx, dy)| {
+                let sim = actor_campaign.simulation();
+                let mut position = Position {
+                    x: switch4.position.x.wrapping_add_signed(dx * 256),
+                    y: switch4.position.y.wrapping_add_signed(dy * 256),
+                    z: 0,
+                };
+                let player_row = &sim.entities()[usize::from(player)];
+                let extent = |row: &EntitySnapshot, offset| i16::from_le_bytes(
+                    row.record_bytes()[offset..offset + 2].try_into().unwrap());
+                if !crate::level1_mission::source_entities_overlap_xy(
+                    switch4.position, extent(&switch4, 88), extent(&switch4, 90),
+                    position, extent(player_row, 88), extent(player_row, 90),
+                ) { return None; }
+                let terrain = sim.canonical_terrain();
+                if terrain.cave_collision_blocked(position) { return None; }
+                position.z = terrain.ground_height(position).checked_add(sim.profile().ground_clearance)?;
+                (position.z <= terrain.ceiling_height(position)?.checked_sub(sim.profile().ceiling_clearance)?)
+                    .then_some(position)
+            }).expect("real switch4 has an open player approach");
+        actor_campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        let mut saw_group11 = false;
+        let mut saw_group50 = false;
+        let mut spider = None;
+        for _ in 0..128 {
+            let _ = actor_campaign.step(crate::PlayerCommand::default(), 0);
+            let sim = actor_campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event,
+                crate::native_world::Mc2DispatchEvent::Error { .. })), "Spider activation: {:?}", sim.dispatch_events());
+            for event in sim.dispatch_events() {
+                if let crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
+                    source_slot, group, authored_indices, ..
+                } = event {
+                    saw_group11 |= *source_slot == 4 && *group == 11 && authored_indices.contains(&577);
+                    saw_group50 |= *group == 50 && authored_indices.contains(&600);
+                }
+            }
+            spider = sim.creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Spider)
+                .find(|row| row.living && matches!(row.origin,
+                    crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record: 600 }))
+                .map(|row| row.handle);
+            if spider.is_some() && saw_group11 && saw_group50 { break; }
+        }
+        let spider = spider.expect("ordinary switch4 -> group11 -> switch577 -> group50 constructs authored Spider600");
+        assert!(saw_group11 && saw_group50, "both actual source activation callbacks must run");
         // One declared player-only approach to each real proximity switch;
         // the switch cadence, complete authored group and command lifetime are
         // all driven by the ordinary source scheduler.
@@ -2608,6 +2663,100 @@ pub(crate) mod tests {
             .terrain
             .planes
             .clone();
+        // Compare the commanded controller206's two actually produced planes
+        // at one cut with the current authored Spider generation. The view is
+        // controlled; neither creature nor controller is constructed by the test.
+        assert_eq!(actor_campaign.simulation().source_arena().handle(spider.source_slot), Some(spider),
+            "the source Spider generation must survive at the comparison cut");
+        {
+            let controller = &actor_campaign.simulation().entities()[206];
+            let position = controller.position;
+            let horizontal = controller.source_word_2c() != 0;
+            let length = 2 * (i32::from(controller.source_word_96() as i16) + 2);
+            let (width, height) = if horizontal { (length, 2) } else { (2, length) };
+            let mut cells = Vec::new();
+            for dy in 0..height {
+                for dx in 0..width {
+                    let x = (i32::from(position.x >> 8) - (width >> 1) + dx) as u8;
+                    let y = (i32::from(position.y >> 8) - (height >> 1) + dy) as u8;
+                    cells.push(usize::from(y) * 256 + usize::from(x));
+                }
+            }
+            let source = actor_campaign.simulation().campaign_entity_presentations(0).unwrap().into_iter()
+                .find(|row| row.entity_index == spider.source_slot)
+                .expect("the live authored Spider retains its source sprite");
+            eprintln!("Cave4 authored Spider600 slot={} generation={} position={:?}; corridor206 position={position:?} envelope={width}x{height}",
+                spider.source_slot, spider.generation, source.position);
+            let mut base = actor_campaign.clone();
+            {
+                let planes = &mut base.simulation_mut().session.state.live.terrain.planes;
+                for &cell in &cells {
+                    planes.ground_heights[cell] = opened_planes.ground_heights[cell];
+                    planes.secondary_heights[cell] = opened_planes.secondary_heights[cell];
+                    planes.angles[cell] = opened_planes.angles[cell];
+                }
+            }
+            let views = [
+                sim_session::CameraPose { x: 52992, y: 26368, z: 2688, yaw: 562, pitch: 0, roll: 0 },
+                sim_session::CameraPose { x: 52992, y: 26368, z: 2688, yaw: 562, pitch: 0, roll: 128 },
+                sim_session::CameraPose { x: 50432, y: 26368, z: 4096, yaw: 520, pitch: 0, roll: 0 },
+            ];
+            for (ordinal, pose) in views.into_iter().enumerate() {
+                let mut view = base.clone();
+                view.simulation_mut().session.state.scratch.source_camera_pose = Some(pose);
+                let generation = view.generation();
+                let mut carrier = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                let opened = carrier.render_current(view.inspection(), view.simulation(), &assets, generation)
+                    .expect("authored Spider and commanded Cave corridor render");
+                assert_eq!(carrier.render_current(view.inspection(), view.simulation(), &assets, generation).unwrap(), opened);
+                assert_eq!(opened.source_sprite_stats.reflection_calls, 0);
+                assert!(opened.animation_sources().iter().any(|row| row.entity_index == spider.source_slot),
+                    "authored Spider must be admitted at {pose:?}");
+                let mut without = view.clone();
+                let source = view.simulation().campaign_entity_presentations(pose.yaw).unwrap().into_iter()
+                    .find(|row| row.entity_index == spider.source_slot).unwrap();
+                without.simulation_mut().session.state.live.economy.economy.map_chains.sync_entity(
+                    crate::renderable_map_chain::RenderableMapSeed {
+                        entity_index: spider.source_slot, active: false,
+                        x: source.position.x, y: source.position.y,
+                    }).unwrap();
+                let mut no_actor = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                let absent = no_actor.render_current(without.inspection(), without.simulation(), &assets, generation).unwrap();
+                let actor_pixels = opened.scene_indices.iter().zip(&absent.scene_indices)
+                    .zip(opened.cave_terrain_orders.as_ref().unwrap())
+                    .filter(|((with, without), rank)| with != without && **rank != 0).count();
+                let actor_rank = opened.cave_cell_orders.as_ref().unwrap()
+                    [usize::from(source.position.y >> 8) * 256 + usize::from(source.position.x >> 8)];
+                if ordinal < 2 {
+                    assert!(actor_rank != 0 && actor_pixels != 0,
+                        "authored Spider must draw over Cave terrain at {pose:?}: rank={actor_rank}, pixels={actor_pixels}");
+                }
+                let mut closed = view.clone();
+                let planes = &mut closed.simulation_mut().session.state.live.terrain.planes;
+                for &cell in &cells {
+                    planes.ground_heights[cell] = closed_planes.ground_heights[cell];
+                    planes.secondary_heights[cell] = closed_planes.secondary_heights[cell];
+                    planes.angles[cell] = closed_planes.angles[cell];
+                }
+                let mut closed_carrier = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                let closed_frame = closed_carrier.render_current(closed.inspection(), closed.simulation(), &assets, generation).unwrap();
+                let closed_planes_copy = closed.simulation().session.state.live.terrain.planes.clone();
+                without.simulation_mut().session.state.live.terrain.planes = closed_planes_copy;
+                let mut closed_no_actor = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                let closed_absent = closed_no_actor.render_current(without.inspection(), without.simulation(), &assets, generation).unwrap();
+                let changed_visibility = opened.scene_indices.iter().zip(&absent.scene_indices)
+                    .zip(closed_frame.scene_indices.iter().zip(&closed_absent.scene_indices))
+                    .zip(opened.cave_terrain_orders.as_ref().unwrap())
+                    .filter(|item| {
+                        let (((open, open_without), (shut, shut_without)), rank) = *item;
+                        *rank != 0 && (*open != *open_without) != (*shut != *shut_without)
+                    }).count();
+                if ordinal == 2 {
+                    assert!(changed_visibility != 0,
+                        "the real corridor opening must change the authored Spider visibility mask at {pose:?}");
+                }
+            }
+        }
         for (slot, position, _, _) in roots {
             let row = &campaign.simulation().session.state.live.economy.entities[usize::from(slot)];
             let horizontal = row.source_word_2c() != 0;
