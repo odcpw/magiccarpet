@@ -2629,6 +2629,59 @@ pub(crate) mod tests {
         }
         let spider = spider.expect("ordinary switch4 -> group11 -> switch577 -> group50 constructs authored Spider600");
         assert!(saw_group11 && saw_group50, "both actual source activation callbacks must run");
+        // Independent continuation of this same real campaign: the ordinary
+        // group34 switch creates authored Spider587 on the other side of the
+        // corridor. Only the player's approach is positioned by this check.
+        let mut two_sides = actor_campaign.clone();
+        let west_switch = two_sides.simulation().entities()[121].clone();
+        assert_eq!((west_switch.class, west_switch.model, west_switch.source_id), (11, 0, 34));
+        let west_approach = (-8_i16..=8).flat_map(|dy| (-8_i16..=8).map(move |dx| (dx, dy)))
+            .find_map(|(dx, dy)| {
+                let sim = two_sides.simulation();
+                let mut point = Position { x: west_switch.position.x.wrapping_add_signed(dx * 256),
+                    y: west_switch.position.y.wrapping_add_signed(dy * 256), z: 0 };
+                let player_row = &sim.entities()[usize::from(player)];
+                let extent = |row: &EntitySnapshot, offset| i16::from_le_bytes(
+                    row.record_bytes()[offset..offset + 2].try_into().unwrap());
+                if !crate::level1_mission::source_entities_overlap_xy(
+                    west_switch.position, extent(&west_switch, 88), extent(&west_switch, 90),
+                    point, extent(player_row, 88), extent(player_row, 90)) { return None; }
+                let terrain = sim.canonical_terrain();
+                if terrain.cave_collision_blocked(point) { return None; }
+                point.z = terrain.ground_height(point).checked_add(sim.profile().ground_clearance)?;
+                (point.z <= terrain.ceiling_height(point)?.checked_sub(sim.profile().ceiling_clearance)?)
+                    .then_some(point)
+            }).expect("real group34 switch has an open player approach");
+        two_sides.simulation_mut().set_level2_entity_position(player, west_approach).unwrap();
+        let mut west_spider = None;
+        let mut group34 = false;
+        for _ in 0..128 {
+            two_sides.step(crate::PlayerCommand::default(), 0);
+            let sim = two_sides.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event,
+                crate::native_world::Mc2DispatchEvent::Error { .. })));
+            group34 |= sim.dispatch_events().iter().any(|event| matches!(event,
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 121, group: 34, authored_indices, .. }
+                    if authored_indices.contains(&587)));
+            west_spider = sim.creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Spider)
+                .find(|row| row.living && matches!(row.origin,
+                    crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record: 587 }))
+                .map(|row| row.handle);
+            if group34 && west_spider.is_some() { break; }
+        }
+        let west_spider = west_spider.expect("ordinary switch121/group34 constructs authored Spider587");
+        assert!(group34);
+        let sim = two_sides.simulation();
+        assert_eq!(sim.source_arena().handle(spider.source_slot), Some(spider));
+        let west = &sim.entities()[usize::from(west_spider.source_slot)];
+        let east = &sim.entities()[usize::from(spider.source_slot)];
+        let corridor = &sim.entities()[206];
+        assert!(west.active && east.active && west.life > 0 && east.life > 0);
+        assert_eq!(corridor.source_word_2c(), 0, "corridor206 runs north-south");
+        assert!(west.position.x < corridor.position.x && east.position.x > corridor.position.x,
+            "real Spiders587 and600 must coexist in opposite corridor half-planes: west={:?} corridor={:?} east={:?}",
+            west.position, corridor.position, east.position);
+        eprintln!("Cave4 real opposite-side Spiders west={:?} corridor={:?} east={:?}", west.position, corridor.position, east.position);
         // One declared player-only approach to each real proximity switch;
         // the switch cadence, complete authored group and command lifetime are
         // all driven by the ordinary source scheduler.
@@ -2981,6 +3034,115 @@ pub(crate) mod tests {
                         "the real corridor opening must change the authored Spider visibility mask at {pose:?}");
                 }
             }
+            // Diagnostic-only omissions use the same native painter, live
+            // planes, owner assets, actor and camera. Actor-off comparisons
+            // identify the Spider's visible contribution on each background.
+            use crate::day_indexed_frame::{CavePlaneOmission, DayIndexedFrameState, WorldRenderOptions};
+            let mut near_clamped_hidden = 0_usize;
+            let candidates = [
+                (sim_session::CameraPose { x: 52480, y: 26880, z: 2944, yaw: 400, pitch: 0, roll: 0 }, CavePlaneOmission::Floor, false),
+                (sim_session::CameraPose { x: 52480, y: 26880, z: 2944, yaw: 400, pitch: 0, roll: 128 }, CavePlaneOmission::Floor, false),
+                (sim_session::CameraPose { x: 51447, y: 28640, z: 4480, yaw: 256, pitch: 128, roll: 0 }, CavePlaneOmission::Ceiling, false),
+                (sim_session::CameraPose { x: 51447, y: 28640, z: 4480, yaw: 256, pitch: 0, roll: 128 }, CavePlaneOmission::Ceiling, false),
+                (sim_session::CameraPose { x: 52084, y: 26467, z: 2294, yaw: 512, pitch: 0, roll: 0 }, CavePlaneOmission::Floor, true),
+            ];
+            for (pose, omission, near_required) in candidates {
+                let mut view = base.clone();
+                view.simulation_mut().session.state.scratch.source_camera_pose = Some(pose);
+                let camera = Position { x: pose.x, y: pose.y, z: pose.z };
+                let terrain = view.simulation().canonical_terrain();
+                assert!(!terrain.cave_collision_blocked(camera)
+                    && camera.z >= terrain.ground_height(camera)
+                    && terrain.ceiling_height(camera).is_some_and(|ceiling| camera.z <= ceiling),
+                    "controlled view must lie within the real open Cave: {pose:?}");
+                if near_required {
+                    assert!(camera.z >= terrain.ground_height(camera).saturating_add(view.simulation().profile().ground_clearance)
+                        && terrain.ceiling_height(camera).is_some_and(|ceiling|
+                            camera.z <= ceiling.saturating_sub(view.simulation().profile().ceiling_clearance)),
+                        "near-clamped witness must fit the source flight clearances: {pose:?}");
+                }
+                let mut without = view.clone();
+                let source = view.simulation().campaign_entity_presentations(pose.yaw).unwrap()
+                    .into_iter().find(|row| row.entity_index == spider.source_slot).unwrap();
+                without.simulation_mut().session.state.live.economy.economy.map_chains.sync_entity(
+                    crate::renderable_map_chain::RenderableMapSeed { entity_index: spider.source_slot,
+                        active: false, x: source.position.x, y: source.position.y }).unwrap();
+                let generation = view.generation();
+                let render = |campaign: &crate::campaign::CampaignSession, omission| {
+                    let mut carrier = DayIndexedFrameState::new(generation);
+                    let mut options = WorldRenderOptions::default();
+                    options.omitted_cave_plane = omission;
+                    options.tag_cave_near_clamped = true;
+                    carrier.set_render_options(options);
+                    carrier.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap()
+                };
+                let full = render(&view, None);
+                if near_required {
+                    let ordinary = DayIndexedFrameState::new(generation)
+                        .render_current(view.inspection(), view.simulation(), &assets, generation).unwrap();
+                    assert_eq!(ordinary.scene_indices, full.scene_indices,
+                        "diagnostic tags cannot alter the canonical scene pixels");
+                    assert!(ordinary.terrain_provenance.iter().all(|value|
+                        *value & crate::presentation::cave_terrain::CAVE_NEAR_CLAMPED_PROVENANCE == 0),
+                        "normal test frames do not receive diagnostic provenance");
+                }
+                assert!(full.animation_sources().iter().any(|row| row.entity_index == spider.source_slot));
+                let rank = full.cave_cell_orders.as_ref().unwrap()
+                    [usize::from(source.position.y >> 8) * 256 + usize::from(source.position.x >> 8)];
+                assert_ne!(rank, 0);
+                let absent = render(&without, None);
+                let with_omission = render(&view, Some(omission));
+                let absent_omission = render(&without, Some(omission));
+                let rgb = |frame: &crate::day_indexed_frame::DayIndexedFrame, pixel: usize| {
+                    let offset = usize::from(frame.scene_indices[pixel]) * 3;
+                    [frame.palette_rgb8[offset], frame.palette_rgb8[offset + 1], frame.palette_rgb8[offset + 2]]
+                };
+                let hidden = (0..full.scene_indices.len()).filter(|&pixel| {
+                    full.cave_terrain_orders.as_ref().unwrap()[pixel] > rank
+                        && rgb(&full, pixel) == rgb(&absent, pixel)
+                        && rgb(&with_omission, pixel) != rgb(&absent_omission, pixel)
+                }).count();
+                let near_hidden = (0..full.scene_indices.len()).filter(|&pixel| {
+                    full.terrain_provenance[pixel]
+                        & crate::presentation::cave_terrain::CAVE_NEAR_CLAMPED_PROVENANCE != 0
+                        && full.cave_terrain_orders.as_ref().unwrap()[pixel] > rank
+                        && rgb(&full, pixel) == rgb(&absent, pixel)
+                        && rgb(&with_omission, pixel) != rgb(&absent_omission, pixel)
+                }).count();
+                near_clamped_hidden += near_hidden;
+                assert!(hidden != 0, "real Spider must lose palette-visible pixels to {omission:?} at {pose:?}");
+                if near_required { assert!(near_hidden != 0, "the pinned view must expose a near-clamped triangle witness"); }
+                eprintln!("Cave4 Spider plane occlusion plane={omission:?} pose={pose:?} rank={rank} hidden_rgb={hidden} near_clamped_triangle_rgb={near_hidden}");
+            }
+            assert!(near_clamped_hidden != 0,
+                "a real admitted Spider must lose a palette-visible pixel to a later terrain triangle containing a near-clamped vertex");
+            // A source-near view is a negative actor control: objects at or
+            // behind depth64 cannot enter DrawSprite, while Cave terrain at
+            // the same view still uses its independent divisor128 clamp.
+            let mut near_position = source.position;
+            crate::move_entity(&mut near_position, 0, 0, -64);
+            let near_pose = sim_session::CameraPose { x: near_position.x, y: near_position.y,
+                z: near_position.z.wrapping_add(128), yaw: 0, pitch: 0, roll: 0 };
+            assert!(matches!(crate::goat_sprite_raster::source_sprite_view_with_depth_adjustment(
+                near_pose.x, near_pose.y, near_pose.yaw, source.position.x, source.position.y,
+                crate::terrain_presentation::TERRAIN_RENDER_CUTOFF_SQUARED, source.primary_depth_adjustment),
+                Err(crate::goat_sprite_raster::Mode20SpriteReject::BehindObjectNearPlane)));
+            let mut near_view = base.clone();
+            near_view.simulation_mut().session.state.scratch.source_camera_pose = Some(near_pose);
+            let sim = near_view.simulation();
+            let planes = sim.canonical_terrain().planes();
+            let grid = crate::terrain_grid::outdoor_grid(crate::terrain_grid::OutdoorGridInput {
+                render_x: near_pose.x, render_y: near_pose.y, yaw: near_pose.yaw,
+                turn: sim.shared_spells().local_player().turn,
+                shading: &planes.shading, angles: &planes.angles,
+            });
+            assert!(grid.iter().any(|vertex| vertex.view_depth > -256 && vertex.view_depth < 128
+                && vertex.distance_squared < crate::terrain_presentation::TERRAIN_RENDER_CUTOFF_SQUARED),
+                "the same real Cave view contains terrain vertices using the divisor128 clamp");
+            let near_frame = DayIndexedFrameState::new(near_view.generation())
+                .render_current(near_view.inspection(), near_view.simulation(), &assets, near_view.generation()).unwrap();
+            assert!(!near_frame.animation_sources().iter().any(|row| row.entity_index == spider.source_slot),
+                "the source-near rejected Spider produces no Cave draw admission");
         }
         for (slot, position, _, _) in roots {
             let row = &campaign.simulation().session.state.live.economy.entities[usize::from(slot)];

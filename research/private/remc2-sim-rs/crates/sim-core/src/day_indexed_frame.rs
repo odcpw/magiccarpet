@@ -638,6 +638,9 @@ pub struct DayIndexedFrame {
     pub palette_rgb8: Vec<u8>,
     /// Last source cell to paint each Cave terrain pixel; zero is unpainted.
     pub cave_terrain_orders: Option<Vec<u16>>,
+    /// Last terrain writer's diagnostic tags; never part of the native ABI.
+    #[cfg(test)]
+    pub(crate) terrain_provenance: Vec<u8>,
     /// Source cell rank indexed by `(tile_y << 8) | tile_x`.
     pub cave_cell_orders: Option<Vec<u16>>,
     pub index_hash: u64,
@@ -721,7 +724,15 @@ pub struct WorldRenderOptions {
     pub viewport_size: u8,
     #[cfg(test)]
     omitted_reflection_actor: Option<u16>,
+    #[cfg(test)]
+    pub(crate) omitted_cave_plane: Option<CavePlaneOmission>,
+    #[cfg(test)]
+    pub(crate) tag_cave_near_clamped: bool,
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CavePlaneOmission { Floor, Ceiling }
 
 impl WorldRenderOptions {
     #[must_use]
@@ -734,6 +745,10 @@ impl WorldRenderOptions {
             viewport_size: 40,
             #[cfg(test)]
             omitted_reflection_actor: None,
+            #[cfg(test)]
+            omitted_cave_plane: None,
+            #[cfg(test)]
+            tag_cave_near_clamped: false,
         }
     }
 }
@@ -1282,7 +1297,17 @@ fn render_environment_indexed_frame(
     };
     match &mut terrain {
         Terrain::Outdoor(plan) => plan.apply_flat_shading(render_options.flat_shading),
-        Terrain::Cave(plan) => plan.apply_flat_shading(render_options.flat_shading),
+        Terrain::Cave(plan) => {
+            plan.apply_flat_shading(render_options.flat_shading);
+            #[cfg(test)]
+            if render_options.tag_cave_near_clamped { plan.tag_near_clamped_for_test(); }
+            #[cfg(test)]
+            match render_options.omitted_cave_plane {
+                Some(CavePlaneOmission::Floor) => *plan = plan.without_floor_submissions_for_test(),
+                Some(CavePlaneOmission::Ceiling) => *plan = plan.without_ceiling_submissions_for_test(),
+                None => {}
+            }
+        }
     }
     let extent = profile.extent();
     let (mut indices, terrain_input_hash, terrain_command_hash) = match &terrain {
@@ -1562,6 +1587,8 @@ fn render_environment_indexed_frame(
         }),
         palette_rgb8,
         cave_terrain_orders,
+        #[cfg(test)]
+        terrain_provenance: provenance,
         cave_cell_orders,
         index_hash,
         terrain_input_hash,

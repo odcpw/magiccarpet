@@ -47,6 +47,8 @@ struct Vertex {
     flags: u16,
     texture: u8,
     uv: u8,
+    #[cfg(test)]
+    near_clamped: bool,
 }
 
 #[derive(Clone)]
@@ -56,7 +58,12 @@ struct Triangle {
     ceiling: bool,
     cell_order: u16,
     flat_shade: u8,
+    #[cfg(test)]
+    near_clamped: bool,
 }
+
+#[cfg(test)]
+pub(crate) const CAVE_NEAR_CLAMPED_PROVENANCE: u8 = 0x40;
 
 #[derive(Clone)]
 pub struct CaveTerrainPlan {
@@ -68,6 +75,8 @@ pub struct CaveTerrainPlan {
     cell_textures: Vec<u8>,
     pub input_hash: u64,
     pub command_hash: u64,
+    #[cfg(test)]
+    tag_near_clamped: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -77,6 +86,10 @@ pub struct CaveRasterReceipt {
 }
 
 impl CaveTerrainPlan {
+    #[cfg(test)]
+    pub(crate) fn tag_near_clamped_for_test(&mut self) {
+        self.tag_near_clamped = true;
+    }
     pub(crate) fn apply_flat_shading(&mut self, enabled: bool) {
         if !enabled { return; }
         self.flat_shading = true;
@@ -226,6 +239,8 @@ impl CaveTerrainPlan {
                 }
             }
             let provenance = provenance | if triangle.ceiling { 4 } else { 2 };
+            #[cfg(test)]
+            let provenance = provenance | if self.tag_near_clamped && triangle.near_clamped { CAVE_NEAR_CLAMPED_PROVENANCE } else { 0 };
             let written_pixels = if let Some(orders) = orders.as_deref_mut() {
                 let width = writer.width();
                 let base = terrain_texture_base(triangle.texture)?;
@@ -437,6 +452,8 @@ pub(crate) fn build_cave_terrain_projected(
         cell_textures,
         input_hash: byte_hash(&input),
         command_hash,
+        #[cfg(test)]
+        tag_near_clamped: false,
     })
 }
 
@@ -468,6 +485,8 @@ fn append_triangles(
             ceiling,
             cell_order,
             flat_shade: source_flat_terrain_shade(std::array::from_fn(|index| cell[index].floor.pnt5)),
+            #[cfg(test)]
+            near_clamped: corners.iter().any(|&corner| cell[corner].near_clamped),
             vertices: corners.map(|corner| {
                 let mut vertex = if ceiling {
                     cell[corner].ceiling
@@ -577,6 +596,8 @@ fn project(
         flags,
         texture,
         uv,
+        #[cfg(test)]
+        near_clamped: grid.view_depth < 128,
     })
 }
 
@@ -597,6 +618,7 @@ mod tests {
             ceiling,
             cell_order: if ceiling { 1 } else { 2 },
             flat_shade: 12,
+            near_clamped: false,
         };
         let smooth = CaveTerrainPlan {
             profile_revision: profile.profile_revision,
@@ -607,6 +629,7 @@ mod tests {
             cell_textures: vec![0, 1, 2],
             input_hash: 7,
             command_hash: 9,
+            tag_near_clamped: false,
         };
         let mut flat = smooth.clone();
         flat.apply_flat_shading(true);
@@ -665,6 +688,7 @@ mod tests {
                     ceiling: true,
                     cell_order: 1,
                     flat_shade: 3,
+                    near_clamped: false,
                 },
                 Triangle {
                     vertices: [point(8, 0), point(20, 0), point(8, 12)],
@@ -672,11 +696,13 @@ mod tests {
                     ceiling: false,
                     cell_order: 2,
                     flat_shade: 3,
+                    near_clamped: false,
                 },
             ],
             cell_orders: vec![0; 65_536],
             input_hash: 7,
             command_hash: 9,
+            tag_near_clamped: false,
         };
         let atlas = vec![17; CLASSIC_HD_TERRAIN_ATLAS_BYTES];
         let mut tables = vec![0; 83_456];

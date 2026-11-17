@@ -1108,18 +1108,61 @@ the normal GameRuntime speed schedule.
 
 This is useful connected native evidence, not a continuous installed-client
 mission route. The two initial player relocations are not GameRuntime commands
-and cannot be promoted into a strict runtime replay. The only current valid
-Cave checkpoint found is the declared incoming entrance save. Public ordinary
-flight, observation and save APIs exist, but no progressed near-corridor save
-or continuous installed witness is available. No replay receipt rewrite,
-teleport API, legacy-launcher bypass or automated mission playthrough was added.
-Keep mc-oi6.4 in_progress with its full original acceptance. Existing installed
+and cannot be promoted into a strict runtime replay. Root subsequently flew
+the declared incoming Cave4 save through fixed, manually selected public input
+legs, rendering each source step and cold-replaying every emitted save without
+receipt changes. The actual tick1247 switch121/group34 publishes command574
+and Spider587; tick1241 remains an ordinary pre-trigger checkpoint. The normal
+installed Original launcher loaded it with the real first-four-role resolver.
+Ordinary UI flight produced corridor sample47, the real Spider32 attack/web and
+life loss; normal P/Save wrote tick5182 at(37846,21219,4769), and later tick5243
+at(39298,20981,4701), life7660. The latter save cold-replays to exactly the same
+snapshot; its current Spider is slot3, not a fixed/reused address assumption.
+The installed mapped native remains842fd4c1. This history has no completed prior
+missions: it is an explicitly incoming Cave checkpoint, not earned Levels1–3.
+The installed captures show actual cave flight and attack, but do not yet isolate
+the Spider's final pixels against a changing corridor; native connected evidence
+does. No teleport API, receipt rewrite or mission-completion automation was added.
+Evidence: generated/cave-runtime-flight-20261117, including the normal UI Save
+log, captures, private saves and strict cold-proof receipts. Existing installed
 Cave movement and exact Cave native→Unity transfer remain separate proofs;
 bounded consumer review found no stale-geometry/missing-consumer defect.
 
-Only a test module changed. Native842fd4c1/player build-wuukj1s5 is reused and
-the qualified Original --check-installed passes. Changed-file UBS has no
-critical; its575 whole-file warnings include existing legacy/test scope.
+A second bounded installed run now saves tick1611 at(37150,21439,4440), yaw621,
+life7660, and shows actual blue Spider leg pixels at the corridor edge. Ordinary
+R resets to the Cave entrance; source pause Load/confirm restores that saved
+pose/health. A subsequent normal Save preserves tick, terrain hash, effect head
+and journal. It is not byte-identical: recorded paused_frame operations advance
+source presentation state and its state hash while gameplay is paused. The
+final emitted save passes strict fresh-owner replay and exact snapshot equality.
+No save validator was changed. Music was disabled through normal F6, and a12s
+single-application PipeWire monitor capture contains non-silent output. Against
+the hash-checked actual Cave bank, first8192-sample normalized correlations are
+0.793 for DOORC2/sample47 and0.809 for DRIP3/sample67, with actual native start
+and finite EndLoop events in the same log; other overlapping drips are not
+individually certified. This is software output, not hardware listening proof.
+Both owned player/display processes were stopped. A fresh bounded review found
+that the older actor/terrain pixel overlap assertion proves visibility, not
+distinct floor/ceiling occlusion. The stronger test-only plane-omission check
+now passes8.93s. At fixed real open Cave views, later floor geometry hides14/13
+Spider RGB pixels in normal/rolled views; ceiling hides91/76. A fifth view meets
+source flight clearance and hides444 real Spider RGB pixels under later floor
+triangles whose own vertices used the source near clamp. Diagnostic provenance
+defaults off, preserves scene indices and exists only in test builds; all search
+hooks were removed. The actual depth64 actor rejection remains intact. Real
+group34/50 constructors leave living authored Spiders587/600 on opposite
+controller206 half-planes; the western one is not adjacent to the doorway.
+These controlled views are not a continuous installed two-creature encounter.
+The failed searches record gate refinement, not rendering defects. Three
+affected Cave primitive/order checks pass. The finite mc-oi6.4 acceptance is
+delivered by this connected evidence plus installed flight/reset/load and exact
+transfer checks; full missions and human play remain separate.
+
+Only test controls, diagnostics and an existing test module changed. Native
+842fd4c1/player build-wuukj1s5 is reused; the qualified Original --check-installed
+passes. Whole-file UBS includes legacy/test warnings and an unchanged test
+temporary-directory nonce falsely labeled a security token; no added critical
+finding was identified.
 Evidence: generated/cave-connected-20261117 (final traversal plus failure
 receipts), and the earlier controlled Cave normal/rolled/near/plane checks.
 No full mission, human combat, FPS or hardware-audio claim is made.
