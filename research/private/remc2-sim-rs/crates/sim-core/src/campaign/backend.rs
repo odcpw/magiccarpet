@@ -14156,6 +14156,12 @@ pub(crate) mod tests {
                 (child, child_generation, parent, parent_generation, owner)
                     == (impact.source_slot, impact.generation, projectile_slot, projectile_generation, player_slot)),
                 "the actual impact must belong to this launch generation: terminals={terminals:?} impact_births={impact_births:?}");
+            let simulation = session.backend().campaign.simulation();
+            if simulation.source_arena().handle(projectile_slot).is_some_and(|handle| handle.generation == projectile_generation) {
+                assert!(!simulation.campaign_entity_presentations(0).unwrap().iter()
+                    .any(|row| row.entity_index == projectile_slot),
+                    "the terminal Fireball is no longer admitted before its slot is reclaimed");
+            }
             assert!(
                 session
                     .backend()
@@ -14179,13 +14185,17 @@ pub(crate) mod tests {
             (projectile_slot, impact.source_slot)
         }
 
-        let root = level_one_descriptor_fixture_path();
-        let base = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = generated.join("mc-bhq8-level1-collision-v5-night");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .expect("qualified complete Night source materials");
+        let base = load_mc2_campaign_with_owner_cache(&root, &cache, &default_catalog().unwrap()).unwrap();
         let mut session = GameSession::open(
             &Mc2CampaignAdapter,
             Arc::new(base),
             91,
-            Mc2CampaignInputs::new(&root),
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
         )
         .unwrap();
         session
@@ -14254,6 +14264,71 @@ pub(crate) mod tests {
         assert_eq!(firefly(&session, target_slot).unwrap().life, 600);
 
         let player_slot = session.backend().campaign.simulation().state.entity_index;
+        // This separate trial starts from the same ready authored scenario but
+        // gives the ordinary cast room to survive a published outer frame.
+        // Only player position/aim and the observation camera are controlled;
+        // the source holder allocates and schedules the projectile itself.
+        let mut saw_live = false;
+        let mut saw_admitted = false;
+        let mut rendered = false;
+        'casts: for yaw in [0_i16, 512, 1024, 1536] {
+            let mut trial = session.backend().campaign.clone();
+            let mut position = target.position;
+            crate::move_entity(&mut position, yaw, 0, 2048);
+            position.z = trial.simulation().canonical_terrain().ground_height(position).wrapping_add(512);
+            trial.simulation_mut().set_level2_entity_position(player_slot, position).unwrap();
+            trial.simulation_mut().set_level2_player_aim_for_test(yaw, 0);
+            trial.step_with_tuning(
+                campaign_player_command(&GameCommand { cast_left: true, ..GameCommand::default() }),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            let Some(projectile) = trial.simulation().economy().fireball_projectiles().iter()
+                .find(|row| row.owner_entity_index == player_slot && row.active && !row.drawing_disabled)
+                .copied() else { continue; };
+            saw_live = true;
+            let handle = trial.simulation().source_arena().handle(projectile.source_entity_index)
+                .expect("ordinary cast published a current projectile generation");
+            for depth in [1024_u16, 2048, 4096] {
+                for pitch in [-64_i16, 0, 64] {
+                    for height in [-128_i16, 128, 512] {
+                        let mut view = trial.clone();
+                        view.simulation_mut().session.state.scratch.source_camera_pose = Some(
+                            sim_session::CameraPose {
+                                x: projectile.position.x,
+                                y: projectile.position.y.wrapping_add(depth),
+                                z: projectile.position.z.wrapping_add(height),
+                                yaw: 0, pitch, roll: 0,
+                            },
+                        );
+                        let generation = view.generation();
+                        let mut carrier = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                        let frame = carrier.render_current(view.inspection(), view.simulation(), &assets, generation)
+                            .expect("real Night projectile view renders");
+                        if !frame.animation_sources().iter().any(|row| row.entity_index == handle.source_slot) {
+                            continue;
+                        }
+                        saw_admitted = true;
+                        let mut without = view.clone();
+                        without.simulation_mut().session.state.live.economy.economy.map_chains
+                            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                                entity_index: handle.source_slot, active: false,
+                                x: projectile.position.x, y: projectile.position.y,
+                            }).expect("ablate only the projectile's draw-chain link");
+                        let mut comparison = crate::day_indexed_frame::DayIndexedFrameState::new(generation);
+                        let absent = comparison.render_current(without.inspection(), without.simulation(), &assets, generation)
+                            .expect("same real view without the projectile link renders");
+                        if frame.scene_indices != absent.scene_indices {
+                            assert!(frame.source_sprites_composited);
+                            assert!(!absent.animation_sources().iter().any(|row| row.entity_index == handle.source_slot));
+                            rendered = true;
+                            break 'casts;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(rendered, "ordinary cast indexed projectile missing: live={saw_live}, admitted={saw_admitted}");
         let (_first_projectile, _first_impact) = cast_until_damage(&mut session, target_slot, 350);
         assert_eq!(session.backend().campaign.simulation().source_arena().handle(target_slot),
             Some(target_handle), "the hit belongs to authored record108's original generation");
