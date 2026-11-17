@@ -957,6 +957,39 @@ remain OPEN. Hardware resolution switching remains the explicitly separate
 renderer option, not the source in-game viewport. Root keeps sole Cargo/RCH/
 push/install dispatch; owners remain through consumer failures.
 
+Animation follow-up: canonical bb716821 is pushed as Original 2e495072.
+Installed player build-wuukj1s5 now uses native 842fd4c1 (native refresh
+receipt build-58kn9shu). The real Level7 group5 segmented creature at a
+naturally scheduled oscillation frame6 selected TMAP64 instead of source
+base58. Direct source modes0/1/21 now ignore that entity frame; framed11/36
+and the downstream mode21 pivot/masks are unchanged. The real authored
+spawn/carried Possession regression fails before the fix and passes after it.
+Affected shared Goat/Villager pixels, ordinary Fireball/reclaim and Cave4
+Spider/corridor checks pass. The final test-only whitespace cleanup does not
+change the tested production code. A bounded independent changed-path review
+found no introduced defect. A possible signed-frame difference in11/36 has
+no demonstrated visible ordinary producer and is not counted as a new blocker.
+
+All628 checked source inputs match Rig and the returned native hash. Installed
+Unity passes actual mission1–4 native/GPU pixel equality/no duplicate sprites,
+runtime read/pause/resume/reset lifetime and semantic asset texture identity
+(three selected cases,16.56s). The lifetime fixture now uses the real installed
+resource roles and normal selected-locale/FONT1 binding; strict missing-font
+refusal is retained. The semantic qualification helper uses the current fixture
+owner and typed bind_asset operation; direct CLI/native/TypeScript/Unity checks
+pass. Its synthetic asset identity proof is separate from actual MC2 actors.
+
+The attempted legacy Level2 overlay test-cache update was reverted: matching
+resource inputs still reach a retired material-schema/fixed-slot presenter,
+rather than the current native-composed world. Those failures are preserved;
+no legacy assertion or validator was weakened. UBS remains partial/whole-file,
+with no critical added-line finding; baseline Rust formatting debt is intact.
+Root viewed normal installed map/loading/NightSpire scene/HUD with mapped
+842fd4c1, one portal and zero retries, then stopped owned processes. Evidence:
+generated/presenter-20261117. This is not a native Level7 encounter, human
+flight/combat, hardware audio, FPS or full campaign proof. Full .1/.3/.4
+acceptance remains OPEN, including the assembled Cave flight/corridor path.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
