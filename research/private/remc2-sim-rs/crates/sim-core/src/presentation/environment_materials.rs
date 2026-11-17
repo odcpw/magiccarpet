@@ -534,11 +534,14 @@ impl EnvironmentResources {
                     && row["frame_count"].as_u64() != metadata.encoded_frame_count.map(u64::from)) {
                 return Err(invalid("TMAP animation metadata differs from decoded owner header"));
             }
-            Ok(metadata)
+            Ok((metadata, decoded.to_vec().into_boxed_slice()))
         }).collect::<Result<Vec<_>>>()?;
+        let mut metadata = metadata;
+        metadata.sort_unstable_by_key(|(row, _)| row.selector);
+        let (metadata, payloads): (Vec<_>, Vec<_>) = metadata.into_iter().unzip();
         let catalog = crate::source_animation::SourceTmapCatalog::new(metadata).map_err(invalid)?;
         let source_tmaps = crate::source_sprite_tmap::SourceSpriteTmapBank::new(frames)
-            .map_err(invalid)?.with_catalog(catalog);
+            .map_err(invalid)?.with_catalog(catalog).with_decoded_payloads(payloads);
         Ok(Self {
             profile: Some(profile),
             content_sha256: content.to_owned(),

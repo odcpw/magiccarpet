@@ -3952,9 +3952,8 @@ impl Mc2CampaignBackend {
         frame: &crate::day_indexed_frame::DayIndexedFrame,
         generation: u64,
     ) -> std::result::Result<(), String> {
-        let animation_demands = self.campaign.simulation()
-            .changing_source_animation_demands(frame.animation_demands())?;
-        let changed = frame.apply_primary_visibility(self.campaign.simulation_mut(), generation)
+        let (changed, animation_demands) = frame
+            .apply_source_feedback(self.campaign.simulation_mut(), generation)
             .map_err(|error| error.to_string())?;
         self.retain_primary_visibility_change(frame.tick, changed, animation_demands);
         Ok(())
@@ -3980,8 +3979,8 @@ impl Mc2CampaignBackend {
     fn apply_primary_visibility_change(&mut self, tick: u64, identities: &[(u16, u32)], animation_demands: &[u16]) -> std::result::Result<(), String> {
         let handles = identities.iter().map(|&(source_slot, generation)|
             crate::campaign::source_arena::SourceEntityHandle { source_slot, generation }).collect::<Vec<_>>();
-        let changing_demands = self.campaign.simulation().changing_source_animation_demands(animation_demands)?;
-        let changed = self.campaign.simulation_mut().apply_source_render_feedback(tick, &handles, animation_demands)?;
+        let (changed, changing_demands) = self.campaign.simulation_mut()
+            .apply_source_render_feedback(tick, &handles, animation_demands)?;
         self.retain_primary_visibility_change(tick, changed, changing_demands);
         Ok(())
     }
@@ -6542,9 +6541,21 @@ pub(crate) mod tests {
         let tick = session.identity().tick;
         session.backend_mut().apply_primary_visibility_change(tick, &[], &[selector]).unwrap();
         assert_ne!(session.backend().campaign.simulation().source_animations, initial);
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        let tick = session.identity().tick;
+        let backend = session.backend_mut();
+        backend.apply_primary_visibility_change(tick, &[], &[selector]).unwrap();
+        let demand_history = backend.primary_visibility_changes.clone();
+        backend.apply_primary_visibility_change(tick, &[], &[selector]).unwrap();
+        assert_eq!(backend.primary_visibility_changes, demand_history,
+            "an already-resident selector requests one service per draw boundary");
         let mut save = Mc2CampaignReplaySave::new(false, session.definition().as_ref().clone(),
             session.backend().initial_semantic_spell_carry().unwrap(), Vec::new(),
             session.backend().replay_operations.clone(), &session.backend().snapshot());
+        // Replay starts with no HUD admission; retain the same source input
+        // that the public serializer records at the accepted frame boundary.
+        save.hud_admission_changes = session.backend().hud_admission_changes.clone();
+        save.initial_display_settings = crate::game_runtime::DisplaySettings::default().into();
         save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
         assert!(save.primary_visibility_changes.last().unwrap().animation_demands.contains(&selector));
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -6556,6 +6567,8 @@ pub(crate) mod tests {
         assert_eq!(restored.backend().snapshot(), session.backend().snapshot());
         assert_eq!(restored.backend().campaign.simulation().source_animations,
             session.backend().campaign.simulation().source_animations);
+        assert_eq!(restored.backend().campaign.simulation().source_animation_clocks,
+            session.backend().campaign.simulation().source_animation_clocks);
         assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
         let mut old = save;
         old.save_contract = "carpet-flight-mc2-campaign-replay-save/v6".into();

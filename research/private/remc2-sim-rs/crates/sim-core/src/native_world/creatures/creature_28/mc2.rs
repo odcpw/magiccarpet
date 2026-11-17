@@ -355,6 +355,7 @@ pub(crate) fn step_row(
     particles: &[ParticleParameter],
     source_context: crate::native_world::source_target::Context<'_>,
     animations: &crate::source_animation::SourceAnimationResidency,
+    animation_action: Option<&mut crate::source_animation::SourceAnimationAction<'_>>,
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
@@ -381,7 +382,11 @@ pub(crate) fn step_row(
         Ok(target) => target,
         Err(error) => { *read_error.borrow_mut() = Some(error); None }
     };
+    let animation_action = std::cell::RefCell::new(animation_action);
     let animation_count = || {
+        if let Some(action) = animation_action.borrow_mut().as_deref_mut() {
+            action(SOURCE_ATTACK_ANIMATION_TMAP, false)?;
+        }
         animations.resident_frame_count_read(SOURCE_ATTACK_ANIMATION_TMAP)
     };
     let frame = Frame { terrain, targets: &[], current_target: Some(&lookup),
@@ -545,7 +550,7 @@ mod alliance_tests {
         let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
         families[usize::from(SOURCE_MODEL)].push(slot);
         step_row(&mut arena, &runtime, &mut terrain, particles, Default::default(),
-            &crate::source_animation::SourceAnimationResidency::default(), slot, &[], &families).unwrap();
+            &crate::source_animation::SourceAnimationResidency::default(), None, slot, &[], &families).unwrap();
         assert_eq!(arena.handle(slot), Some(handle));
         assert!(arena.entities[usize::from(slot)].drawing_disabled());
         assert!(arena.economy.map_chains.is_linked(slot),
@@ -904,14 +909,14 @@ mod alliance_tests {
         families[usize::from(SOURCE_MODEL)].push(slot);
         let animations = crate::source_animation::SourceAnimationResidency::default();
         let effects = step_row(&mut arena, &runtime, &mut terrain, particles,
-            Default::default(), &animations, slot, &[parent], &families).unwrap();
+            Default::default(), &animations, None, slot, &[parent], &families).unwrap();
         assert_eq!(effects.feedback, vec![(parent, 24)]);
         let row = &arena.entities[usize::from(slot)];
         assert_eq!((row.action, word(row, 154), row.record[77]), (226, enemy, 14));
         let row = &mut arena.entities[usize::from(slot)];
         row.set_source_action(231); put_word(row, 50, 1);
         step_row(&mut arena, &runtime, &mut terrain, particles,
-            Default::default(), &animations, slot, &[parent], &families).unwrap();
+            Default::default(), &animations, None, slot, &[parent], &families).unwrap();
         let row = &arena.entities[usize::from(slot)];
         assert_eq!((row.record[77], row.record[76], word(row, 44)), (10, 3, 0));
         assert!(!row.drawing_disabled());

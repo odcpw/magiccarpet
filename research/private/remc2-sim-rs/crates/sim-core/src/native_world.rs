@@ -3066,6 +3066,9 @@ pub struct Mc2LiveState {
     pub(crate) nyphur_dispatcher: RivalWizardRoster,
     pub(crate) player_visibility: player_visibility::PlayerVisibility,
     pub(crate) source_animations: crate::source_animation::SourceAnimationResidency,
+    pub(crate) source_animation_payloads: std::sync::Arc<[Box<[u8]>]>,
+    pub(crate) source_animation_owner: Option<std::sync::Arc<str>>,
+    pub(crate) source_animation_clocks: crate::source_animation::SourceAnimationClocks,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,

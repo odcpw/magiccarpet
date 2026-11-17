@@ -580,6 +580,14 @@ impl DayIndexedFrameAssets {
         self.materials.source_tmaps().and_then(|bank| bank.catalog())
     }
 
+    pub(crate) fn source_animation_bank(&self) -> Option<(
+        crate::source_animation::SourceTmapCatalog,
+        std::sync::Arc<[Box<[u8]>]>,
+    )> {
+        let bank = self.materials.source_tmaps()?;
+        Some((bank.catalog()?.clone(), bank.decoded_payloads()))
+    }
+
     #[must_use]
     pub fn tablesd(&self) -> &[u8] {
         self.materials.tables()
@@ -647,6 +655,14 @@ impl DayIndexedFrame {
         session: &mut Mc2Simulation,
         generation: u64,
     ) -> Result<Vec<(u16, u32)>, DayIndexedFrameError> {
+        self.apply_source_feedback(session, generation).map(|(visible, _)| visible)
+    }
+
+    pub(crate) fn apply_source_feedback(
+        &self,
+        session: &mut Mc2Simulation,
+        generation: u64,
+    ) -> Result<(Vec<(u16, u32)>, Vec<u16>), DayIndexedFrameError> {
         if self.generation != generation || self.tick != session.state.tick {
             return Err(DayIndexedFrameError::new("primary sprite feedback belongs to a stale frame"));
         }
@@ -656,6 +672,8 @@ impl DayIndexedFrame {
             return Err(DayIndexedFrameError::new("primary sprite feedback belongs to a different source view"));
         }
         session.validate_source_animation_catalog(self.animation_catalog.as_ref())
+            .map_err(DayIndexedFrameError::new)?;
+        session.validate_source_animation_owner(&self.cache_content_sha256)
             .map_err(DayIndexedFrameError::new)?;
         if self.render_identities.iter().any(|handle|
             session.source_arena().handle(handle.source_slot) != Some(*handle)) {
@@ -682,7 +700,13 @@ impl DayIndexedFrame {
             .map_err(DayIndexedFrameError::new)
     }
 
+    #[cfg(test)]
     pub(crate) fn animation_demands(&self) -> &[u16] { &self.animation_demands }
+
+    #[cfg(test)]
+    pub(crate) fn animation_sources(&self) -> &[crate::native_world::CampaignEntityPresentation] {
+        &self.animation_sources
+    }
 
 }
 
@@ -1110,6 +1134,8 @@ fn render_environment_indexed_frame(
     player_labels: Option<&PlayerLabelBinding>,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
     validate_day_route(inspection, session, assets)?;
+    session.validate_source_animation_owner(assets.cache_content_sha256())
+        .map_err(DayIndexedFrameError::new)?;
     if player_labels.is_some_and(|binding| binding.visible
         && binding.locale.as_ref().and_then(|locale| locale.fonts.get("font1")).is_none()) {
         return Err(DayIndexedFrameError::new("visible source player names require the selected FONT1 binding"));
@@ -1330,6 +1356,9 @@ fn render_environment_indexed_frame(
             .map_err(|error| DayIndexedFrameError::new(error.to_string()))
         })
         .transpose()?;
+    if let Some(sprites) = source_sprites.as_mut() {
+        sprites.set_animation_clocks(&session.source_animation_clocks);
+    }
     if let (Some(sprites), Some(viewport)) = (source_sprites.as_mut(), world_viewport) {
         sprites.set_viewport(viewport);
     }

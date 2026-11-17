@@ -6601,6 +6601,9 @@ impl Mc2Simulation {
             nyphur_dispatcher,
             player_visibility,
             source_animations: crate::source_animation::SourceAnimationResidency::default(),
+            source_animation_payloads: Arc::default(),
+            source_animation_owner: None,
+            source_animation_clocks: crate::source_animation::SourceAnimationClocks::default(),
             source_frame_timing_index: 0,
             source_setting_30: crate::campaign::source_setting::SourceSetting30::new(),
             source_model45_building_selectors,
@@ -7429,6 +7432,8 @@ impl Mc2Simulation {
     pub(crate) fn bind_source_animation_catalog(
         &mut self,
         catalog: crate::source_animation::SourceTmapCatalog,
+        payloads: Arc<[Box<[u8]>]>,
+        owner: Arc<str>,
     ) -> Result<()> {
         let mut authored = self.session.state.live.mission.authored_features().iter()
             .filter(|row| row.index > 0 && row.index < 1200).collect::<Vec<_>>();
@@ -7438,6 +7443,9 @@ impl Mc2Simulation {
             catalog, &self.session.definition.presentation, &authored,
         ).map_err(NativeWorldError::new)?;
         self.session.state.live.source_animations = animations;
+        self.session.state.live.source_animation_payloads = payloads;
+        self.session.state.live.source_animation_owner = Some(owner);
+        self.session.state.live.source_animation_clocks = Default::default();
         self.session.rebase();
         Ok(())
     }
@@ -7449,12 +7457,27 @@ impl Mc2Simulation {
         tick: u64,
         handles: &[crate::campaign::source_arena::SourceEntityHandle],
         demands: &[u16],
-    ) -> std::result::Result<Vec<(u16, u32)>, String> {
-        let mut animations = self.session.state.live.source_animations.clone();
-        for &selector in demands { animations.demand(selector)?; }
+    ) -> std::result::Result<(Vec<(u16, u32)>, Vec<u16>), String> {
+        let live = &self.session.state.live;
+        let mut animations = live.source_animations.clone();
+        let mut clocks = live.source_animation_clocks.clone();
+        let mut changed_demands = Vec::new();
+        for &selector in demands {
+            let allocated = animations.demand(selector)?;
+            let marked = match live.source_animation_payloads.get(usize::from(selector)) {
+                Some(payload) => clocks.latch_draw_demand(selector, payload, &animations)?,
+                None if live.source_animation_payloads.is_empty() => false,
+                None => return Err(format!("source TMAP{selector} payload unavailable")),
+            };
+            if allocated || marked {
+                changed_demands.push(selector);
+            }
+        }
+        clocks.discard_unresident(&animations);
         let changed = self.apply_primary_sprite_visibility(tick, handles)?;
         self.session.state.live.source_animations = animations;
-        Ok(changed)
+        self.session.state.live.source_animation_clocks = clocks;
+        Ok((changed, changed_demands))
     }
 
     pub(crate) fn validate_source_animation_catalog(
@@ -7469,6 +7492,14 @@ impl Mc2Simulation {
         }
     }
 
+    pub(crate) fn validate_source_animation_owner(&self, cache: &str) -> std::result::Result<(), String> {
+        if self.source_animation_owner.as_deref().is_some_and(|owner| owner != cache) {
+            return Err("source animation pixels belong to a different owner material bank".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn changing_source_animation_demands(&self, demands: &[u16]) -> std::result::Result<Vec<u16>, String> {
         let mut animations = self.session.state.live.source_animations.clone();
         let mut changed = Vec::new();
@@ -18502,9 +18533,21 @@ impl Mc2Simulation {
                             }
                         }
                     };
+                    let mut animation_action = |selector, finish| {
+                        if live.source_animation_payloads.is_empty() {
+                            return Ok(());
+                        }
+                        live.source_animation_clocks.reset_or_finish(
+                            selector,
+                            finish,
+                            &live.source_animations,
+                            |id| live.source_animation_payloads.get(usize::from(id)).map(AsRef::as_ref),
+                        )
+                    };
                     creatures::creature_10::mc2::scheduled_step(
                         &mut live.economy, &mut live.core.runtime, &mut live.terrain,
                         &mut live.shared_spells, particles, &presentation.entity_parameters, &live.source_animations,
+                        Some(&mut animation_action),
                         source_slot, player_entity_index, families, class9,
                         live.source_setting_30.value(), live.source_frame_timing_index, &mut apply_world,
                     )
@@ -19023,6 +19066,17 @@ impl Mc2Simulation {
                             particles: Some(&self.session.definition.presentation.particles),
                             ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
                         };
+                        let mut animation_action = |selector, finish| {
+                            if live.source_animation_payloads.is_empty() {
+                                return Ok(());
+                            }
+                            live.source_animation_clocks.reset_or_finish(
+                                selector,
+                                finish,
+                                &live.source_animations,
+                                |id| live.source_animation_payloads.get(usize::from(id)).map(AsRef::as_ref),
+                            )
+                        };
                         let outcome = creatures::creature_28::mc2::step_row(
                             &mut live.economy,
                             &live.core.runtime,
@@ -19030,6 +19084,7 @@ impl Mc2Simulation {
                             &self.session.definition.presentation.particles,
                             targets,
                             &live.source_animations,
+                            Some(&mut animation_action),
                             source_slot,
                             players,
                             models,
@@ -31134,6 +31189,23 @@ impl Mc2Simulation {
         self.advance_campaign_palette_frame();
         self.session.state.scratch.dispatch_events.clear();
         self.session.state.scratch.nyphur_dispatch_traces.clear();
+        // DrawAndEventsInGame services the preceding draw once before
+        // PlayerEvents/UpdateEntities, independently of the speed's pass count.
+        let live = &mut self.session.state.live;
+        if let Err(message) = live.source_animation_clocks.advance_unpaused(
+            &live.source_animations,
+            |selector| live.source_animation_payloads.get(usize::from(selector)).map(AsRef::as_ref),
+        ) {
+            let source_slot = live.core.state.entity_index;
+            self.session.state = state_before;
+            self.session.state.scratch.dispatch_events.clear();
+            self.session.state.scratch.dispatch_events.push(Mc2DispatchEvent::Error {
+                pass: 0,
+                source_slot,
+                message,
+            });
+            return Vec::new();
+        }
         self.session.state.scratch.economy_event_cursor =
             self.session.state.live.economy.events().len();
         // The campaign/C ABI flight carrier writes `state.position` before

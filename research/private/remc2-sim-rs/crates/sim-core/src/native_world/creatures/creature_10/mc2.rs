@@ -1122,6 +1122,7 @@ pub(crate) fn scheduled_step(
     particles: &[ParticleParameter],
     entity_parameters: &[[u8; 34]],
     animations: &crate::source_animation::SourceAnimationResidency,
+    animation_action: Option<&mut crate::source_animation::SourceAnimationAction<'_>>,
     slot: u16,
     player_slot: u16,
     families: &[Vec<u16>; 29],
@@ -1198,6 +1199,9 @@ pub(crate) fn scheduled_step(
         particle
             .animation_limit()
             .ok_or_else(|| format!("final encounter particle{index} has invalid animation mode"))?;
+        if let Some(action) = animation_action {
+            action(particle.base_tmap, true)?;
+        }
         frame.source_animation_timer = animations.boss_timer_read(particle.base_tmap)?;
     }
     let mut scoped = |arena: &mut SourceArena, terrain: &mut SessionTerrain,
@@ -2549,6 +2553,32 @@ mod tests {
         let interval_bound = usize::try_from(remaining_hits).unwrap()
             .saturating_mul(100 + 7 + 22 + 5 + 1)
             .saturating_add(usize::from(death_animation) + 93 + 1024);
+        // Declared image control: reset the resident death group before the
+        // natural fight. The actual phase13 callback must finish its shared
+        // stream from this zero image; no actor, timer or RNG is changed.
+        let death_selector = animation.base_tmap;
+        let expected_death_pixels = {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            let bytes = live.source_animation_payloads[usize::from(death_selector)].as_ref();
+            let width = u16::from_le_bytes([bytes[2], bytes[3]]);
+            let height = u16::from_le_bytes([bytes[4], bytes[5]]);
+            let base_end = 6 + usize::from(width) * usize::from(height);
+            let count = u16::from_le_bytes([bytes[base_end], bytes[base_end + 1]]);
+            assert_eq!(live.source_animations.resident_frame_count_read(death_selector).unwrap(), Some(count));
+            let mut pixels = vec![0; usize::from(width) * usize::from(height)];
+            let mut cursor = base_end as u32;
+            for _ in 0..count {
+                cursor = sim_ss2_tmap::apply_ss2_delta(bytes, &mut pixels, "boss test",
+                    death_selector, width, height, cursor, bytes.len()).unwrap();
+            }
+            assert!(pixels.iter().any(|&pixel| pixel != 0));
+            live.source_animation_clocks.reset_or_finish(death_selector, false,
+                &live.source_animations, |id| live.source_animation_payloads
+                    .get(usize::from(id)).map(AsRef::as_ref)).unwrap();
+            assert!(live.source_animation_clocks.pixels(death_selector).unwrap().iter().all(|&pixel| pixel == 0));
+            pixels
+        };
+        let mut death_image_finished = false;
         let mut fight_launches = Vec::new();
         let mut fight_payments = Vec::new();
         let mut fight_impacts = Vec::new();
@@ -2581,6 +2611,8 @@ mod tests {
         for turn in 0..interval_bound {
             let prior_boss = campaign.simulation().source_arena().handle(boss_slot) == Some(boss);
             let boss_before = prior_boss.then(|| &campaign.simulation().entities()[usize::from(boss_slot)]);
+            let finishing_death_image = boss_before.is_some_and(|row|
+                row.record[74] == 13 && row.source_dword_10() <= 1);
             let constructing_death_meteor = boss_before.is_some_and(|row| row.record[74] == 12);
             let constructing_reward = boss_before.is_some_and(|row|
                 row.record[74] == 15 && row.source_dword_10() <= 1);
@@ -2609,6 +2641,19 @@ mod tests {
             area_damage::start_effect_damage_trace(boss_slot);
             campaign.simulation().start_creature17_trace();
             campaign.step(crate::PlayerCommand { flags: 0x10, ..Default::default() }, 0);
+            if finishing_death_image {
+                let live = &campaign.simulation().session.state.live;
+                assert_eq!(live.source_animations.resident_frame_count_read(death_selector).unwrap(),
+                    Some(u16::from_le_bytes([
+                        live.source_animation_payloads[usize::from(death_selector)][6 + expected_death_pixels.len()],
+                        live.source_animation_payloads[usize::from(death_selector)][7 + expected_death_pixels.len()],
+                    ])));
+                let pixels = live.source_animation_clocks
+                    .pixels(death_selector).expect("resident death image");
+                assert_eq!(pixels, expected_death_pixels.as_slice(),
+                    "actual phase13 source action finishes the shared owner stream");
+                death_image_finished = true;
+            }
             let trace = campaign.simulation().take_creature17_trace();
             if turn < 2 {
                 initial_flight.extend(trace.flight.iter().filter(|visit| visit.target == caster_handle)
@@ -2786,6 +2831,7 @@ mod tests {
             }
             if reclaimed && reward_consumed && reward_product.is_some() && death_meteor.is_some() { break; }
         }
+        assert!(death_image_finished, "the natural phase13 callback finished the source image");
         let terminal = fight_consumed.last().unwrap_or_else(|| panic!(
             "held public Meteor produced no boss consumption: retreat={retreat:?} muzzle={muzzle:?} sampled_ground={sampled_ground:?} launches={} impacts={} first_acquisition={first_acquisition:?} first_impact_reclaim={first_impact_reclaim:?} drift={first_drift:?}",
             fight_launches.len(), fight_impacts.len()));

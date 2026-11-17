@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 #[path = "sorcerer_labels.rs"]
 mod sorcerer_labels;
 
+#[cfg(test)]
+mod animated_tests;
+
 use crate::{
     campaign::sprite_render::{source_sprite_pixel_metadata, source_sprite_pixel_mode},
     classic_hd_raster::ClassicHdRasterError,
@@ -52,6 +55,7 @@ struct Sprite {
 pub(crate) struct SourceWorldSprites<'a> {
     camera: Mode20SpriteCamera,
     bank: &'a SourceSpriteTmapBank,
+    animation_clocks: Option<&'a crate::source_animation::SourceAnimationClocks>,
     buckets: BTreeMap<u16, Vec<Sprite>>,
     reflections: bool,
     previous_pixel_mode: u8,
@@ -198,6 +202,7 @@ impl<'a> SourceWorldSprites<'a> {
         Ok(Self {
             camera: sprite_camera,
             bank,
+            animation_clocks: None,
             buckets,
             reflections: map_type != MapType::Cave
                 && camera.reflections
@@ -216,6 +221,14 @@ impl<'a> SourceWorldSprites<'a> {
 
     pub(crate) fn reflections_enabled(&self) -> bool {
         self.reflections
+    }
+
+    /// Bind the shared source lifetime for pure frame reads in every pass.
+    pub(crate) fn set_animation_clocks(
+        &mut self,
+        clocks: &'a crate::source_animation::SourceAnimationClocks,
+    ) {
+        self.animation_clocks = Some(clocks);
     }
     pub(crate) fn set_viewport(&mut self, viewport: crate::classic_hd::ClassicHdViewport) {
         self.viewport = Some(viewport);
@@ -273,6 +286,15 @@ impl<'a> SourceWorldSprites<'a> {
                 .bank
                 .frame(source.selected_tmap)
                 .expect("source frame retained from validated planning");
+            let pixels = self.animation_clocks
+                .and_then(|clocks| clocks.pixels(source.selected_tmap))
+                .unwrap_or(&frame.pixels);
+            if pixels.len() != frame.pixels.len() {
+                return Err(ClassicHdRasterError(format!(
+                    "source TMAP {} live pixels do not match its retained extent",
+                    source.selected_tmap
+                )));
+            }
             let mut draw = |placement, pixel_mode, kind| {
                 rasterize_indexed_source_sprite(
                     indices,
@@ -282,7 +304,7 @@ impl<'a> SourceWorldSprites<'a> {
                     placement,
                     frame.width,
                     frame.height,
-                    &frame.pixels,
+                    pixels,
                     tables,
                     self.camera.projection.roll,
                     pixel_mode,
@@ -550,6 +572,38 @@ mod tests {
         assert_eq!(world.stats().primary_calls, 1);
         assert!(world.stats().shadow_writes > 0);
         assert_eq!(world.primary_visibility_completions(), &[1]);
+
+        // The retained live image, rather than the immutable bank's base
+        // image, must feed each pass. Latching alone never advances it.
+        let payload = [1, 0, 2, 0, 2, 0, 7, 7, 7, 7, 1, 0, 0, 0, 0, 0];
+        let mut clocks = crate::source_animation::SourceAnimationClocks::default();
+        let catalog = crate::source_animation::SourceTmapCatalog::new((0..504_u16)
+            .map(|selector| crate::source_animation::SourceTmapMetadata {
+                selector, group: selector, allocation_bytes: 16,
+                encoded_frame_count: (selector == 1).then_some(1),
+            }).collect()).unwrap();
+        let presentation = crate::native_world::PresentationSelectors {
+            particles: Box::new([]), level_sprite_selectors: Box::new([]),
+            entity_parameters: Box::new([]),
+        };
+        let mut residency = crate::source_animation::SourceAnimationResidency::initialize(
+            catalog, &presentation, &[],
+        ).unwrap();
+        residency.demand(1).unwrap();
+        clocks.latch_draw_demand(1, &payload, &residency).unwrap();
+        let before = clocks.clone();
+        let mut live = SourceWorldSprites::new(
+            camera, crate::terrain_frame::level1_projection(camera), MapType::Night,
+            vec![row], &[particle], &bank, &cells, &ground, 0, true,
+        ).unwrap();
+        live.set_animation_clocks(&clocks);
+        let mut live_indices = vec![77; 320 * 200];
+        live.draw_cell(TerrainPass::Reflected, 1, 0, 320, 200, &mut live_indices, &tables).unwrap();
+        assert_eq!(live_indices[140 * 320 + 160], 7);
+        live.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut live_indices, &tables).unwrap();
+        assert!(live_indices.contains(&7));
+        assert!(live.stats().shadow_writes > 0);
+        assert_eq!(clocks, before, "render reads must not mutate source clocks");
     }
 
     #[test]
