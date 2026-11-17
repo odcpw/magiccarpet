@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using NUnit.Framework.Interfaces;
 using NUnit.Framework.Internal;
@@ -22,473 +24,447 @@ namespace MagicCarpet.Native.Tests
     [Level2EntityPresenterTestNames]
     public sealed class Level2EntityPresenterEditModeTests
     {
+        // Test-only binding to the existing public character-state ABI. The
+        // Original client cohort does not contain the Modern C# wrapper.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CharacterState
+        {
+            internal uint abiVersion, structSize;
+            internal ulong generation, tick;
+            internal uint slotGeneration, parentGeneration;
+            internal ushort entityIndex, sourceId, parentIndex, parentId;
+            internal byte classId, model, action, phase, active, hasTarget, hasParent, stance;
+            internal ushort x, y;
+            internal short z, yaw, pitch, speed;
+            internal int life;
+            internal ushort targetIndex, targetX, targetY;
+            internal short targetZ;
+            internal uint controlFlags;
+            internal ushort ageTicks, renderParameter;
+            internal short roll;
+            internal ushort sourceHalfWidth, renderHeight, previousIndex, nextIndex, partIndex;
+            internal uint lifecycleFlags;
+        }
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_campaign_character_states_copy_v2(
+            ulong handle, ulong generation, ulong tick,
+            [Out] CharacterState[] buffer, uint capacity, uint elementSize, out uint written);
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_campaign_world_entity_presentations_copy(
+            ulong handle, ulong generation, ulong tick, short cameraYaw,
+            [Out] NativeSim.CampaignEntityPresentation[] buffer, uint capacity, uint elementSize,
+            out uint written);
+
+        private static NativeSim.CampaignEntityPresentation[] WorldRows(
+            NativeCampaignSession session, short cameraYaw)
+        {
+            Assert.That(Marshal.SizeOf<NativeSim.CampaignEntityPresentation>(), Is.EqualTo(64));
+            var rows = new NativeSim.CampaignEntityPresentation[1000];
+            var status = mc_native_campaign_world_entity_presentations_copy(session.Handle,
+                session.Generation, session.Tick, cameraYaw, rows, (uint)rows.Length, 64, out var written);
+            NativeSession.Check(status, "read source world entity presentations");
+            Assert.That(written, Is.LessThanOrEqualTo((uint)rows.Length));
+            Array.Resize(ref rows, checked((int)written));
+            Assert.That(rows.All(row => row.abiVersion == NativeSim.AbiVersion && row.structSize == 64 &&
+                row.generation == session.Generation && row.tick == session.Tick &&
+                row.selectedTmap >= row.baseTmap && row.orientationSector <= 15 && row.mirrored <= 1 &&
+                row.reserved0 == 0 && row.reserved == 0 && row.pixelMode <= 7 && row.brightness <= 0x2000), Is.True);
+            Assert.That(rows.Select(row => row.entityIndex).Distinct().Count(), Is.EqualTo(rows.Length));
+            return rows;
+        }
+
+        private static CharacterState[] ReadCharacterStates(NativeCampaignSession session)
+        {
+            Assert.That(Marshal.SizeOf<CharacterState>(), Is.EqualTo(96));
+            Assert.That(Marshal.OffsetOf<CharacterState>(nameof(CharacterState.life)).ToInt32(), Is.EqualTo(60));
+            Assert.That(Marshal.OffsetOf<CharacterState>(nameof(CharacterState.lifecycleFlags)).ToInt32(), Is.EqualTo(92));
+            var rows = new CharacterState[1000];
+            var status = mc_native_campaign_character_states_copy_v2(session.Handle,
+                session.Generation, session.Tick, rows, (uint)rows.Length, 96, out var written);
+            NativeSession.Check(status, "read source character states for qualification");
+            Assert.That(written, Is.LessThanOrEqualTo((uint)rows.Length));
+            Array.Resize(ref rows, checked((int)written));
+            Assert.That(rows.All(row => row.abiVersion == NativeSim.AbiVersion && row.structSize == 96 &&
+                row.generation == session.Generation && row.tick == session.Tick && row.active == 1), Is.True);
+            Assert.That(rows.Select(row => row.entityIndex).Distinct().Count(), Is.EqualTo(rows.Length));
+            return rows;
+        }
+
         private static string PrivateRoot =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
-        private static string Level2Package =>
-            Environment.GetEnvironmentVariable("MC_CAMPAIGN_PACKAGE") ??
-            Path.Combine(
-                PrivateRoot,
-                "generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        private static string CurrentLevel2Package =>
+            Path.Combine(PrivateRoot, "generated/level2-day-block32-campaign-v2");
 
-        private static string Level2DayCache =>
-            Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
+        private static string CurrentLevel2Environment =>
+            Path.Combine(PrivateRoot, "generated/mc-oi62-environment-level2-v2");
 
         [Test]
         public void ProductionSnapshotsPresentTypedGoatAndVillagerRows()
         {
-            var root = new GameObject("Level 2 entity presenter test root");
-            try
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                CurrentLevel2Environment, CurrentLevel2Package);
+            using var session = NativeCampaignSession.OpenLevel2(
+                CurrentLevel2Package, CurrentLevel2Environment);
+            using var surface = new CampaignPresentationSurface();
+            var entities = session.Entities();
+            var goats = session.Goats().Where(row => row.active != 0).ToArray();
+            var villagers = entities.Where(row => row.active != 0 && row.classId == 5 && row.model == 13).ToArray();
+            Assert.That(goats, Has.Length.EqualTo(36), "the source reset has 36 Goats");
+            Assert.That(villagers, Has.Length.EqualTo(29), "the source reset has 29 Villagers");
+
+            var rows = WorldRows(session, 0);
+            var goat = rows.Single(row => row.entityIndex == 39);
+            Assert.That(goat.renderParameterIndex, Is.EqualTo(238));
+            Assert.That(goat.baseTmap, Is.EqualTo(152));
+            Assert.That(goat.selectedTmap, Is.EqualTo(152));
+            Assert.That((goat.x, goat.y, goat.z), Is.EqualTo((goats.Single(row => row.entityIndex == 39).x,
+                goats.Single(row => row.entityIndex == 39).y, goats.Single(row => row.entityIndex == 39).z)));
+            var villager = rows.Single(row => row.entityIndex == 77);
+            Assert.That((villager.renderParameterIndex, villager.baseTmap, villager.selectedTmap),
+                Is.EqualTo(((ushort)271, (ushort)199, (ushort)201)));
+            Assert.That((villager.x, villager.y, villager.z), Is.EqualTo((entities[77].x, entities[77].y, entities[77].z)));
+            Assert.That(rows.All(row => row.generation == session.Generation && row.tick == session.Tick), Is.True);
+            foreach (var row in new[] { goat, villager })
             {
-                using var session = NativeCampaignSession.OpenLevel2(
-                    Level2Package,
-                    Level2DayCache);
-                var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new CampaignEntityPresenter(root.transform);
-
-                Assert.That(
-                    presenter.Present(session, cache, 0),
-                    Is.True,
-                    "the validated native Level 2 frame must reach the presenter");
-                Assert.That(presenter.Presentations, Has.Length.EqualTo(65));
-                Assert.That(presenter.LiveViewCount, Is.EqualTo(65));
-                Assert.That(
-                    presenter.Presentations.Count(row =>
-                        row.Family == CampaignEntityFamily.Goat),
-                    Is.EqualTo(36));
-                Assert.That(
-                    presenter.Presentations.Count(row =>
-                        row.Family == CampaignEntityFamily.Villager),
-                    Is.EqualTo(29));
-                Assert.That(
-                    presenter.Presentations.All(row =>
-                        row.Generation == session.Generation &&
-                        row.Tick == session.Tick &&
-                        row.Visible),
-                    Is.True);
-
-                var goat = presenter.Presentations.Single(row =>
-                    row.EntityIndex == 39);
-                Assert.That(goat.Family, Is.EqualTo(CampaignEntityFamily.Goat));
-                Assert.That(goat.RenderParameterIndex, Is.EqualTo(238));
-                Assert.That(goat.BaseTmap, Is.EqualTo(152));
-                Assert.That(goat.Selector, Is.EqualTo(152));
-                Assert.That(
-                    goat.SourcePosition,
-                    Is.EqualTo(new Vector3(36992f / 64f, 2719f / 64f, 7534f / 64f)));
-                Assert.That(goat.Scale.y, Is.EqualTo(150f / 64f));
-                Assert.That(goat.Rotation, Is.EqualTo(Quaternion.Euler(0f, 180f, 0f)));
-
-                var villager = presenter.Presentations.Single(row =>
-                    row.EntityIndex == 77);
-                Assert.That(villager.Family, Is.EqualTo(CampaignEntityFamily.Villager));
-                Assert.That(villager.RenderParameterIndex, Is.EqualTo(271));
-                Assert.That(villager.BaseTmap, Is.EqualTo(199));
-                Assert.That(villager.Selector, Is.EqualTo(201));
-                Assert.That(
-                    villager.SourcePosition,
-                    Is.EqualTo(new Vector3(31110f / 64f, 1552f / 64f, 46225f / 64f)));
-                Assert.That(villager.Scale.y, Is.EqualTo(300f / 64f));
-                Assert.That(villager.Rotation, Is.EqualTo(
-                    Quaternion.Euler(0f, 180f - 913f * (360f / 2048f), 0f)));
-
-                var goatObject = goat.GameObject;
-                var villagerObject = villager.GameObject;
-                Assert.That(
-                    presenter.Present(session, cache, 0),
-                    Is.True,
-                    "re-presenting the same production frame is idempotent");
-                Assert.That(
-                    presenter.Presentations.Single(row => row.EntityIndex == 39).GameObject,
-                    Is.SameAs(goatObject));
-                Assert.That(
-                    presenter.Presentations.Single(row => row.EntityIndex == 77).GameObject,
-                    Is.SameAs(villagerObject));
-                Assert.That(
-                    root.GetComponentsInChildren<MeshRenderer>(true),
-                    Has.Length.EqualTo(65));
+                var texture = cache.EnvironmentMaterials.tmaps.textures.Single(item => item.index == row.selectedTmap);
+                Assert.That(texture.source_empty, Is.False);
+                Assert.That(cache.ReadOutput(texture.indices_path), Has.Length.EqualTo(texture.width * texture.height));
+                Assert.That(texture.frame_count, Is.GreaterThan(0));
             }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(root);
-            }
+            Assert.That(cache.EnvironmentMaterials.profile.key_color_1, Is.EqualTo(254));
+            Assert.That(cache.EnvironmentMaterials.profile.key_color_2, Is.Zero);
+            surface.PresentEnvironment(session, cache);
+            Assert.That(surface.Generation, Is.EqualTo(session.Generation));
+            Assert.That(surface.Tick, Is.EqualTo(session.Tick));
+            Assert.That(surface.CacheContentHash, Is.EqualTo(cache.ContentHash));
+            CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
+            var before = surface.FrameHash;
+            surface.PresentEnvironment(session, cache);
+            Assert.That(surface.FrameHash, Is.EqualTo(before));
+            Assert.That(session.Tick, Is.Zero);
         }
 
         [Test]
         public void ProductionRemovalResetAndDisposeClearRowsWithoutLeakingViews()
         {
-            var root = new GameObject("Level 2 entity presenter lifecycle test root");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                CurrentLevel2Environment, CurrentLevel2Package);
+            using var session = NativeCampaignSession.OpenLevel2(
+                CurrentLevel2Package, CurrentLevel2Environment);
+            var surface = new CampaignPresentationSurface();
             try
             {
-                using var session = NativeCampaignSession.OpenLevel2(
-                    Level2Package,
-                    Level2DayCache);
-                var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new CampaignEntityPresenter(root.transform);
-
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                var originalGoat = presenter.Presentations.Single(row =>
-                    row.EntityIndex == 39).GameObject;
+                surface.PresentEnvironment(session, cache);
+                Assert.That(WorldRows(session, 0).Any(row => row.entityIndex == 39), Is.True);
+                var original = ReadCharacterStates(session).Single(row => row.entityIndex == 39);
                 session.SubmitGoatDamage(39, 1_000_000, 152);
-
                 var removed = false;
                 for (var turn = 0; turn < 32 && !removed; turn++)
                 {
                     session.Step(123, 456, 7);
-                    Assert.That(presenter.Present(session, cache, 0), Is.True);
-                    removed = presenter.Presentations.All(row =>
-                        row.EntityIndex != 39);
+                    surface.PresentEnvironment(session, cache);
+                    removed = WorldRows(session, 0).All(row => row.entityIndex != 39);
                 }
-
-                Assert.That(removed, Is.True, "the reclaimed Goat disappears on a later frame");
-                Assert.That(
-                    presenter.LiveViewCount,
-                    Is.EqualTo(70),
-                    "the removed Goat leaves the 64 other legacy rows plus six ordinary rooted class-5 rows");
-                Assert.That(originalGoat == null, Is.True);
-                var rendererCount = root.GetComponentsInChildren<MeshRenderer>(true).Length;
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                Assert.That(presenter.LiveViewCount, Is.EqualTo(70));
-                Assert.That(
-                    root.GetComponentsInChildren<MeshRenderer>(true),
-                    Has.Length.EqualTo(rendererCount));
-
+                Assert.That(removed, Is.True, "the hidden Goat disappears on a later frame");
+                Assert.That(ReadCharacterStates(session).Any(row => row.entityIndex == 39 &&
+                    row.slotGeneration == original.slotGeneration && row.active != 0), Is.True,
+                    "same-pass hide retains the original source actor generation");
+                session.Step(123, 456, 7);
+                Assert.That(ReadCharacterStates(session).Any(row => row.entityIndex == 39 &&
+                    row.slotGeneration == original.slotGeneration && row.active != 0), Is.False,
+                    "the following source pass reclaims the hidden actor generation");
+                surface.PresentEnvironment(session, cache);
+                var oldTick = session.Tick;
+                var frameHash = surface.FrameHash;
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.FrameHash, Is.EqualTo(frameHash));
                 var oldGeneration = session.Generation;
                 session.Reset();
                 Assert.That(session.Generation, Is.EqualTo(oldGeneration + 1));
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                Assert.That(presenter.Presentations, Has.Length.EqualTo(65));
-                Assert.That(presenter.Presentations.All(row =>
-                    row.Generation == session.Generation), Is.True);
-
-                presenter.Reset(session.Generation);
-                Assert.That(presenter.Presentations, Is.Empty);
-                Assert.That(presenter.LiveViewCount, Is.Zero);
-                presenter.Dispose();
-                Assert.That(presenter.Presentations, Is.Empty);
-                Assert.That(presenter.LiveViewCount, Is.Zero);
-                Assert.That(presenter.Present(session, cache, 0), Is.False);
-                Assert.That(
-                    root.GetComponentsInChildren<MeshRenderer>(true),
-                    Is.Empty);
+                Assert.That(WorldRows(session, 0).Any(row => row.entityIndex == 39), Is.True);
+                surface.PresentEnvironment(session, cache);
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((session.Generation, 0ul)));
+                var stale = new NativeSim.CampaignEntityPresentation[1];
+                var status = NativeSim.mc_native_campaign_entity_presentations_copy(
+                    session.Handle, oldGeneration, oldTick, 0, stale, 1, 64, out _);
+                Assert.That(status, Is.EqualTo(NativeSim.GenerationMismatch));
+                var root = surface.Root.gameObject;
+                surface.Dispose();
+                Assert.That(root == null, Is.True, "disposing destroys the native-composed surface");
+                Assert.Throws<ObjectDisposedException>(() => surface.PresentEnvironment(session, cache));
             }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                surface.Dispose();
             }
         }
 
         [Test]
         public void PublicFireballHitPresentsTheProductionBeeFromRustAuthority()
         {
-            var root = new GameObject("Level 2 production Bee presenter root");
-            try
+            var package = Path.Combine(PrivateRoot,
+                "generated/mc-paj2-source-secret-34-campaign-package");
+            var environment = Path.Combine(PrivateRoot,
+                "generated/campaign-original-environments/source34");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(environment, package);
+            using var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(35, 34, 0), environment);
+            using var surface = new CampaignPresentationSurface();
+            // The real group-23 switch creates both Bees and Fireball row739.
+            // Position control exercises that source route; it does not claim
+            // organic arrival at this secret mission.
+            var trigger = session.Entities()[96];
+            Assert.That((trigger.active, trigger.classId, trigger.model, trigger.action, trigger.sourceId),
+                Is.EqualTo(((byte)1, (byte)11, (byte)1, (byte)1, (ushort)23)));
+            var farX = unchecked((ushort)(trigger.x + 24576));
+            NativeSim.CampaignSpellPickupSnapshot pickup = default;
+            for (var turn = 0; turn < 16; turn++)
             {
-                using var session = NativeCampaignSession.OpenLevel2(
-                    Level2Package,
-                    Level2DayCache);
-                var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new CampaignEntityPresenter(root.transform);
-
-                var bee = DriveProductionBeeToAction17(session);
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                var before = presenter.Presentations.Single(row =>
-                    row.EntityIndex == bee.entityIndex);
-                Assert.That(before.Family, Is.EqualTo(CampaignEntityFamily.Bee));
-                Assert.That(before.RenderParameterIndex, Is.EqualTo(3));
-                Assert.That(before.BaseTmap, Is.EqualTo(14));
-                Assert.That(before.Selector, Is.EqualTo(
-                    Mode17Selector(14, bee.yaw, 0)));
-                Assert.That(before.Scale.y, Is.EqualTo(150f / 64f));
-                Assert.That(before.Visible, Is.True);
-                var beeObject = before.GameObject;
-
-                var localPlayer = session.Players().Single(row => row.slot == 0);
-                var player = session.Entities().Single(row =>
-                    row.entityIndex == localPlayer.entityIndex);
-                var playerX = unchecked((ushort)(bee.x + 256));
-                var playerY = unchecked((ushort)(bee.y + 360));
-                var playerZ = unchecked((short)(bee.z + 280 - player.fov));
-                session.Step(
-                    playerX,
-                    playerY,
-                    playerZ,
-                    flags: 0x40,
-                    requestedSpell: 0);
-                session.Step(playerX, playerY, playerZ);
-
-                var pending = session.Entities()[bee.entityIndex];
-                Assert.That(pending.authority, Is.EqualTo(NativeSim.CampaignLive));
-                Assert.That(pending.active, Is.EqualTo(1));
-                Assert.That(pending.classId, Is.EqualTo(5));
-                Assert.That(pending.model, Is.EqualTo(2));
-                Assert.That(pending.action, Is.EqualTo(17));
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                Assert.That(
-                    presenter.Presentations.Single(row =>
-                        row.EntityIndex == bee.entityIndex).GameObject,
-                    Is.SameAs(beeObject),
-                    "a public Fireball mailbox write must not replace Unity's Rust-bound view");
-
-                session.Step(playerX, playerY, playerZ);
-                var consumed = session.Entities()[bee.entityIndex];
-                Assert.That(consumed.authority, Is.EqualTo(NativeSim.CampaignLive));
-                Assert.That(consumed.active, Is.EqualTo(1));
-                Assert.That(consumed.action, Is.EqualTo(18));
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                Assert.That(
-                    presenter.Presentations.Single(row =>
-                        row.EntityIndex == bee.entityIndex).GameObject,
-                    Is.SameAs(beeObject));
+                pickup = session.SpellPickups().SingleOrDefault(row =>
+                    row.active == 1 && row.family == 0 && row.authoredIndex == 739);
+                if (pickup.active == 1) break;
+                session.Step(farX, trigger.y, trigger.z);
             }
-            finally
+            Assert.That(pickup.active, Is.EqualTo(1), "the real switch must produce Fireball row739");
+            var acquired = false;
+            for (var turn = 0; turn < 8 && !acquired; turn++)
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                session.Step(pickup.x, pickup.y, pickup.z);
+                var hud = session.DayHudState(session.Tick);
+                acquired = hud.left.holderEntityIndex == pickup.sourceEntityIndex &&
+                    hud.left.rawSpellSelector == 0;
             }
+            Assert.That(acquired, Is.True, "public movement must acquire the authored Fireball");
+            var ready = session.DayHudState(session.Tick);
+            Assert.That(ready.left.activeValue, Is.Zero);
+            Assert.That(ready.localPlayerMana, Is.GreaterThanOrEqualTo(ready.left.maxMana));
+            var bee = DriveProductionBeeToAction17(session);
+            var beforeView = WorldRows(session, 0).Single(row => row.entityIndex == bee.entityIndex);
+            Assert.That((bee.classId, bee.model, bee.action), Is.EqualTo(((byte)5, (byte)2, (byte)17)));
+            Assert.That((beforeView.renderParameterIndex, beforeView.baseTmap), Is.EqualTo(((ushort)3, (ushort)14)));
+            Assert.That(beforeView.selectedTmap, Is.EqualTo(Mode17Selector(14, bee.yaw, 0)));
+            surface.PresentEnvironment(session, cache);
+            var surfaceRoot = surface.Root;
+            var worldTexture = surface.WorldIndices;
+            var player = session.Entities()[session.Players().Single(row => row.slot == 0).entityIndex];
+            var hit = false;
+            var projectile = false;
+            var paid = false;
+            var pending = false;
+            // Hold the acquired left hand through its real activation delay.
+            // Public position and pitch controls track the moving source Bee;
+            // no target, spell, mana or projectile state is injected.
+            for (var turn = 0; turn < 16 && !hit; turn++)
+            {
+                var current = session.Entities()[bee.entityIndex];
+                Assert.That((current.active, current.classId, current.model, current.sourceId),
+                    Is.EqualTo((bee.active, bee.classId, bee.model, bee.sourceId)));
+                pending |= current.action == 17;
+                session.Step(unchecked((ushort)(current.x + 256)),
+                    unchecked((ushort)(current.y + 600)), unchecked((short)(current.z - 9)),
+                    flags: 0x10, requestedSpell: (short)(turn == 0 ? 0 : NativeSim.NoRequestedSpell),
+                    pitch: 64);
+                var hud = session.DayHudState(session.Tick);
+                paid |= hud.localPlayerMana < ready.localPlayerMana;
+                projectile |= session.Entities().Any(row => row.active != 0 && row.classId == 9 &&
+                    row.model == 0 && row.sourceId == player.entityIndex);
+                hit = session.EconomyEvents().Any(row => row.code == 15 && row.primaryId == bee.entityIndex &&
+                    row.entity0 == player.entityIndex && row.value0 > 0);
+                if (turn == 0)
+                {
+                    Assert.That(session.Entities()[bee.entityIndex].action, Is.EqualTo(17));
+                    surface.PresentEnvironment(session, cache);
+                    Assert.That(surface.Root, Is.SameAs(surfaceRoot));
+                    Assert.That(surface.WorldIndices, Is.SameAs(worldTexture));
+                }
+            }
+            Assert.That(pending, Is.True, "the original Bee remained in its scheduled action before the hit");
+            Assert.That(paid, Is.True, "the player pays for the real cast");
+            Assert.That(projectile, Is.True, "the public cast produces a real Fireball");
+            var after = session.Entities()[bee.entityIndex];
+            Assert.That((after.active, after.classId, after.model, after.sourceId),
+                Is.EqualTo((bee.active, bee.classId, bee.model, bee.sourceId)));
+            Assert.That(hit, Is.True, "a public Fireball damages the real authored Bee");
+            Assert.That(after.action, Is.EqualTo(18), "the scheduled Bee consumes the hit");
+            var afterView = WorldRows(session, 0).Single(row => row.entityIndex == bee.entityIndex);
+            Assert.That((afterView.generation, afterView.tick), Is.EqualTo((session.Generation, session.Tick)));
+            Assert.That(afterView.renderParameterIndex, Is.EqualTo(3));
+            surface.PresentEnvironment(session, cache);
+            Assert.That(surface.Root, Is.SameAs(surfaceRoot));
+            Assert.That(surface.WorldIndices, Is.SameAs(worldTexture));
+            Assert.That(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(), Is.Empty);
+            CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
         }
-
         [Test]
         public void Class5MappingsAndHideThenFollowingRemovalAreExact()
         {
-            var root = new GameObject("Level 2 class-5 presenter mapping root");
-            try
+            // Each mapping comes from a real reset actor. The shared
+            // hide/reclaim consumer is exercised by the Goat lifecycle test.
+            var cases = new[] {
+                (package: "dragon-bee-20261105-integration/level5-owner-current/level5",
+                 environment: "secret-lifecycle-20261111-source4-environment", level: (ushort)5,
+                 models: new[] { (model: (byte)2, parameter: (ushort)3, tmap: (ushort)14, height: (ushort)150),
+                     (model: (byte)3, parameter: (ushort)88, tmap: (ushort)30, height: (ushort)180),
+                     (model: (byte)4, parameter: (ushort)0, tmap: (ushort)8, height: (ushort)250),
+                     (model: (byte)9, parameter: (ushort)220, tmap: (ushort)158, height: (ushort)125) }),
+                (package: "settlement-20261105-integration/owner-collision-closure-v4/level7",
+                 environment: "campaign-original-environments/level7-complete", level: (ushort)7,
+                 models: new[] { (model: (byte)14, parameter: (ushort)219, tmap: (ushort)138, height: (ushort)250) })
+            };
+            foreach (var test in cases)
             {
-                using var session = NativeCampaignSession.OpenLevel2(
-                    Level2Package,
-                    Level2DayCache);
-                var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new CampaignEntityPresenter(root.transform);
-                var baseline = session.Entities();
-                var goats = session.Goats();
-                var rows = Copy(baseline);
-                rows[990] = LiveClass5Row(990, 2, 17, 0, 100, 200, 300);
-                rows[991] = LiveClass5Row(991, 3, 25, 0, 110, 210, 310);
-                rows[992] = LiveClass5Row(992, 4, 33, 0, 120, 220, 320);
-                rows[993] = LiveClass5Row(993, 9, 72, 0, 130, 230, 330);
-                rows[994] = LiveClass5Row(994, 14, 113, 0, 140, 240, 340);
-
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick,
-                        rows,
-                        goats,
-                        cache,
-                        0),
-                    Is.True);
-                AssertClass5Presentation(presenter, 990, CampaignEntityFamily.Bee, 3, 14, 150);
-                AssertClass5Presentation(
-                    presenter,
-                    991,
-                    CampaignEntityFamily.Multipart,
-                    88,
-                    30,
-                    180);
-                AssertClass5Presentation(
-                    presenter,
-                    992,
-                    CampaignEntityFamily.Archer,
-                    0,
-                    8,
-                    250);
-                AssertClass5Presentation(
-                    presenter,
-                    993,
-                    CampaignEntityFamily.Model9,
-                    220,
-                    158,
-                    125);
-                AssertClass5Presentation(
-                    presenter,
-                    994,
-                    CampaignEntityFamily.Trader,
-                    219,
-                    138,
-                    250);
-
-                var beeObject = presenter.Presentations.Single(row =>
-                    row.EntityIndex == 990).GameObject;
-                var hidden = Copy(rows);
-                hidden[990].active = 0;
-                hidden[990].action = 21;
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick + 1,
-                        hidden,
-                        goats,
-                        cache,
-                        0),
-                    Is.True);
-                var hiddenBee = presenter.Presentations.Single(row =>
-                    row.EntityIndex == 990);
-                Assert.That(hiddenBee.GameObject, Is.SameAs(beeObject));
-                Assert.That(hiddenBee.Visible, Is.False,
-                    "same-pass hide retains the source-slot view but disables drawing");
-
-                var following = Copy(hidden);
-                following[990] = baseline[990];
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick + 2,
-                        following,
-                        goats,
-                        cache,
-                        0),
-                    Is.True);
-                Assert.That(presenter.Presentations.All(row => row.EntityIndex != 990), Is.True);
-                Assert.That(beeObject == null, Is.True,
-                    "the following-boundary source-row removal destroys the Unity view");
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(root);
+                var package = Path.Combine(PrivateRoot, "generated", test.package);
+                var environment = Path.Combine(PrivateRoot, "generated", test.environment);
+                var cache = OwnerAssetCache.OpenAndValidateEnvironment(environment, package);
+                using var session = NativeCampaignSession.Open(package,
+                    NativeSim.CampaignSelection.Create(test.level, (ushort)(test.level - 1),
+                        (byte)(test.level == 7 ? 1 : 0)), environment);
+                using var surface = new CampaignPresentationSurface();
+                var actors = session.Entities();
+                var rows = WorldRows(session, 0);
+                foreach (var expected in test.models)
+                {
+                    var source = actors.Where(row => row.active != 0 && row.classId == 5 && row.model == expected.model)
+                        .Select(row => row.entityIndex).ToArray();
+                    Assert.That(source, Is.Not.Empty, $"real source class5/model{expected.model} must exist");
+                    var matches = rows.Where(row => source.Contains(row.entityIndex) &&
+                        row.renderParameterIndex == expected.parameter).ToArray();
+                    Assert.That(matches, Is.Not.Empty, $"class5/model{expected.model} must reach the native consumer");
+                    foreach (var row in matches)
+                    {
+                        Assert.That((row.baseTmap, row.logicalHeight), Is.EqualTo((expected.tmap, expected.height)));
+                        Assert.That((row.generation, row.tick), Is.EqualTo((session.Generation, session.Tick)));
+                        var actor = actors[row.entityIndex];
+                        Assert.That((row.x, row.y, row.z), Is.EqualTo((actor.x, actor.y, actor.z)));
+                        Assert.That(cache.EnvironmentMaterials.tmaps.textures.Any(texture =>
+                            texture.index == row.selectedTmap && !texture.source_empty), Is.True);
+                    }
+                }
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.Generation, Is.EqualTo(session.Generation));
+                Assert.That(surface.Tick, Is.EqualTo(session.Tick));
+                CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
             }
         }
-
         [Test]
         public void MalformedStaleAndUnboundRowsFailClosed()
         {
-            var root = new GameObject("Level 2 entity presenter negative test root");
-            try
-            {
-                using var session = NativeCampaignSession.OpenLevel2(
-                    Level2Package,
-                    Level2DayCache);
-                var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new CampaignEntityPresenter(root.transform);
-                var entities = session.Entities();
-                var goats = session.Goats();
-
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-
-                var wrongModel = Copy(entities);
-                wrongModel[39].model = 99;
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick,
-                        wrongModel,
-                        goats,
-                        cache,
-                        0),
-                    Is.False);
-                Assert.That(presenter.Presentations, Is.Empty);
-                Assert.That(presenter.LiveViewCount, Is.Zero);
-
-                var wrongAction = Copy(entities);
-                wrongAction[77].action = 1;
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick,
-                        wrongAction,
-                        goats,
-                        cache,
-                        0),
-                    Is.False);
-                Assert.That(presenter.Presentations, Is.Empty);
-
-                var unknownLiveClass5 = Copy(entities);
-                unknownLiveClass5[990] = LiveClass5Row(990, 2, 99, 0, 1, 2, 3);
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick,
-                        unknownLiveClass5,
-                        goats,
-                        cache,
-                        0),
-                    Is.False,
-                    "a live authority row cannot invent an unregistered class-5 action");
-                Assert.That(presenter.Presentations, Is.Empty);
-
-                var duplicate = Copy(entities);
-                duplicate[77].entityIndex = 76;
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick,
-                        duplicate,
-                        goats,
-                        cache,
-                        0),
-                    Is.False);
-                Assert.That(presenter.Presentations, Is.Empty);
-
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                session.Step(123, 456, 7);
-                var currentEntities = session.Entities();
-                var currentGoats = session.Goats();
-                Assert.That(presenter.Present(session, cache, 0), Is.True);
-                Assert.That(
-                    presenter.Present(
-                        session.Generation,
-                        session.Tick - 1,
-                        currentEntities,
-                        currentGoats,
-                        cache,
-                        0),
-                    Is.False);
-                Assert.That(presenter.Presentations, Is.Empty);
-                Assert.That(
-                    presenter.Present(session, null, 0),
-                    Is.False,
-                    "a missing validated owner cache cannot create a placeholder sprite");
-                Assert.That(presenter.Presentations, Is.Empty);
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(root);
-            }
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                CurrentLevel2Environment, CurrentLevel2Package);
+            using var session = NativeCampaignSession.OpenLevel2(
+                CurrentLevel2Package, CurrentLevel2Environment);
+            using var surface = new CampaignPresentationSurface();
+            surface.PresentEnvironment(session, cache);
+            var frame = (byte[])session.SceneFrameIndices.Clone();
+            var hash = surface.FrameHash;
+            var rows = new NativeSim.CampaignEntityPresentation[1];
+            // The native consumer owns its rows, so callers can no longer inject
+            // duplicate or malformed actors. Reject malformed ABI buffers and
+            // stale identities before any output or scene can be published.
+            rows[0].entityIndex = 65535;
+            var status = NativeSim.mc_native_campaign_entity_presentations_copy(
+                session.Handle, session.Generation, session.Tick, 0, rows, 1, 63, out _);
+            Assert.That(status, Is.EqualTo(5), "undersized presentation records are rejected");
+            Assert.That(rows[0].entityIndex, Is.EqualTo(65535));
+            status = mc_native_campaign_world_entity_presentations_copy(
+                session.Handle, session.Generation, session.Tick, 0, rows, 1, 64, out _);
+            Assert.That(status, Is.EqualTo(NativeSim.Bounds), "an undersized batch cannot publish partial rows");
+            Assert.That(rows[0].entityIndex, Is.EqualTo(65535));
+            status = NativeSim.mc_native_campaign_entity_presentations_copy(
+                session.Handle, session.Generation, session.Tick + 1, 0, rows, 1, 64, out _);
+            Assert.That(status, Is.EqualTo(NativeSim.GenerationMismatch));
+            Assert.That(rows[0].entityIndex, Is.EqualTo(65535));
+            Assert.Throws<InvalidOperationException>(() => surface.PresentEnvironment(session, null));
+            var wrongPackage = Path.Combine(PrivateRoot, "generated/mc-bhq8-level1-collision-v5-night");
+            var wrongPath = Path.Combine(PrivateRoot, "generated/mc-oi62-environment-level1-v2");
+            var wrong = OwnerAssetCache.OpenAndValidateEnvironment(wrongPath, wrongPackage);
+            Assert.Throws<InvalidOperationException>(() => surface.PresentEnvironment(session, wrong));
+            Assert.That(surface.FrameHash, Is.EqualTo(hash));
+            CollectionAssert.AreEqual(frame, session.SceneFrameIndices);
+            CollectionAssert.AreEqual(frame, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
         }
-
         [Test]
         public void RuntimeProductionRouteUsesThePresenterWithoutManagedGameplayState()
         {
-            var root = new GameObject("Level 2 runtime entity presenter route root");
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var locale = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE");
+            var scenarioPath = Environment.GetEnvironmentVariable("MC_RENDER_OBSERVATION_SCENARIO");
+            Assert.That(locale, Is.Not.Null.And.Not.Empty, "the production locale cache is required");
+            Assert.That(scenarioPath, Is.Not.Null.And.Not.Empty, "the installed package scenario is required");
+            var profile = Path.Combine(Path.GetTempPath(), "mc-entity-runtime-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(profile);
+            var root = new GameObject("production composed entity route");
             root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var activeBefore = NativeSession.ActiveSessionCount;
             try
             {
-                var runtime = root.AddComponent<MagicCarpetRuntime>();
-                runtime.QualificationInitializeLevel2Production(
-                    Level2Package,
-                    Level2DayCache);
-
-                Assert.That(runtime.QualificationPresentLevel2EntityRows(), Is.True);
-                Assert.That(
-                    runtime.QualificationLevel2EntityPresentations,
-                    Has.Length.EqualTo(65));
-                Assert.That(
-                    runtime.QualificationLevel2EntityPresentations.Count(row =>
-                        row.Family == CampaignEntityFamily.Goat),
-                    Is.EqualTo(36));
-                Assert.That(
-                    runtime.QualificationLevel2EntityPresentations.Count(row =>
-                        row.Family == CampaignEntityFamily.Villager),
-                    Is.EqualTo(29));
-                runtime.QualificationDisposeNativeOwners();
-                Assert.That(runtime.QualificationLevel2EntityPresentations, Is.Empty);
-                Assert.That(
-                    root.GetComponentsInChildren<MeshRenderer>(true),
-                    Is.Empty,
-                    "native owner disposal removes the entity presentation hierarchy");
+                var scenario = JsonUtility.FromJson<GameRuntimeTransport.InstalledPackageSetRequest>(
+                    File.ReadAllText(scenarioPath));
+                Assert.That(scenario.packages, Has.Length.EqualTo(3));
+                var arguments = new List<string> {
+                    "-mc-game-runtime",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-runtime-speech-cache", Path.Combine(generated, "mc2-campaign-speech-current"),
+                    "-mc-runtime-menu-cache", locale, "-mc-preferences-profile", profile
+                };
+                foreach (var package in scenario.packages)
+                    arguments.AddRange(new[] { "-mc-runtime-package", package.package_dir,
+                        "-mc-runtime-owner-cache", package.owner_cache_path,
+                        "-mc-runtime-presentation-cache", package.presentation_cache_path });
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime)
+                    .GetField("campaignSession", flags).GetValue(runtime);
+                var surface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeNightSurface", flags).GetValue(runtime);
+                var cache = (OwnerAssetCache)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeEnvironmentCache", flags).GetValue(runtime);
+                Assert.That(native, Is.Not.Null);
+                Assert.That(surface, Is.Not.Null);
+                Assert.That(native.Handle.ToString(), Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
+                var actors = native.Entities();
+                Assert.That(WorldRows(native, 0).Any(row =>
+                    actors[row.entityIndex].classId == 5 && actors[row.entityIndex].model == 1), Is.True,
+                    "real opening Goats reach the native presentation");
+                surface.PresentEnvironment(native, cache);
+                Assert.That(native.SceneSpritesComposited, Is.True);
+                Assert.That(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(), Is.Empty,
+                    "the runtime does not create a second managed sprite world");
+                CollectionAssert.AreEqual(native.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray());
+                var initialTick = native.Tick;
+                var paused = runtime.QualificationPauseGameRuntimeProduction();
+                native.SynchronizeGameRuntimeIdentity(paused);
+                surface.PresentEnvironment(native, cache);
+                Assert.That(native.Tick, Is.EqualTo(initialTick));
+                var pausedFrame = (byte[])native.SceneFrameIndices.Clone();
+                surface.PresentEnvironment(native, cache);
+                CollectionAssert.AreEqual(pausedFrame, native.SceneFrameIndices);
+                var resumed = runtime.QualificationResumeGameRuntimeProduction();
+                native.SynchronizeGameRuntimeIdentity(resumed);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(surface.Tick, Is.EqualTo(initialTick + 1));
+                var previousGeneration = native.Generation;
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(native.Generation, Is.Not.EqualTo(previousGeneration));
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, 0ul)));
+                var surfaceRoot = surface.Root.gameObject;
+                runtime.QualificationDisposeGameRuntimeProduction();
+                Assert.That(surfaceRoot == null, Is.True, "runtime disposal destroys the composed surface");
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             }
             finally
             {
+                runtime.QualificationDisposeGameRuntimeProduction();
                 UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(profile, true);
             }
         }
-
-        private static NativeSim.CampaignEntitySnapshot[] Copy(
-            NativeSim.CampaignEntitySnapshot[] source)
-        {
-            var copy = new NativeSim.CampaignEntitySnapshot[source.Length];
-            Array.Copy(source, copy, source.Length);
-            return copy;
-        }
-
         private static NativeSim.CampaignEntitySnapshot DriveProductionBeeToAction17(
             NativeCampaignSession session)
         {
@@ -505,11 +481,13 @@ namespace MagicCarpet.Native.Tests
             };
             for (var attempt = 0; attempt < 132; attempt++)
             {
-                var bee = session.Entities().SingleOrDefault(row =>
+                var bees = session.Entities().Where(row =>
                     row.authority == NativeSim.CampaignLive &&
-                    row.entityIndex == 119 &&
                     row.classId == 5 &&
-                    row.model == 2);
+                    row.model == 2 && row.active != 0).ToArray();
+                var bee = bees.FirstOrDefault(row => row.action == 17 && row.phase % 30 != 0);
+                if (bee.authority != NativeSim.CampaignLive)
+                    bee = bees.FirstOrDefault();
                 if (bee.authority == NativeSim.CampaignLive &&
                     bee.action == 17 && bee.phase % 30 != 0)
                 {
@@ -531,55 +509,6 @@ namespace MagicCarpet.Native.Tests
 
             Assert.Fail("the ordinary campaign route did not produce an action-17 Day Bee");
             return default;
-        }
-
-        private static NativeSim.CampaignEntitySnapshot LiveClass5Row(
-            ushort entityIndex,
-            byte model,
-            byte action,
-            short yaw,
-            ushort x,
-            ushort y,
-            short z)
-        {
-            return new NativeSim.CampaignEntitySnapshot
-            {
-                abiVersion = NativeSim.AbiVersion,
-                structSize = 52,
-                entityIndex = entityIndex,
-                sourceId = entityIndex,
-                nextRelation = ushort.MaxValue,
-                parameterRelation = ushort.MaxValue,
-                authority = NativeSim.CampaignLive,
-                active = 1,
-                classId = 5,
-                model = model,
-                action = action,
-                phase = 1,
-                x = x,
-                y = y,
-                z = z,
-                yaw = yaw,
-                reserved = new uint[4]
-            };
-        }
-
-        private static void AssertClass5Presentation(
-            CampaignEntityPresenter presenter,
-            ushort entityIndex,
-            CampaignEntityFamily family,
-            ushort renderParameter,
-            int baseTmap,
-            int logicalHeight)
-        {
-            var row = presenter.Presentations.Single(candidate =>
-                candidate.EntityIndex == entityIndex);
-            Assert.That(row.Family, Is.EqualTo(family));
-            Assert.That(row.RenderParameterIndex, Is.EqualTo(renderParameter));
-            Assert.That(row.BaseTmap, Is.EqualTo(baseTmap));
-            Assert.That(row.Selector, Is.EqualTo(baseTmap));
-            Assert.That(row.Scale.y, Is.EqualTo(logicalHeight / 64f));
-            Assert.That(row.Visible, Is.True);
         }
 
         private static int Mode17Selector(int baseTmap, short entityYaw, short cameraYaw)

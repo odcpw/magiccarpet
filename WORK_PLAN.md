@@ -990,6 +990,57 @@ generated/presenter-20261117. This is not a native Level7 encounter, human
 flight/combat, hardware audio, FPS or full campaign proof. Full .1/.3/.4
 acceptance remains OPEN, including the assembled Cave flight/corridor path.
 
+Renderer qualification follow-up — 2026-11-17: the existing Level14 two-form
+creature check now follows the natural action-driven group311 clear, actual
+draw admission, next source-turn SS2 transition and a later natural reset.
+Its original transformation/splash/contact assertions remain. The final exact
+check passes157.64s, including direct retained-clock equality across repeated
+reads (the gameplay hash alone does not cover those clocks). A same-state
+group-image ablation changes native pixels; that proves the group's visible
+contribution, not exclusive attribution of every changed pixel to that actor.
+The expected transition uses the production decoder and is sequencing evidence,
+not an independent decoder oracle.
+
+The existing strict incoming replay check now optionally covers actual Cave4,
+using its complete source owner before construction and the real prefix1–4
+resolver. It passes33.68s with exact restored snapshot/flow and empty completed
+history. This is a declared incoming Loading control, not earned prior missions.
+The resulting unchanged save also passes the public native loader. Root launched
+that save through the normal installed Original launcher, viewed Cave terrain,
+bounded forward/turn input and the source pause menu, and verified mapped native
+842fd4c1. The owned player/display are stopped. The first smoke checker waited
+for an obsolete marker and timed out; the corrected checker uses the existing
+SpiderCave startup event. No client/source bypass or runtime repair was needed.
+F5 while paused produced no save; no new save-key claim is made.
+
+The six old fixed-slot managed presenter checks now use the actual native-composed
+world, retaining their original semantic obligations. All six pass28.737s in the
+qualified Original cohort: exact Goat/Villager and five class5 mappings,
+same-pass hidden/current generation followed by reclaim, malformed/stale guards,
+runtime resource binding and public Fireball/Bee interaction. Actual source34
+group23 produces Fireball739; public pickup acquires it, held left input services
+its real activation delay, and declared player position/pitch tracks the moving
+Bee. The check requires payment, a live player-owned projectile, attributed
+damage and action17→18, with the same Unity surface/texture and no duplicate
+overlay. The compact public probe records projectile tick18 and damage250 at
+tick20. This is not organic secret arrival or uniquely attributed actor pixels.
+Earlier failures released the cast before activation and aimed above the moving
+Bee; source readiness or input acceptance alone was never a hit. A final C#
+conditional needed an explicit short cast in the older Original cohort.
+
+No production source changed in this follow-up; current installed native/player
+are reused and the qualified Original --check-installed passes. The canonical
+Modern checkout's separate installation is not the Original qualification target.
+UBS reports no C# warning/critical. Its two Rust whole-file scan yields three
+unchanged false-positive criticals: semantic secret-outcome equality and a
+diagnostic file-name nonce, not credentials. No added critical was identified;
+legacy formatting/whole-file warnings remain. Evidence:
+generated/render-completion-20261117, final presenter-current-6.xml.
+Bounded independent review found no new demonstrated production defect. Full
+.1/.3/.4 acceptance stays OPEN: broad admitted-family coverage, separately
+attributed final reflection pixels/Night water, and the joined installed Cave
+flight/corridor/creature route must not be inferred from representative checks.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;

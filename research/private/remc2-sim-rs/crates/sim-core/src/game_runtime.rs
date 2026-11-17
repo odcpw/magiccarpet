@@ -4174,30 +4174,45 @@ mod tests {
         let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
             || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
         ).join("generated");
-        for (external, relative) in [
+        let mut cases = vec![
             (2, "level2-day-block32-campaign-v2"),
             (3, "level3-day-block32-campaign-recipe-v2"),
-        ] {
-            let package = generated.join(relative);
+        ];
+        if std::env::var_os("MC_CORRECTED_CAVE_SOURCE_OWNER").is_some() {
+            cases.push((4, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"));
+        }
+        for (external, relative) in cases {
+            let package = if external == 4 {
+                std::env::var_os("MC_CORRECTED_CAVE_PACKAGE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| generated.join(relative))
+            } else {
+                generated.join(relative)
+            };
             // Opt-in actual source role, bound before construction. A full
             // environment owns the source animation catalog; adding it only
             // at cold load would correctly refuse a no-owner state receipt.
-            let source_owner = (external == 3)
-                .then(|| std::env::var_os("MC_CORRECTED_DAY_SOURCE_OWNER").map(PathBuf::from))
-                .flatten();
-            let resolver = Mc2RuntimePackageResolver::load([
+            let source_owner = match external {
+                3 => std::env::var_os("MC_CORRECTED_DAY_SOURCE_OWNER").map(PathBuf::from),
+                4 => std::env::var_os("MC_CORRECTED_CAVE_SOURCE_OWNER").map(PathBuf::from),
+                _ => None,
+            };
+            let mut inputs = vec![
                 Mc2CampaignInputs::new(if external == 2 {
                     package.clone()
                 } else {
                     level_two_package()
                 }),
-                source_owner.as_ref().map_or_else(
+                source_owner.as_ref().filter(|_| external == 3).map_or_else(
                     || Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
                     |owner| Mc2CampaignInputs::with_owner_cache(&package, owner),
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
-            ])
-            .unwrap();
+            ];
+            if external == 4 {
+                inputs.push(Mc2CampaignInputs::with_owner_cache(&package, source_owner.as_ref().unwrap()));
+            }
+            let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
             let definition = Arc::new(match &source_owner {
                 Some(owner) => crate::campaign::backend::load_mc2_campaign_with_owner_cache(
                     &package, owner, &default_catalog().unwrap(),
@@ -4227,7 +4242,7 @@ mod tests {
             resolver.open_pending(&mut source, guard, 523).unwrap();
             if source_owner.is_some() {
                 assert!(source.session().unwrap().backend().campaign_presentation_source()
-                    .simulation().source_animations.is_bound(), "initial Level3 constructor has the actual source catalog");
+                    .simulation().source_animations.is_bound(), "initial constructor has the actual source catalog");
             }
             if external == 3 {
                 // Independent owner-level play needs the earlier spells for
@@ -4266,7 +4281,7 @@ mod tests {
             // The default check still admits the legacy terrain-only adapter
             // without changing authority. The opt-in full role must remain
             // identical to the source role installed before construction.
-            let cached_resolver = Mc2RuntimePackageResolver::load([
+            let mut cached_inputs = vec![
                 if external == 2 {
                     Mc2CampaignInputs::with_owner_cache(
                         &package,
@@ -4277,12 +4292,15 @@ mod tests {
                 },
                 Mc2CampaignInputs::with_owner_cache(
                     generated.join("level3-day-block32-campaign-recipe-v2"),
-                    source_owner.clone().unwrap_or_else(||
+                    source_owner.clone().filter(|_| external == 3).unwrap_or_else(||
                         generated.join("level3-day-minimap-owner-cache-v3/components/material")),
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
-            ])
-            .unwrap();
+            ];
+            if external == 4 {
+                cached_inputs.push(Mc2CampaignInputs::with_owner_cache(&package, source_owner.as_ref().unwrap()));
+            }
+            let cached_resolver = Mc2RuntimePackageResolver::load(cached_inputs).unwrap();
             let mut restored = GameRuntime::<Mc2CampaignBackend>::title(524).unwrap();
             let guard = restored.identity().guard();
             cached_resolver
@@ -4296,11 +4314,15 @@ mod tests {
                 restored.identity().active_runtime_flow,
                 source.identity().active_runtime_flow
             );
+            assert!(source.completed_levels.is_empty());
+            assert!(restored.completed_levels.is_empty());
             // Optional fresh owner-local diagnostic output, never an updated golden.
             let output_variable = if external == 2 {
                 "MC_CORRECTED_LEVEL2_REPLAY_OUTPUT"
-            } else {
+            } else if external == 3 {
                 "MC_CORRECTED_DAY_REPLAY_OUTPUT"
+            } else {
+                "MC_CORRECTED_CAVE_REPLAY_OUTPUT"
             };
             if let Some(path) = std::env::var_os(output_variable) {
                 use std::io::Write;
