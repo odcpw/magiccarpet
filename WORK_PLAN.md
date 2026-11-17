@@ -1089,6 +1089,41 @@ reclaim and source camera/order checks are reused, not repeated. Batch3 now owns
 the remaining joined installed Cave flight/corridor/creature path; mc-oi6.4 and
 the assembled campaign remain OPEN.
 
+Sequential renderer batch3 — the new same-session Cave4 native path passes9.29s.
+It uses the exact installed package/owner: source switch4/group11 constructs
+switch577/group50 and authored Spider600; source switch125/group40/command584
+opens controller206. Both live height planes and consecutive native frames
+change with the same controller/Spider incarnations. After two declared player
+approach controls,17 ordinary hover-turn commands and forward/climb/free-look
+commands show1,213 actual palette-visible Spider pixels on a step that moves the
+player, then enter the real corridor strip and cross its far east edge at
+(52798,26252,3081). Source Cave floor/ceiling checks hold throughout. Root viewed
+the native flight image and actor-omitted diagnostic comparison. The omission
+changes only a same-state clone; no live terrain, actor or camera is overwritten
+during flight. Earlier failed routes are preserved: admitted Spider rows alone
+were not visible, and northward flight missed the east-west corridor. Assertions
+were retained and the source flight controls corrected. This uses the existing
+speed-index0 native harness, not a claim of identical fixed-step commands in
+the normal GameRuntime speed schedule.
+
+This is useful connected native evidence, not a continuous installed-client
+mission route. The two initial player relocations are not GameRuntime commands
+and cannot be promoted into a strict runtime replay. The only current valid
+Cave checkpoint found is the declared incoming entrance save. Public ordinary
+flight, observation and save APIs exist, but no progressed near-corridor save
+or continuous installed witness is available. No replay receipt rewrite,
+teleport API, legacy-launcher bypass or automated mission playthrough was added.
+Keep mc-oi6.4 in_progress with its full original acceptance. Existing installed
+Cave movement and exact Cave native→Unity transfer remain separate proofs;
+bounded consumer review found no stale-geometry/missing-consumer defect.
+
+Only a test module changed. Native842fd4c1/player build-wuukj1s5 is reused and
+the qualified Original --check-installed passes. Changed-file UBS has no
+critical; its575 whole-file warnings include existing legacy/test scope.
+Evidence: generated/cave-connected-20261117 (final traversal plus failure
+receipts), and the earlier controlled Cave normal/rolled/near/plane checks.
+No full mission, human combat, FPS or hardware-audio claim is made.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;

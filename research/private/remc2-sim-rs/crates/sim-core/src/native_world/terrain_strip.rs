@@ -2062,6 +2062,231 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn mission_four_spider_and_corridor_share_live_opening() {
+        use crate::FlightWorld;
+        let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let cache = generated.join("mc-b9s2-cursor-level4-20261029");
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            &package, &cache, crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
+        ).expect("installed Cave4 package and selected owner");
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache).unwrap();
+        let player = campaign.simulation().state.entity_index;
+        let corridor = campaign.simulation().source_arena().handle(206).unwrap();
+        let position = campaign.simulation().entities()[206].position;
+        let mut receipt = Vec::new();
+        let mut step = |campaign: &mut crate::campaign::CampaignSession, phase: &str, command: crate::PlayerCommand| {
+            let _ = campaign.step(command, 0);
+            let sim = campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event,
+                crate::native_world::Mc2DispatchEvent::Error { .. })), "{phase}: {:?}", sim.dispatch_events());
+            let row = &sim.entities()[206];
+            let view = sim.source_camera_pose();
+            let spider = sim.creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Spider)
+                .find(|row| row.living && matches!(row.origin,
+                    crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record: 600 }));
+            receipt.push(serde_json::json!({"phase":phase, "tick":sim.state.tick,
+                "input":{"flags":command.flags,"roll":command.roll,"pitch":command.pitch,
+                    "argument_6":command.argument_6,"argument_8":command.argument_8},
+                "player":{"x":sim.state.position.x,"y":sim.state.position.y,"z":sim.state.position.z},
+                "camera":{"x":view.x,"y":view.y,"z":view.z,"yaw":view.yaw,"pitch":view.pitch,"roll":view.roll},
+                "spider":spider.map(|root| { let row = &sim.entities()[usize::from(root.handle.source_slot)];
+                    serde_json::json!({"slot":root.handle.source_slot,"generation":root.handle.generation,
+                        "x":row.position.x,"y":row.position.y,"z":row.position.z,"action":row.action}) }),
+                "corridor_life":row.life,
+                "ground":sim.canonical_terrain().ground_height(position),
+                "ceiling":sim.canonical_terrain().ceiling_height(position)}));
+        };
+        for _ in 0..256 {
+            step(&mut campaign, "closing", crate::PlayerCommand::default());
+            if campaign.simulation().entities()[206].life == 3 { break; }
+        }
+        let closed = campaign.simulation().canonical_terrain();
+        assert_eq!(campaign.simulation().entities()[206].life, 3);
+        assert!(closed.cave_collision_blocked(position));
+        let closed_ground = closed.ground_height(position);
+        let closed_ceiling = closed.ceiling_height(position).unwrap();
+
+        // Only player position is controlled. The two source switches, their
+        // groups, the Spider and controller are ordinary scheduled owners.
+        let switch = campaign.simulation().entities()[4].clone();
+        assert_eq!((switch.class, switch.model, switch.source_id), (11, 0, 11));
+        let approach = (-8_i16..=8).flat_map(|dy| (-8_i16..=8).map(move |dx| (dx, dy)))
+            .find_map(|(dx, dy)| {
+                let sim = campaign.simulation();
+                let mut p = Position { x: switch.position.x.wrapping_add_signed(dx * 256),
+                    y: switch.position.y.wrapping_add_signed(dy * 256), z: 0 };
+                let player_row = &sim.entities()[usize::from(player)];
+                let extent = |row: &EntitySnapshot, offset| i16::from_le_bytes(
+                    row.record_bytes()[offset..offset + 2].try_into().unwrap());
+                if !crate::level1_mission::source_entities_overlap_xy(switch.position,
+                    extent(&switch, 88), extent(&switch, 90), p, extent(player_row, 88), extent(player_row, 90))
+                    || sim.canonical_terrain().cave_collision_blocked(p) { return None; }
+                p.z = sim.canonical_terrain().ground_height(p).checked_add(sim.profile().ground_clearance)?;
+                (p.z <= sim.canonical_terrain().ceiling_height(p)?.checked_sub(sim.profile().ceiling_clearance)?)
+                    .then_some(p)
+            }).expect("source switch4 has an open player approach");
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        let mut group11 = false;
+        let mut group50 = false;
+        let mut spider = None;
+        for _ in 0..128 {
+            step(&mut campaign, "spider-switch", crate::PlayerCommand::default());
+            let sim = campaign.simulation();
+            for event in sim.dispatch_events() {
+                if let crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. } = event {
+                    group11 |= *source_slot == 4 && *group == 11 && authored_indices.contains(&577);
+                    group50 |= *group == 50 && authored_indices.contains(&600);
+                }
+            }
+            spider = sim.creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Spider)
+                .find(|row| row.living && matches!(row.origin,
+                    crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record: 600 }))
+                .map(|row| row.handle);
+            if spider.is_some() && group11 && group50 { break; }
+        }
+        let spider = spider.expect("real switch4/group11/switch577/group50 constructs Spider600");
+        assert!(group11 && group50);
+        let switch = campaign.simulation().entities()[125].clone();
+        assert_eq!((switch.class, switch.model, switch.action, switch.source_id), (11, 0, 0, 40));
+        let mut approach = switch.position;
+        approach.x = approach.x.wrapping_sub(768);
+        approach.z = campaign.simulation().canonical_terrain().ground_height(approach)
+            + campaign.simulation().profile().ground_clearance;
+        assert!(!campaign.simulation().canonical_terrain().cave_collision_blocked(approach));
+        assert!(approach.z <= campaign.simulation().canonical_terrain().ceiling_height(approach).unwrap()
+            - campaign.simulation().profile().ceiling_clearance);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        let mut produced = false;
+        let mut opened = false;
+        let mut previous_frame: Option<(i16, i16, sim_session::CameraPose, Vec<u8>, Vec<u16>)> = None;
+        let mut changed_frame = false;
+        let mut admitted_spider = false;
+        for _ in 0..256 {
+            step(&mut campaign, "corridor-switch-and-opening", crate::PlayerCommand::default());
+            let sim = campaign.simulation();
+            assert_eq!(sim.source_arena().handle(corridor.source_slot), Some(corridor));
+            assert_eq!(sim.source_arena().handle(spider.source_slot), Some(spider));
+            produced |= sim.dispatch_events().iter().any(|event| matches!(event,
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. }
+                if *source_slot == 125 && *group == 40 && authored_indices.contains(&584)));
+            let frame = crate::day_indexed_frame::DayIndexedFrameState::new(campaign.generation())
+                .render_current(campaign.inspection(), sim, &assets, campaign.generation()).unwrap();
+            admitted_spider |= frame.animation_sources().iter().any(|row| row.entity_index == spider.source_slot);
+            let ground = sim.canonical_terrain().ground_height(position);
+            let ceiling = sim.canonical_terrain().ceiling_height(position).unwrap();
+            let camera = sim.source_camera_pose();
+            if let Some((previous_ground, previous_ceiling, previous_camera, previous_pixels, previous_orders)) = previous_frame.take() {
+                if (previous_ground != ground || previous_ceiling != ceiling) && previous_camera == camera
+                    && previous_pixels.iter().zip(&frame.scene_indices)
+                        .zip(previous_orders.iter().zip(frame.cave_terrain_orders.as_ref().unwrap()))
+                        .any(|((old_pixel, pixel), (old_order, order))| old_pixel != pixel && old_order != order) {
+                    changed_frame = true;
+                }
+            }
+            previous_frame = Some((ground, ceiling, camera, frame.scene_indices, frame.cave_terrain_orders.unwrap()));
+            if sim.entities()[206].life == 4 { opened = true; break; }
+        }
+        assert!(produced && opened, "ordinary switch125/group40/command584 opens controller206");
+        let terrain = campaign.simulation().canonical_terrain();
+        assert!(!terrain.cave_collision_blocked(position));
+        assert!(terrain.ground_height(position) < closed_ground);
+        assert!(terrain.ceiling_height(position).unwrap() > closed_ceiling);
+        assert!(changed_frame, "live source steps publish changed Cave frames");
+        assert!(admitted_spider, "the same live source camera admits Spider600 while the corridor opens");
+        let mut flight = position;
+        flight.z = (terrain.ground_height(position) + terrain.ceiling_height(position).unwrap()) / 2;
+        assert_eq!(crate::resolve_legacy_movement(&mut crate::FlightState::default(), flight, flight,
+            crate::FlightProfile::CAVE, terrain), crate::MovementResolution::Accept(flight));
+        // Continue this same session with ordinary flight input. No player
+        // relocation, camera override or terrain mutation occurs after the
+        // source switch approach above.
+        // Turn toward the east-west corridor before accelerating, so the
+        // player stays within its narrow north-south extent.
+        for _ in 0..17 {
+            step(&mut campaign, "hover-turn", crate::PlayerCommand { roll: 127, ..Default::default() });
+        }
+        let flight_start = campaign.simulation().state.position;
+        let mut moved = false;
+        let mut entered = false;
+        let mut crossed = false;
+        let mut visible_spider = None;
+        for _ in 0..64 {
+            // Negative pitch climbs: move_entity subtracts the signed sine
+            // contribution from altitude. Ordinary free-look keeps the
+            // source camera level and facing east along the corridor.
+            let before_step = campaign.simulation().state.position;
+            let yaw = campaign.simulation().state.yaw;
+            let pitch = campaign.simulation().state.pitch_accumulator;
+            step(&mut campaign, "flight", crate::PlayerCommand { flags: 1, pitch: -64,
+                argument_6: 512_i16.wrapping_sub(yaw) as u16,
+                argument_8: (-(pitch / 2)) as u16, ..Default::default() });
+            let sim = campaign.simulation();
+            assert_eq!(sim.source_arena().handle(spider.source_slot), Some(spider));
+            let player_position = sim.state.position;
+            moved |= player_position != flight_start;
+            let terrain = sim.canonical_terrain();
+            assert!(player_position.z >= terrain.ground_height(player_position));
+            assert!(player_position.z <= terrain.ceiling_height(player_position).unwrap());
+            assert_eq!(sim.entities()[206].life, 4, "the same corridor remains open during flight");
+            let within_span = (99..=106).contains(&(player_position.y >> 8));
+            entered |= within_span && player_position.x >= position.x - 256 && player_position.x <= position.x + 256;
+            crossed |= entered && within_span && player_position.x > position.x + 256;
+            let generation = campaign.generation();
+            let full = crate::day_indexed_frame::DayIndexedFrameState::new(generation)
+                .render_current(campaign.inspection(), sim, &assets, generation).unwrap();
+            if visible_spider.is_none() && full.animation_sources().iter().any(|row| row.entity_index == spider.source_slot) {
+                let row = sim.campaign_entity_presentations(sim.source_camera_pose().yaw).unwrap().into_iter()
+                    .find(|row| row.entity_index == spider.source_slot).unwrap();
+                let mut without = campaign.clone();
+                without.simulation_mut().session.state.live.economy.economy.map_chains.sync_entity(
+                    crate::renderable_map_chain::RenderableMapSeed { entity_index: spider.source_slot,
+                        active: false, x: row.position.x, y: row.position.y }).unwrap();
+                let absent = crate::day_indexed_frame::DayIndexedFrameState::new(generation)
+                    .render_current(without.inspection(), without.simulation(), &assets, generation).unwrap();
+                let changed: Vec<_> = full.scene_indices.iter().zip(&absent.scene_indices).enumerate()
+                    .filter_map(|(index, (&a, &b))| {
+                        let a = usize::from(a) * 3; let b = usize::from(b) * 3;
+                        (full.palette_rgb8[a..a + 3] != absent.palette_rgb8[b..b + 3]).then_some(index)
+                    }).collect();
+                if player_position != before_step && !changed.is_empty() {
+                    visible_spider = Some((sim.source_camera_pose(), full, absent, changed));
+                }
+            }
+            if crossed && visible_spider.is_some() { break; }
+        }
+        drop(step);
+        if let Some(path) = std::env::var_os("MC_CAVE_CONNECTED_RECEIPT") {
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+            serde_json::to_writer_pretty(&mut output, &serde_json::json!({"controlled_player_approach":true,
+                "spider_slot":spider.source_slot,"spider_generation":spider.generation,
+                "corridor_slot":corridor.source_slot,"steps":receipt})).unwrap();
+        }
+        let sim = campaign.simulation();
+        let source = &sim.entities()[usize::from(spider.source_slot)];
+        eprintln!("Cave4 flight end moved={moved} crossed={crossed} view={:?} player={:?} Spider={:?} action={} visible={}",
+            sim.source_camera_pose(), sim.state.position, source.position, source.action, visible_spider.is_some());
+        assert!(moved, "ordinary flight input must move the real player within the live Cave");
+        assert!(crossed, "ordinary flight must cross the far edge of the opened corridor");
+        let (view, full, absent, changed) = visible_spider.expect("the live flight view shows real Spider600 pixels");
+        eprintln!("Cave4 live flight Spider={} view={view:?} visible_pixels={} first=({}, {})",
+            spider.source_slot, changed.len(), changed[0] % 320, changed[0] / 320);
+        if let Some(root) = std::env::var_os("MC_CAVE_CONNECTED_EVIDENCE") {
+            use std::io::Write;
+            let root = std::path::PathBuf::from(root);
+            std::fs::create_dir_all(&root).unwrap();
+            for (name, frame) in [("flight", &full), ("without-spider", &absent)] {
+                let mut output = std::fs::OpenOptions::new().write(true).create_new(true)
+                    .open(root.join(format!("{name}.ppm"))).unwrap();
+                write!(output, "P6\n320 200\n255\n").unwrap();
+                for &index in &frame.scene_indices {
+                    output.write_all(&frame.palette_rgb8[usize::from(index) * 3..usize::from(index) * 3 + 3]).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mission_four_corridors_change_both_planes_and_live_flight_collision() {
         use crate::FlightWorld;
         let package = std::env::var_os("MC_CAVE_CORRIDOR_OWNER_PACKAGE").map_or_else(
