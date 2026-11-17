@@ -719,6 +719,8 @@ pub struct WorldRenderOptions {
     pub shadows: bool,
     pub flat_shading: bool,
     pub viewport_size: u8,
+    #[cfg(test)]
+    omitted_reflection_actor: Option<u16>,
 }
 
 impl WorldRenderOptions {
@@ -730,6 +732,8 @@ impl WorldRenderOptions {
             shadows: true,
             flat_shading: false,
             viewport_size: 40,
+            #[cfg(test)]
+            omitted_reflection_actor: None,
         }
     }
 }
@@ -1358,6 +1362,8 @@ fn render_environment_indexed_frame(
         .transpose()?;
     if let Some(sprites) = source_sprites.as_mut() {
         sprites.set_animation_clocks(&session.source_animation_clocks);
+        #[cfg(test)]
+        sprites.omit_reflection_actor(render_options.omitted_reflection_actor);
     }
     if let (Some(sprites), Some(viewport)) = (source_sprites.as_mut(), world_viewport) {
         sprites.set_viewport(viewport);
@@ -2580,6 +2586,72 @@ mod tests {
             let proof = witnessed.unwrap_or_else(|| panic!("no real outdoor actor retained and overpainted: level={}", selection.external_level));
             eprintln!("real outdoor actor order level={} actor={} camera={:?} rank={} visible={} overpainted={}",
                 selection.external_level, proof.0, proof.1, proof.2, proof.3, proof.4);
+        }
+    }
+
+    #[test]
+    fn real_day_and_night_actor_reflections_survive_water_composition() {
+        for (package, cache, selection, actor, x, y) in [
+            ("level3-day-block32-campaign-recipe-v2", "mc-level3-environment-exit-20261025", crate::campaign::spec::CampaignSelection::LEVEL3, 220_u16, 56192, 24960),
+            ("mc-bhq8-level1-collision-v5-night", "mc-oi62-environment-level1-v2", crate::campaign::spec::CampaignSelection::LEVEL1, 51, 30345, 55440),
+        ] {
+            let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+                generated_path(package), generated_path(cache), selection,
+            ).unwrap();
+            let assets = DayIndexedFrameAssets::load(generated_path(cache)).unwrap();
+            let pose = sim_session::CameraPose { x, y, z: 128, yaw: 0, pitch: 11, roll: 0 };
+            campaign.simulation_mut().session.state.scratch.source_camera_pose = Some(pose);
+            let generation = campaign.generation();
+            let before = campaign.state_hash();
+            let clocks = campaign.simulation().source_animation_clocks.clone();
+            assert!(campaign.simulation().campaign_entity_presentations(0).unwrap().iter()
+                .any(|row| row.entity_index == actor && row.draw_order != u32::MAX));
+            let mut carrier = DayIndexedFrameState::new(generation);
+            let full = carrier.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            assert_eq!(carrier.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap(), full);
+            let mut omitted = DayIndexedFrameState::new(generation);
+            omitted.set_render_options(WorldRenderOptions {
+                omitted_reflection_actor: Some(actor), ..WorldRenderOptions::default()
+            });
+            let absent = omitted.render_current(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            let changed: Vec<_> = full.scene_indices.iter().zip(&absent.scene_indices).enumerate()
+                .filter_map(|(index, (a, b))| (a != b).then_some(index)).collect();
+            assert_eq!(full.source_sprite_stats.reflection_calls, absent.source_sprite_stats.reflection_calls + 1);
+            assert!(full.source_sprite_stats.reflection_writes > absent.source_sprite_stats.reflection_writes);
+            assert!(!changed.is_empty(), "the reflected actor survives into the final water composition");
+            assert_eq!(full.palette_rgb8, absent.palette_rgb8);
+            assert!(changed.iter().any(|&index| {
+                let a = usize::from(full.scene_indices[index]) * 3;
+                let b = usize::from(absent.scene_indices[index]) * 3;
+                full.palette_rgb8[a..a + 3] != absent.palette_rgb8[b..b + 3]
+            }), "the reflected actor changes visible palette colours");
+            assert_eq!((full.source_sprite_stats.primary_calls, full.source_sprite_stats.primary_writes,
+                full.source_sprite_stats.shadow_calls, full.source_sprite_stats.shadow_writes),
+                (absent.source_sprite_stats.primary_calls, absent.source_sprite_stats.primary_writes,
+                 absent.source_sprite_stats.shadow_calls, absent.source_sprite_stats.shadow_writes));
+            assert_eq!(full.terrain_input_hash, absent.terrain_input_hash);
+            assert_eq!(full.terrain_command_hash, absent.terrain_command_hash);
+            assert_eq!(campaign.state_hash(), before, "render reads preserve the live actor and terrain");
+            assert_eq!(campaign.simulation().source_animation_clocks, clocks, "render reads do not advance source clocks");
+            eprintln!("reflection witness level={} actor={} pose={pose:?} changed={} first=({}, {})",
+                selection.external_level, actor, changed.len(), changed[0] % 320, changed[0] / 320);
+            if let Some(root) = std::env::var_os("MC_OUTDOOR_REFLECTION_EVIDENCE") {
+                use std::io::Write;
+                let root = std::path::PathBuf::from(root);
+                std::fs::create_dir_all(&root).unwrap();
+                for (name, frame) in [("composed", &full), ("without-actor-reflection", &absent)] {
+                    let mut ppm = std::fs::OpenOptions::new().write(true).create_new(true)
+                        .open(root.join(format!("level{}-{name}.ppm", selection.external_level))).unwrap();
+                    write!(ppm, "P6\n320 200\n255\n").unwrap();
+                    for &index in &frame.scene_indices {
+                        ppm.write_all(&frame.palette_rgb8[usize::from(index) * 3..usize::from(index) * 3 + 3]).unwrap();
+                    }
+                }
+                let mut receipt = std::fs::OpenOptions::new().write(true).create_new(true)
+                    .open(root.join(format!("level{}-reflection.txt", selection.external_level))).unwrap();
+                writeln!(receipt, "actor={actor} pose={pose:?} changed={} coordinates={:?}", changed.len(),
+                    changed.iter().take(32).map(|index| (index % 320, index / 320)).collect::<Vec<_>>()).unwrap();
+            }
         }
     }
 

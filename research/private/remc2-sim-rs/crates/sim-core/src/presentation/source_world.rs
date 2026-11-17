@@ -58,6 +58,8 @@ pub(crate) struct SourceWorldSprites<'a> {
     animation_clocks: Option<&'a crate::source_animation::SourceAnimationClocks>,
     buckets: BTreeMap<u16, Vec<Sprite>>,
     reflections: bool,
+    #[cfg(test)]
+    omitted_reflection_actor: Option<u16>,
     previous_pixel_mode: u8,
     viewport: Option<crate::classic_hd::ClassicHdViewport>,
     map_type: MapType,
@@ -207,6 +209,8 @@ impl<'a> SourceWorldSprites<'a> {
             reflections: map_type != MapType::Cave
                 && camera.reflections
                 && camera.eye_z < REFLECTION_EYE_Z_LIMIT,
+            #[cfg(test)]
+            omitted_reflection_actor: None,
             previous_pixel_mode,
             viewport: None,
             map_type,
@@ -221,6 +225,11 @@ impl<'a> SourceWorldSprites<'a> {
 
     pub(crate) fn reflections_enabled(&self) -> bool {
         self.reflections
+    }
+
+    #[cfg(test)]
+    pub(crate) fn omit_reflection_actor(&mut self, slot: Option<u16>) {
+        self.omitted_reflection_actor = slot;
     }
 
     /// Bind the shared source lifetime for pure frame reads in every pass.
@@ -330,6 +339,10 @@ impl<'a> SourceWorldSprites<'a> {
                     -i32::from(source.position.z),
                 );
                 self.previous_pixel_mode = sprite.reflection_pixel_mode;
+                #[cfg(test)]
+                if self.omitted_reflection_actor == Some(source.entity_index) {
+                    continue;
+                }
                 let result = draw(
                     reflected,
                     sprite.reflection_pixel_mode,

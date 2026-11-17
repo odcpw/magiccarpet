@@ -1067,6 +1067,28 @@ the previously installed842fd4c1 lifecycle checks. Batch2 is actual outdoor
 reflection pixels and batch3 is joined Cave flight/corridor/creature; .3/.4 and
 full campaign acceptance remain OPEN. No Rust/Unity production code changed.
 
+Sequential renderer batch2 — mc-oi6.3 is now CLOSED. A test-only per-instance
+omission at the named actor's reflected raster call leaves primary/shadow calls
+and writes, source pixel-mode continuation, terrain input/commands and actual
+authority/clocks unchanged. At pinned actual Day3 actor220 and Night1 actor51
+water views, its omission removes26 and416 final palette-visible RGB pixels
+respectively. The final exact check passes3.07s; actual terrain/actor overpaint
+passes3.59s and the existing flat5/7, reflective26 and shadow option checks
+pass1.72s at the same compiled source. Root viewed both real native composed
+scenes and independently checked their RGB differences. These are controlled
+native views, not newly sampled physical-display water encounters. Prior exact
+native→Unity/no-duplicate checks and actual installed Day/Night load evidence
+remain the real client transfer evidence.
+
+Bounded independent gate review found no production defect; the two-file change
+is cfg(test) only. Installed Original native842fd4c1/player build-wuukj1s5 is
+reused and --check-installed passes. UBS's lone whole-file critical is an unchanged
+test-directory filename nonce, not a security token; no added critical found.
+Evidence: generated/outdoor-reflection-20261117. Existing projectile impact/hide/
+reclaim and source camera/order checks are reused, not repeated. Batch3 now owns
+the remaining joined installed Cave flight/corridor/creature path; mc-oi6.4 and
+the assembled campaign remain OPEN.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
