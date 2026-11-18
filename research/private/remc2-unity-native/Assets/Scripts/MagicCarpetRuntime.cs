@@ -2940,7 +2940,7 @@ namespace MagicCarpet.Native
             gameRuntimeSpellMarkRequested = null;
             gameRuntimeSpellCycleRequested = null;
             var afterStepIdentity = session.ObservedCampaignIdentity();
-            DrainGameRuntimeSemanticEvents();
+            DrainGameRuntimeSemanticEvents(advanceMusic: true);
             if (level2Mode)
             {
                 UpdateGameRuntimeLevel2Presentation(
@@ -2967,7 +2967,7 @@ namespace MagicCarpet.Native
             AdvanceGameRuntimeHelpFrame();
         }
 
-        private void DrainGameRuntimeSemanticEvents()
+        private void DrainGameRuntimeSemanticEvents(bool advanceMusic = false)
         {
             const uint PageLimit = 128;
             const int RecentEventLimit = 256;
@@ -3019,7 +3019,7 @@ namespace MagicCarpet.Native
                 cursor == head,
                 "semantic event drain reaches the authoritative retained head");
             gameRuntimeSemanticEventCursor = cursor;
-            ConsumeGameRuntimeAudioEffects();
+            ConsumeGameRuntimeAudioEffects(advanceMusic);
         }
 
         private void AdvanceGameRuntimeHelpFrame()
@@ -3099,10 +3099,11 @@ namespace MagicCarpet.Native
                     }
                     if (playerPreferences != null)
                         replacement.ApplyPreferences(playerPreferences.Current.preferences);
-                    replacement.ApplyCampaignMusic(music);
+                    replacement.ValidateCampaignMusicState(music);
                     replacement.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
                     campaignSession.BeginRuntimeEffectConsumption(observation);
                 });
+            ownerAudio.ApplyCampaignMusic(music);
             if (!preserveSpeech) campaignSpeech.Stop();
             if (playerPreferences != null)
                 campaignSpeech.ApplyPreferences(playerPreferences.Current.preferences);
@@ -3143,6 +3144,12 @@ namespace MagicCarpet.Native
             // Pause retires native voices immediately. Observe that accepted
             // boundary even if resume happens before the next effect drain.
             RebindGameRuntimeAudioGeneration();
+            if (ownerAudio != null && campaignSession != null)
+            {
+                campaignSession.SynchronizeGameRuntimeIdentity(identity);
+                Level2Audio.Refresh();
+                ownerAudio.ApplyCampaignMusic(level2DayMusic);
+            }
             return identity;
         }
 
@@ -3297,7 +3304,7 @@ namespace MagicCarpet.Native
             gameRuntimeBriefingPlayed = true;
         }
 
-        private void ConsumeGameRuntimeAudioEffects()
+        private void ConsumeGameRuntimeAudioEffects(bool advanceMusic)
         {
             if (campaignSession == null || string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath)) return;
             campaignSession.SynchronizeGameRuntimeIdentity(session.ObservedCampaignIdentity());
@@ -3358,7 +3365,10 @@ namespace MagicCarpet.Native
             FlushPooledAudio(pooledAudio);
             if (ownerAudio != null)
             {
-                UpdateLevel2DayMusicPresentation();
+                if (advanceMusic)
+                    UpdateLevel2DayMusicPresentation();
+                else
+                    Level2Audio.Refresh();
                 ownerAudio.ApplyCampaignMusic(level2DayMusic);
             }
         }
@@ -10565,7 +10575,7 @@ namespace MagicCarpet.Native
                     RebindGameRuntimeAudioGeneration();
                     // Resume may advance the generation again. Observe its music
                     // without servicing an extra fade-timer callback.
-                    level2DayMusic = campaignSession.DayMusicState();
+                    Level2Audio.Refresh();
                     ownerAudio.ApplyCampaignMusic(level2DayMusic);
                 }
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();
@@ -10905,7 +10915,7 @@ namespace MagicCarpet.Native
             campaignSpeech?.ApplyPreferences(applied.preferences);
             if (ownerAudio != null && campaignSession != null)
             {
-                UpdateLevel2DayMusicPresentation();
+                Level2Audio.Refresh();
                 ownerAudio.ApplyCampaignMusic(level2DayMusic);
             }
             return applied;
@@ -11917,7 +11927,7 @@ namespace MagicCarpet.Native
             if (action == GameRuntimeTransport.SourceAudioAction.Music && ownerAudio != null && campaignSession != null)
             {
                 // Observe the accepted source state without an extra fade callback.
-                level2DayMusic = campaignSession.DayMusicState();
+                Level2Audio.Refresh();
                 ownerAudio.ApplyCampaignMusic(level2DayMusic);
             }
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderObservation();

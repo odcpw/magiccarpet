@@ -58,8 +58,10 @@ namespace MagicCarpet.Native
             Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
             byte lineHighlight, int anchorX, int anchorY)
         {
-            if ((anchorX != 540 && anchorX != 600) || anchorY != 48)
-                throw new ArgumentException("source hint 41 anchor is invalid");
+            var manaAnchor = (anchorX == 540 || anchorX == 600) && anchorY == 48;
+            var minimapAnchor = (anchorX == 64 && anchorY == 66) || (anchorX == 190 && anchorY == 202);
+            if (!manaAnchor && !minimapAnchor)
+                throw new ArgumentException("source gameplay hint anchor is invalid");
             var centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
             var centerY = anchorY - 94 + 28 < 80 ? anchorY + 66 : anchorY - 94;
             return BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,

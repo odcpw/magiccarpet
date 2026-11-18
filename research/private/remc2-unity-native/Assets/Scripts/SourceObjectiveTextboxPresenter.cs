@@ -64,14 +64,15 @@ namespace MagicCarpet.Native
             PresentRaster(next, sourceText, sessionGeneration, -1);
         }
 
-        internal void PresentHint(string sourceText, ulong sessionGeneration, int anchorX)
+        internal void PresentHint(string sourceText, ulong sessionGeneration, int anchorX, int anchorY = 48)
         {
-            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == anchorX) return;
+            var key = checked(anchorY * 640 + anchorX);
+            if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == key) return;
             var bytes = SourceBytes(sourceText);
             var next = ObjectiveTextboxCompositor.BuildSourceHintForeground(bytes, assets.Glyphs,
                 assets.GlyphMasks, assets.Corner, assets.Side, assets.Horizontal, assets.HelpTextColor,
-                assets.BlendSelector, assets.TextColor, anchorX, 48);
-            PresentRaster(next, sourceText, sessionGeneration, anchorX);
+                assets.BlendSelector, assets.TextColor, anchorX, anchorY);
+            PresentRaster(next, sourceText, sessionGeneration, key);
         }
 
         internal void PresentContextHint(string sourceText, ulong sessionGeneration, int centerX, int centerY)

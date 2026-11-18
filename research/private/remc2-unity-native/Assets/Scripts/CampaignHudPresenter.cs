@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -101,16 +102,18 @@ namespace MagicCarpet.Native
             internal ushort[] VisibleSpellRecords { get; private set; }
             internal int VisibleSpellHighlight { get; private set; } = -1;
 
-            internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding)
+            internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
+                bool hasMinimapHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
-                var ids = new[] { 1, 3, 40, 41, 42, 69, 70, 71,
+                var ids = new List<int> { 1, 3, 40, 41, 42, 69, 70, 71,
                     72, 73, 74, 75, 76, 77, 78, 79, 80, 85 };
-                rows = new RowState[ids.Length];
-                for (var index = 0; index < ids.Length; index++) rows[index] = new RowState(rowFor(ids[index]));
-                mana = rows[3];
+                if (hasMinimapHelp) ids.Insert(1, 2);
+                rows = new RowState[ids.Count];
+                for (var index = 0; index < ids.Count; index++) rows[index] = new RowState(rowFor(ids[index]));
+                mana = FindRow(41);
             }
 
             internal void ApplyHelpMode(bool enabled)
@@ -146,7 +149,7 @@ namespace MagicCarpet.Native
 
             internal void Advance(bool leftUnavailable, bool rightUnavailable,
                 bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
-                bool levelEnd = false, bool minimapEnabled = true)
+                bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -191,12 +194,15 @@ namespace MagicCarpet.Native
                         {
                             foreach (var row in rows)
                             {
-                                var eligible = row.Binding.Row == 1 || (row.Binding.Row == 3 ? wallContactCounter != 0 :
-                                    row.Binding.Row == 41 && (leftUnavailable || rightUnavailable));
-                                // GetHelpPopupTextAndCoords_87CF0 applies this
-                                // mask after normal eligibility when IsLevelEnd
-                                // is set. Forced word88 selection bypasses it.
-                                if (levelEnd && (row.Binding.Flags & 0x4ff) != 0) eligible = false;
+                                var eligible = row.Binding.Row switch {
+                                    1 or 2 => true,
+                                    3 => wallContactCounter != 0,
+                                    41 => leftUnavailable || rightUnavailable,
+                                    _ => false
+                                };
+                                // The source end mask includes the eligible bit
+                                // just set on these rows. Forced word88 bypasses it.
+                                if (levelEnd) eligible = false;
                                 // The source separately masks minimap-related
                                 // rows whenever icons and map are hidden.
                                 if (!minimapEnabled && (row.Binding.Flags & 0x2ff) != 0) eligible = false;
@@ -209,7 +215,17 @@ namespace MagicCarpet.Native
                     }
                     if (currentRow != null)
                     {
-                        if (currentRow.Binding.Row == 41) AnchorX = leftUnavailable ? 540 : 600;
+                        if (currentRow.Binding.Row == 2)
+                        {
+                            // GetHelpPopupTextAndCoords_87CF0 sets the anchor when polling.
+                            AnchorX = mapOpen ? 190 : 64;
+                            AnchorY = mapOpen ? 202 : 66;
+                        }
+                        else if (currentRow.Binding.Row == 41)
+                        {
+                            AnchorX = leftUnavailable ? 540 : 600;
+                            AnchorY = 48;
+                        }
                         remaining = currentRow.Binding.Duration;
                     }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
@@ -652,7 +668,7 @@ namespace MagicCarpet.Native
             if (string.IsNullOrEmpty(languageCache.LanguageText(329)))
                 throw new InvalidDataException("Missing source language record 329");
             gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
-            gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow);
+            gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow, languageCache.HasMinimapHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -684,7 +700,7 @@ namespace MagicCarpet.Native
             bool minimapEnabled)
         {
             gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
-                wallContactCounter, levelEnd, minimapEnabled);
+                wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen);
         }
 
         private void DrawGameRuntimeHelpHint()
@@ -731,8 +747,9 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellPriorPixels = null;
                 gameRuntimeSpellPriorGeneration = 0;
                 var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
-                if (helpRow.Row == 41)
-                    gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation, gameRuntimeManaHint.AnchorX);
+                if (helpRow.Row == 2 || helpRow.Row == 41)
+                    gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,
+                        gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
                 else
                     gameRuntimeManaHintPresenter.PresentContextHint(helpText, campaignSession.Generation, helpRow.X, helpRow.Y);
             }
