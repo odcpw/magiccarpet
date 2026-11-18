@@ -801,6 +801,63 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+### Original audio, minimap and campaign continuity — 2026-11-18
+
+Canonical `936b3bd8`, `255f6dfc`, `000a391e`, and `3adf0176` are published on
+`codex/original-ending` through `fa5e8a56`. Current Original build `build-wnhko4t3`
+uses the same native `0c58356c8df10fffb23dac5f0627edc5531a479666505b7d32a4c59a774e62cc`
+as the initial audio/help build `build-b2f6evq_`.
+All 626 recorded Rig inputs match the published source. The normal `--menu`
+launch reached the three startup clips, Title, New Game, and NightSpire with
+one portal click and zero retries. All 30 resource roles and the mapped plugin
+were verified. Evidence is in `generated/gameplay-audio-20261118/`.
+
+Night Goat sound 46 now goes through the scheduled positional mixer. The
+unchanged released Night v9 replay cold-loads with all original receipts,
+then adds new Goat audio. Its continued save preserves the verified operation
+boundary and cold-resaves byte-for-byte. The previous reader rejects the new
+optional marker. The installed private stereo capture matched the owner
+GOAT.WAV at the actual logged playback rates and gains. The Day3 minimap now
+uses the scheduler's current creature chain. The same input that previously
+failed published all ten remaining Skeletons in source order after the dying
+member was unlinked. The Castle marker retired after combat loss and reuse.
+Its collector stayed alive, so direct collector-marker removal remains open.
+
+Optimized music callbacks run during accepted gameplay steps. The selected
+owner XMIDI track changes gain from 0.55 at idle to 0.80 in combat. The first
+installed Day3 flight reached combat but its mouse steering did not reach idle.
+An exact ordinary-input checkpoint allowed a neutral-only repeat of the real
+combat-to-idle transition. Installed trace ticks 2168 and 2247 match native
+callbacks 128 and 256. Phase-matched owner PCM measured 0.7990 combat and
+0.5496 idle (+3.25 dB), with silent paused output. Evidence is in
+`generated/adaptive-music-playback-20261118.OPkPs3/`. The installed minimap help uses
+owner row 287 and the existing indexed HUD. Its real selection, anchor pixels,
+repeated-read purity, and 50-draw lifetime passed with GLCore. NightSpire's
+objective-advance and completion lines both matched the actual owner PCM in
+the preceding installed player from a retained fixed public input trace.
+Those captures do not certify hardware output or the rest of the campaign.
+
+The Keys dialog rejects new mappings of fixed gameplay controls. The first
+physical input check then found an IMGUI text-only event that incorrectly
+rejected the next capture after a valid physical key. The dialog now consumes
+those text events without changing its draft or clearing a real rejection.
+Focused checks verified direct Apply, rejected-key atomicity and cold reload.
+The installed Title check rejects L, cancels without changing profile bytes,
+and persists Q directly without the earlier Escape workaround. A fresh
+Original process loaded the same profile and genuine NightSpire save. Physical
+Q opened and closed the visible world map, while Return did not toggle it.
+The saved history contains exactly two new map-toggle operations. Evidence:
+`generated/settings-key-capture-20261118/installed-keys-no-escape/`.
+
+Pav abandon/cancel and cold parent return reopened Jaleen once with retained
+Possession, on a checkpoint with declared prior state. The final Uluth Results
+save and map restored byte-for-byte on the current native with all 30 roles
+and the real owner catalog. Dismissal preserved all 26 progression rows and
+did not replay CUT6. This starts after CUT6 and credits. Earned NightSpire
+Results and consecutive opening transitions, earned secret round trips, new
+full ending playback, and broader help/locale acceptance remain open. No bead
+acceptance or dependency is changed by these bounded results.
+
 Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
 the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
 flight assistance, F1 Help Mode, Shift+F1/F2/F3/F4 graphics and original Title
