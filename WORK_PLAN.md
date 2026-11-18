@@ -3374,13 +3374,23 @@ The check uses declared player geometry and typed damage contacts on the
 existing fixture. No production code changed. The retained installed
 Cave4 saves precede this trigger. See `generated/cave4-switch22-20261118/`.
 
-The configured final368/374 checks passed7.388s: ordinary switch scheduling,
+In the earlier batch 4, configured final368/374 checks passed 7.388 s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
-row374 overlap to four authored model28 roots and following reclaim. Final392
-exit remains unqualified; no completion flag was forced. The recorded-input
+row374 overlap to four authored model28 roots and following reclaim. That batch
+did not qualify final392. The recorded-input
 combat/save/carry check was interrupted by a kernel OOM before a result receipt
-and is NOT a pass. Both new checks are uncommitted test-only work; the installed
-reward runtime above is unchanged. Preserve the current source and batch4 logs.
+and produced no acceptance result.
+
+The later candidate-10 final regression covers both remaining named rows.
+After the actual boss terminal transition, row392 publishes group31
+as `[393,394]` once and reclaims. Row394 then starts player action12 in
+the same pass, clears the visible portal flag, reclaims, and reaches
+victory Results. The connected test also verifies CUT6, credits and
+guarded Results save through cold return to the map. It uses declared
+prior resources and exit positioning. See
+`generated/shared-engine-20261111-integration/candidate-10/ending-final-regression.log`
+(661.05 s) and the installed retained continuation under
+`generated/uluth-cold-continuation-20261118/`.
 
 OOM remediation on2026-11-11: RAM-backed `/tmp` held about28GiB while swap was
 full. The current Cargo cache has been moved byte-for-byte to SSD at
