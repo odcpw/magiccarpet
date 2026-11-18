@@ -1659,7 +1659,10 @@ namespace MagicCarpet.Native.Tests
                     var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
                     // The stationary owner still sees both idle reminders
                     // before the first lower-priority objective-key hint.
-                    for (var frame = 0; frame < 170 + 2 * (50 + 20) && hint.VisibleRow != 1; frame++)
+                    // Fireball help from the marker close adds an interval
+                    // and can give the marker time to become overdue again.
+                    var intervals = menu.LocaleCache.HasFireballHelp ? 4 : 2;
+                    for (var frame = 0; frame < 170 + intervals * (50 + 20) && hint.VisibleRow != 1; frame++)
                     {
                         runtime.QualificationDriveGameRuntimeFrames(1);
                         Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13));
@@ -1771,6 +1774,188 @@ namespace MagicCarpet.Native.Tests
                     runtime.QualificationDriveGameRuntimeFrames(1);
                 CheckSource(assignRight ? (short)2 : (short)1, 0);
                 PaintAndExpire(12, 297, "Use castle spell to build a safe haven", assignRight ? 600 : null);
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        public void ProductionFireballHelpConsumesTheOrdinaryObjectivePopupClose(bool centerCue, bool mapMasksCue)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Fireball help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var pending = hintType.GetField("fireballHelpPending", flags);
+                var remaining = hintType.GetField("remaining", flags);
+                bool Pending() => (bool)pending.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void CheckFireball()
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    var fireball = snapshot.player_spells.Single(spell => spell.id == "spell.fireball");
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.hand,
+                        hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo((true, true, centerCue ? "none" : "left", (short)(centerCue ? 3 : 0), (short)1)));
+                }
+
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                if (centerCue)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.speed", 0, rightHand: false);
+                    Draw();
+                }
+                CheckFireball();
+                var search = menu.GameplayHelpForRow(7);
+                Assert.That((search.TextRecord, search.Flags, search.Duration, search.AgeThreshold, search.Priority),
+                    Is.EqualTo((292, 4, 50, 600, 2)));
+                Assert.That(menu.GameplayLanguageText(search.TextRecord), Is.EqualTo("Search for fireball spell"));
+                ToggleMap(true);
+                Assert.That(Pending(), Is.False);
+                for (var frame = 0; frame < 80 && hint.VisibleRow != 82; frame++)
+                {
+                    Draw();
+                    Assert.That(Pending(), Is.False);
+                }
+                Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((82, (object)49)));
+                var subject = (ushort)hintType.GetField("objectiveHelpSubject", flags).GetValue(hint);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject == subject), Is.True);
+                for (var frame = 0; frame < 48; frame++)
+                {
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.EqualTo(82));
+                    Assert.That(Pending(), Is.False, "the active objective hint has not closed");
+                }
+                Draw();
+                Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()), Is.EqualTo((82, (object)0, true)));
+                var closedAt = native.Tick;
+                var afterClose = runtime.QualificationSaveGameRuntimeProductionReplay();
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                Assert.That((native.Tick, Pending()), Is.EqualTo((closedAt, true)));
+                CollectionAssert.AreEqual(afterClose, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                if (mapMasksCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen), Is.EqualTo((false, 20UL, true)),
+                        "the ordinary poll consumes the Fireball request on the full map");
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.EqualTo(13), "the map-admitted spell-menu cue wins that same poll");
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 80 && hint.VisibleRow != 12; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(7).And.Not.EqualTo(10));
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That(hint.VisibleRow, Is.EqualTo(12), "the next world poll offers Castle, with no delayed Fireball hint");
+                    CheckFireball();
+                    TestContext.WriteLine($"Fireball request armed at {closedAt}, masked on the next full-map poll, then row12 at {native.Tick}.");
+                    return;
+                }
+
+                ToggleMap(false);
+                for (var frame = 0; frame < 23 && hint.VisibleRow != 10; frame++)
+                {
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "Fireball wins its source-order tie with Castle");
+                }
+                var x = centerCue ? 320 : 540;
+                var y = centerCue ? 80 : 32;
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint), Pending()),
+                    Is.EqualTo((10, x, y, (object)49, false)));
+                var binding = menu.GameplayHelpForRow(10);
+                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((295, 0x624, 50, 600, 5)));
+                const string text = "Use fireball spell to destroy target";
+                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                CheckFireball();
+                display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                Assert.That(output?.IsCreated(), Is.True);
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                var artwork = menu.ObjectiveForProfile("day");
+                var palette = surface.FramePaletteRgb8;
+                Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                var pixels = ReadObjectivePixels(output);
+                Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                if (centerCue)
+                {
+                    Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                    Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                }
+                else
+                {
+                    var sourceX = x + 1 - raster.X;
+                    var sourceY = y - raster.Y;
+                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                }
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((10, false)));
+                Draw();
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
+                TestContext.WriteLine($"Fireball request armed at {closedAt}, row10 painted at {tick}, anchor ({x}, {y}).");
             }
             finally
             {

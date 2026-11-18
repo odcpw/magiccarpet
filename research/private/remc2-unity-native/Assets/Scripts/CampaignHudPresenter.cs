@@ -83,6 +83,7 @@ namespace MagicCarpet.Native
             private readonly Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> rowFor;
             private readonly RowState[] rows;
             private readonly RowState mana;
+            private readonly Func<sbyte> sourceObjectiveStageKind;
             // SetTextBoxMinMaxSizes_87090 clears dword_0x72; the 20-pass
             // delay is installed only by suppression or sub_87C10.
             private int pollDelay;
@@ -92,6 +93,7 @@ namespace MagicCarpet.Native
             private ushort objectiveHelpSubject;
             private int pendingRow;
             private bool spellMode;
+            private bool fireballHelpPending;
             private int spellSlot = -1, spellTier = -1, spellCycle;
             private ushort[] spellRecords;
             private int spellHighlight = -1;
@@ -103,6 +105,7 @@ namespace MagicCarpet.Native
             internal bool SpellVisible { get; private set; }
             internal bool HasObjectiveMarkHelp { get; }
             internal bool HasLargeMapHelp { get; }
+            internal bool HasFireballHelp { get; }
             internal bool PollsObjectiveMarkHelp =>
                 HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
             internal ushort[] VisibleSpellRecords { get; private set; }
@@ -111,11 +114,14 @@ namespace MagicCarpet.Native
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
                 bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false,
                 bool hasLowLifeHelp = false, bool hasIdleHelp = false, bool hasVitalsHelp = false,
-                bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false)
+                bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false,
+                bool hasFireballHelp = false, Func<sbyte> sourceObjectiveStageKind = null)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
                 HasLargeMapHelp = hasLargeMapHelp;
+                HasFireballHelp = hasFireballHelp;
+                this.sourceObjectiveStageKind = sourceObjectiveStageKind;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
                 var ids = new List<int> { 1, 3, 40, 41, 42, 69, 70, 71,
@@ -125,6 +131,11 @@ namespace MagicCarpet.Native
                 if (hasLowLifeHelp) ids.Insert(ids.IndexOf(40), 5);
                 if (hasSpellSearchHelp) ids.InsertRange(ids.IndexOf(40), new[] { 6, 8 });
                 if (hasCastleSpellHelp) ids.InsertRange(ids.IndexOf(40), new[] { 12, 13 });
+                if (hasFireballHelp)
+                {
+                    ids.Insert(ids.FindIndex(row => row > 7), 7);
+                    ids.Insert(ids.FindIndex(row => row > 10), 10);
+                }
                 if (hasIdleHelp) ids.InsertRange(ids.IndexOf(40), new[] { 15, 16 });
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
@@ -151,6 +162,7 @@ namespace MagicCarpet.Native
                 currentRow = null;
                 objectiveHelpSubject = 0;
                 pendingRow = 0;
+                fireballHelpPending = false;
                 spellMode = false;
                 spellSlot = spellTier = -1;
                 spellCycle = 0;
@@ -181,7 +193,8 @@ namespace MagicCarpet.Native
                 ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null,
                 bool lowLife = false, bool leftAssigned = false, bool rightAssigned = false,
                 bool noAcquiredSpells = false, bool missingCastleSpell = false,
-                bool hasCastleSpellWithoutCastle = false, int? castleHandAnchorX = null)
+                bool hasCastleSpellWithoutCastle = false, int? castleHandAnchorX = null,
+                bool? fireballSpellEnabled = null, int? fireballHandAnchorX = null)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -222,6 +235,11 @@ namespace MagicCarpet.Native
                 }
                 else if (--pollDelay <= 0)
                 {
+                    // GetHelpPopupTextAndCoords runs before the forced-row
+                    // and priority decisions. A masked or losing cue consumes
+                    // the request too, provided at least one holder is enabled.
+                    var fireballRequested = fireballHelpPending && !noAcquiredSpells;
+                    if (fireballRequested) fireballHelpPending = false;
                     if (pendingRow != 0)
                     {
                         currentRow = FindRow(pendingRow);
@@ -246,7 +264,9 @@ namespace MagicCarpet.Native
                                     4 => !mapOpen && hasObjectiveHelpSubject == false,
                                     5 => lowLife && !mapOpen,
                                     6 => noAcquiredSpells,
+                                    7 => fireballRequested && fireballSpellEnabled == false,
                                     8 => missingCastleSpell,
+                                    10 => fireballRequested && fireballSpellEnabled == true && !mapOpen,
                                     12 => hasCastleSpellWithoutCastle && !mapOpen,
                                     13 => hasCastleSpellWithoutCastle && castleHandAnchorX == null,
                                     15 or 16 => idleDraws > 100,
@@ -279,9 +299,11 @@ namespace MagicCarpet.Native
                             AnchorX = mapOpen ? 190 : 64;
                             AnchorY = mapOpen ? 202 : 66;
                         }
+                        else if (currentRow.Binding.Row == 10 && fireballHandAnchorX.HasValue)
+                            (AnchorX, AnchorY) = (fireballHandAnchorX.Value, 32);
                         else if (currentRow.Binding.Row == 12 && castleHandAnchorX.HasValue)
                             (AnchorX, AnchorY) = (castleHandAnchorX.Value, 32);
-                        else if (currentRow.Binding.Row is 5 or 12 or 13 or 36 or 37 or 38 or 39)
+                        else if (currentRow.Binding.Row is 5 or 7 or 10 or 12 or 13 or 36 or 37 or 38 or 39)
                             (AnchorX, AnchorY) = (currentRow.Binding.X, currentRow.Binding.Y);
                         else if (currentRow.Binding.Row == 41)
                         {
@@ -443,6 +465,11 @@ namespace MagicCarpet.Native
                 {
                     currentRow.Age = 0;
                     currentRow.Priority = currentRow.Binding.Priority;
+                    var closedRow = currentRow.Binding.Row;
+                    if (HasFireballHelp && (closedRow is 19 or 25 or 26 or 28 or 82 ||
+                        closedRow is >= 72 and <= 80 &&
+                        sourceObjectiveStageKind?.Invoke() is 1 or 2 or 3 or 7 or 8 or 9))
+                        fireballHelpPending = true;
                     if (currentRow.Binding.Row == 15) FindRow(16).Priority = 6;
                     // sub_889F0 promotes the retained minimap rows when the
                     // objective-expiry context closes.
@@ -758,7 +785,17 @@ namespace MagicCarpet.Native
             gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
                 languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp,
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
-                languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp);
+                languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp,
+                languageCache.HasFireballHelp, ReadCurrentHelpObjectiveStageKind);
+        }
+
+        private sbyte ReadCurrentHelpObjectiveStageKind()
+        {
+            // sub_889F0 reads the current objective on closure, which can
+            // differ from the context row's original source stage.
+            var colour = campaignSession.DayHudState(campaignSession.Tick).localPlayerColorIndex;
+            var objective = campaignSession.ObjectiveStageState(colour, 0);
+            return campaignSession.ObjectiveStageState(colour, objective.textSelector).stageKind;
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -823,11 +860,17 @@ namespace MagicCarpet.Native
                 observation.source_top_status?.castle_rows?.Length == 0;
             int? castleHandAnchorX = hud.left.rawSpellSelector == 2 ? 540 :
                 hud.right.rawSpellSelector == 2 ? 600 : null;
+            var fireballSpell = hasSpell && hint.HasFireballHelp
+                ? Array.Find(observation.player_spells, spell => spell.id == "spell.fireball") : null;
+            bool? fireballSpellEnabled = fireballSpell == null ? null : fireballSpell.availability != "not_acquired";
+            int? fireballHandAnchorX = hud.left.rawSpellSelector == 0 ? 540 :
+                hud.right.rawSpellSelector == 0 ? 600 : null;
             hint.Advance(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0, showHelp, paused, suppressed,
                 wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen,
                 marks, nearest, hasObjectiveHelpSubject, lowLife,
                 hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
-                !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX);
+                !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX,
+                fireballSpellEnabled, fireballHandAnchorX);
         }
 
         private ushort NearestObjectiveHelpSubject(
@@ -900,7 +943,7 @@ namespace MagicCarpet.Native
                     gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen);
                 else if (helpRow.Row is 2 or 5 or 36 or 37 or 38 or 39 or 41 ||
-                    (helpRow.Row == 12 && gameRuntimeManaHint.AnchorY == 32))
+                    (helpRow.Row is 10 or 12 && gameRuntimeManaHint.AnchorY == 32))
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
                 else

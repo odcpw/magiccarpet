@@ -144,7 +144,7 @@ def source_gameplay_help() -> bytes:
     if len(rows) != 105:
         raise cache.CacheError("pinned gameplay help table extent changed")
     bindings = []
-    for index in (1, 2, 3, 4, 5, 6, 8, 12, 13, 15, 16, 36, 37, *range(38, 43), 69, 70, 71, *range(72, 83), 85, *range(86, 91)):
+    for index in (1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 15, 16, 36, 37, *range(38, 43), 69, 70, 71, *range(72, 83), 85, *range(86, 91)):
         kind, axes, tail = rows[index]
         values = [int(value.strip(), 0) for value in axes.split(",")]
         extra = [int(value.strip(), 0) for value in tail.split(",")]

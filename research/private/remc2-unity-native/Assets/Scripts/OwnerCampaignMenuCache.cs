@@ -286,6 +286,7 @@ namespace MagicCarpet.Native
                         3856 => "d4cc8b1203b2ca4f9da0c2488c27966c2aaa3c099425ff7b78f2400f560896ce",
                         4077 => "8a108cc216d64884e51df5dd17f6419a4e31551af972c2d0f735f62fd64eb12f",
                         4303 => "472d70de35f78b3545fcfeaa864a29ea4a8706583b6eb400a33e5b2451a2efa1",
+                        4525 => "5b18ce4a633f19ebc951d387cc2669553767c316d18f623cf60ac3f44e7a01db",
                         _ => throw new InvalidDataException("source gameplay help receipt is incomplete")
                     };
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
@@ -303,7 +304,12 @@ namespace MagicCarpet.Native
                     if (helpReceipt.bytes >= 3075) sourceRows.Insert(sourceRows.IndexOf(40), 4);
                     if (helpReceipt.bytes >= 3186) sourceRows.Insert(sourceRows.IndexOf(40), 5);
                     if (helpReceipt.bytes >= 4077) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 6, 8 });
-                    if (helpReceipt.bytes == 4303) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 12, 13 });
+                    if (helpReceipt.bytes >= 4303) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 12, 13 });
+                    if (helpReceipt.bytes == 4525)
+                    {
+                        sourceRows.Insert(sourceRows.IndexOf(8), 7);
+                        sourceRows.Insert(sourceRows.IndexOf(12), 10);
+                    }
                     if (helpReceipt.bytes >= 3406) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 15, 16 });
                     if (helpReceipt.bytes >= 3630) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 36, 37 });
                     if (helpReceipt.bytes >= 3856) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 38, 39 });
@@ -595,6 +601,7 @@ namespace MagicCarpet.Native
         internal bool HasCastHelp => gameplayHelp.ContainsKey(38) && gameplayHelp.ContainsKey(39);
         internal bool HasSpellSearchHelp => gameplayHelp.ContainsKey(6) && gameplayHelp.ContainsKey(8);
         internal bool HasCastleSpellHelp => gameplayHelp.ContainsKey(12) && gameplayHelp.ContainsKey(13);
+        internal bool HasFireballHelp => gameplayHelp.ContainsKey(7) && gameplayHelp.ContainsKey(10);
         internal bool HasObjectiveMarkHelp => gameplayHelp.ContainsKey(81) && gameplayHelp.ContainsKey(82);
 
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
