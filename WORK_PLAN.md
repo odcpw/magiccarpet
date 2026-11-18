@@ -912,6 +912,22 @@ roles, native `4dbbe5fd`, no input and no retry. The live unacquired variant
 and broader locale/other help acceptance remain open under `mc-oi6.6`.
 See `generated/possession-help-20261118.clbzbSVe/`.
 
+Canonical `be41e10b`, published as `fe05606e`, connects neutral mana to
+Original minimap help row 18. The Day3 checkpoint shows live sphere 259
+with its indexed leader for 50 draws, then paints the assigned right-hand
+Possession cue after dismissal. An ordinary paid Possession cast claims
+the same 500-mana sphere and drops row 18 while retaining the map dot.
+Thirteen distinct GLCore checks passed across two runs on identical
+production code, including Cave6 spell search and the Castle reminder
+refusals at their actual source-priority polls. Full `mc-oi6.6` stays open.
+Original `build-k3rzmq6w` installs native `1d235e04`. All 628 recorded
+native inputs match Rig and both Git revisions. The normal launcher
+cold-loaded Revealed Way with three roles, the verified menu cache and
+the matching mapped plugin, without input or retry. Only the help table
+and its manifest changed in the active cache. UBS C# coverage was partial;
+none of the reported critical findings fell on added lines. See
+`generated/loose-mana-help-20261118.gaDBxSF0/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
