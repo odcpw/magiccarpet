@@ -179,12 +179,17 @@ namespace MagicCarpet.Native.Tests
                         "capture edits the pending preferences, not live controls");
                     preferences.BeginKeyCapture(1);
                     Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Minus }), Is.True);
-                    var menuKeys = new[] { KeyCode.Q, KeyCode.E, KeyCode.T, KeyCode.Y, KeyCode.U, KeyCode.I };
-                    for (var slot = 4; slot < 10; slot++)
+                    var menuKeys = new[] { KeyCode.E, KeyCode.T, KeyCode.Y, KeyCode.U, KeyCode.I };
+                    for (var slot = 5; slot < 10; slot++)
                     {
                         preferences.BeginKeyCapture(slot);
-                        Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = menuKeys[slot - 4] }), Is.True);
+                        Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = menuKeys[slot - 5] }), Is.True);
                     }
+                    preferences.BeginKeyCapture(4);
+                    Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Q }), Is.True);
+                    var qText = new Event { type = EventType.KeyDown, keyCode = KeyCode.None, character = 'q' };
+                    Assert.That(preferences.CaptureKey(qText), Is.True);
+                    Assert.That(qText.type, Is.EqualTo(EventType.Used));
                     Assert.That(preferences.Apply(), Is.True);
                     Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
                     Assert.That(preferences.Current.preferences.keys[1], Is.EqualTo("Minus"));
@@ -194,11 +199,13 @@ namespace MagicCarpet.Native.Tests
 
                     preferences.Open();
                     preferences.BeginKeyCapture(4);
-                    foreach (var fixedKey in new[] { KeyCode.C, KeyCode.L, KeyCode.Space })
+                    foreach (var (fixedKey, character) in new[] { (KeyCode.C, 'c'), (KeyCode.L, 'l'), (KeyCode.Space, ' ') })
                     {
                         var reserved = new Event { type = EventType.KeyDown, keyCode = fixedKey };
                         Assert.That(preferences.CaptureKey(reserved), Is.True);
                         Assert.That(reserved.type, Is.EqualTo(EventType.Used));
+                        var text = new Event { type = EventType.KeyDown, keyCode = KeyCode.None, character = character };
+                        Assert.That(preferences.CaptureKey(text), Is.True);
                         Assert.That(preferences.Apply(), Is.False, $"{fixedKey} cannot be assigned to the map");
                         Assert.That(preferences.IsOpen, Is.True);
                         Assert.That(preferences.Current.preferences.keys[4], Is.EqualTo("Q"));

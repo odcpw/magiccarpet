@@ -331,6 +331,12 @@ namespace MagicCarpet.Native
         internal bool CaptureKey(Event input)
         {
             if (captureKey < 0 || input.type != EventType.KeyDown) return false;
+            // IMGUI can deliver text separately from the physical key used by this dialog.
+            if (input.keyCode == KeyCode.None && input.character != '\0')
+            {
+                input.Use();
+                return true;
+            }
             if (input.keyCode == KeyCode.Escape)
             {
                 captureKey = -1;
