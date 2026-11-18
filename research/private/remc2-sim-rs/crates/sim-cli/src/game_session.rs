@@ -13,8 +13,8 @@ use sim_core::game_runtime::{
     RuntimeGuard, RuntimeMode, RuntimeTransitionError,
 };
 use sim_core::game_session::{
-    CampaignSnapshot, GAME_SESSION_CONTRACT, GameCommand, GameSession, GameSessionError,
-    SessionGuard, SessionObservation,
+    ActorPageRequest, CampaignSnapshot, GAME_SESSION_CONTRACT, GameCommand, GameSession,
+    GameSessionError, SessionGuard, SessionObservation,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
@@ -121,6 +121,11 @@ enum Command {
     Snapshot {
         session_guard: SessionGuardInput,
         cursor: Option<String>,
+        limit: Option<usize>,
+    },
+    Actors {
+        session_guard: SessionGuardInput,
+        offset: Option<u32>,
         limit: Option<usize>,
     },
     Describe {
@@ -356,6 +361,10 @@ impl Stream {
                     "open_pending": {"guard": "runtime_guard", "result": "Playing; resolver selects the pending semantic level"},
                     "snapshot": {"session_guard": "session_guard", "limit": "1..100, default 100", "cursor": "optional returned next_cursor",
                         "result": "authoritative player pose/motion/vitals, objectives, acquired spell IDs/tiers/costs/readiness and paged presentation entities"},
+                    "actors": {"session_guard": "session_guard", "limit": "1..100, default 100",
+                        "offset": "start at 0; continue with value.next_offset and the same session guard",
+                        "kinds": Mc2CampaignBackend::actor_page_kinds().collect::<Vec<_>>(),
+                        "result": "guarded page of current semantic actor lifetimes"},
                     "describe": {"limit": "1..100, default 100", "cursor": "optional returned next_cursor", "result": "semantic catalog descriptors; effective values when a session is bound"},
                     "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0", "limit": "1..100"},
                     "step": {"guard": "runtime_guard", "session_guard": "session_guard", "input": GameCommand::default(), "ticks": 1},
@@ -424,6 +433,25 @@ impl Stream {
                 let limit = page_limit(limit)?;
                 let observation = self.session(session_guard)?.snapshot();
                 snapshot_page(observation, cursor.as_deref(), limit)
+            }
+            Command::Actors {
+                session_guard,
+                offset,
+                limit,
+            } => {
+                let limit = page_limit(limit)?;
+                let request =
+                    ActorPageRequest::new(offset.unwrap_or(0), limit as u32).ok_or_else(|| {
+                        StreamError::new(
+                            "INVALID_CURSOR",
+                            "actor page offset exceeds the bounded range; start a new page",
+                        )
+                    })?;
+                let page = self
+                    .session(session_guard)?
+                    .actors(session_guard.into(), request)
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(page))
             }
             Command::Describe { cursor, limit } => {
                 let limit = page_limit(limit)?;

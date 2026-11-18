@@ -818,7 +818,15 @@ with stable parent identities. Repeated reads preserve the state snapshot, and
 the guard rejects stale ticks. The normal Original launcher loaded NightSpire with
 30 roles, one portal click and zero retries. The launch covers packaging;
 the guarded query and exact lifecycle checks cover the observation behavior.
-See `generated/actor-pages-20261118/`. Broader `mc-b9s` remains open.
+The existing `sim-cli game session` stream now discovers and reads the same
+guarded actor pages. The Rig-matched release CLI paged 61 live Payahandra
+actors against all 30 owner roles at tick 354. Reads preserved the snapshot.
+Close and restore reissued opaque lifetimes and rejected the old generation;
+invalid limit, offset and tick were also refused. The installed native adds
+direct owner-package witnesses for Day2 Villager and Level22 Trader alongside
+the Level5 families above. See `generated/actor-pages-20261118/`.
+This completes the named actor observation scope of `mc-b9s.4`. Broader
+`mc-b9s` and its objective, terrain and economy query leaf stay open.
 
 English idle movement help is implemented and published as `cdbf29f7`.
 The exact GLCore check cold-loads Cave4, resets the idle counter through
