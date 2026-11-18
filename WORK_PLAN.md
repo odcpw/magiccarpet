@@ -860,6 +860,20 @@ evidence. Assigned-but-unready live behavior, further help and alternate
 languages remain open under `mc-oi6.6`. See
 `generated/top-bar-cast-help-20261118.D8i2Cf6r/`.
 
+Canonical `e7abbbcb`, published as `ad48e28f`, adds English spell-search
+rows 6 and 8 from the current held-spell and Castle acquisition state.
+Five focused GLCore checks passed in 141.280 s. Cave4 displayed row 6
+at tick 284; Cave6 displayed row 8 at 323. Acquired but unassigned Castle
+suppressed both in Day3 through the real tick-2854 empty poll, after the
+recurring objective reminder and minimap prompt. Cast and vitals regressions
+also passed. Only the help table and manifest changed in the active cache.
+Original `build-fmy6_bc4` cold-loaded Cave6 via the normal launcher with
+six roles and matching native `3987657a`, without gameplay input. A prior
+explicit override passed the cache alias itself and was refused by the
+regular-directory guard; using its resolved path passed. The focused
+GLCore runs supply the prompt evidence. Full `mc-oi6.6` remains open.
+See `generated/spell-search-help-20261118.2GyLq1eO/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
@@ -880,8 +894,18 @@ the optimized CLI cold-load reaches the same deposit boundary. Paired runs
 preserve game hashes and journal, and stale, invalid and reset cases are
 checked. All 628 recorded inputs match canonical, Rig and published source.
 Original `build-idpw2fbd` installs the matching native `534882ac`. See
-`generated/economy-observations-20261118/`. Bounded terrain windows and
-generation-safe historical event payloads remain open under `mc-b9s.5`.
+`generated/economy-observations-20261118/`.
+
+Canonical `e54ac147`, published as `fc7617c8`, exposes guarded, bounded,
+nonwrapping terrain windows in Native and CLI. At the ordinary NightSpire
+Castle stamp, ticks 1743→1744, both read the same 8×8 window and report
+ground height 768→800, the collision material change and protected-height
+flag at tile (116,230). The full window records 46 height changes and 16
+material/protection changes. Read purity and stale/bounds refusals passed.
+All 628 inputs match canonical, Rig and published source, and the installed
+Original `build-fmy6_bc4` maps verified native `3987657a`. See
+`generated/semantic-terrain-20261118/`. Generation-safe historical event
+payloads remain open under `mc-b9s.5`.
 
 The earned NightSpire exit checkpoint matches 13 historical pose/exit
 boundaries and reaches the real authored exit at tick 10695. The native
