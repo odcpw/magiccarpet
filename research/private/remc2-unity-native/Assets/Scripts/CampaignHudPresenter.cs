@@ -111,7 +111,7 @@ namespace MagicCarpet.Native
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
                 bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false,
                 bool hasLowLifeHelp = false, bool hasIdleHelp = false, bool hasVitalsHelp = false,
-                bool hasCastHelp = false, bool hasSpellSearchHelp = false)
+                bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -124,6 +124,7 @@ namespace MagicCarpet.Native
                 if (hasLargeMapHelp) ids.Insert(ids.IndexOf(40), 4);
                 if (hasLowLifeHelp) ids.Insert(ids.IndexOf(40), 5);
                 if (hasSpellSearchHelp) ids.InsertRange(ids.IndexOf(40), new[] { 6, 8 });
+                if (hasCastleSpellHelp) ids.InsertRange(ids.IndexOf(40), new[] { 12, 13 });
                 if (hasIdleHelp) ids.InsertRange(ids.IndexOf(40), new[] { 15, 16 });
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
@@ -179,7 +180,8 @@ namespace MagicCarpet.Native
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> objectiveMarks = null,
                 ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null,
                 bool lowLife = false, bool leftAssigned = false, bool rightAssigned = false,
-                bool noAcquiredSpells = false, bool missingCastleSpell = false)
+                bool noAcquiredSpells = false, bool missingCastleSpell = false,
+                bool hasCastleSpellWithoutCastle = false, int? castleHandAnchorX = null)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -245,6 +247,8 @@ namespace MagicCarpet.Native
                                     5 => lowLife && !mapOpen,
                                     6 => noAcquiredSpells,
                                     8 => missingCastleSpell,
+                                    12 => hasCastleSpellWithoutCastle && !mapOpen,
+                                    13 => hasCastleSpellWithoutCastle && castleHandAnchorX == null,
                                     15 or 16 => idleDraws > 100,
                                     36 or 37 => !mapOpen,
                                     38 => leftAssigned && !mapOpen,
@@ -275,7 +279,9 @@ namespace MagicCarpet.Native
                             AnchorX = mapOpen ? 190 : 64;
                             AnchorY = mapOpen ? 202 : 66;
                         }
-                        else if (currentRow.Binding.Row is 5 or 36 or 37 or 38 or 39)
+                        else if (currentRow.Binding.Row == 12 && castleHandAnchorX.HasValue)
+                            (AnchorX, AnchorY) = (castleHandAnchorX.Value, 32);
+                        else if (currentRow.Binding.Row is 5 or 12 or 13 or 36 or 37 or 38 or 39)
                             (AnchorX, AnchorY) = (currentRow.Binding.X, currentRow.Binding.Y);
                         else if (currentRow.Binding.Row == 41)
                         {
@@ -752,7 +758,7 @@ namespace MagicCarpet.Native
             gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
                 languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp,
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
-                languageCache.HasCastHelp, languageCache.HasSpellSearchHelp);
+                languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -804,19 +810,24 @@ namespace MagicCarpet.Native
                     }
                 }
             }
-            var vitals = gameRuntimeCampaignSnapshot?.value?.player_vitals;
+            var observation = gameRuntimeCampaignSnapshot.value;
+            var vitals = observation.player_vitals;
             var lowLife = vitals != null && vitals.life <= (vitals.max_life >> 2);
             // Source v29 gates the signed assignments separately from cast readiness.
-            var hasSpell = gameRuntimeCampaignSnapshot.value.spell_menu_has_any_spell;
+            var hasSpell = observation.spell_menu_has_any_spell;
             // "not_acquired" is the empty family-2 source slot. An invalid
             // nonempty holder does not trigger the Castle search reminder.
-            var missingCastle = hasSpell && Array.Find(gameRuntimeCampaignSnapshot.value.player_spells,
-                spell => spell.id == "spell.castle")?.availability == "not_acquired";
+            var castleSpell = hasSpell ? Array.Find(observation.player_spells, spell => spell.id == "spell.castle") : null;
+            var missingCastle = castleSpell?.availability == "not_acquired";
+            var hasCastleSpellWithoutCastle = castleSpell != null && !missingCastle &&
+                observation.source_top_status?.castle_rows?.Length == 0;
+            int? castleHandAnchorX = hud.left.rawSpellSelector == 2 ? 540 :
+                hud.right.rawSpellSelector == 2 ? 600 : null;
             hint.Advance(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0, showHelp, paused, suppressed,
                 wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen,
                 marks, nearest, hasObjectiveHelpSubject, lowLife,
                 hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
-                !hasSpell, missingCastle);
+                !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX);
         }
 
         private ushort NearestObjectiveHelpSubject(
@@ -888,7 +899,8 @@ namespace MagicCarpet.Native
                 if (helpRow.Row == 82)
                     gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen);
-                else if (helpRow.Row is 2 or 5 or 36 or 37 or 38 or 39 or 41)
+                else if (helpRow.Row is 2 or 5 or 36 or 37 or 38 or 39 or 41 ||
+                    (helpRow.Row == 12 && gameRuntimeManaHint.AnchorY == 32))
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
                 else

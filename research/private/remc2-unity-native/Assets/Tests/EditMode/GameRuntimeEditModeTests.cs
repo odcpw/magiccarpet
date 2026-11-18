@@ -1511,8 +1511,9 @@ namespace MagicCarpet.Native.Tests
 
                 var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
                 // Day 3's full map also admits the priority-5 objective
-                // marker reminder. Budget for its initial draw and recurrence.
-                var frameLimit = row == 0 ? 350 + 2 * (50 + 20) : 350;
+                // reminder. With an unassigned Castle, row 13 also recurs.
+                var extraIntervals = menu.LocaleCache.HasCastleSpellHelp ? 6 : 2;
+                var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) : 350;
                 for (var frame = 0; frame < frameLimit; frame++)
                 {
                     runtime.QualificationDriveGameRuntimeFrames(1);
@@ -1589,6 +1590,197 @@ namespace MagicCarpet.Native.Tests
                 if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
                 runtime.QualificationDisposeGameRuntimeProduction();
                 display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void ProductionCastleHelpUsesOrdinaryAssignmentAndOwnedCastle(bool assignRight, bool buildCastle)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                EngineSessionTransport.CampaignSnapshotValue Snapshot() => transport.GameRuntimeCampaignSnapshot().value;
+                void CheckSource(short right, int ownedCastles)
+                {
+                    var snapshot = Snapshot();
+                    var spell = snapshot.player_spells.Single(row => row.id == "spell.castle");
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((snapshot.spell_menu_has_any_spell, spell.acquired, spell.hand),
+                        Is.EqualTo((true, true, right == 2 ? "right" : "none")));
+                    Assert.That((hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo(((short)0, right)));
+                    Assert.That(snapshot.source_top_status.castle_rows.Length, Is.EqualTo(ownedCastles));
+                }
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                CheckSource(1, 0);
+                if (assignRight)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.castle", 0, rightHand: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    CheckSource(2, 0);
+                }
+                if (buildCastle)
+                {
+                    Assert.That(Snapshot().player_vitals.mana, Is.EqualTo(1000));
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                    for (var frame = 0; frame < 20 && Snapshot().source_top_status.castle_rows.Length == 0; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    var castle = Snapshot().source_top_status.castle_rows.Single();
+                    Assert.That((castle.stage, castle.life, castle.mana), Is.EqualTo(((byte)1, 20000, 0)),
+                        "a paid ordinary Castle cast completes construction on the actual owner");
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, rightHand: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                    // The stationary owner still sees both idle reminders
+                    // before the first lower-priority objective-key hint.
+                    for (var frame = 0; frame < 170 + 2 * (50 + 20) && hint.VisibleRow != 1; frame++)
+                    {
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13));
+                        if (hint.VisibleRow != 0 && (drawn.Count == 0 || drawn[drawn.Count - 1].Row != hint.VisibleRow))
+                            drawn.Add((hint.VisibleRow, native.Tick));
+                    }
+                    var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
+                    TestContext.WriteLine($"Owned Castle help draws {chronology}. Final tick {native.Tick}.");
+                    Assert.That(drawn.Any(item => item.Row == 16), Is.True, "the earlier idle steering reminder retains priority");
+                    Assert.That(hint.VisibleRow, Is.EqualTo(1),
+                        $"a lower-priority poll wins after both Castle cues are refused. Draws {chronology}");
+                    CheckSource(1, 1);
+                    return;
+                }
+
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void PaintAndExpire(int row, int record, string text, int? anchorX = null)
+                {
+                    Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((row, (object)49)));
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo(row == 12 ? (record, 50, 0x624, 320, 80, 600, 5) :
+                            (record, 50, 0x404, 320, 80, 120, 4)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(anchorX.HasValue ? (anchorX.Value, 32) : (320, 80)));
+                    Assert.That(surface, Is.Not.Null, "the retained Day3 owner publishes its real frame surface");
+                    if (display == null) display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (window == null)
+                    {
+                        window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True, "the ordinary indexed popup allocated its actual render target");
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    if (anchorX.HasValue)
+                    {
+                        var x = anchorX.Value + 1 - raster.X;
+                        var y = 32 - raster.Y;
+                        Assert.That(raster.IndicesThenMask[y * raster.Width + x], Is.EqualTo(artwork.TextColor));
+                        Assert.That(pixels[(raster.Height - 1 - y) * raster.Width + x], Is.EqualTo(Colour(artwork.TextColor)),
+                            "the indexed highlight starts at the assigned hand");
+                    }
+                    else
+                    {
+                        Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                        Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                    }
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    TestContext.WriteLine($"Castle help row {row} painted at tick {tick}, anchor ({hint.AnchorX}, {hint.AnchorY}).");
+                    runtime.QualificationDriveGameRuntimeFrames(49);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(row));
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+
+                ToggleMap(true);
+                var seenMinimap = false;
+                for (var frame = 0; frame < 500; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "the full map masks row 12");
+                    seenMinimap |= hint.VisibleRow == 2;
+                    if (assignRight) Assert.That(hint.VisibleRow, Is.Not.EqualTo(13));
+                    if ((!assignRight && hint.VisibleRow == 13) ||
+                        (assignRight && seenMinimap && (int)pollDelay.GetValue(hint) < 0)) break;
+                }
+                if (assignRight)
+                {
+                    Assert.That(seenMinimap, Is.True);
+                    Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
+                        "the assigned Castle spell suppresses the unassigned-hand prompt at an open full-map poll");
+                }
+                else PaintAndExpire(13, 298, "Press control for spell menu");
+                ToggleMap(false);
+                for (var frame = 0; frame < 110 && hint.VisibleRow != 12; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                CheckSource(assignRight ? (short)2 : (short)1, 0);
+                PaintAndExpire(12, 297, "Use castle spell to build a safe haven", assignRight ? 600 : null);
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
                 UnityEngine.Object.DestroyImmediate(root);
                 Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             }
