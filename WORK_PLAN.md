@@ -886,6 +886,19 @@ roles, the rehashed menu cache and verified native `3987657a`, with no
 input or retry. Full `mc-oi6.6` remains open. See
 `generated/castle-help-20261118.eQq6W9MF/`.
 
+Canonical `f06063fa`, published as `b526b94f`, binds Fireball help rows
+7 and 10 to the source popup-close request and current spell/hand state.
+Six focused GLCore checks passed in 211.006 s. On the retained Revealed Way
+checkpoint, the real row82 close arms the cue. Row10 paints the left-hand
+pointer at tick 2504 and the centered cue at 2522 after ordinary Speed
+assignment; both retain indexed pixels, 50-draw expiry and replay purity.
+The full-map check consumes the masked request at the scheduled poll and
+later displays row12 without reviving Fireball. Three Castle regressions
+also pass. Original `build-ba6mvgi0` cold-loaded Revealed Way with three
+owner roles, matching native `4dbbe5fd`, no input and no retry. Row7 still
+needs a live positive witness; full `mc-oi6.6` remains open. See
+`generated/fireball-help-20261118.pHL9vpFC/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
