@@ -4277,6 +4277,30 @@ namespace MagicCarpet.Native.Tests
                 var speechSource = (AudioSource)typeof(CampaignSpeechPresenter).GetField("source", flags).GetValue(speech);
                 var currentClip = speechSource.clip;
                 Assert.That(currentClip, Is.Not.Null);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var settingsTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var soundVolume = prefs.Current.preferences.sound_volume;
+                var musicVolume = prefs.Current.preferences.music_volume;
+                Assert.That(soundVolume, Is.GreaterThan(24));
+                Assert.That(musicVolume, Is.GreaterThan(24));
+                Assert.That(speech.SoundMix, Is.EqualTo((soundVolume / 3) / (float)soundVolume));
+                Assert.That(speech.MusicMix, Is.EqualTo((musicVolume / 3) / (float)musicVolume));
+                Assert.That(prefs.ApplySource(next => next.music_volume = 8), Is.True);
+                Assert.That(speech.MusicMix, Is.EqualTo(1), "the source slider writes the selected master channel immediately");
+                Assert.That(speech.SoundMix, Is.EqualTo((soundVolume / 3) / (float)soundVolume),
+                    "the other channel remains ducked");
+                var musicMix = typeof(OwnerAudioPresentation).GetField("speechMusicGain", flags);
+                Assert.That(musicMix.GetValue(audio), Is.EqualTo(1f), "the live mixer receives the accepted gain");
+                Assert.That(prefs.ApplySource(next => next.sound_volume = 8), Is.True);
+                Assert.That(speech.SoundMix, Is.EqualTo(1));
+                Assert.That(speechSource.volume, Is.EqualTo(8f / 127));
+                Assert.That((speechSource.clip, speech.PlayCount), Is.EqualTo((currentClip, 1)));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(settingsTick));
+                Assert.That(prefs.ApplySource(next => {
+                    next.sound_volume = soundVolume;
+                    next.music_volume = musicVolume;
+                }), Is.True);
+                runtime.QualificationResumeGameRuntimeProduction();
                 var before = runtime.GameRuntimeProductionIdentity;
                 F4();
                 Assert.That(prefs.Current.preferences.speech_enabled, Is.False);

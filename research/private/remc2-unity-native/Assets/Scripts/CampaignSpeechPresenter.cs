@@ -96,6 +96,10 @@ namespace MagicCarpet.Native
 
         internal void ApplyPreferences(PlayerPreferences preferences)
         {
+            // The options slider writes the selected master immediately. An
+            // unchanged preference leaves that channel's speech fade intact.
+            if (soundVolume != preferences.sound_volume) soundUnits = preferences.sound_volume;
+            if (musicVolume != preferences.music_volume) musicUnits = preferences.music_volume;
             soundVolume = preferences.sound_volume;
             musicVolume = preferences.music_volume;
             if (!ducked && !restoring) { soundUnits = soundVolume; musicUnits = musicVolume; }

@@ -10912,7 +10912,11 @@ namespace MagicCarpet.Native
                 campaignSpeech?.Stop();
             }
             ownerAudio?.ApplyPreferences(applied.preferences);
-            campaignSpeech?.ApplyPreferences(applied.preferences);
+            if (campaignSpeech != null)
+            {
+                campaignSpeech.ApplyPreferences(applied.preferences);
+                ownerAudio?.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
+            }
             if (ownerAudio != null && campaignSession != null)
             {
                 Level2Audio.Refresh();
