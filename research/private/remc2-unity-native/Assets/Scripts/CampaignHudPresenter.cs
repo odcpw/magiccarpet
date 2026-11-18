@@ -111,6 +111,7 @@ namespace MagicCarpet.Native
             internal bool HasFireballHelp { get; }
             internal bool HasPossessionHelp { get; }
             internal bool HasLooseManaHelp { get; }
+            internal bool HasOwnedCastleMinimapHelp { get; }
             private bool HasCastleAttackHelp { get; }
             internal bool PollsObjectiveMarkHelp =>
                 HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
@@ -124,7 +125,7 @@ namespace MagicCarpet.Native
                 bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false,
                 bool hasFireballHelp = false, Func<sbyte> sourceObjectiveStageKind = null,
                 bool hasPossessionHelp = false, bool hasLooseManaHelp = false, bool hasCastleReturnReminder = false,
-                bool hasCastleAttackHelp = false)
+                bool hasCastleAttackHelp = false, bool hasOwnedCastleMinimapHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -133,6 +134,7 @@ namespace MagicCarpet.Native
                 HasPossessionHelp = hasPossessionHelp;
                 HasLooseManaHelp = hasLooseManaHelp;
                 HasCastleAttackHelp = hasCastleAttackHelp;
+                HasOwnedCastleMinimapHelp = hasOwnedCastleMinimapHelp;
                 this.sourceObjectiveStageKind = sourceObjectiveStageKind;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
@@ -155,6 +157,7 @@ namespace MagicCarpet.Native
                         ids.Insert(ids.FindIndex(later => later > row), row);
                 if (hasLooseManaHelp) ids.Insert(ids.FindIndex(row => row > 18), 18);
                 if (hasCastleAttackHelp) ids.Insert(ids.FindIndex(row => row > 17), 17);
+                if (hasOwnedCastleMinimapHelp) ids.InsertRange(ids.FindIndex(row => row > 24), new[] { 23, 24 });
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
                 if (hasObjectiveMarkHelp) ids.InsertRange(ids.IndexOf(85), new[] { 81, 82 });
@@ -219,7 +222,8 @@ namespace MagicCarpet.Native
                 bool? possessionSpellEnabled = null, int? possessionHandAnchorX = null,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> entityMarks = null,
                 ushort nearestEntitySubject = 0, ushort nearestManaSubject = 0,
-                bool canFundCastleUpgrade = false, byte? castleHitFrames = null)
+                bool canFundCastleUpgrade = false, byte? castleHitFrames = null,
+                (ushort Collector, ushort Castle) nearestCastleMarkers = default)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -242,9 +246,9 @@ namespace MagicCarpet.Native
                 }
                 if (remaining != 0)
                 {
-                    if (currentRow.Binding.Row is 18 or 21 or 81 or 82)
+                    var entityHint = CampaignPresentationSurface.IsMinimapEntityHelpRow(currentRow.Binding.Row);
+                    if (entityHint || currentRow.Binding.Row is 81 or 82)
                     {
-                        var entityHint = currentRow.Binding.Row is 18 or 21;
                         if (!RefreshMinimapHelpAnchor(entityHint ? entityMarks : objectiveMarks,
                             entityHint ? entityHelpSubject : objectiveHelpSubject))
                         {
@@ -315,6 +319,8 @@ namespace MagicCarpet.Native
                                     17 => castleHitFrames.HasValue && castleAttackPolls > 0 && !mapOpen,
                                     18 => nearestManaSubject != 0,
                                     21 => nearestEntitySubject != 0,
+                                    23 => nearestCastleMarkers.Collector != 0,
+                                    24 => nearestCastleMarkers.Castle != 0,
                                     36 or 37 => !mapOpen,
                                     38 => leftAssigned && !mapOpen,
                                     39 => rightAssigned && !mapOpen,
@@ -366,6 +372,10 @@ namespace MagicCarpet.Native
                             entityHelpSubject = nearestManaSubject;
                         else if (currentRow.Binding.Row == 21)
                             entityHelpSubject = nearestEntitySubject;
+                        else if (currentRow.Binding.Row == 23)
+                            entityHelpSubject = nearestCastleMarkers.Collector;
+                        else if (currentRow.Binding.Row == 24)
+                            entityHelpSubject = nearestCastleMarkers.Castle;
                         remaining = currentRow.Binding.Duration;
                     }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
@@ -845,7 +855,8 @@ namespace MagicCarpet.Native
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
                 languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp,
                 languageCache.HasFireballHelp, ReadCurrentHelpObjectiveStageKind, languageCache.HasPossessionHelp,
-                languageCache.HasLooseManaHelp, languageCache.HasCastleReturnReminder, languageCache.HasCastleAttackHelp);
+                languageCache.HasLooseManaHelp, languageCache.HasCastleReturnReminder, languageCache.HasCastleAttackHelp,
+                languageCache.HasOwnedCastleMinimapHelp);
         }
 
         private sbyte ReadCurrentHelpObjectiveStageKind()
@@ -892,6 +903,7 @@ namespace MagicCarpet.Native
             ushort nearest = 0;
             ushort nearestEntity = 0;
             ushort nearestMana = 0;
+            (ushort Collector, ushort Castle) nearestCastleMarkers = default;
             bool? hasObjectiveHelpSubject = null;
             if (hint.HasObjectiveMarkHelp && showHelp && !paused && !suppressed && minimapEnabled)
             {
@@ -901,7 +913,7 @@ namespace MagicCarpet.Native
                     surface.Tick == campaignSession.Tick)
                 {
                     marks = surface.ObjectiveHelpMarks;
-                    if (hint.HasPossessionHelp)
+                    if (hint.HasPossessionHelp || hint.HasOwnedCastleMinimapHelp)
                         entityMarks = surface.EntityHelpMarks;
                     if (hint.PollsObjectiveMarkHelp)
                     {
@@ -912,6 +924,9 @@ namespace MagicCarpet.Native
                             nearestEntity = NearestMinimapHelpSubject(entityMarks, 21, ref entities);
                             if (hint.HasLooseManaHelp)
                                 nearestMana = NearestMinimapHelpSubject(entityMarks, 18, ref entities);
+                            if (hint.HasOwnedCastleMinimapHelp)
+                                nearestCastleMarkers = (NearestMinimapHelpSubject(entityMarks, 23, ref entities),
+                                    NearestMinimapHelpSubject(entityMarks, 24, ref entities));
                         }
                         if (hint.HasLargeMapHelp && surface.LiveMinimapReady)
                             hasObjectiveHelpSubject = surface.HasObjectiveHelpSubject;
@@ -952,7 +967,7 @@ namespace MagicCarpet.Native
                 hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
                 !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX,
                 fireballSpellEnabled, fireballHandAnchorX, possessionSpellEnabled, possessionHandAnchorX,
-                entityMarks, nearestEntity, nearestMana, canFundCastleUpgrade, castleHitFrames);
+                entityMarks, nearestEntity, nearestMana, canFundCastleUpgrade, castleHitFrames, nearestCastleMarkers);
         }
 
         private ushort NearestMinimapHelpSubject(
@@ -1036,10 +1051,11 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellPriorPixels = null;
                 gameRuntimeSpellPriorGeneration = 0;
                 var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
-                if (helpRow.Row is 18 or 21 or 82)
+                var entityAnchor = CampaignPresentationSurface.IsMinimapEntityHelpRow(helpRow.Row);
+                if (entityAnchor || helpRow.Row == 82)
                     gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen,
-                        entityAnchor: helpRow.Row is 18 or 21);
+                        entityAnchor: entityAnchor);
                 else if (helpRow.Row is 2 or 5 or 36 or 37 or 38 or 39 or 41 ||
                     (helpRow.Row is 10 or 11 or 12 && gameRuntimeManaHint.AnchorY == 32))
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,

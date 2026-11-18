@@ -918,6 +918,8 @@ namespace MagicCarpet.Native
             return written;
         }
 
+        internal static bool IsMinimapEntityHelpRow(int row) => row is 18 or 21 or 23 or 24;
+
         private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapEntity[] entities,
             NativeSim.CampaignMinimapMark[] marks, bool fullMap)
         {
@@ -941,12 +943,13 @@ namespace MagicCarpet.Native
             HasObjectiveHelpSubject = objectiveHelpMarks.Count != 0;
             foreach (var entity in entities)
             {
-                if (entity.helpSelector is not (18 or 21 or 0x53) || entity.visible == 0 ||
+                var entityHelp = IsMinimapEntityHelpRow(entity.helpSelector);
+                if ((!entityHelp && entity.helpSelector != 0x53) || entity.visible == 0 ||
                     entity.x < 0 || entity.y < 0) continue;
                 var x = entity.x / scale;
                 var y = entity.y / scale;
                 if (!MinimapEntityInsideAperture(x, y, minimapTables, fullMap)) continue;
-                if (entity.helpSelector is 18 or 21)
+                if (entityHelp)
                     entityHelpMarks.Add((entity.helpSelector, entity.subjectEntityIndex, x * 2, y * 2));
                 else if (!fullMap)
                     HasObjectiveHelpSubject = true;

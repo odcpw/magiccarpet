@@ -1763,8 +1763,15 @@ namespace MagicCarpet.Native.Tests
                     // Fireball help from the marker close adds an interval
                     // and can give the marker time to become overdue again.
                     var intervals = menu.LocaleCache.HasPossessionHelp ? 6 : menu.LocaleCache.HasFireballHelp ? 4 : 2;
-                    var decisiveRow = looseManaHelp ? 21 : 1;
-                    for (var frame = 0; frame < 170 + intervals * (50 + 20) && hint.VisibleRow != decisiveRow; frame++)
+                    var ownedMarkerHelp = menu.LocaleCache.HasOwnedCastleMinimapHelp;
+                    // The recurring owned markers replace the earlier row21
+                    // poll. At the third Collector poll, the refused rows
+                    // have had time to outrank that actual source winner.
+                    if (ownedMarkerHelp) intervals += 4;
+                    var decisiveRow = ownedMarkerHelp ? 23 : looseManaHelp ? 21 : 1;
+                    var decisiveOccurrence = ownedMarkerHelp ? 3 : 1;
+                    var decisiveSeen = 0;
+                    for (var frame = 0; frame < 170 + intervals * (50 + 20) && decisiveSeen < decisiveOccurrence; frame++)
                     {
                         if (looseManaHelp && frame % 80 == 78)
                             transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
@@ -1773,14 +1780,18 @@ namespace MagicCarpet.Native.Tests
                         runtime.QualificationDriveGameRuntimeFrames(1);
                         Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13).And.Not.EqualTo(14));
                         if (hint.VisibleRow != 0 && (drawn.Count == 0 || drawn[drawn.Count - 1].Row != hint.VisibleRow))
+                        {
                             drawn.Add((hint.VisibleRow, native.Tick));
+                            if (hint.VisibleRow == decisiveRow) decisiveSeen++;
+                        }
                     }
                     var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
                     TestContext.WriteLine($"Owned Castle help draws {chronology}. Final tick {native.Tick}.");
                     if (!looseManaHelp)
                         Assert.That(drawn.Any(item => item.Row == 16), Is.True, "the earlier idle steering reminder retains priority");
                     Assert.That(hint.VisibleRow, Is.EqualTo(decisiveRow),
-                        $"a lower-priority poll wins after both Castle cues are refused. Draws {chronology}");
+                        $"the decisive poll follows the Castle refusals. Draws {chronology}");
+                    Assert.That(decisiveSeen, Is.EqualTo(decisiveOccurrence));
                     CheckSource(1, 1);
                     Assert.That(menus.MapOpen, Is.False);
                     var minimap = runtime.GameRuntimeProductionIdentity.display_settings.minimap;
@@ -2691,6 +2702,156 @@ namespace MagicCarpet.Native.Tests
                 }
                 runtime.QualificationDisposeGameRuntimeProduction();
                 if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionOwnedCastleMinimapHelpFollowsBothActualMarkers()
+        {
+            var replay = Path.Combine(PrivateRoot,
+                "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle and Collector map help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                var possession = hintType.GetField("possessionHelpPending", flags);
+                var draws = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                var priorRow = 0;
+                int Remaining() => (int)remaining.GetValue(hint);
+                ushort Subject() => (ushort)subjectField.GetValue(hint);
+                void Draw()
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != priorRow)
+                        draws.Add((hint.VisibleRow, native.Tick));
+                    priorRow = hint.VisibleRow;
+                }
+                (int X, int Y) CurrentAnchor(int row, ushort subject)
+                {
+                    Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, native.Tick)));
+                    var mark = surface.EntityHelpMarks.Single(mark => mark.Row == row && mark.Subject == subject);
+                    return (mark.X, mark.Y);
+                }
+
+                Assert.That((native.Tick, menus.MapOpen), Is.EqualTo((2048UL, false)));
+                Assert.That(surface, Is.Not.Null);
+                var action = menus.Step(true, false, false, false, false, true);
+                Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                    menus.PlayerInformationOpen, action), Is.True);
+                Draw();
+                Assert.That((native.Tick, menus.MapOpen), Is.EqualTo((2049UL, true)));
+
+                var admitted = new System.Collections.Generic.HashSet<int>();
+                while (native.Tick < 2252 && admitted.Count < 2)
+                {
+                    var row = hint.VisibleRow;
+                    if (row is not (23 or 24) || admitted.Contains(row))
+                    {
+                        Draw();
+                        continue;
+                    }
+                    var collector = row == 23;
+                    var subject = (ushort)(collector ? 258 : 261);
+                    var record = collector ? 311 : 312;
+                    var text = collector ? "This is your balloon which collects your possessed mana" : "This is your castle";
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((record, 0, 50, 160, 5)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    var entity = native.Entities()[subject];
+                    Assert.That((entity.entityIndex, entity.sourceId, entity.active, entity.classId, entity.model),
+                        Is.EqualTo((subject, (ushort)252, (byte)1, (byte)3, (byte)(collector ? 3 : 2))));
+                    var command = native.WorldMap(native.Tick).entities.Single(mark =>
+                        mark.helpSelector == row && mark.subjectEntityIndex == subject);
+                    Assert.That((command.visible, command.selector),
+                        Is.EqualTo(((byte)1, (ushort)(collector ? 66 : 58))));
+                    var (x, y) = CurrentAnchor(row, subject);
+                    Assert.That((Subject(), hint.AnchorX, hint.AnchorY, Remaining()),
+                        Is.EqualTo((subject, 2 * command.x, 2 * command.y, 49)));
+                    Assert.That((x, y), Is.EqualTo((hint.AnchorX, hint.AnchorY)));
+
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True);
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var sourceX = x + 1 - raster.X;
+                    var sourceY = y - raster.Y;
+                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, Remaining(), Subject()), Is.EqualTo((tick, 49, subject)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                    for (var frame = 0; frame < 48; frame++)
+                    {
+                        Draw();
+                        Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((row, subject, 48 - frame)));
+                        Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(CurrentAnchor(row, subject)));
+                    }
+                    var requests = (fireball.GetValue(hint), possession.GetValue(hint));
+                    Draw();
+                    Assert.That((hint.VisibleRow, Remaining(), Subject()), Is.EqualTo((row, 0, (ushort)0)));
+                    Assert.That((fireball.GetValue(hint), possession.GetValue(hint)), Is.EqualTo(requests));
+                    admitted.Add(row);
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+                var chronology = string.Join(", ", draws.Select(frame => $"{frame.Row}@{frame.Tick}"));
+                Assert.That(admitted, Is.EquivalentTo(new[] { 23, 24 }), $"Ordinary full-map draws {chronology} through tick {native.Tick}.");
+                TestContext.WriteLine($"Ordinary full-map draws {chronology}. Row23 and row24 each kept their own subject for 50 draws.");
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
                 UnityEngine.Object.DestroyImmediate(root);
                 Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             }
