@@ -846,8 +846,19 @@ unchanged. The normal Original launcher cold-loaded the real Cave4
 checkpoint with four exact roles, no input and no retry. Both prompts are
 visible in the installed capture. Only the help table and its manifest
 digest changed in the active owner cache. See
-`generated/top-bar-vitals-help-20261118.Kb2v1CJL/`. Cast-key guidance,
-other source help and alternate-language verification remain open.
+`generated/top-bar-vitals-help-20261118.Kb2v1CJL/`.
+
+Canonical `0e279bb2`, published as `0daa1605`, adds the assigned-hand
+cast prompts at source rows 38/39. The exact Cave6 GLCore check passed in
+30.859 s using an ordinarily reacquired Fireball. It covered source priority,
+the empty right hand, ordinary right-hand assignment, both indexed leaders,
+both 50-draw lifetimes and replay purity. The active cache changed only the
+help table and manifest. Original `build-idpw2fbd` cold-loaded the retained
+Cave6 checkpoint through the normal launcher with the matching native, six
+owner roles and zero retries. The exact GLCore check supplies the prompt
+evidence. Assigned-but-unready live behavior, further help and alternate
+languages remain open under `mc-oi6.6`. See
+`generated/top-bar-cast-help-20261118.D8i2Cf6r/`.
 
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
@@ -860,7 +871,17 @@ source. Original `build-d6_t4mf7` installs native `a0551e64`; the ordinary
 launcher entered NightSpire with 30 roles, one portal click and no retry.
 The launch covers packaging. The focused native/CLI proof covers the
 transition. See `generated/objective-observations-20261118/`.
-Economy and terrain acceptance remain open under `mc-b9s.5`.
+Canonical `6c8d8813`, published as `7a619281`, adds guarded native and CLI
+reads of live Castles, Collectors and mana spheres with current generation-safe
+relations. The retained NightSpire input reached a paid Castle at tick 1739,
+its Collector at 1761, four ordinary 500-mana pickups and a 2,000-mana
+deposit at 2745. Native reads follow the spheres through hide and reclaim;
+the optimized CLI cold-load reaches the same deposit boundary. Paired runs
+preserve game hashes and journal, and stale, invalid and reset cases are
+checked. All 628 recorded inputs match canonical, Rig and published source.
+Original `build-idpw2fbd` installs the matching native `534882ac`. See
+`generated/economy-observations-20261118/`. Bounded terrain windows and
+generation-safe historical event payloads remain open under `mc-b9s.5`.
 
 The earned NightSpire exit checkpoint matches 13 historical pose/exit
 boundaries and reaches the real authored exit at tick 10695. The native
