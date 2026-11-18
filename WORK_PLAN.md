@@ -826,7 +826,7 @@ invalid limit, offset and tick were also refused. The installed native adds
 direct owner-package witnesses for Day2 Villager and Level22 Trader alongside
 the Level5 families above. See `generated/actor-pages-20261118/`.
 This completes the named actor observation scope of `mc-b9s.4`. Broader
-`mc-b9s` and its objective, terrain and economy query leaf stay open.
+`mc-b9s` stays open.
 
 English idle movement help is implemented and published as `cdbf29f7`.
 The exact GLCore check cold-loads Cave4, resets the idle counter through
@@ -848,6 +848,19 @@ visible in the installed capture. Only the help table and its manifest
 digest changed in the active owner cache. See
 `generated/top-bar-vitals-help-20261118.Kb2v1CJL/`. Cast-key guidance,
 other source help and alternate-language verification remain open.
+
+Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
+condition, authored ID and live stage in one guarded native/CLI read. Both
+consumers matched the retained ordinary NightSpire tick 168→169 boundary:
+My Beacon completed, Foot of Spire became current, and the count rose from
+zero to one. Reads preserved the prior installed state hashes, event journal
+and terrain hash, and stale guards were refused. The Day2 read returned the
+bound Nyphur target ID. All 627 input hashes match canonical, Rig and published
+source. Original `build-d6_t4mf7` installs native `a0551e64`; the ordinary
+launcher entered NightSpire with 30 roles, one portal click and no retry.
+The launch covers packaging. The focused native/CLI proof covers the
+transition. See `generated/objective-observations-20261118/`.
+Economy and terrain acceptance remain open under `mc-b9s.5`.
 
 The earned NightSpire exit checkpoint matches 13 historical pose/exit
 boundaries and reaches the real authored exit at tick 10695. The native
