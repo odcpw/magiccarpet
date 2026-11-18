@@ -31618,6 +31618,14 @@ mod tests {
 
     #[test]
     fn paid_castle_and_collector_publish_source_top_status_and_admitted_hit_clocks() {
+        fn marker(simulation: &Mc2Simulation, slot: u16) -> Option<crate::level1_mission::Level1MinimapEntityInput> {
+            let mut rows = simulation.campaign_minimap_owned_inputs().unwrap().into_iter()
+                .filter(|row| row.source_slot == slot);
+            let row = rows.next();
+            assert!(rows.next().is_none(), "one source slot owns at most one typed minimap input");
+            row
+        }
+
         fn frame(campaign: &mut CampaignSession, command: PlayerCommand, top_bar: bool,
             menu: Option<sim_session::AbandonAction>) {
             let simulation = campaign.simulation_mut();
@@ -31695,6 +31703,11 @@ mod tests {
             .find(|row| row.active && row.source_entity_index == collector_slot && row.source_class == 3 && row.model == 3)
             .unwrap_or_else(|| panic!("the actual even-phase root must construct its first collector: root={root:?}, free={}",
                 campaign.simulation().economy().free_slot_count()));
+        let collector_handle = campaign.simulation().source_arena().handle(collector_slot).unwrap();
+        let live_marker = marker(campaign.simulation(), collector_slot).expect("the stock collector owns a minimap input");
+        assert_eq!((live_marker.class, live_marker.model, live_marker.action), (3, 3, 9));
+        assert_eq!((live_marker.source_id, live_marker.position), (owner, collector.position));
+        assert!(live_marker.active && live_marker.source_id_is_local_player && live_marker.source_id_is_player);
         let status = campaign.simulation().source_top_status(goal);
         let castle = status.castle.unwrap();
         assert_eq!((castle.stage, castle.icon_selector, status.balloon_icon_selector), (1, 44, 51));
@@ -31805,18 +31818,55 @@ mod tests {
             "NewEvent's balloon A4 is the shared source context");
         assert_eq!(campaign.simulation().shared_spells().local_player().balloon_hit_frame_time, 0,
             "ordinary balloon damage must not invent a local A4 alias");
+        // Use the ordinary odd Castle callback so the collector's own lethal
+        // damage is observable separately from even stock maintenance.
+        if campaign.simulation().economy().castle_for_owner(owner).unwrap().phase & 1 == 0 {
+            frame(&mut campaign, PlayerCommand::default(), true, None);
+        }
+        assert_ne!(campaign.simulation().economy().castle_for_owner(owner).unwrap().phase & 1, 0);
         {
             let live = &mut campaign.simulation_mut().session.state.live;
             area_damage::contact(&mut live.economy, None, collector_slot, u16::MAX, 266).unwrap();
         }
-        // One collector damage visit, up to two root visits to reach even
-        // maintenance, then the following-pass reclaim boundary.
-        for _ in 0..4 {
-            frame(&mut campaign, PlayerCommand::default(), true, None);
-            if !campaign.simulation().source_top_status(goal).balloons[0].present { break; }
-        }
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        let simulation = campaign.simulation();
+        let lethal = simulation.economy().castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == collector_slot).unwrap();
+        assert!(lethal.life < 0 && !lethal.drawing_disabled());
+        assert_eq!(simulation.source_arena().handle(collector_slot), Some(collector_handle));
+        let lethal_marker = marker(simulation, collector_slot).unwrap();
+        assert_eq!((lethal_marker.source_id, lethal_marker.position), (owner, lethal.position));
+        assert!(lethal_marker.active, "a lethal mailbox on its own does not hide the minimap actor");
+
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        let simulation = campaign.simulation();
+        assert_eq!(simulation.source_arena().handle(root.source_entity_index), Some(root_handle));
+        assert_eq!(simulation.source_arena().handle(collector_slot), Some(collector_handle));
+        let hidden = marker(simulation, collector_slot).expect("the hidden owner suppresses its raw row through this boundary");
+        assert!(!hidden.active && hidden.control_flags & ENTITY_DRAW_DISABLED_BIT != 0);
         assert!(!campaign.simulation().source_top_status(goal).balloons[0].present,
             "source balloon destruction/reclaim removes its HUD row");
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        let simulation = campaign.simulation();
+        assert!(simulation.source_arena().resolve(collector_handle).is_none());
+        assert!(marker(simulation, collector_slot).is_none(), "the retired collector releases its typed minimap input");
+        assert!(!simulation.entities()[usize::from(collector_slot)].active,
+            "the reclaimed raw record cannot reappear through minimap fallback");
+
+        frame(&mut campaign, PlayerCommand::default(), true, None);
+        let simulation = campaign.simulation();
+        let current_root = simulation.economy().castle_for_owner(owner).unwrap();
+        assert_eq!(simulation.source_arena().handle(current_root.source_entity_index), Some(root_handle));
+        assert_eq!(current_root.defender_slots[0], collector_slot, "the real stock refill reuses the freed address");
+        let replacement = simulation.source_arena().handle(collector_slot).unwrap();
+        assert_ne!(replacement.generation, collector_handle.generation);
+        assert!(simulation.source_arena().resolve(collector_handle).is_none());
+        let replacement_actor = simulation.economy().castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == collector_slot).unwrap();
+        let replacement_marker = marker(simulation, collector_slot).unwrap();
+        assert!(replacement_actor.life > 0 && replacement_marker.active);
+        assert_eq!((replacement_marker.class, replacement_marker.model, replacement_marker.action), (3, 3, 9));
+        assert_eq!((replacement_marker.source_id, replacement_marker.position), (owner, replacement_actor.position));
 
         // A lethal root hit does not retrigger the nonlethal A4 byte195.
         assert!(campaign.simulation().economy().free_slot_count() > 0,
