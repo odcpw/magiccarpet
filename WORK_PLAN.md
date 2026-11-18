@@ -3341,6 +3341,15 @@ The same exact test retains and passes all prior mission assertions
 Full `mc-6qf.1` stays open. See
 `generated/level9-repeat-switch-20261118/`.
 
+Cymmeria's reset-active repeat-exit switch now has a separate direct package
+check. The installed native publishes all 24 authored group1 rows in order at
+tick 1 and has no repeat through tick 19 under ordinary default input. The
+exact 5.32 s test then controls only player geometry. It verifies that staying
+outside holds the countdown, the tenth inside visit rearms it, and leaving
+again republishes the same ordered rows. The switch keeps its identity and the
+new field reaches its ordinary callback. Only the test changed. See
+`generated/level10-repeat-exit-20261118/`.
+
 The configured final368/374 checks passed7.388s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
 row374 overlap to four authored model28 roots and following reclaim. Final392
