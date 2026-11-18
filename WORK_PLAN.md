@@ -916,8 +916,23 @@ flag at tile (116,230). The full window records 46 height changes and 16
 material/protection changes. Read purity and stale/bounds refusals passed.
 All 628 inputs match canonical, Rig and published source, and the installed
 Original `build-fmy6_bc4` maps verified native `3987657a`. See
-`generated/semantic-terrain-20261118/`. Generation-safe historical event
-payloads remain open under `mc-b9s.5`.
+`generated/semantic-terrain-20261118/`.
+
+Canonical `5675391d`, published as `4eb95f99`, adds generation-safe
+economy payloads to the existing bounded event journal. Native and CLI
+report the same real Castle construction start at tick 1740, four
+500-mana transfers and the 2,000-mana deposit at 2745. The paid root is
+visible at 1739; construction is published on the subsequent frame with
+stage 1. All four sphere identities survive reclaim in retained history,
+and a cold CLI replay reconstructs the final pickup. The 136.437 s proof
+also covers stale guards, expiration, unchanged reads and seven exact
+prior state/journal receipts. The current Cave6 sample at tick 40 returns
+ground 224 and ceiling 5568 without changing the state. All 628 inputs
+match Rig and the published revision. Original native refresh
+`build-s8mo2uez` cold-loaded NightSpire via the normal launcher with
+native `4dbbe5fd`, no input and no retry. `mc-b9s.5` is closed for its
+existing acceptance; broader session and campaign acceptance remains open.
+See `generated/semantic-economy-history-20261118/`.
 
 The earned NightSpire exit checkpoint matches 13 historical pose/exit
 boundaries and reaches the real authored exit at tick 10695. The native
