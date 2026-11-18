@@ -17,9 +17,9 @@ use sim_core::game_session::{
     GameSession, GameSessionError, MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, SessionGuard,
     SessionObservation, TERRAIN_GRID_SIDE, TerrainWindowRequest,
 };
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const CONTRACT: &str = "carpet-flight-command-stream/v1";
@@ -27,6 +27,18 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PAGE: usize = 100;
 const MAX_PACKAGES: usize = 64;
+
+fn publish_replay(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staging = tempfile::NamedTempFile::with_prefix_in(".campaign-save-", directory)?;
+    staging.write_all(bytes)?;
+    staging.as_file().sync_all()?;
+    staging.persist_noclobber(path)?;
+    Ok(())
+}
 
 pub(crate) fn capabilities() -> Value {
     json!({
@@ -642,13 +654,7 @@ impl Stream {
                     }
                 }
                 let bytes = self.resolver()?.save_replay(&self.runtime)?;
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(|error| StreamError::new("SAVE_IO_ERROR", error))?;
-                file.write_all(&bytes)
-                    .and_then(|()| file.sync_all())
+                publish_replay(&path, &bytes)
                     .map_err(|error| StreamError::new("SAVE_IO_ERROR", error))?;
                 Ok(
                     json!({"path": path, "bytes": bytes.len(), "persistence": "authoritative_operation_replay"}),
