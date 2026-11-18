@@ -801,6 +801,35 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+### Goat lifetime pages and Cave loop timing — 2026-11-18
+
+Canonical `63b8b0f2`, published as `ff7e2bea`, adds bounded campaign actor
+pages for `creature.goat`. The public read binds session, generation and tick;
+opaque lifetime IDs use the authoritative arena incarnation. The campaign
+profile advertises its Goat scope separately from the existing exact Unity
+capability arrays. Live Day2 paging and guard/read-purity checks passed in
+3.19s. The NightSpire paid Fireball test follows a Goat with a declared,
+published 200-life property through damage, dying, hide and reclaim in 5.51s.
+The original 600/1200-life cases remain in the same test. Same-slot reuse
+remains open. The older full snapshot's scoreboard contains `source_slot`;
+the untouched optimized registry test fails its existing guard too. The
+actor-page change preserves the original scoreboard consumers and guard.
+Original `build-41je7c5x` is installed with native
+`fb751cf5501717c68956502c1b8e740e95a0265f3a6509f991640edac9ebf546`.
+All 626 native inputs match canonical, Rig and published source. The optimized
+public read paged 36 distinct live Day2 Goats and repeated identically.
+The canonical launcher loaded NightSpire with all 30 resource roles, one portal
+click and zero retries. The mapped native matched. This smoke covers launch and
+load; the focused runtime checks cover Goat observation and lifetime.
+See `generated/goat-actor-pages-20261118.Lk77Lx/`.
+
+Cave track 3 audibly repeated in a 250s private capture from installed
+`build-nstm28wl`. The two head preludes were 239.201458s apart against the
+owner render's 240.001451s period. Phase remained aligned through 238s and
+the repetitive ending prevents a unique terminal fit. Exact length remains
+open pending timestamped capture evidence. See
+`generated/adaptive-cave-loop-20261118.2y8of3mi/`.
+
 ### Objective popup closure, Night music and collector retirement — 2026-11-18
 
 Canonical `c3e5cd77` is installed in Original `build-nstm28wl` with native
