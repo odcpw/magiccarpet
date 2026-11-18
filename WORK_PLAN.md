@@ -1230,6 +1230,16 @@ creature, Cave spell/impact playback was not exercised, and the real Cave
 finite witness is door47. Capture used a software sink and does not establish
 hardware listening or full mission play.
 
+The installed Original cold-loaded the existing genuine Pav entry replay
+with native 15b4e827 and all 30 package roles on 2026-11-18. A private audio
+server captured the owned player stream. The single TRACK26 request played
+the 4999 ms owner segment, with 0.923 normalized correlation across that span.
+The initial shared-server capture was silent and supplied no playback
+evidence. Private capture and routing receipts are in
+`generated/pav-speech-private-20261118-ojqzzzjw/`. This verifies audible
+software output for the existing secret announcement and leaves ordinary
+advancement, completion, briefing and full mc-oi6.10 acceptance open.
+
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
 build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
