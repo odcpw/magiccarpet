@@ -7310,29 +7310,39 @@ impl Mc2Simulation {
             prepared.command.audible = true;
             return Some(prepared);
         }
-        let source = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get(usize::from(entity_index))?;
-        if source.control_flags & 0x80 != 0 {
+        let arena = &self.session.state.live.economy;
+        // Authored Wind can own the current slot without a raw projection.
+        // Resolve it through the same live carrier as the source scheduler.
+        let wind = if sound_id == 49
+            && arena.live_arena_kind(entity_index) == Some(Level2DynamicArenaKind::AuthoredModel22)
+        {
+            arena.authored_model22().iter()
+                .find(|wind| wind.active && wind.source_entity_index == entity_index)
+        } else {
+            None
+        };
+        let (position, flags, source_id, action) = if let Some(wind) = wind {
+            (wind.position, wind.control_flags, wind.entity_id, wind.action)
+        } else {
+            let source = arena.entities.get(usize::from(entity_index))?;
+            (source.position, source.control_flags, source.source_id, source.action)
+        };
+        if flags & 0x80 != 0 {
             return None;
         }
         let source_position = if entity_index == self.state.entity_index {
             self.state.position
         } else {
-            source.position
+            position
         };
         crate::prepare_event_sound_command(
             self.state.position,
             self.state.yaw,
             source_position,
             sound_id,
-            self.session.state.live.economy.global_rng,
-            source.source_id,
-            source.action,
+            arena.global_rng,
+            source_id,
+            action,
         )
     }
 
@@ -28568,6 +28578,20 @@ impl Mc2Simulation {
                 step.live
             }
             Level2DynamicArenaKind::AuthoredModel22 => {
+                let expiring = self.session.state.live.economy.authored_model22().iter()
+                    .any(|source| source.active && source.source_entity_index == source_slot
+                        && source.life.wrapping_sub(1) < 0 && source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0);
+                if expiring && !self.session.replay_legacy_wind_audio {
+                    // sub_33110 ends the sound before sub_338D0 hides the root
+                    // and its children and clears the affected targets.
+                    self.push_flight_effect(FlightEvent::EndLoop {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::WhirlwindField,
+                        entity_index: source_slot,
+                        player_index: -1,
+                        sound_id: 49,
+                    });
+                }
                 let live = {
                     let state = &mut self.session.state.live;
                     let links =
@@ -28615,6 +28639,15 @@ impl Mc2Simulation {
                                 message,
                             });
                             return false;
+                        }
+                        if !self.session.replay_legacy_wind_audio {
+                            self.push_flight_effect(FlightEvent::PrepareSound {
+                                #[cfg(test)]
+                                audio_site: crate::MissionAudioSite::WhirlwindField,
+                                entity_index: source_slot,
+                                player_index: -1,
+                                sound_id: 49,
+                            });
                         }
                     }
                 }
@@ -29794,6 +29827,10 @@ impl Mc2Simulation {
 
     pub(crate) fn set_replay_legacy_goat_audio(&mut self, historical: bool) {
         self.session.replay_legacy_goat_audio = historical;
+    }
+
+    pub(crate) fn set_replay_legacy_wind_audio(&mut self, historical: bool) {
+        self.session.replay_legacy_wind_audio = historical;
     }
 
     pub(crate) fn apply_warm_hand_selection_flash(&mut self, ticks: [u8; 2]) {

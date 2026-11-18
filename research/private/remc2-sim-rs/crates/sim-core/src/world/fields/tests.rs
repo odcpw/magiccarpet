@@ -1193,6 +1193,7 @@ fn scheduled_authored_wind_publishes_old_and_new_map_heads() {
 
 #[test]
 fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
+    use crate::{FlightEvent, MissionAudioSite, campaign::journal::CampaignEffect};
     use crate::native_world::{Level2DynamicArenaKind, Mc2DispatchEvent};
 
     let mut session = campaign();
@@ -1273,6 +1274,10 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
         root.source_slot > player,
         "the player visit precedes this Wind source visit"
     );
+    let audio_start = session.effect_journal().records().len();
+    let mut historical = session.clone();
+    historical.set_replay_legacy_wind_audio(true);
+    historical.step_outer_turn(PlayerCommand::default(), 0);
     let player_steps = session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         player_steps.len(),
@@ -1290,6 +1295,11 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
         .iter()
         .find(|row| row.source_entity_index == root.source_slot)
         .unwrap();
+    assert_eq!(historical.state.position, live.core.state.position);
+    assert_eq!(historical.economy().authored_model22(), live.economy.authored_model22());
+    assert!(!historical.effect_journal().records()[audio_start..].iter().any(|record| matches!(record.effect,
+        CampaignEffect::Flight(FlightEvent::PrepareSound { sound_id: 49, .. }))),
+        "the historical prefix omits only the Wind audio join, retaining ordinary Wind motion");
     assert_ne!(
         (live.core.state.position.x, live.core.state.position.y),
         (player_steps[0].committed.x, player_steps[0].committed.y),
@@ -1309,6 +1319,22 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
         live.shared_spells.player_entity().position,
         live.core.state.position
     );
+    let audio = session.effect_journal().records()[audio_start..].iter()
+        .filter(|record| matches!(record.effect, CampaignEffect::Flight(FlightEvent::PrepareSound {
+            audio_site: MissionAudioSite::WhirlwindField, entity_index, player_index: -1, sound_id: 49,
+        }) if entity_index == root.source_slot)).collect::<Vec<_>>();
+    assert_eq!(audio.len(), 1, "one sound request follows the actual Wind update");
+    let audio = audio[0].audio.expect("the Wind request carries its prepared source position");
+    assert_eq!(audio.play_type, 4);
+    assert_eq!(audio.command.rate_delta_percent, 0);
+    assert_eq!(audio.command.sound_flags, 0);
+    assert!(audio.command.audible);
+    let listener = live.core.state.position;
+    assert_eq!((audio.command.relative_x, audio.command.relative_y, audio.command.relative_z), (
+        i32::from(after_wind.position.x) - i32::from(listener.x),
+        i32::from(after_wind.position.y) - i32::from(listener.y),
+        i32::from(after_wind.position.z) - i32::from(listener.z),
+    ), "the moving field and the affected listener use their current source poses");
 
     // Retreat while the unmodified authored lifetime advances; return once
     // near its natural end so its real cleanup sees the same player carrier.
@@ -1384,6 +1410,12 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
             assert!(session.field_source_rows().iter().any(|source| source.index
                 == root.source_slot
                 && source.control_flags & 0x400 != 0));
+            let terminal = session.effect_journal().records().iter().filter(|record| matches!(record.effect,
+                CampaignEffect::Flight(FlightEvent::EndLoop {
+                    audio_site: MissionAudioSite::WhirlwindField, entity_index, player_index: -1, sound_id: 49,
+                }) if entity_index == root.source_slot)).collect::<Vec<_>>();
+            assert_eq!(terminal.len(), 1, "the terminal Wind visit requests one finite voice end");
+            assert_eq!(terminal[0].audio.unwrap().play_type, 4);
             hidden = true;
         }
     }
@@ -1391,6 +1423,15 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
         returned && hidden && reclaimed,
         "authored Wind must naturally expire and reclaim"
     );
+    let events = session.effect_journal().records()[audio_start..].iter()
+        .filter(|record| match record.effect {
+            CampaignEffect::Flight(FlightEvent::PrepareSound { entity_index, sound_id: 49, .. }
+                | FlightEvent::EndLoop { entity_index, sound_id: 49, .. }) => entity_index == root.source_slot,
+            _ => false,
+        }).map(|record| &record.effect).collect::<Vec<_>>();
+    assert!(matches!(events.last(), Some(CampaignEffect::Flight(FlightEvent::EndLoop { .. }))));
+    assert_eq!(events.iter().filter(|event| matches!(event, CampaignEffect::Flight(FlightEvent::EndLoop { .. }))).count(), 1,
+        "reclaim does not reissue the terminal request or start the sound again");
 }
 
 #[test]

@@ -752,6 +752,7 @@ pub enum MissionAudioSite {
     BossApproach,
     BossDeathRumble,
     BossDeathPeriodic,
+    WhirlwindField,
     Count,
 }
 
@@ -1246,6 +1247,7 @@ impl MissionAudioSite {
         Self::BossApproach,
         Self::BossDeathRumble,
         Self::BossDeathPeriodic,
+        Self::WhirlwindField,
     ];
 
     #[must_use]
@@ -1649,6 +1651,14 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp sub_21030 LABEL_48 counter divisible by4",
+                true,
+            ),
+            Self::WhirlwindField => (
+                "49",
+                "live Wind slot after target updates; terminal request before cleanup",
+                "4",
+                "fixed 0",
+                "EventsFunctions.cpp sub_33110",
                 true,
             ),
             Self::WyvernAttack => (

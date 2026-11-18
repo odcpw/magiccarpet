@@ -309,6 +309,9 @@ pub struct CampaignSession {
     /// The restore candidate uses the historical audio policy only while
     /// replaying operations recorded before Goat sound preparation existed.
     pub(crate) replay_legacy_goat_audio: bool,
+    /// The restore candidate suppresses the Wind sound only during operations
+    /// recorded before source-49 preparation and termination were joined.
+    pub(crate) replay_legacy_wind_audio: bool,
 }
 
 impl CampaignSession {
@@ -327,6 +330,7 @@ impl CampaignSession {
             state,
             generation: 0,
             replay_legacy_goat_audio: false,
+            replay_legacy_wind_audio: false,
         }
     }
 
