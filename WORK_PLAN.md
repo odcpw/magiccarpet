@@ -826,15 +826,21 @@ click and zero retries. The mapped native matched. This smoke covers launch and
 load; the focused runtime checks cover Goat observation and lifetime.
 See `generated/goat-actor-pages-20261118.Lk77Lx/`.
 
-Cave track 3 audibly repeated in a 250s private capture from installed
-`build-nstm28wl`. The two head preludes were 239.201458s apart against the
-owner render's 240.001451s period. Phase remained aligned through 238s and
-the repetitive ending prevents a unique terminal fit. The next integrated
-capture on `build-41je7c5x` measured 239.201451s in Pulse and 239.201474s
-with direct PipeWire versus the owner's 240.001451s. Pulse packet timing
-was continuous within 10ms. Both readers saw the same early repeat at the
-private sink; the audio source emitted one track start. The responsible
-boundary upstream of the readers remains open. Evidence:
+Cave track 3 repeated in both installed captures. Reanalysis of both audible
+startup anchors on `build-41je7c5x` finds the full 240.001451s transport
+period in Pulse and 240.001474s in direct PipeWire. Both saw two matching owner
+heads 35,280 source frames apart at startup and lost phase in the final 0.8s.
+The earlier 239.201451s measurement used the duplicate startup head.
+One managed start and continuous packet timing rule out a second game start
+or a gap in the capture. The qualified Unity A/B reproduced the same 35,280
+frames at the mixer before the device. Setting AudioSource.timeSamples lets
+Unity seek and prefill, then a redundant managed seek replayed the buffered
+head and displaced the tail. Removing that seek preserves the full
+176,464-frame diagnostic clip and its tail on both fresh start and restart.
+The game capture tap now keeps enable-state reads off the mixer thread.
+The short test uses controlled PCM with the production stream/source and real
+capture tap. A fresh installed Cave owner-track capture still needs to pass.
+See `generated/adaptive-stream-loop-discriminator-20261118/` and
 `generated/adaptive-cave-loop-timed-20261118/installed-cave4-timed/`.
 
 The authored Karakir Cave switch at row 29, tile (201,204), can start Wind

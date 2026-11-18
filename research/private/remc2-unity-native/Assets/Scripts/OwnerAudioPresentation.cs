@@ -953,7 +953,6 @@ namespace MagicCarpet.Native
             {
                 musicSource.Stop();
                 musicSource.timeSamples = 0;
-                musicStream.Seek(0);
                 musicSource.Play();
                 musicStartCount++;
                 Debug.Log($"MC_MUSIC_START generation={state.generation} tick={state.tick} " +
