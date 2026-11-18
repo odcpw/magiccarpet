@@ -1,6 +1,9 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Serialization.Json;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -8,6 +11,114 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class CampaignMinimapPixelTests
     {
+        private sealed class ObjectiveHelpWindow : UnityEditor.EditorWindow
+        {
+            internal Action RepaintRuntime;
+            private void OnGUI() => RepaintRuntime?.Invoke();
+        }
+
+        [Test]
+        public void ProductionObjectiveHelpReadsLiveDayMarksAcrossBlinkWithoutRepaintAdvancing()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var locale = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE");
+            var replayPath = Environment.GetEnvironmentVariable("MC_OBJECTIVE_HELP_DAY_REPLAY");
+            Assert.That(locale, Is.Not.Empty.And.Not.Null);
+            Assert.That(replayPath, Is.Not.Empty.And.Not.Null);
+            var arguments = new List<string> {
+                "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "-mc-runtime-menu-cache", locale, "-mc-runtime-replay-load", replayPath
+            };
+            var resourcesPath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(generated, "continuity-20261115/installed-full-resources.json");
+            using (var input = File.OpenRead(resourcesPath))
+            {
+                var serializer = new DataContractJsonSerializer(typeof(GameRuntimeTransport.InstalledPackageResource[]));
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])serializer.ReadObject(input);
+                Assert.That(resources.Length, Is.GreaterThanOrEqualTo(3));
+                foreach (var package in resources.Take(3))
+                    arguments.AddRange(new[] { "-mc-runtime-package", package.package_dir,
+                        "-mc-runtime-owner-cache", package.owner_cache_path,
+                        "-mc-runtime-presentation-cache", package.presentation_cache_path });
+            }
+            var root = new GameObject("Day objective mark help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<ObjectiveHelpWindow>();
+            var target = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, fields).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                Assert.That(native.Tick, Is.EqualTo(2025));
+                Assert.That(hint.HasObjectiveMarkHelp, Is.True);
+                Assert.That(menu.GameplayHelpForRow(81).TextRecord, Is.EqualTo(343));
+                var binding = menu.GameplayHelpForRow(82);
+                Assert.That((binding.TextRecord, binding.Duration, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((344, 50, 160, 5)));
+                var marks = native.MinimapMarks(native.Tick, native.MinimapState(native.Tick));
+                Assert.That(marks.Where(row => row.helpSelector == 82).All(row => row.visible == 0), Is.True);
+                Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject != 0), Is.True,
+                    "ordinary authored rectangles offer help before the next visible blink");
+                for (var frame = 0; frame < 80 && hint.VisibleRow != 82; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(82));
+                var subjectField = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("objectiveHelpSubject", fields);
+                var subject = (ushort)subjectField.GetValue(hint);
+                var current = surface.ObjectiveHelpMarks.Single(mark => mark.Row == 82 && mark.Subject == subject);
+                Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((current.X, current.Y)));
+
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                    .OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = target;
+                    camera.Render();
+                }
+                window.RepaintRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", fields).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var lifetime = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", fields);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var sourceText = menu.GameplayLanguageText(344);
+                Assert.That(sourceText, Is.Not.Empty);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", fields).GetValue(presenter),
+                    Is.EqualTo(sourceText));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", fields).GetValue(presenter);
+                Assert.That(raster, Is.Not.Null);
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                Assert.That(native.Tick, Is.EqualTo(tick));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(48), "only the next ordinary frame advances help");
+            }
+            finally
+            {
+                window.RepaintRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         [Test]
         public void IndexedMinimapComposesSourceTerrainAndOrderedWritesBeforeHud()
         {

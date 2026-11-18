@@ -88,6 +88,7 @@ namespace MagicCarpet.Native
             private int pollDelay;
             private int remaining;
             private RowState currentRow;
+            private ushort objectiveHelpSubject;
             private int pendingRow;
             private bool spellMode;
             private int spellSlot = -1, spellTier = -1, spellCycle;
@@ -99,18 +100,23 @@ namespace MagicCarpet.Native
             internal int AnchorX { get; private set; } = 540;
             internal int AnchorY { get; private set; }
             internal bool SpellVisible { get; private set; }
+            internal bool HasObjectiveMarkHelp { get; }
+            internal bool PollsObjectiveMarkHelp =>
+                HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
             internal ushort[] VisibleSpellRecords { get; private set; }
             internal int VisibleSpellHighlight { get; private set; } = -1;
 
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
-                bool hasMinimapHelp = false)
+                bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
+                HasObjectiveMarkHelp = hasObjectiveMarkHelp;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
                 var ids = new List<int> { 1, 3, 40, 41, 42, 69, 70, 71,
                     72, 73, 74, 75, 76, 77, 78, 79, 80, 85 };
                 if (hasMinimapHelp) ids.Insert(1, 2);
+                if (hasObjectiveMarkHelp) ids.InsertRange(ids.IndexOf(85), new[] { 81, 82 });
                 rows = new RowState[ids.Count];
                 for (var index = 0; index < ids.Count; index++) rows[index] = new RowState(rowFor(ids[index]));
                 mana = FindRow(41);
@@ -130,6 +136,7 @@ namespace MagicCarpet.Native
                 pollDelay = 0;
                 remaining = 0;
                 currentRow = null;
+                objectiveHelpSubject = 0;
                 pendingRow = 0;
                 spellMode = false;
                 spellSlot = spellTier = -1;
@@ -149,7 +156,9 @@ namespace MagicCarpet.Native
 
             internal void Advance(bool leftUnavailable, bool rightUnavailable,
                 bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
-                bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false)
+                bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false,
+                IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> objectiveMarks = null,
+                ushort nearestObjectiveSubject = 0)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -172,8 +181,18 @@ namespace MagicCarpet.Native
                 }
                 if (remaining != 0)
                 {
+                    if (currentRow.Binding.Row == 81 || currentRow.Binding.Row == 82)
+                    {
+                        if (!RefreshObjectiveMarkAnchor(objectiveMarks))
+                        {
+                            Close();
+                            AgeRows();
+                            return;
+                        }
+                    }
                     // Eligibility is sampled by SetHelpPopupCoords only when
-                    // selecting a popup, not reevaluated during its 50 draws.
+                    // selecting ordinary rows. Type8 also requires the same
+                    // subject pointer to have refreshed before each popup draw.
                     Visible = true;
                     VisibleRow = currentRow.Binding.Row;
                     if (--remaining == 0) Close();
@@ -187,6 +206,10 @@ namespace MagicCarpet.Native
                     }
                     else
                     {
+                        var hasFixedObjectiveMark = false;
+                        if (objectiveMarks != null)
+                            foreach (var mark in objectiveMarks)
+                                hasFixedObjectiveMark |= mark.Row == 81;
                         // Current eligibility is sampled only by the source
                         // poll. A contact event does not promote or select row3.
                         var bestOverdue = 0;
@@ -198,6 +221,8 @@ namespace MagicCarpet.Native
                                     1 or 2 => true,
                                     3 => wallContactCounter != 0,
                                     41 => leftUnavailable || rightUnavailable,
+                                    81 => hasFixedObjectiveMark,
+                                    82 => nearestObjectiveSubject != 0,
                                     _ => false
                                 };
                                 // The source end mask includes the eligible bit
@@ -226,6 +251,8 @@ namespace MagicCarpet.Native
                             AnchorX = leftUnavailable ? 540 : 600;
                             AnchorY = 48;
                         }
+                        else if (currentRow.Binding.Row == 82)
+                            objectiveHelpSubject = nearestObjectiveSubject;
                         remaining = currentRow.Binding.Duration;
                     }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
@@ -234,6 +261,22 @@ namespace MagicCarpet.Native
                 // sub_87B70 services every source row after selection/draw,
                 // including rows that are not currently eligible.
                 AgeRows();
+            }
+
+            private bool RefreshObjectiveMarkAnchor(
+                IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> marks)
+            {
+                // The source fixed-point hint passes a null subject. It may
+                // win the poll but fails sub_872A0's nonnull active Type8 guard.
+                if (objectiveHelpSubject == 0 || marks == null) return false;
+                foreach (var mark in marks)
+                {
+                    if (mark.Row != 82 || mark.Subject != objectiveHelpSubject) continue;
+                    AnchorX = mark.X;
+                    AnchorY = mark.Y;
+                    return true;
+                }
+                return false;
             }
 
             private void AgeRows()
@@ -365,6 +408,7 @@ namespace MagicCarpet.Native
                     currentRow.Priority = currentRow.Binding.Priority;
                 }
                 currentRow = null;
+                objectiveHelpSubject = 0;
                 pollDelay = spellMode ? 6 : 20;
             }
 
@@ -668,7 +712,8 @@ namespace MagicCarpet.Native
             if (string.IsNullOrEmpty(languageCache.LanguageText(329)))
                 throw new InvalidDataException("Missing source language record 329");
             gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
-            gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow, languageCache.HasMinimapHelp);
+            gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
+                languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -699,8 +744,46 @@ namespace MagicCarpet.Native
             bool showHelp, bool paused, bool suppressed, sbyte wallContactCounter, bool levelEnd,
             bool minimapEnabled)
         {
-            gameRuntimeManaHint?.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
-                wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen);
+            var hint = gameRuntimeManaHint;
+            if (hint == null) return;
+            IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> marks = null;
+            ushort nearest = 0;
+            if (hint.HasObjectiveMarkHelp && showHelp && !paused && !suppressed && minimapEnabled)
+            {
+                var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
+                    level2DayPresentationSurface ?? gameRuntimeNightSurface;
+                if (surface != null && surface.Generation == campaignSession.Generation &&
+                    surface.Tick == campaignSession.Tick)
+                {
+                    marks = surface.ObjectiveHelpMarks;
+                    if (hint.PollsObjectiveMarkHelp)
+                        nearest = NearestObjectiveHelpSubject(marks);
+                }
+            }
+            hint.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
+                wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen, marks, nearest);
+        }
+
+        private ushort NearestObjectiveHelpSubject(
+            IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> marks)
+        {
+            ushort nearest = 0;
+            var distance = int.MaxValue;
+            NativeSim.CampaignEntitySnapshot[] entities = null;
+            var player = gameRuntimeCampaignSnapshot.value.player_pose;
+            foreach (var mark in marks)
+            {
+                if (mark.Row != 82 || mark.Subject == 0) continue;
+                entities ??= campaignSession.Entities();
+                var entity = entities[mark.Subject];
+                var dx = unchecked((short)(entity.x - player.x));
+                var dy = unchecked((short)(entity.y - player.y));
+                var current = (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                if (current >= distance) continue;
+                distance = current;
+                nearest = mark.Subject;
+            }
+            return nearest;
         }
 
         private void DrawGameRuntimeHelpHint()
@@ -747,7 +830,10 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellPriorPixels = null;
                 gameRuntimeSpellPriorGeneration = 0;
                 var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
-                if (helpRow.Row == 2 || helpRow.Row == 41)
+                if (helpRow.Row == 82)
+                    gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
+                        gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen);
+                else if (helpRow.Row == 2 || helpRow.Row == 41)
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
                 else
