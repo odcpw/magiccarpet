@@ -5,15 +5,136 @@
 //! between two reads made by the same callback.
 
 use crate::Position;
-use crate::campaign::source_arena::SourceArena;
+use crate::campaign::source_arena::{
+    CreatureRootOrigin, CreatureRuntimeIdentity, CreatureRuntimeRole, SourceArena,
+    SourceEntityHandle, SourceEntityView,
+};
 use crate::combat::area::{Actor, Shape};
+use crate::game_session::{ActorLifecycle, PresentationPose};
 use crate::goat::GoatFamily;
 use crate::house::HouseFamily;
+use crate::level_definition::CreatureKind;
 use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
+pub(crate) const PAGED_CREATURES: [CreatureKind; 7] = [
+    CreatureKind::Goat,
+    CreatureKind::Bee,
+    CreatureKind::Dragon,
+    CreatureKind::Archer,
+    CreatureKind::Skeleton,
+    CreatureKind::Villager,
+    CreatureKind::Trader,
+];
+
+pub(crate) struct CreaturePageSource {
+    pub(crate) identity: CreatureRuntimeIdentity,
+    pub(crate) pose: PresentationPose,
+    pub(crate) roll: i16,
+    pub(crate) health: Option<(i32, i32)>,
+    pub(crate) target: Option<SourceEntityHandle>,
+    pub(crate) parent: Option<SourceEntityHandle>,
+    pub(crate) lifecycle: ActorLifecycle,
+}
+
 impl super::Mc2Simulation {
+    pub(crate) fn creature_page_sources(&self) -> impl Iterator<Item = CreaturePageSource> + '_ {
+        let arena = self.source_arena();
+        arena
+            .creature_observation_slots(self.session.definition.initial_creature_bindings())
+            .into_iter()
+            .filter_map(|slot| {
+                let identity = self.creature_identity_for_source_slot(slot)?;
+                PAGED_CREATURES.contains(&identity.kind).then_some(identity)
+            })
+            .filter_map(|identity| self.creature_page_source(identity))
+    }
+
+    pub(crate) fn creature_page_source(
+        &self,
+        identity: CreatureRuntimeIdentity,
+    ) -> Option<CreaturePageSource> {
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let slot = identity.handle.source_slot;
+        let current = arena.resolve(identity.handle)?;
+        if identity.origin == CreatureRootOrigin::InitialPackage && identity.handle.generation != 0
+        {
+            return None;
+        }
+        if identity.kind == CreatureKind::Goat && identity.role == CreatureRuntimeRole::Root {
+            let goat = live
+                .goats
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == slot)?;
+            return Some(CreaturePageSource {
+                identity,
+                pose: PresentationPose {
+                    x: goat.position.x,
+                    y: goat.position.y,
+                    z: goat.position.z,
+                    yaw: goat.yaw,
+                    pitch: goat.pitch,
+                },
+                roll: goat.roll,
+                health: Some((goat.life, goat.max_life)),
+                target: goat.target_entity_index.and_then(|slot| arena.handle(slot)),
+                parent: None,
+                lifecycle: goat.observation_lifecycle()?,
+            });
+        }
+        let context = Context::from_ordinary(&live.goats, &live.ordinary);
+        let view = read(arena, context, slot).ok()??;
+        if (!view.active && !view.drawing_disabled()) || view.class != 5 {
+            return None;
+        }
+
+        let part = identity.role == CreatureRuntimeRole::MultipartPart;
+        let (pitch, max_life, orientation, action) =
+            creature_page_owned_pose_and_capacity(current, context, arena, identity)?;
+        let (yaw, roll) =
+            orientation.unwrap_or_else(|| (view.yaw.unwrap_or(0), view.roll.unwrap_or(0)));
+        let dragon_death = identity.kind == CreatureKind::Dragon
+            && matches!(
+                action,
+                super::level2_class5::dragon::DRAGON_PRE_KILL_ACTION
+                    | super::level2_class5::dragon::DRAGON_KILL_ACTION
+            );
+        let lifecycle = if view.drawing_disabled() {
+            ActorLifecycle::Hidden
+        } else if view.life < 0 || dragon_death || (!part && !identity.living) {
+            ActorLifecycle::Dying
+        } else {
+            ActorLifecycle::Alive
+        };
+        let parent = if part {
+            self.creature_identity_for_source_slot(identity.root_slot)
+                .and_then(|parent| arena.dragon_observation_parent(identity, parent))
+        } else {
+            None
+        };
+        Some(CreaturePageSource {
+            identity,
+            pose: PresentationPose {
+                x: view.position.x,
+                y: view.position.y,
+                z: view.position.z,
+                yaw,
+                pitch,
+            },
+            roll,
+            health: (!part).then_some((view.life, max_life)),
+            target: view
+                .relations
+                .target
+                .filter(|&slot| slot != 0)
+                .and_then(|slot| arena.handle(slot)),
+            parent,
+            lifecycle,
+        })
+    }
     /// Objective rectangles and arrows follow the current UpdateEntities
     /// model head and its source next links, including same-pass lifetime.
     pub fn campaign_creature_objective_targets(
@@ -3392,6 +3513,134 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         // yaw/roll fields are array_0x52 collision axes, not pose angles.
         Kind::AuthoredTree => (Some(0), Some(0)),
         _ => (None, None),
+    }
+}
+
+pub(crate) fn authored_dragon_chain_contains(
+    arena: &SourceArena,
+    root: u16,
+    record: u16,
+    child: u16,
+) -> bool {
+    use super::level2_class5::dragon::{
+        DRAGON_KILL_ACTION, DRAGON_MODEL, DRAGON_PART_COUNT,
+    };
+
+    let Some(runtime) = arena
+        .economy
+        .authored_class5_runtime()
+        .iter()
+        .find(|row| row.source_entity_index == root)
+    else {
+        return false;
+    };
+    let mut previous = root;
+    let mut next = runtime.linked_head;
+    for _ in 0..DRAGON_PART_COUNT {
+        if next == 0 {
+            break;
+        }
+        let slot = next;
+        if let Some(part) = arena
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.active && part.source_entity_index == slot)
+        {
+            if part.entity_id != root
+                || part.root_authored_index != record
+                || part.previous_entity_index != previous
+            {
+                break;
+            }
+            if slot == child {
+                return true;
+            }
+            next = part.next_entity_index;
+        } else {
+            // The retirement prologue retains two chain words after
+            // freeing a hidden segment. Stop if that address was reused.
+            let Some(retired) = arena.entities.get(usize::from(slot)).filter(|row| {
+                arena.handle(slot).is_none()
+                    && row.class == 0
+                    && row.model == DRAGON_MODEL
+                    && row.action == DRAGON_KILL_ACTION
+                    && row.source_id == root
+                    && row.word_32() == previous
+            }) else {
+                break;
+            };
+            next = retired.word_34();
+        }
+        previous = slot;
+    }
+    false
+}
+
+/// Pitch and capacity come from the same current carrier as the target
+/// view. In particular a dynamic birth cannot use that slot's reset packet.
+fn creature_page_owned_pose_and_capacity(
+    current: SourceEntityView<'_>,
+    context: Context<'_>,
+    arena: &SourceArena,
+    identity: CreatureRuntimeIdentity,
+) -> Option<(i16, i32, Option<(i16, i16)>, u8)> {
+    let slot = identity.handle.source_slot;
+    match current {
+        SourceEntityView::Dynamic(Kind::BeeCreature) if identity.kind == CreatureKind::Bee => arena
+            .bee_creatures()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| (row.pitch, row.max_life, None, row.action)),
+        SourceEntityView::Dynamic(Kind::AuthoredDragonPart)
+            if identity.kind == CreatureKind::Dragon =>
+        {
+            arena
+                .authored_dragon_parts()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.pitch, row.max_life, None, row.action))
+        }
+        SourceEntityView::Dynamic(Kind::AuthoredClass5) => arena
+            .authored_class5()
+            .iter()
+            .find(|row| {
+                row.active
+                    && row.source_entity_index == slot
+                    && identity.raw_model == Some(row.model)
+            })
+            .map(|row| (row.pitch, row.max_life, None, row.action)),
+        SourceEntityView::Dynamic(Kind::HouseResident) => arena
+            .house_residents()
+            .iter()
+            .find(|row| {
+                row.active && row.source_entity_index == slot && row.semantic_kind == identity.kind
+            })
+            .map(|row| {
+                (
+                    0,
+                    row.max_life,
+                    Some((row.yaw, row.desired_heading)),
+                    row.action,
+                )
+            }),
+        SourceEntityView::Imported(row) if identity.kind == CreatureKind::Villager => context
+            .villagers?
+            .villagers()
+            .iter()
+            .find(|state| {
+                state.source_retained() && state.entity_index == slot && state.model == row.model
+            })
+            .map(|state| (state.pitch, state.max_life, None, state.action)),
+        SourceEntityView::Imported(row)
+            if matches!(
+                identity.kind,
+                CreatureKind::Dragon | CreatureKind::Archer | CreatureKind::Skeleton
+            ) =>
+        {
+            Some((row.pitch, row.max_life, None, row.action))
+        }
+        _ => None,
     }
 }
 

@@ -617,9 +617,14 @@ pub struct ActorObservation {
     pub entity_id: Option<sim_definition::level_definition::LevelEntityId>,
     pub pose: PresentationPose,
     pub roll: i16,
-    pub life: i32,
-    pub max_life: i32,
+    /// Multipart children have pose and lifetime, with health owned by the root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub life: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_life: Option<i32>,
     pub target: Option<RuntimeActorId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<RuntimeActorId>,
     pub lifecycle: ActorLifecycle,
 }
 

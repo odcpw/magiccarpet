@@ -201,6 +201,11 @@ fn authored_day_bees_contact_player_and_public_fireball_drives_absence() {
         let row = session.economy().bee_creatures().iter().find(|row|
             row.active && row.authored_index() == Some(authored)).expect("authored group21 Bee");
         let handle = session.source_arena().handle(row.source_entity_index).unwrap();
+        let page = session.creature_page_sources().find(|view| view.identity.handle == handle).unwrap();
+        assert_eq!(page.identity.kind, crate::level_definition::CreatureKind::Bee);
+        assert_eq!(page.health, Some((row.life, row.max_life)));
+        assert_eq!((page.pose.x, page.pose.y, page.pose.z, page.pose.yaw, page.pose.pitch, page.roll),
+            (row.position.x, row.position.y, row.position.z, row.yaw, row.pitch, row.roll));
         let sprite = session.campaign_entity_presentations(0).unwrap().into_iter()
             .find(|view| view.entity_index == handle.source_slot).expect("real Bee sprite projection");
         assert_eq!((sprite.render_parameter_index, sprite.position), (row.particle_index, row.position));
@@ -302,11 +307,25 @@ fn authored_day_bees_contact_player_and_public_fireball_drives_absence() {
         for (index, (_, handle, initial_life)) in bees.iter().enumerate() {
             if session.source_arena().handle(handle.source_slot) != Some(*handle) {
                 reclaimed[index] = true;
+                assert!(session.creature_page_sources().all(|view| view.identity.handle != *handle));
             } else if let Some(row) = session.economy().bee_creatures().iter().find(|row|
                 row.active && row.source_entity_index == handle.source_slot)
             {
                 observed_damage[index] |= row.life < *initial_life && row.damage_attacker_entity_index == player;
                 hidden[index] |= !row.drawing_enabled;
+                let page = session
+                    .creature_page_sources()
+                    .find(|view| view.identity.handle == *handle)
+                    .unwrap();
+                assert_eq!(page.health, Some((row.life, row.max_life)));
+                assert_eq!(
+                    page.target,
+                    row.target_entity_index
+                        .and_then(|slot| session.source_arena().handle(slot))
+                );
+                if !row.drawing_enabled {
+                    assert_eq!(page.lifecycle, crate::game_session::ActorLifecycle::Hidden);
+                }
             }
         }
         if trace.len() < 32 && paid_casts > 0 {

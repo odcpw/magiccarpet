@@ -12,6 +12,7 @@
 #[cfg(test)]
 #[path = "global_context_tests.rs"]
 mod global_context_tests;
+mod actor_pages;
 mod marked_spells;
 mod player_notifications;
 mod runtime_catalog;
@@ -4845,71 +4846,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         offset: usize,
         count: usize,
     ) -> Vec<ActorObservation> {
-        use crate::campaign::source_arena::{CreatureRootOrigin, CreatureRuntimeRole};
-        use crate::campaign::spec::Mc2EntityRuntimeBinding;
-        use crate::level_definition::{CreatureKind, LevelEntityKind};
-
-        let simulation = self.campaign.simulation();
-        let arena = simulation.source_arena();
-        let definition = self.campaign.definition();
-        let authored_ids = definition.authored_creature_entity_bindings();
-        let kind = SemanticId::parse("creature.goat").expect("static Goat semantic ID");
-
-        simulation
-            .goats()
-            .iter()
-            .filter_map(|goat| {
-                let lifecycle = goat.observation_lifecycle()?;
-                let identity = simulation.creature_identity_for_source_slot(goat.entity_index)?;
-                (identity.kind == CreatureKind::Goat && identity.role == CreatureRuntimeRole::Root)
-                    .then_some((goat, identity, lifecycle))
-            })
-            .skip(offset)
-            .take(count)
-            .map(|(goat, identity, lifecycle)| {
-                let entity_id = match identity.origin {
-                    CreatureRootOrigin::InitialPackage => definition
-                        .level_definition()
-                        .entities()
-                        .iter()
-                        .find(|entity| {
-                            matches!(
-                                definition.movable_entity_binding(entity.id()),
-                                Some(Mc2EntityRuntimeBinding::InitialSource {
-                                    initial_source_slot,
-                                    kind: LevelEntityKind::Creature(CreatureKind::Goat),
-                                    ..
-                                }) if *initial_source_slot == goat.entity_index
-                            )
-                        })
-                        .map(|entity| entity.id().clone()),
-                    CreatureRootOrigin::AuthoredRecord { authored_record } => {
-                        authored_ids.get(&authored_record).cloned()
-                    }
-                    _ => None,
-                };
-                ActorObservation {
-                    actor: self.actor_lifetime_id(guard, identity.handle),
-                    kind: kind.clone(),
-                    entity_id,
-                    pose: PresentationPose {
-                        x: goat.position.x,
-                        y: goat.position.y,
-                        z: goat.position.z,
-                        yaw: goat.yaw,
-                        pitch: goat.pitch,
-                    },
-                    roll: goat.roll,
-                    life: goat.life,
-                    max_life: goat.max_life,
-                    target: goat
-                        .target_entity_index
-                        .and_then(|slot| arena.handle(slot))
-                        .map(|handle| self.actor_lifetime_id(guard, handle)),
-                    lifecycle,
-                }
-            })
-            .collect()
+        actor_pages::observe(self, guard, offset, count)
     }
 
     fn flight_assistance_menu_open(&self) -> bool {
@@ -13589,7 +13526,7 @@ pub(crate) mod tests {
             let entry = observe(&public).expect("the page contains the actual reset Goat");
             assert_eq!(
                 (entry.max_life, entry.life, entry.lifecycle),
-                (maximum, maximum, ActorLifecycle::Alive)
+                (Some(maximum), Some(maximum), ActorLifecycle::Alive)
             );
             assert_eq!(
                 entry.entity_id.as_ref().map(|id| id.as_str()),
@@ -13788,7 +13725,7 @@ pub(crate) mod tests {
             assert_eq!(sim.entities()[usize::from(goat_slot)].life, goat.life);
             let hit = observe(&public).expect("the paid hit retains the same observed lifetime");
             let lethal = maximum == LETHAL_VISIT_MAX_LIFE as i32;
-            assert_eq!(hit.life, maximum - 250);
+            assert_eq!(hit.life, Some(maximum - 250));
             assert_eq!(
                 hit.lifecycle,
                 if lethal {

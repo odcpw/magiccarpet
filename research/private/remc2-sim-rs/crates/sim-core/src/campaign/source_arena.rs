@@ -1507,6 +1507,27 @@ impl SourceArena {
         initial_bindings: &BTreeMap<u16, CreatureKind>,
         authored_bindings: &BTreeMap<u16, CreatureKind>,
     ) -> CreatureRuntimeCensus {
+        CreatureRuntimeCensus {
+            entries: self
+                .creature_observation_slots(initial_bindings)
+                .into_iter()
+                .filter_map(|source_slot| {
+                    self.creature_runtime_identity_inner(
+                        source_slot,
+                        initial_bindings,
+                        authored_bindings,
+                        true,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+
+    pub(crate) fn creature_observation_slots(
+        &self,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+    ) -> BTreeSet<u16> {
         let mut slots = initial_bindings.keys().copied().collect::<BTreeSet<_>>();
         // Dynamic raw roots need not have a reset binding or a typed row.
         // The identity resolver below checks the current slot generation.
@@ -1557,20 +1578,50 @@ impl SourceArena {
                 .map(|source| source.source_entity_index),
         );
 
-        CreatureRuntimeCensus {
-            entries: slots
-                .into_iter()
-                .filter_map(|source_slot| {
-                    self.creature_runtime_identity_inner(
-                        source_slot,
-                        initial_bindings,
-                        authored_bindings,
-                        true,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+        slots
+    }
+
+    /// Check the parent birth while the two current allocations still exist.
+    /// Repeated authored groups can construct the same record again. Their
+    /// current linked body identifies this birth. Reset births use generation
+    /// zero, and converted Dragons retain an explicit root handle.
+    pub(crate) fn dragon_observation_parent(
+        &self,
+        child: CreatureRuntimeIdentity,
+        parent: CreatureRuntimeIdentity,
+    ) -> Option<SourceEntityHandle> {
+        if child.kind != CreatureKind::Dragon
+            || child.role != CreatureRuntimeRole::MultipartPart
+            || parent.kind != CreatureKind::Dragon
+            || parent.role != CreatureRuntimeRole::Root
+            || parent.handle.source_slot != child.root_slot
+            || self.handle(child.handle.source_slot) != Some(child.handle)
+            || self.handle(child.root_slot) != Some(parent.handle)
+        {
+            return None;
         }
+        let same_birth = match child.origin {
+            CreatureRootOrigin::InitialPackage => {
+                parent.origin == child.origin && parent.handle.generation == 0
+            }
+            CreatureRootOrigin::AuthoredRecord { authored_record } => {
+                parent.origin == child.origin
+                    && crate::native_world::source_target::authored_dragon_chain_contains(
+                        self,
+                        parent.handle.source_slot,
+                        authored_record,
+                        child.handle.source_slot,
+                    )
+            }
+            _ => self
+                .dynamic_dragon_part_origins
+                .get(&child.handle.source_slot)
+                .is_some_and(|binding| {
+                    binding.child_generation == child.handle.generation
+                        && binding.root == parent.handle
+                }),
+        };
+        same_birth.then_some(parent.handle)
     }
 
     /// Resolve one live creature identity without rebuilding the full census.

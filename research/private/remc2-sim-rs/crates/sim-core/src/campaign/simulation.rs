@@ -45165,6 +45165,8 @@ mod tests {
 
     #[test]
     fn cf14_level3_skeleton_and_dragon_deaths_unlock_goats_and_terrain_close() {
+        use crate::game_session::ActorLifecycle;
+
         const SKELETON_SLOT: u16 = 93;
         const FIREBALL_DAMAGE: u16 = 500;
 
@@ -45211,6 +45213,24 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let baseline_hash = campaign.state_hash();
+        let skeleton_handle = campaign
+            .simulation()
+            .source_arena()
+            .handle(SKELETON_SLOT)
+            .unwrap();
+        let skeleton_page = |campaign: &CampaignSession| {
+            campaign
+                .simulation()
+                .creature_page_sources()
+                .find(|entry| entry.identity.handle == skeleton_handle)
+        };
+        let initial_skeleton = skeleton_page(&campaign).unwrap();
+        assert_eq!(initial_skeleton.identity.kind, CreatureKind::Skeleton);
+        assert_eq!(
+            initial_skeleton.health,
+            Some((1_000, skeleton(&campaign).max_life))
+        );
+        assert_eq!(initial_skeleton.lifecycle, ActorLifecycle::Alive);
         let player_entity_index = campaign
             .simulation()
             .session
@@ -45352,6 +45372,12 @@ mod tests {
         let lethal_phase = skeleton(&campaign).phase;
         step(&mut campaign);
         assert_eq!(skeleton(&campaign).life, -500);
+        let dying_skeleton = skeleton_page(&campaign).unwrap();
+        assert_eq!(
+            dying_skeleton.health,
+            Some((-500, skeleton(&campaign).max_life))
+        );
+        assert_eq!(dying_skeleton.lifecycle, ActorLifecycle::Dying);
         assert_eq!(skeleton(&campaign).action, 76);
         assert_eq!(skeleton(&campaign).word_24(), player_entity_index);
         assert_eq!(skeleton(&campaign).word_26(), player_entity_index);
@@ -45390,6 +45416,10 @@ mod tests {
         let kill_phase = kill_phase.expect("action 77 reaches its eight-phase kill cadence");
         assert_eq!(kill_phase & 7, 0);
         let hidden = skeleton(&campaign);
+        assert_eq!(
+            skeleton_page(&campaign).unwrap().lifecycle,
+            ActorLifecycle::Hidden
+        );
         assert!(
             hidden.active,
             "hide is retained for the rest of the source pass"
@@ -45421,6 +45451,7 @@ mod tests {
 
         step(&mut campaign);
         let reclaimed = skeleton(&campaign);
+        assert!(skeleton_page(&campaign).is_none());
         assert!(!reclaimed.active);
         assert_eq!(reclaimed.class, 0);
         assert!(
@@ -45574,6 +45605,15 @@ mod tests {
         let receipts = campaign.simulation().cf10_production_schedule_receipts();
         let mut same_pass_roots = 0;
         for (dragon_index, dragon) in dragons.iter().enumerate() {
+            let root_handle = live.economy.handle(dragon.source_entity_index).unwrap();
+            let root_page = campaign
+                .simulation()
+                .creature_page_sources()
+                .find(|entry| entry.identity.handle == root_handle)
+                .unwrap();
+            assert_eq!(root_page.identity.kind, CreatureKind::Dragon);
+            assert_eq!(root_page.health, Some((dragon.life, dragon.max_life)));
+            assert_eq!(root_page.parent, None);
             let constructor_phase = u8::try_from(dragon_index).expect("two Dragons");
             let initial_rng = next_rng(
                 dragon
@@ -45718,6 +45758,14 @@ mod tests {
                     .expect("Dragon body chain remains complete");
                 assert_eq!(part.parent_entity_index, 0);
                 assert_eq!(part.entity_id, dragon.source_entity_index);
+                let part_handle = live.economy.handle(part_slot).unwrap();
+                let part_page = campaign
+                    .simulation()
+                    .creature_page_sources()
+                    .find(|entry| entry.identity.handle == part_handle)
+                    .unwrap();
+                assert_eq!(part_page.parent, Some(root_handle));
+                assert_eq!(part_page.health, None);
                 assert_eq!(part.particle_index, 19 + part_index as u16);
                 assert_eq!(
                     (
@@ -46245,6 +46293,11 @@ mod tests {
         );
         assert!(live.economy.resolve(immediate_body_handle).is_some(),
             "the hidden body stays allocated through its same-pass epilogue");
+        let hidden_body_page = campaign.simulation().creature_page_sources()
+            .find(|entry| entry.identity.handle == immediate_body_handle).unwrap();
+        assert_eq!(hidden_body_page.lifecycle, ActorLifecycle::Hidden);
+        assert_eq!(hidden_body_page.parent, Some(dying_root_handle));
+        assert_eq!(hidden_body_page.health, None);
         assert_eq!(
             live.economy
                 .economy
@@ -46303,6 +46356,11 @@ mod tests {
             "the hidden root stays allocated through its same-pass epilogue");
         assert!(live.economy.resolve(immediate_body_handle).is_none(),
             "the previous hidden body generation is reclaimed at the next boundary");
+        assert!(campaign.simulation().creature_page_sources()
+            .all(|entry| entry.identity.handle != immediate_body_handle));
+        let hidden_root_page = campaign.simulation().creature_page_sources()
+            .find(|entry| entry.identity.handle == dying_root_handle).unwrap();
+        assert_eq!(hidden_root_page.lifecycle, ActorLifecycle::Hidden);
         assert!(live.economy.economy.events().iter().any(|event| matches!(
             event,
             Level2EconomyEvent::ManaSphereSpawned {
@@ -46347,6 +46405,9 @@ mod tests {
         let live = &campaign.simulation().session.state.live;
         assert!(live.economy.resolve(dying_root_handle).is_none(),
             "the hidden root generation is reclaimed at a following boundary");
+        assert!(campaign.simulation().creature_page_sources().all(|entry| {
+            entry.identity.handle != dying_root_handle && entry.parent != Some(dying_root_handle)
+        }));
         assert!(
             live.economy
                 .economy
@@ -49701,8 +49762,15 @@ mod tests {
 
     #[test]
     fn authored_creature_sprite_selectors_follow_live_birth_and_movement() {
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/level2-day-block32-campaign-v2");
+        use crate::game_session::ActorLifecycle;
+
+        let package = std::env::var_os("MC_ACTOR_ARCHER_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/level2-day-block32-campaign-v2")
+            },
+            PathBuf::from,
+        );
         let mut campaign =
             crate::campaign::CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
         let session = campaign.simulation_mut();
@@ -49716,6 +49784,15 @@ mod tests {
             .find(|source| source.active && source.model == 4)
             .copied()
             .unwrap();
+        let archer_handle = session
+            .source_arena()
+            .handle(archer.source_entity_index)
+            .unwrap();
+        let archer_page = |session: &Mc2Simulation| {
+            session
+                .creature_page_sources()
+                .find(|row| row.identity.handle == archer_handle)
+        };
         let check = |session: &Mc2Simulation| {
             let before = session.campaign_state_hash();
             let live = session
@@ -49725,6 +49802,25 @@ mod tests {
                 .find(|source| source.source_entity_index == archer.source_entity_index)
                 .unwrap();
             let sprites = session.campaign_entity_presentations(0).unwrap();
+            let actor = archer_page(session).expect("current Archer incarnation");
+            assert_eq!(actor.identity.kind, CreatureKind::Archer);
+            assert_eq!(actor.health, Some((live.life, live.max_life)));
+            assert_eq!(
+                (
+                    actor.pose.x,
+                    actor.pose.y,
+                    actor.pose.z,
+                    actor.pose.yaw,
+                    actor.pose.pitch
+                ),
+                (
+                    live.position.x,
+                    live.position.y,
+                    live.position.z,
+                    live.yaw,
+                    live.pitch
+                )
+            );
             let row = sprites
                 .iter()
                 .find(|row| row.entity_index == archer.source_entity_index)
@@ -49770,6 +49866,10 @@ mod tests {
                 .iter()
                 .all(|row| row.entity_index != archer.source_entity_index),
             "hidden dynamic occupant cannot resurrect its previous imported sprite"
+        );
+        assert_eq!(
+            archer_page(session).unwrap().lifecycle,
+            ActorLifecycle::Hidden
         );
         campaign.reset();
         assert!(campaign.simulation().economy().authored_class5().is_empty());

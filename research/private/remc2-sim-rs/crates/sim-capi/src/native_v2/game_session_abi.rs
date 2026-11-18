@@ -475,7 +475,10 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 {
                     "profile": "mc2-campaign",
                     "snapshot_value": "campaign_snapshot/v5",
-                    "actor_pages": { "kinds": ["creature.goat"], "maximum_page_size": MAX_ACTOR_PAGE_SIZE },
+                    "actor_pages": {
+                        "kinds": Mc2CampaignBackend::actor_page_kinds().collect::<Vec<_>>(),
+                        "maximum_page_size": MAX_ACTOR_PAGE_SIZE
+                    },
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -1813,7 +1816,10 @@ mod tests {
         assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v5");
         assert_eq!(
             profiles[1]["actor_pages"],
-            serde_json::json!({"kinds": ["creature.goat"], "maximum_page_size": MAX_ACTOR_PAGE_SIZE})
+            serde_json::json!({"kinds": [
+                "creature.goat", "creature.bee", "creature.dragon", "creature.archer",
+                "creature.skeleton", "creature.villager", "creature.trader"
+            ], "maximum_page_size": MAX_ACTOR_PAGE_SIZE})
         );
         assert_eq!(
             profiles[1]["capabilities"],
@@ -2130,15 +2136,20 @@ mod tests {
         let rest = read_page(handle, 1, 0, 2, MAX_ACTOR_PAGE_SIZE);
         assert!(rest["value"]["next_offset"].is_null());
         let all = rows(read_page(handle, 1, 0, 0, MAX_ACTOR_PAGE_SIZE));
-        assert_eq!(all.len(), 36, "active ordinary Day2 Goat census");
         let self_page = read_page(handle, 1, 0, 0, 2);
         assert_eq!(first, self_page);
         assert_eq!([rows(first), rows(rest)].concat(), all);
-        assert!(
-            all.iter()
-                .all(|row| row["kind"] == "creature.goat" && row["lifecycle"] == "alive")
-        );
-        assert!(all.iter().any(|row| row["entity_id"].is_string()));
+        let goats = all
+            .iter()
+            .filter(|row| row["kind"] == "creature.goat")
+            .collect::<Vec<_>>();
+        assert_eq!(goats.len(), 36, "active ordinary Day2 Goat census");
+        assert!(goats.iter().all(|row| row["lifecycle"] == "alive"
+            && row["life"].is_i64()
+            && row["max_life"].is_i64()
+            && row.get("parent").is_none()));
+        assert!(goats.iter().any(|row| row["entity_id"].is_string()));
+        assert!(all.iter().any(|row| row["kind"] == "creature.villager"));
         let ids: std::collections::BTreeSet<_> = all
             .iter()
             .map(|row| row["actor"].as_str().unwrap())
@@ -2187,6 +2198,7 @@ mod tests {
         let stepped = read_page(handle, 1, 1, 0, 2);
         assert_eq!(stepped["identity"]["tick"], "1");
         assert_eq!(stepped["value"]["actors"][0]["actor"], all[0]["actor"]);
+        let observed_step = campaign_snapshot(handle);
 
         assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
         assert_eq!(
@@ -2209,12 +2221,102 @@ mod tests {
         );
         assert_ne!(reset["value"]["actors"][0]["actor"], all[0]["actor"]);
         let independent = open_campaign_fixture();
-        let independent_page = read_page(independent, 1, 0, 0, 2);
+        assert_eq!(
+            mc_game_session_step_json_v1(independent, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            campaign_snapshot(independent)["value"],
+            observed_step["value"],
+            "the same replayed input without observation leaves state, tick, and journal equal"
+        );
+        let independent_page = read_page(independent, 1, 1, 0, 2);
         assert_ne!(
             independent_page["value"]["actors"][0]["actor"],
             all[0]["actor"]
         );
         assert_eq!(mc_game_session_destroy_v1(independent), MC_STATUS_OK);
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn neutral_campaign_actor_pages_expose_live_level_five_dragon_roots_and_parts() {
+        let package = std::env::var_os("MC_ACTOR_LEVEL5_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            PathBuf::from,
+        );
+        let handle = open_campaign_path(&package);
+        let page = |tick| {
+            read_json_with_capacity(64 * 1024, |buffer, capacity, length| {
+                mc_game_session_actors_json_v1(
+                    handle,
+                    1,
+                    tick,
+                    0,
+                    MAX_ACTOR_PAGE_SIZE,
+                    buffer,
+                    capacity,
+                    length,
+                )
+            })
+        };
+        // The first ordinary source pass adopts package Bees and Dragons
+        // into their existing typed carriers.
+        let command = br#"{}"#;
+        let step = |tick| {
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    handle,
+                    1,
+                    tick,
+                    command.as_ptr(),
+                    command.len() as u32
+                ),
+                MC_STATUS_OK
+            );
+        };
+        step(0);
+        let initial = page(1);
+        let rows = initial["value"]["actors"].as_array().unwrap();
+        for kind in ["creature.bee", "creature.archer", "creature.skeleton"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row["kind"] == kind && row["max_life"].is_i64()),
+                "missing actual {kind}"
+            );
+        }
+        let children = rows
+            .iter()
+            .filter(|row| row["kind"] == "creature.dragon" && row["parent"].is_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !children.is_empty(),
+            "the actual package has linked Dragon parts"
+        );
+        for child in &children {
+            assert!(child.get("life").is_none() && child.get("max_life").is_none());
+            let parent = rows
+                .iter()
+                .find(|row| row["actor"] == child["parent"])
+                .unwrap();
+            assert_eq!(parent["kind"], "creature.dragon");
+            assert!(parent["life"].is_i64() && parent["max_life"].is_i64());
+            assert_ne!(parent["actor"], child["actor"]);
+        }
+        for tick in 1..5 {
+            step(tick);
+        }
+        let later = page(5);
+        let later = later["value"]["actors"].as_array().unwrap();
+        assert!(
+            children.iter().any(
+                |child| later.iter().any(|row| row["actor"] == child["actor"]
+                    && row["parent"] == child["parent"]
+                    && row["pose"] != child["pose"])
+            ),
+            "ordinary Flight frames move the same multipart lifetime"
+        );
         assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
     }
 

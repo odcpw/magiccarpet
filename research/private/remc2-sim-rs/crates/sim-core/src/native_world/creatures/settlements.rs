@@ -3852,6 +3852,14 @@ mod production_tests {
             .clone();
         let handle = session.source_arena().handle(victim.entity_index).unwrap();
         let player_handle = session.source_arena().handle(player).unwrap();
+        let page = |session: &crate::native_world::Mc2Simulation| {
+            session
+                .creature_page_sources()
+                .find(|row| row.identity.handle == handle)
+        };
+        let initial_page = page(&session).expect("the original Villager is publicly observable");
+        assert_eq!(initial_page.identity.kind, CreatureKind::Villager);
+        assert_eq!(initial_page.health, Some((victim.life, victim.max_life)));
         assert!(
             session
                 .campaign_entity_presentations(0)
@@ -4033,6 +4041,17 @@ mod production_tests {
                     .find(|row| row.entity_index == handle.source_slot)
                 {
                     if death.is_none() && row.life < 0 {
+                        let current_page =
+                            page(&session).expect("lethal Villager is retained until reclaim");
+                        assert_eq!(current_page.health, Some((row.life, row.max_life)));
+                        assert_eq!(
+                            (
+                                current_page.pose.x,
+                                current_page.pose.y,
+                                current_page.pose.z
+                            ),
+                            (row.position.x, row.position.y, row.position.z)
+                        );
                         death = Some((
                             row.life,
                             row.current_attacker,
@@ -4059,6 +4078,10 @@ mod production_tests {
                             "the hidden original Villager must leave presentation immediately"
                         );
                         hidden = true;
+                        assert_eq!(
+                            page(&session).unwrap().lifecycle,
+                            crate::game_session::ActorLifecycle::Hidden
+                        );
                     }
                 }
                 burst |= session.dispatch_events().iter().any(|event| matches!(event,
@@ -4082,6 +4105,10 @@ mod production_tests {
                     }
                 }
             } else if hidden {
+                assert!(
+                    page(&session).is_none(),
+                    "the reclaimed birth cannot leave a lingering public row"
+                );
                 reclaimed = true;
                 break;
             }
