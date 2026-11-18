@@ -803,6 +803,19 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ### Goat lifetime pages and Cave loop timing — 2026-11-18
 
+Original `build-4zmyev0o` now installs the audio rewind and capture-tap
+fixes, the collector area-damage fix, and English large-map help. Canonical
+`64748bb7`, `f2d714d0`, and `6c67bf95` are published through `075c7f04`.
+All 626 checked native inputs agree across local, Rig, and published source.
+The current native is
+`3f3744cf7b4531c0dbcc68cb47357017338d56b332e7982d643650146c01859f`;
+`--check-installed` passes. The default menu cache now resolves to the
+validated 678-output row 4 cache. The canonical Original launcher entered
+NightSpire with all 30 roles, one portal click, zero retries and the matching
+mapped native. The launch covers the installed build and default resources.
+Cave track continuity in the installed build and installed collector retirement
+remain separate checks. See `generated/collector-hostile-area-20261118/`.
+
 Canonical `63b8b0f2`, published as `ff7e2bea`, adds bounded campaign actor
 pages for `creature.goat`. The public read binds session, generation and tick;
 opaque lifetime IDs use the authoritative arena incarnation. The campaign
