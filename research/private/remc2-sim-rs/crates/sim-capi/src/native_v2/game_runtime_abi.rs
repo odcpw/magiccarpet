@@ -1059,6 +1059,7 @@ impl RuntimeRecord {
             ordinary_completion: receipt,
         });
         self.campaign_presentation = None;
+        self.reset_audio()?;
         Ok(())
     }
 
@@ -1247,6 +1248,7 @@ impl RuntimeRecord {
             )
             .map_err(map_transition_error)?;
         self.completion_transition_receipt = None;
+        self.reset_audio()?;
         Ok(())
     }
 
