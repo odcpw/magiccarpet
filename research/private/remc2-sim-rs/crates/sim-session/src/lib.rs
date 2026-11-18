@@ -718,6 +718,61 @@ pub struct EconomyPage {
     pub next_offset: Option<u32>,
 }
 
+pub const TERRAIN_GRID_SIDE: u16 = 256;
+pub const MAX_TERRAIN_WINDOW_SIDE: u16 = 16;
+
+/// Nonwrapping rectangle on the canonical terrain grid, in tile coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainWindowRequest {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+impl TerrainWindowRequest {
+    #[must_use]
+    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Option<Self> {
+        if !(1..=MAX_TERRAIN_WINDOW_SIDE).contains(&width)
+            || !(1..=MAX_TERRAIN_WINDOW_SIDE).contains(&height)
+            || x.checked_add(width)? > TERRAIN_GRID_SIDE
+            || y.checked_add(height)? > TERRAIN_GRID_SIDE
+        {
+            return None;
+        }
+        Some(Self {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    /// Iterate row-major with x increasing within each row.
+    pub fn tiles(self) -> impl Iterator<Item = (u8, u8)> {
+        (self.y..self.y + self.height)
+            .flat_map(move |y| (self.x..self.x + self.width).map(move |x| (x as u8, y as u8)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainSample {
+    /// Current authoritative height at the tile origin, in world Z units.
+    pub ground_height: i16,
+    pub ceiling_height: Option<i16>,
+    /// The gameplay collision material at the sample, independent of art.
+    pub material_mask: u32,
+    /// Whether the current topology protects this cell from guarded height edits.
+    pub height_edit_protected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainWindow {
+    #[serde(flatten)]
+    pub rectangle: TerrainWindowRequest,
+    pub samples: Vec<TerrainSample>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
 
@@ -971,6 +1026,9 @@ pub trait GameSessionBackend {
     ) -> Vec<EconomyObservation> {
         Vec::new()
     }
+    fn observe_terrain_window(&self, _request: TerrainWindowRequest) -> Vec<TerrainSample> {
+        Vec::new()
+    }
     /// Whether the authoritative game menu excludes idle flight assistance.
     fn flight_assistance_menu_open(&self) -> bool {
         false
@@ -1194,6 +1252,22 @@ impl<B: GameSessionBackend> GameSession<B> {
             value: EconomyPage {
                 assets,
                 next_offset,
+            },
+        })
+    }
+
+    /// Read one coherent terrain window at the exact session generation and tick.
+    pub fn terrain_window(
+        &self,
+        guard: SessionGuard,
+        request: TerrainWindowRequest,
+    ) -> Result<SessionObservation<TerrainWindow>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: TerrainWindow {
+                rectangle: request,
+                samples: self.backend.observe_terrain_window(request),
             },
         })
     }

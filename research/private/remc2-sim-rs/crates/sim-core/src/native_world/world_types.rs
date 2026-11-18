@@ -1,4 +1,5 @@
 use super::*;
+use crate::game_session::{TerrainSample, TerrainWindowRequest};
 use std::sync::Arc;
 
 #[derive(Clone,Debug,Eq,PartialEq)]
@@ -2484,6 +2485,27 @@ pub struct HouseRemovalOutcome {
 }
 
 impl SessionTerrain {
+    pub(crate) fn observe_window(&self, window: TerrainWindowRequest) -> Vec<TerrainSample> {
+        window
+            .tiles()
+            .map(|(x, y)| {
+                let position = Position {
+                    x: u16::from(x) << 8,
+                    y: u16::from(y) << 8,
+                    z: 0,
+                };
+                TerrainSample {
+                    ground_height: self.ground_height(position),
+                    ceiling_height: self.ceiling_height(position),
+                    material_mask: self.material_mask(position),
+                    // The same terrain protection flag used by the guarded
+                    // relative-height writes in world::terrain::disasters.
+                    height_edit_protected: self.angle_flags(crate::Tile { x, y }) & 0x80 != 0,
+                }
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn voxel_world(&self)->Option<&crate::voxel_world::VoxelWorld>{self.voxel.as_ref().map(|v|&v.world)}
 

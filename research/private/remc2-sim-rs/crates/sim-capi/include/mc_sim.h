@@ -1561,6 +1561,11 @@ int32_t mc_game_session_economy_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Read current terrain samples in a nonwrapping, row-major tile rectangle. */
+int32_t mc_game_session_terrain_window_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_session_audio_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,

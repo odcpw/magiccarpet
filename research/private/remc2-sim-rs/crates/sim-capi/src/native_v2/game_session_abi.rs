@@ -21,7 +21,8 @@ use sim_session::{
     ActorPage, ActorPageRequest, EconomyPage, EventPage, GameAudioCommand, GameCommand, GameSession,
     GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, MAX_OBJECTIVE_STAGES,
     ObjectiveObservation, OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode,
-    SessionObservation,
+    SessionObservation, MAX_TERRAIN_WINDOW_SIDE, TERRAIN_GRID_SIDE, TerrainWindow,
+    TerrainWindowRequest,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -200,6 +201,26 @@ impl NeutralSession {
             }
         };
         session.economy(guard, request).map_err(map_guard_error)
+    }
+
+    fn terrain_window(
+        &self,
+        guard: SessionGuard,
+        request: TerrainWindowRequest,
+    ) -> AbiResult<SessionObservation<TerrainWindow>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "terrain windows are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session
+            .terrain_window(guard, request)
+            .map_err(map_guard_error)
     }
 
     fn audio_for_event(
@@ -520,6 +541,11 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                         "kinds": ["castle", "collector", "mana_sphere"],
                         "maximum_page_size": MAX_ACTOR_PAGE_SIZE
                     },
+                    "terrain_window": {
+                        "grid_side": TERRAIN_GRID_SIDE,
+                        "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,
+                        "wraps": false
+                    },
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -807,6 +833,34 @@ pub extern "C" fn mc_game_session_economy_json_v1(
         with_neutral_session(handle, |session| {
             let observation =
                 session.economy(session_guard(handle, generation, expected_tick), request)?;
+            write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_terrain_window_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = TerrainWindowRequest::new(x, y, width, height).ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_BOUNDS,
+                "terrain window exceeds the size or grid bounds",
+            )
+        })?;
+        with_neutral_session(handle, |session| {
+            let observation = session
+                .terrain_window(session_guard(handle, generation, expected_tick), request)?;
             write_json(&observation, buffer, capacity, out_length)
         })
     })

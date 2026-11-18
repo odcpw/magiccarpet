@@ -68,7 +68,7 @@ use crate::{
         LateralControl, LongitudinalControl, ObjectiveObservation, ObjectiveProgress, PlayerMotion,
         PlayerPose,
         PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
-        SessionGuard,
+        SessionGuard, TerrainSample, TerrainWindowRequest,
     },
     level_definition::SpellKind,
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
@@ -4826,6 +4826,13 @@ impl GameSessionBackend for Mc2CampaignBackend {
         count: usize,
     ) -> Vec<EconomyObservation> {
         economy_observation::observe(self, guard, offset, count)
+    }
+
+    fn observe_terrain_window(&self, request: TerrainWindowRequest) -> Vec<TerrainSample> {
+        self.campaign
+            .simulation()
+            .canonical_terrain()
+            .observe_window(request)
     }
 
     fn flight_assistance_menu_open(&self) -> bool {

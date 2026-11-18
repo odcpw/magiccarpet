@@ -14,7 +14,8 @@ use sim_core::game_runtime::{
 };
 use sim_core::game_session::{
     ActorPageRequest, CampaignSnapshot, GAME_SESSION_CONTRACT, GameCommand, GameSession,
-    GameSessionError, MAX_OBJECTIVE_STAGES, SessionGuard, SessionObservation,
+    GameSessionError, MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, SessionGuard,
+    SessionObservation, TERRAIN_GRID_SIDE, TerrainWindowRequest,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
@@ -135,6 +136,13 @@ enum Command {
         session_guard: SessionGuardInput,
         offset: Option<u32>,
         limit: Option<usize>,
+    },
+    TerrainWindow {
+        session_guard: SessionGuardInput,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
     },
     Describe {
         cursor: Option<String>,
@@ -379,6 +387,11 @@ impl Stream {
                         "offset": "start at 0; continue with value.next_offset and the same session guard",
                         "kinds": ["castle", "collector", "mana_sphere"],
                         "result": "guarded page of current economy lifetimes"},
+                    "terrain_window": {"session_guard": "session_guard",
+                        "x": "origin tile column", "y": "origin tile row",
+                        "width": "tile count", "height": "tile count",
+                        "grid_side": TERRAIN_GRID_SIDE, "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,
+                        "wraps": false, "result": "guarded row-major terrain samples"},
                     "describe": {"limit": "1..100, default 100", "cursor": "optional returned next_cursor", "result": "semantic catalog descriptors; effective values when a session is bound"},
                     "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0", "limit": "1..100"},
                     "step": {"guard": "runtime_guard", "session_guard": "session_guard", "input": GameCommand::default(), "ticks": 1},
@@ -476,6 +489,25 @@ impl Stream {
                 let observation = self
                     .session(session_guard)?
                     .economy(session_guard.into(), request)
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(observation))
+            }
+            Command::TerrainWindow {
+                session_guard,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let request = TerrainWindowRequest::new(x, y, width, height).ok_or_else(|| {
+                    StreamError::new(
+                        "INVALID_TERRAIN_WINDOW",
+                        format!("use a nonwrapping {TERRAIN_GRID_SIDE}-tile grid and sides of 1..={MAX_TERRAIN_WINDOW_SIDE} tiles"),
+                    )
+                })?;
+                let observation = self
+                    .session(session_guard)?
+                    .terrain_window(session_guard.into(), request)
                     .map_err(|error| StreamError::new(error.code.as_str(), error))?;
                 Ok(json!(observation))
             }
