@@ -972,7 +972,7 @@ pub(crate) struct EffectLists {
     model45_chain: crate::campaign::source_arena::SourceSlotChain,
     mana_chain: crate::campaign::source_arena::SourceManaChain,
     model22_chain: crate::campaign::source_arena::SourceSlotChain,
-    class5_chains: [crate::campaign::source_arena::SourceSlotChain; 29],
+    class5_chains: std::sync::Arc<[crate::campaign::source_arena::SourceSlotChain; 29]>,
     epoch: u32,
 }
 
@@ -1152,6 +1152,10 @@ pub(crate) fn retire_hidden_player_death_markers(
 }
 
 impl EffectLists {
+    pub(crate) fn retain_class5_chains(&self, arena: &mut SourceArena) {
+        arena.class5_model_chains = Some(self.class5_chains.clone());
+    }
+
     /// Current fixed records reached from the pass-start class-5 heads.
     /// Preserve NewEvent's next-link cut and source-list reset epoch.
     pub(crate) fn class5_current_slots(&self, arena: &SourceArena) -> [Vec<u16>; 29] {
@@ -1307,7 +1311,7 @@ pub(crate) fn capture_effect_lists(
         class3_chain,
         model45_chain,
         model22_chain,
-        class5_chains,
+        class5_chains: std::sync::Arc::new(class5_chains),
         mana_chain: {
             let mut slots = targets
                 .arena
@@ -2635,6 +2639,7 @@ mod tests {
             };
             arena.rebuild_source_free_arena();
             let lists = capture_effect_lists(&mut arena, None);
+            lists.retain_class5_chains(&mut arena);
             let before = lists.class5_current_slots(&arena);
             assert!(before.iter().any(|bucket| !bucket.is_empty()));
             let epoch = arena.economy.source_list_epoch();
@@ -2663,6 +2668,13 @@ mod tests {
             let after = lists.class5_current_slots_after_allocation(
                 &arena.economy, &arena.entities,
             );
+            for (model, slots) in after.iter().enumerate() {
+                assert_eq!(
+                    arena.objective_creature_slots(model as u32).unwrap(),
+                    *slots,
+                    "the objective map follows the same captured class-5 head after {case}"
+                );
+            }
             if recycle {
                 assert_eq!(Some(root.unwrap().source_entity_index), replacement);
                 assert_ne!(arena.economy.source_list_epoch(), epoch);

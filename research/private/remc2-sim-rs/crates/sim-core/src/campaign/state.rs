@@ -306,6 +306,9 @@ pub struct CampaignSession {
     pub baseline_hash: ResetReceipt,
     pub state: CampaignState,
     pub generation: u64,
+    /// The restore candidate uses the historical audio policy only while
+    /// replaying operations recorded before Goat sound preparation existed.
+    pub(crate) replay_legacy_goat_audio: bool,
 }
 
 impl CampaignSession {
@@ -323,6 +326,7 @@ impl CampaignSession {
             baseline_hash,
             state,
             generation: 0,
+            replay_legacy_goat_audio: false,
         }
     }
 

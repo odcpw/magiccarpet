@@ -1463,6 +1463,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             &mut live.ordinary,
                         )),
                     );
+                    self.effect_lists.retain_class5_chains(&mut live.economy);
                 }
                 {
                     let economy = &mut self.owner.session.state.live.economy;
@@ -29319,17 +29320,34 @@ impl Mc2Simulation {
         )
     }
 
-    /// Apply the source `KillEntity_1C930` side effects emitted by the typed
-    /// Goat family in the same event order: mana conversion allocates the
-    /// model-39 sphere first, the extra-sphere request allocates the
-    /// class-10/model-1 death burst second, and the removal marker then leaves
-    /// both rows for the live-arena cursor/reclaim pass.
+    /// Publish Goat sound preparation and apply the source `KillEntity_1C930`
+    /// effects in callback order. Mana conversion allocates the model-39
+    /// sphere before the extra-sphere request allocates the death burst. The
+    /// live-arena cursor owns subsequent updates and reclaim.
     pub(super) fn apply_level2_goat_economy_events(
         &mut self,
         events: &[GoatStepEvent],
     ) -> std::result::Result<(), String> {
         for event in events {
             match *event {
+                GoatStepEvent::Bleat {
+                    #[cfg(test)]
+                    audio_site,
+                    entity_index,
+                    sound_id,
+                    ..
+                } if !self.session.replay_legacy_goat_audio => {
+                    // The Goat callback has already projected its current
+                    // source row into the arena. Prepare in this slot visit
+                    // before the pending sound slots drain.
+                    self.push_flight_effect(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site,
+                        entity_index,
+                        player_index: -1,
+                        sound_id,
+                    });
+                }
                 GoatStepEvent::ManaConverted { entity_index, mana } => {
                     if let Some((position, yaw, rng)) = self
                         .session
@@ -29772,6 +29790,10 @@ impl Mc2Simulation {
 
     pub(crate) fn set_historical_hand_selection_flash(&mut self, historical: bool) {
         self.session.state.live.core.context.historical_hand_selection_flash = historical;
+    }
+
+    pub(crate) fn set_replay_legacy_goat_audio(&mut self, historical: bool) {
+        self.session.replay_legacy_goat_audio = historical;
     }
 
     pub(crate) fn apply_warm_hand_selection_flash(&mut self, ticks: [u8; 2]) {

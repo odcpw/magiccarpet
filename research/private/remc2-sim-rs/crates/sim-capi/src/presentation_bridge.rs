@@ -802,47 +802,13 @@ fn campaign_map_plan(
         let RuntimeRelation::Scalar(model) = stage.relation else {
             return Err("creature objective has no source model selector".to_owned());
         };
-        // GameUI's bytearray_38403x[model] is a source-linked class-5 list.
-        // Reconstruct its head from the actual next links, never pool order.
-        let candidates = session
-            .entities()
-            .iter()
-            .filter(|entity| {
-                entity.index != 0
-                    && entity.active
-                    && entity.class == 5
-                    && u32::from(entity.model) == model
-            })
-            .map(|entity| (entity.index, entity))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let linked = candidates
-            .values()
-            .filter_map(|entity| entity.next_relation)
-            .collect::<std::collections::BTreeSet<_>>();
-        let heads = candidates
-            .keys()
-            .copied()
-            .filter(|index| !linked.contains(index))
-            .collect::<Vec<_>>();
-        if !candidates.is_empty() && heads.len() != 1 {
-            return Err("creature objective source chain has no unique head".to_owned());
-        }
-        let mut current = heads.first().copied().unwrap_or(0);
-        let mut visited = std::collections::BTreeSet::new();
         let mut nearest = None;
         let mut nearest_distance = 0x1000000;
-        while current != 0 {
-            if !visited.insert(current) {
-                return Err("creature objective source chain is cyclic".to_owned());
-            }
-            let entity = candidates
-                .get(&current)
-                .ok_or_else(|| "creature objective source link leaves its model list".to_owned())?;
-            current = entity.next_relation.unwrap_or(0);
-            let (x, y) = geometry.project(map_view, entity.position);
+        for (slot, position) in session.campaign_creature_objective_targets(model)? {
+            let (x, y) = geometry.project(map_view, position);
             marks.push(Level2MinimapMark {
                 source_order: marks.len() as u16,
-                subject_entity_index: entity.index,
+                subject_entity_index: slot,
                 x,
                 y,
                 palette_index: palette.spells,
@@ -850,10 +816,10 @@ fn campaign_map_plan(
                 help_selector: 0x52,
                 visible: u8::from(session.state.tick & 3 == 0),
             });
-            let distance = minimap_objective_distance(view.position, entity.position);
+            let distance = minimap_objective_distance(view.position, position);
             if distance < nearest_distance {
                 nearest_distance = distance;
-                nearest = Some(entity.position);
+                nearest = Some(position);
             }
         }
         if let Some(target) = nearest {

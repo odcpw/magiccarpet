@@ -390,7 +390,8 @@ impl CampaignDayMusicLifecycle {
                 break;
             }
             self.fade_callback_count = self.fade_callback_count.wrapping_add(1);
-            debug_assert!(!matches!(self.envelope.callback(), FadeCallback::Inactive));
+            let callback = self.envelope.callback();
+            debug_assert!(!matches!(callback, FadeCallback::Inactive));
         }
     }
 
@@ -449,6 +450,31 @@ impl CampaignDayMusicLifecycle {
         ]);
         let digest = hasher.finalize();
         u64::from_le_bytes(digest[..8].try_into().expect("sha256 has eight bytes"))
+    }
+}
+
+#[cfg(test)]
+mod music_tests {
+    use super::CampaignDayMusicLifecycle;
+
+    #[test]
+    fn campaign_music_advances_active_callbacks_in_release() {
+        let mut music = CampaignDayMusicLifecycle::start_day();
+        music.update(2, 3);
+        music.advance(127);
+        assert_eq!(music.envelope.current, 127);
+        assert!(music.envelope.timer_active);
+        music.advance(8);
+        assert!(!music.envelope.timer_active);
+        assert_eq!(music.fade_callback_count, 128);
+
+        music.update(1, 3);
+        music.advance(127);
+        assert_eq!(music.envelope.current, 0);
+        assert!(music.envelope.timer_active);
+        music.advance(8);
+        assert!(!music.envelope.timer_active);
+        assert_eq!(music.fade_callback_count, 256);
     }
 }
 

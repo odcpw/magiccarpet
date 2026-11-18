@@ -14,6 +14,31 @@ use crate::villager::VillagerFamily;
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
 impl super::Mc2Simulation {
+    /// Objective rectangles and arrows follow the current UpdateEntities
+    /// model head and its source next links, including same-pass lifetime.
+    pub fn campaign_creature_objective_targets(
+        &self,
+        model: u32,
+    ) -> Result<Vec<(u16, Position)>, String> {
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let context = Context {
+            spells: Some(&live.shared_spells),
+            particles: Some(&self.session.definition.presentation.particles),
+            map_type: Some(live.terrain.map_type()),
+            ..Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        arena
+            .objective_creature_slots(model)?
+            .into_iter()
+            .map(|slot| {
+                read(arena, context, slot)?
+                    .map(|view| (slot, view.position))
+                    .ok_or_else(|| format!("creature objective source slot {slot} has no position"))
+            })
+            .collect()
+    }
+
     /// Current typed actors consumed by both campaign map projections.
     /// Retain hidden owners in this result so callers suppress their obsolete
     /// raw packet until the following source reclaim. The specialized

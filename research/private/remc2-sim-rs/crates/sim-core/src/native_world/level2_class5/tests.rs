@@ -1705,6 +1705,33 @@ fn level_two_three_reachable_creature_sounds_emit_in_pinned_source_order() {
         assert_eq!(receipt.position, goat.position);
     }
 
+    let prepared_goat_slots = |session: &Mc2Simulation| {
+        session
+            .effect_journal()
+            .records()
+            .iter()
+            .filter_map(|record| {
+                let crate::campaign::journal::CampaignEffect::Flight(
+                    crate::FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::GoatBleat,
+                        entity_index,
+                        player_index,
+                        sound_id: 46,
+                    },
+                ) = record.effect
+                else {
+                    return None;
+                };
+                assert_eq!(player_index, -1, "source Goat sound is positional");
+                let audio = record.audio.expect("Goat has a prepared positional command");
+                assert_eq!(audio.play_type, 3, "source uses the if-not-playing class");
+                assert_eq!(audio.command.sound_flags, 0);
+                Some(entity_index)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(prepared_goat_slots(&session), [39, 40, 42]);
+
     // Each source slot contributes one typed audio event to this pass. A
     // second ordinary visit does not replay the just-consumed modulo tail.
     assert_eq!(
@@ -1720,6 +1747,7 @@ fn level_two_three_reachable_creature_sounds_emit_in_pinned_source_order() {
         creature_audio_receipts(&session).is_empty(),
         "a duplicate source visit cannot duplicate the prior audio journal"
     );
+    assert_eq!(prepared_goat_slots(&session), [39, 40, 42]);
 
     // Reset clears the ordered journal and restores the exact state carriers;
     // replaying the same ordinary route reproduces the three receipts/hash.
@@ -1731,6 +1759,7 @@ fn level_two_three_reachable_creature_sounds_emit_in_pinned_source_order() {
     configure_three_level_two_creature_sounds(&mut session);
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(creature_audio_receipts(&session), receipts);
+    assert_eq!(prepared_goat_slots(&session), [39, 40, 42]);
     assert_eq!(session.campaign_state_hash(), first_audio_hash);
 }
 

@@ -16,6 +16,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use super::state::{SourceLink, SourceTopology, digest_topology};
 
@@ -54,7 +55,7 @@ pub(crate) struct SourceManaRow {
 /// An UpdateEntities head. Links live in the fixed raw records,
 /// including inactive shadows of typed rows. NewEvent resets a reused
 /// record's next_0; sub57F20 alone leaves its old successor intact.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SourceSlotChain {
     slots: Vec<u16>,
     generations: BTreeMap<u16, u32>,
@@ -85,8 +86,16 @@ impl SourceSlotChain {
         economy: &Level2EconomyState,
         entities: &[EntitySnapshot],
     ) -> Vec<u16> {
+        self.follow_current_slots(economy, entities).0
+    }
+
+    fn follow_current_slots(
+        &self,
+        economy: &Level2EconomyState,
+        entities: &[EntitySnapshot],
+    ) -> (Vec<u16>, u16) {
         if self.epoch != economy.source_list_epoch() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let mut current = self.slots.first().copied().unwrap_or(0);
         let mut visited = BTreeSet::new();
@@ -101,7 +110,7 @@ impl SourceSlotChain {
                 raw.next_relation.unwrap_or(0)
             } else { 0 };
         }
-        rows
+        (rows, current)
     }
 }
 
@@ -277,6 +286,9 @@ pub struct SourceArena {
     pub(crate) dynamic_lighting: crate::dynamic_lighting::DynamicLightingState,
     /// Runtime setting consumed at admission, not at later light service.
     pub(crate) dynamic_lighting_enabled: bool,
+    // Derived from the existing UpdateEntities pre-pass. Replays repopulate
+    // it while executing the same source passes.
+    pub(crate) class5_model_chains: Option<Arc<[SourceSlotChain; 29]>>,
     replacement_slots: Vec<u16>,
     // Producer provenance only; all mutable creature fields remain in entities.
     raw_creature_origins: BTreeMap<u16, (u32, CreatureKind, CreatureRootOrigin)>,
@@ -294,6 +306,7 @@ impl SourceArena {
             effects: crate::world::effects::State::default(),
             dynamic_lighting: crate::dynamic_lighting::DynamicLightingState::reset(),
             dynamic_lighting_enabled: true,
+            class5_model_chains: None,
             replacement_slots: Vec::new(),
             raw_creature_origins: BTreeMap::new(),
             raw_creature_parts: BTreeMap::new(),
@@ -2067,6 +2080,32 @@ impl SourceArena {
     pub(crate) fn rebuilt_class5_model_presence(&self) -> [bool; 29] {
         self.rebuilt_class5_model_slots()
             .map(|source_slots| !source_slots.is_empty())
+    }
+
+    pub(crate) fn objective_creature_slots(&self, model: u32) -> Result<Vec<u16>, String> {
+        let model = model as usize;
+        if let Some(chains) = &self.class5_model_chains {
+            let chain = chains
+                .get(model)
+                .ok_or_else(|| format!("creature objective model {model} leaves the source lists"))?;
+            let (slots, unvisited) = chain.follow_current_slots(&self.economy, &self.entities);
+            if unvisited != 0 {
+                return Err(format!(
+                    "creature objective model {model} has invalid source link {unvisited}"
+                ));
+            }
+            if let Some(slot) = slots.iter().find(|slot| !chain.generations.contains_key(slot)) {
+                return Err(format!(
+                    "creature objective model {model} source link leaves the captured list at {slot}"
+                ));
+            }
+            Ok(slots)
+        } else {
+            self.rebuilt_class5_model_slots()
+                .into_iter()
+                .nth(model)
+                .ok_or_else(|| format!("creature objective model {model} leaves the source lists"))
+        }
     }
 
     /// Rebuild remc2's source-ordered class-10/model-45 membership as the
