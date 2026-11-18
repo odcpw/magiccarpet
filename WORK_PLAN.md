@@ -1077,6 +1077,20 @@ selection. All six owned capture processes stopped. See
 remaining gameplay sound acceptance stay open under `mc-paj.1`,
 `mc-oi6.9` and `mc-oi6.8`.
 
+The retained earned NightSpire exit now has an intermediate cold-save witness
+on installed native `327b91e6`. The public runtime finished the 187-frame exit
+tail, saved its actual Results state, dismissed Results, and saved the map.
+Two fresh CLI processes loaded those saves and opened Payahandra Ruins at tick
+zero with byte-identical entry payloads. The frontier and three carried spells
+match, with persistent experience 49/9/1 for Fireball/Possession/Castle and
+Fireball still selected. A stale duplicate open leaves the live owner intact.
+The installed Original independently cold-loaded Results with all 30 roles,
+displayed its statistics, and opened the same successor through the map portal.
+The save producer here is the public runtime API. The installed Results sheet
+consumes a key as dismissal, so this runs no Results-screen quick-save check.
+Broader `mc-zdo.6` acceptance stays open. Evidence is under
+`generated/earned-results-persistence-20261118/`.
+
 ### Goat lifetime pages and Cave loop timing — 2026-11-18
 
 Original `build-4zmyev0o` now installs the audio rewind and capture-tap
