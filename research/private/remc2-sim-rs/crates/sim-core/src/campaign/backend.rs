@@ -61,10 +61,11 @@ use crate::{
         creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
-        CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
+        ActorObservation, CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
         GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
         LateralControl, LongitudinalControl, ObjectiveProgress, PlayerMotion, PlayerPose,
         PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
+        SessionGuard,
     },
     level_definition::SpellKind,
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
@@ -4838,6 +4839,79 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign.tick()
     }
 
+    fn observe_actors(
+        &self,
+        guard: SessionGuard,
+        offset: usize,
+        count: usize,
+    ) -> Vec<ActorObservation> {
+        use crate::campaign::source_arena::{CreatureRootOrigin, CreatureRuntimeRole};
+        use crate::campaign::spec::Mc2EntityRuntimeBinding;
+        use crate::level_definition::{CreatureKind, LevelEntityKind};
+
+        let simulation = self.campaign.simulation();
+        let arena = simulation.source_arena();
+        let definition = self.campaign.definition();
+        let authored_ids = definition.authored_creature_entity_bindings();
+        let kind = SemanticId::parse("creature.goat").expect("static Goat semantic ID");
+
+        simulation
+            .goats()
+            .iter()
+            .filter_map(|goat| {
+                let lifecycle = goat.observation_lifecycle()?;
+                let identity = simulation.creature_identity_for_source_slot(goat.entity_index)?;
+                (identity.kind == CreatureKind::Goat && identity.role == CreatureRuntimeRole::Root)
+                    .then_some((goat, identity, lifecycle))
+            })
+            .skip(offset)
+            .take(count)
+            .map(|(goat, identity, lifecycle)| {
+                let entity_id = match identity.origin {
+                    CreatureRootOrigin::InitialPackage => definition
+                        .level_definition()
+                        .entities()
+                        .iter()
+                        .find(|entity| {
+                            matches!(
+                                definition.movable_entity_binding(entity.id()),
+                                Some(Mc2EntityRuntimeBinding::InitialSource {
+                                    initial_source_slot,
+                                    kind: LevelEntityKind::Creature(CreatureKind::Goat),
+                                    ..
+                                }) if *initial_source_slot == goat.entity_index
+                            )
+                        })
+                        .map(|entity| entity.id().clone()),
+                    CreatureRootOrigin::AuthoredRecord { authored_record } => {
+                        authored_ids.get(&authored_record).cloned()
+                    }
+                    _ => None,
+                };
+                ActorObservation {
+                    actor: self.actor_lifetime_id(guard, identity.handle),
+                    kind: kind.clone(),
+                    entity_id,
+                    pose: PresentationPose {
+                        x: goat.position.x,
+                        y: goat.position.y,
+                        z: goat.position.z,
+                        yaw: goat.yaw,
+                        pitch: goat.pitch,
+                    },
+                    roll: goat.roll,
+                    life: goat.life,
+                    max_life: goat.max_life,
+                    target: goat
+                        .target_entity_index
+                        .and_then(|slot| arena.handle(slot))
+                        .map(|handle| self.actor_lifetime_id(guard, handle)),
+                    lifecycle,
+                }
+            })
+            .collect()
+    }
+
     fn flight_assistance_menu_open(&self) -> bool {
         super::source_menus::suppresses_flight_assistance(
             self.campaign.simulation().level2_player_menu_state(),
@@ -5531,6 +5605,24 @@ impl Mc2CampaignBackend {
         Some(RuntimeActorId(
             self.opaque_runtime_handle(b"actor", source_value),
         ))
+    }
+
+    fn actor_lifetime_id(
+        &self,
+        guard: SessionGuard,
+        handle: crate::campaign::source_arena::SourceEntityHandle,
+    ) -> RuntimeActorId {
+        let mut digest = Sha256::new();
+        digest.update(b"mc2-campaign-actor-lifetime/v1\0");
+        digest.update(self.campaign.definition().package_sha256.as_bytes());
+        digest.update(guard.session_id.to_le_bytes());
+        digest.update(guard.generation.to_le_bytes());
+        digest.update(handle.source_slot.to_le_bytes());
+        digest.update(handle.generation.to_le_bytes());
+        let bytes = digest.finalize()[..8]
+            .try_into()
+            .expect("SHA-256 prefix is eight bytes");
+        RuntimeActorId(u64::from_le_bytes(bytes).max(1))
     }
 
     fn spell_holder_actor(
@@ -13432,13 +13524,37 @@ pub(crate) mod tests {
         damage(&mut session);
         assert_eq!(inspect(&session).1, 500);
 
+        const LETHAL_VISIT_MAX_LIFE: u32 = 200;
+        let changes = ChangeSetBuilder::new(
+            "campaign-goat-max-life",
+            &published,
+            "admit-a-lethal-paid-fireball-visit",
+            RequestedTiming::SessionReset,
+        )
+        .set_entity_max_life_from(goat, AUTHORED_MAX_LIFE, LETHAL_VISIT_MAX_LIFE)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, changes.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                changes,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let lethal_visit = store.active_definition().unwrap();
+
         // The same authored combat property also reaches a real paid public
         // producer. Each definition gets one fixed incoming Fireball; no Goat
         // state, life, source timer or RNG is changed to manufacture a hit.
         for (definition, maximum) in [
             (base.clone(), PACKAGE_MAX_LIFE as i32),
             (published.clone(), AUTHORED_MAX_LIFE as i32),
+            (lethal_visit, LETHAL_VISIT_MAX_LIFE as i32),
         ] {
+            use crate::game_session::{ActorLifecycle, ActorPageRequest, MAX_ACTOR_PAGE_SIZE};
             let mut public = GameSession::open(
                 &Mc2CampaignAdapter,
                 Arc::new(definition),
@@ -13455,6 +13571,30 @@ pub(crate) mod tests {
                 .clone();
             assert_eq!((target.max_life, target.life), (maximum, maximum));
             let target_handle = sim.source_arena().handle(goat_slot).unwrap();
+            let lifetime = public
+                .backend()
+                .actor_lifetime_id(guard(&public), target_handle);
+            let observe = |session: &GameSession<Mc2CampaignBackend>| {
+                session
+                    .actors(
+                        guard(session),
+                        ActorPageRequest::new(0, MAX_ACTOR_PAGE_SIZE).unwrap(),
+                    )
+                    .unwrap()
+                    .value
+                    .actors
+                    .into_iter()
+                    .find(|row| row.actor == lifetime)
+            };
+            let entry = observe(&public).expect("the page contains the actual reset Goat");
+            assert_eq!(
+                (entry.max_life, entry.life, entry.lifecycle),
+                (maximum, maximum, ActorLifecycle::Alive)
+            );
+            assert_eq!(
+                entry.entity_id.as_ref().map(|id| id.as_str()),
+                Some("creature.goat.at_110_38")
+            );
             let player = sim.state.entity_index;
             let player_handle = sim.source_arena().handle(player).unwrap();
             let holder = sim.shared_spells().local_player().enabled_spell_holders[0];
@@ -13646,6 +13786,17 @@ pub(crate) mod tests {
                 "the first observed subtraction retains the accepted mailbox owner"
             );
             assert_eq!(sim.entities()[usize::from(goat_slot)].life, goat.life);
+            let hit = observe(&public).expect("the paid hit retains the same observed lifetime");
+            let lethal = maximum == LETHAL_VISIT_MAX_LIFE as i32;
+            assert_eq!(hit.life, maximum - 250);
+            assert_eq!(
+                hit.lifecycle,
+                if lethal {
+                    ActorLifecycle::Dying
+                } else {
+                    ActorLifecycle::Alive
+                }
+            );
             let (_, before_debit, after_debit) = payment_visits.iter()
                 .find(|(slot, before, _)| *slot == player && before.2 <= -fireball.mana_cost)
                 .unwrap_or_else(|| panic!("the player must actually consume the queued paid charge: {payment_visits:?}"));
@@ -13685,15 +13836,42 @@ pub(crate) mod tests {
                 maximum,
                 "equal-elapsed no-cast retains the published maximum"
             );
+
+            if lethal {
+                let mut hidden = false;
+                let mut reclaimed = false;
+                for _ in 0..32 {
+                    public.step(guard(&public), GameCommand::default()).unwrap();
+                    let sim = public.backend().campaign.simulation();
+                    match observe(&public) {
+                        Some(row) => {
+                            assert_eq!(row.entity_id, entry.entity_id);
+                            assert!(matches!(
+                                row.lifecycle,
+                                ActorLifecycle::Dying | ActorLifecycle::Hidden
+                            ));
+                            hidden |= row.lifecycle == ActorLifecycle::Hidden;
+                        }
+                        None => {
+                            assert!(sim.source_arena().resolve(target_handle).is_none());
+                            reclaimed = true;
+                            break;
+                        }
+                    }
+                }
+                assert!(
+                    hidden && reclaimed,
+                    "the paid lethal hit reaches hidden publication then reclaim"
+                );
+            }
         }
 
         std::fs::remove_dir_all(&workspace_root).unwrap();
         // No-Claim: this proves one reset-live Level 1 Goat's guarded
         // maximum-life publication, old-session isolation, explicit
         // reopen/reset materialization, ordinary mailbox vectors and one real
-        // paid public Fireball against each bound maximum. It does not author
-        // other Goat parameters or cover Goat death outputs, objectives,
-        // save/replay, or Unity UI.
+        // paid public Fireball against each bound maximum. The controlled
+        // lethal maximum follows the same bound actor through reclaim.
     }
 
     #[test]

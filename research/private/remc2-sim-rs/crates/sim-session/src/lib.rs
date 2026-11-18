@@ -580,6 +580,55 @@ pub struct RuntimeActorId(
     pub u64,
 );
 
+pub const MAX_ACTOR_PAGE_SIZE: u32 = 1024;
+
+/// A cursor is an offset in the stable ordering of one guarded observation.
+/// Carry its session generation and tick when requesting a subsequent page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActorPageRequest {
+    offset: u32,
+    limit: u32,
+}
+
+impl ActorPageRequest {
+    #[must_use]
+    pub const fn new(offset: u32, limit: u32) -> Option<Self> {
+        if limit == 0 || limit > MAX_ACTOR_PAGE_SIZE || offset.checked_add(limit).is_none() {
+            return None;
+        }
+        Some(Self { offset, limit })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorLifecycle {
+    Alive,
+    Dying,
+    Hidden,
+}
+
+/// Current observation of one allocated actor. After reclaim the lifetime
+/// is absent, even if its former address has acquired a different actor.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ActorObservation {
+    pub actor: RuntimeActorId,
+    pub kind: SemanticId,
+    pub entity_id: Option<sim_definition::level_definition::LevelEntityId>,
+    pub pose: PresentationPose,
+    pub roll: i16,
+    pub life: i32,
+    pub max_life: i32,
+    pub target: Option<RuntimeActorId>,
+    pub lifecycle: ActorLifecycle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ActorPage {
+    pub actors: Vec<ActorObservation>,
+    pub next_offset: Option<u32>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
 
@@ -812,6 +861,16 @@ pub trait GameSessionBackend {
     fn tick(&self) -> u64;
     fn completion_status(&self) -> GameCompletionStatus;
     fn snapshot(&self) -> Self::Snapshot;
+    /// Project up to `count` actors from the requested offset in a stable
+    /// backend order. The session validates identity before asking for rows.
+    fn observe_actors(
+        &self,
+        _guard: SessionGuard,
+        _offset: usize,
+        _count: usize,
+    ) -> Vec<ActorObservation> {
+        Vec::new()
+    }
     /// Whether the authoritative game menu excludes idle flight assistance.
     fn flight_assistance_menu_open(&self) -> bool {
         false
@@ -992,6 +1051,29 @@ impl<B: GameSessionBackend> GameSession<B> {
             identity: self.identity(),
             value: self.backend.snapshot(),
         }
+    }
+
+    /// Read one bounded actor page without advancing gameplay or retaining
+    /// a second registry. An extra row determines whether another page exists.
+    pub fn actors(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> Result<SessionObservation<ActorPage>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        let limit = request.limit as usize;
+        let mut actors = self
+            .backend
+            .observe_actors(guard, request.offset as usize, limit + 1);
+        let next_offset = (actors.len() > limit).then_some(request.offset + request.limit);
+        actors.truncate(limit);
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: ActorPage {
+                actors,
+                next_offset,
+            },
+        })
     }
 
     /// Observe authoritative gameplay completion without advancing the

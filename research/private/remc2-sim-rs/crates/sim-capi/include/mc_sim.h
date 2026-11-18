@@ -1545,6 +1545,12 @@ int32_t mc_game_session_events_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t cursor, uint32_t limit, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Read a campaign actor page at the exact generation/tick. Pass the returned
+ * next_offset with the same generation/tick to continue, or zero to start. */
+int32_t mc_game_session_actors_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
 int32_t mc_game_session_audio_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,

@@ -18,8 +18,9 @@ use sim_core::{
     },
 };
 use sim_session::{
-    EventPage, GameAudioCommand, GameCommand, GameSession, GameSessionAssetError, GameSessionError,
-    OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode, SessionObservation,
+    ActorPage, ActorPageRequest, EventPage, GameAudioCommand, GameCommand, GameSession,
+    GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, OpenSessionError, SessionGuard,
+    SessionGuardError, SessionGuardErrorCode, SessionObservation,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -145,6 +146,24 @@ impl NeutralSession {
                 .events_after(guard, cursor, limit)
                 .map_err(map_campaign_session_error),
         }
+    }
+
+    fn actors(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> AbiResult<SessionObservation<ActorPage>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "actor observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.actors(guard, request).map_err(map_guard_error)
     }
 
     fn audio_for_event(
@@ -456,6 +475,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 {
                     "profile": "mc2-campaign",
                     "snapshot_value": "campaign_snapshot/v5",
+                    "actor_pages": { "kinds": ["creature.goat"], "maximum_page_size": MAX_ACTOR_PAGE_SIZE },
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -681,6 +701,27 @@ pub extern "C" fn mc_game_session_events_json_v1(
                 usize::try_from(limit)
                     .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "event limit exceeds usize"))?,
             )?;
+            write_json(&page, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_actors_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    offset: u32,
+    limit: u32,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = ActorPageRequest::new(offset, limit)
+            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "invalid actor page offset or limit"))?;
+        with_neutral_session(handle, |session| {
+            let page = session.actors(session_guard(handle, generation, expected_tick), request)?;
             write_json(&page, buffer, capacity, out_length)
         })
     })
@@ -1771,6 +1812,10 @@ mod tests {
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
         assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v5");
         assert_eq!(
+            profiles[1]["actor_pages"],
+            serde_json::json!({"kinds": ["creature.goat"], "maximum_page_size": MAX_ACTOR_PAGE_SIZE})
+        );
+        assert_eq!(
             profiles[1]["capabilities"],
             serde_json::json!([
                 "snapshot",
@@ -2058,6 +2103,119 @@ mod tests {
         assert_eq!(campaign_snapshot(reopened)["value"], stepped["value"]);
         assert_eq!(mc_game_session_destroy_v1(reopened), MC_STATUS_OK);
         assert_eq!(mc_game_session_destroy_v1(owned), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn neutral_campaign_actor_pages_follow_live_goats_at_an_exact_session_boundary() {
+        let contract = read_json(|buffer, capacity, length| {
+            mc_game_session_contract_json_v1(buffer, capacity, length)
+        });
+        assert_eq!(
+            contract["session_profiles"][1]["actor_pages"]["maximum_page_size"],
+            MAX_ACTOR_PAGE_SIZE
+        );
+        let handle = open_campaign_fixture();
+        let read_page = |owner, generation, tick, offset, limit| {
+            read_json_with_capacity(64 * 1024, |buffer, capacity, length| {
+                mc_game_session_actors_json_v1(
+                    owner, generation, tick, offset, limit, buffer, capacity, length,
+                )
+            })
+        };
+        let rows = |page: serde_json::Value| page["value"]["actors"].as_array().unwrap().clone();
+        let initial = campaign_snapshot(handle);
+        let first = read_page(handle, 1, 0, 0, 2);
+        assert_eq!(first["identity"], initial["identity"]);
+        assert_eq!(first["value"]["next_offset"], 2);
+        let rest = read_page(handle, 1, 0, 2, MAX_ACTOR_PAGE_SIZE);
+        assert!(rest["value"]["next_offset"].is_null());
+        let all = rows(read_page(handle, 1, 0, 0, MAX_ACTOR_PAGE_SIZE));
+        assert_eq!(all.len(), 36, "active ordinary Day2 Goat census");
+        let self_page = read_page(handle, 1, 0, 0, 2);
+        assert_eq!(first, self_page);
+        assert_eq!([rows(first), rows(rest)].concat(), all);
+        assert!(
+            all.iter()
+                .all(|row| row["kind"] == "creature.goat" && row["lifecycle"] == "alive")
+        );
+        assert!(all.iter().any(|row| row["entity_id"].is_string()));
+        let ids: std::collections::BTreeSet<_> = all
+            .iter()
+            .map(|row| row["actor"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), all.len());
+        let mut ignored = 0;
+        for (offset, limit) in [(0, 0), (0, MAX_ACTOR_PAGE_SIZE + 1), (u32::MAX, 1)] {
+            assert_eq!(
+                mc_game_session_actors_json_v1(
+                    handle,
+                    1,
+                    0,
+                    offset,
+                    limit,
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut ignored
+                ),
+                MC_STATUS_BOUNDS,
+            );
+        }
+        assert_eq!(
+            campaign_snapshot(handle),
+            initial,
+            "observing and paging does not alter gameplay"
+        );
+
+        let command = br#"{}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_game_session_actors_json_v1(
+                handle,
+                1,
+                0,
+                2,
+                2,
+                std::ptr::null_mut(),
+                0,
+                &raw mut ignored
+            ),
+            MC_STATUS_INVALID_ARGUMENT,
+        );
+        let stepped = read_page(handle, 1, 1, 0, 2);
+        assert_eq!(stepped["identity"]["tick"], "1");
+        assert_eq!(stepped["value"]["actors"][0]["actor"], all[0]["actor"]);
+
+        assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_session_actors_json_v1(
+                handle,
+                1,
+                1,
+                2,
+                2,
+                std::ptr::null_mut(),
+                0,
+                &raw mut ignored
+            ),
+            MC_STATUS_GENERATION_MISMATCH,
+        );
+        let reset = read_page(handle, 2, 0, 0, 2);
+        assert_eq!(
+            reset["value"]["actors"][0]["entity_id"],
+            all[0]["entity_id"]
+        );
+        assert_ne!(reset["value"]["actors"][0]["actor"], all[0]["actor"]);
+        let independent = open_campaign_fixture();
+        let independent_page = read_page(independent, 1, 0, 0, 2);
+        assert_ne!(
+            independent_page["value"]["actors"][0]["actor"],
+            all[0]["actor"]
+        );
+        assert_eq!(mc_game_session_destroy_v1(independent), MC_STATUS_OK);
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]
