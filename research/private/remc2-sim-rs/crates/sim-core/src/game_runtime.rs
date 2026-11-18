@@ -4201,6 +4201,31 @@ mod tests {
                 4 => std::env::var_os("MC_CORRECTED_CAVE_SOURCE_OWNER").map(PathBuf::from),
                 _ => None,
             };
+            let mut cave_inputs = Vec::new();
+            let mut cave6_fireball = false;
+            if external == 4 {
+                let selection =
+                    crate::campaign::spec::CampaignDefinition::declared_selection(&package).unwrap();
+                if selection.external_level == 6 {
+                    cave6_fireball = std::env::var_os("MC_CORRECTED_CAVE6_INCOMING_FIREBALL").is_some();
+                    // The production resolver requires the ordinary prefix
+                    // even when the fixture starts at a later Loading boundary.
+                    cave_inputs.extend([
+                        Mc2CampaignInputs::with_owner_cache(
+                            generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                            generated.join("mc-b9s2-cursor-level4-20261029"),
+                        ),
+                        Mc2CampaignInputs::with_owner_cache(
+                            generated.join("dragon-bee-20261105-integration/level5-owner-current/level5"),
+                            generated.join("secret-lifecycle-20261111-source4-environment"),
+                        ),
+                    ]);
+                }
+                cave_inputs.push(Mc2CampaignInputs::with_owner_cache(
+                    &package,
+                    source_owner.as_ref().unwrap(),
+                ));
+            }
             let mut inputs = vec![
                 Mc2CampaignInputs::new(if external == 2 {
                     package.clone()
@@ -4213,9 +4238,7 @@ mod tests {
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
             ];
-            if external == 4 {
-                inputs.push(Mc2CampaignInputs::with_owner_cache(&package, source_owner.as_ref().unwrap()));
-            }
+            inputs.extend(cave_inputs.iter().cloned());
             let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
             let definition = Arc::new(match &source_owner {
                 Some(owner) => crate::campaign::backend::load_mc2_campaign_with_owner_cache(
@@ -4248,23 +4271,25 @@ mod tests {
                 assert!(source.session().unwrap().backend().campaign_presentation_source()
                     .simulation().source_animations.is_bound(), "initial constructor has the actual source catalog");
             }
-            if external == 3 {
-                // Independent owner-level play needs the earlier spells for
-                // combat, sphere claims, Castle building and movement. This
-                // entry does not claim preceding campaign completion.
+            if external == 3 || cave6_fireball {
+                // Cave 6's authored spell room follows the first Thief
+                // objective. Its controlled entry declares only the earlier
+                // Fireball so the objective and new pickups play normally.
+                let acquired = if cave6_fireball {
+                    vec![SpellKind::Fireball]
+                } else {
+                    vec![
+                        SpellKind::Fireball,
+                        SpellKind::Possession,
+                        SpellKind::Castle,
+                        SpellKind::Speed,
+                    ]
+                };
                 source
                     .session_mut()
                     .unwrap()
                     .backend_mut()
-                    .install_semantic_spell_carry_for_test(
-                        vec![
-                            SpellKind::Fireball,
-                            SpellKind::Possession,
-                            SpellKind::Castle,
-                            SpellKind::Speed,
-                        ],
-                        Some(SpellKind::Fireball),
-                    )
+                    .install_semantic_spell_carry_for_test(acquired, Some(SpellKind::Fireball))
                     .unwrap();
             }
             let guard = source.session().unwrap().identity().guard();
@@ -4274,12 +4299,14 @@ mod tests {
                 .step(guard, GameCommand::default())
                 .unwrap();
             let save = resolver.save_replay(&source).unwrap();
-            if external == 3 {
+            if external == 3 || cave6_fireball {
                 let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
-                assert_eq!(
-                    save_json["semantic_spell_carry"]["acquired"],
-                    serde_json::json!(["fireball", "possession", "castle", "speed"]),
-                );
+                let expected = if cave6_fireball {
+                    serde_json::json!(["fireball"])
+                } else {
+                    serde_json::json!(["fireball", "possession", "castle", "speed"])
+                };
+                assert_eq!(save_json["semantic_spell_carry"]["acquired"], expected);
                 assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
             }
             // The default check still admits the legacy terrain-only adapter
@@ -4303,9 +4330,7 @@ mod tests {
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
             ];
-            if external == 4 {
-                cached_inputs.push(Mc2CampaignInputs::with_owner_cache(&package, source_owner.as_ref().unwrap()));
-            }
+            cached_inputs.extend(cave_inputs);
             let cached_resolver = Mc2RuntimePackageResolver::load(cached_inputs).unwrap();
             let mut restored = GameRuntime::<Mc2CampaignBackend>::title(524).unwrap();
             let guard = restored.identity().guard();

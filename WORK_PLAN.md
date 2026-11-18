@@ -1196,8 +1196,31 @@ Ordinary saved NightSpire launched with the new mapped native on the first
 attempt. Exact tests and receipts are in generated/hud-minimap-20261117 and
 generated/gameplay-audio-20261117/installed-night1-audible. The C# scanner was
 partial and changed-hunk review found no critical finding on added lines.
-Full mc-oi6.5 remains open for the current Cave acquired-spell path and
-remaining acceptance; these checks do not certify full missions or playtest.
+Full mc-oi6.5 remains open for remaining marker qualification. These checks
+do not certify full missions or playtest.
+
+The Cave6 qualification fixture now supplies the actual Level4 and Level5
+package roles required by the existing resolver. On the installed 15b4e827
+native, the fixture's real Cave6 entry cold-replays with no spells and with an
+opt-in declared incoming Fireball. The latter displays the Cave HUD and
+Fireball menu cell in the installed player. Fixed normal native commands
+create Fireballs at ticks2–3 before the authored Thief claims the sole
+spell at tick4. On the fixed-input approach the Thief drops the same holder78
+and ordinary overlap reacquires it at tick27. The live GAME snapshot restores
+the ready left-hand tier0 Fireball and its menu entry. The paused tick40 save
+cold-replays exactly with life10000 and mana440. Normal semantic menu input
+reassigns holder78 to the right hand, updates the published HUD icon and
+casts real Fireball projectiles. The installed player renders the reacquired
+spell and HUD after physical resume and cast. The tested local mana decline
+also occurs without casting while the first Thief is active, so this is not
+a separate cast-debit witness. The route declares incoming Fireball and does
+not represent earned previous-level carry or the whole Cave mission. No
+production entry rules changed.
+Receipts: `generated/hud-cave6-20261118.vrlCHd/` and
+`generated/gameplay-audio-20261118/cave6-reacquired-fireball/`.
+The live Day3 map also removes a Castle marker when its source Castle is
+removed, while its still-living collector marker remains. Collector death
+through that same map consumer still needs a direct witness.
 
 ### Original gameplay audio — 2026-11-17
 
@@ -1225,10 +1248,32 @@ repaired by restoring the receipt-owned backup and moving the added backups
 out of Assets. The normal qualification gate remains intact. Captures and
 bounded input records are under generated/gameplay-audio-20261117.
 
-Full mc-oi6.8 stays open. The captured Night route had no identified audible
-creature, Cave spell/impact playback was not exercised, and the real Cave
-finite witness is door47. Capture used a software sink and does not establish
-hardware listening or full mission play.
+Full mc-oi6.8 stays open. The earlier captures have no identified audible
+Night creature and use door47 as the real Cave finite witness. Software
+capture does not establish hardware listening or full mission play.
+
+Installed Cave6 now supplies the spell and impact witness. Normal resume
+and cast from the declared incoming Fireball replay generated local source9
+and positional source3 in that order on 15b4e827. Stereo channels aligned
+at the same offsets for each bank2 owner WAV despite overlap, at peak
+normalized correlations 0.351 and 0.609. The player was tied to a private
+Pulse server and had no stream on the main server. The actual source62
+creature sound also matched its owner WAV at 0.941. Evidence:
+`generated/gameplay-audio-20261118/cave6-fireball-first-ticks/`.
+The follow-up uses the cold-valid tick40 save after genuine reacquisition.
+Physical resume and cast again produced source9, source3 and source62.
+The pre-impact launch prefix matched at 0.998 on both channels and the
+positional impact matched at 0.866 on the left channel. Evidence:
+`generated/gameplay-audio-20261118/cave6-reacquired-fireball/`.
+
+The installed Night1 approach reached live audible-distance Goats. Its exact
+public replay produced three source46 Bleat dispatches without a corresponding
+audio journal entry or playback. The Goat slot callback omits the existing
+source sound preparation join. A narrow correction is prepared for review.
+Publication is pending the active simulator-file owner's handoff and matching
+build/replay verification. Earlier saves with those dispatches can have
+different journal receipts once publication is fixed. Evidence:
+`generated/gameplay-audio-20261118/night1-creature/goat-join-negative.json`.
 
 The installed Original cold-loaded the existing genuine Pav entry replay
 with native 15b4e827 and all 30 package roles on 2026-11-18. A private audio
@@ -1238,7 +1283,15 @@ The initial shared-server capture was silent and supplied no playback
 evidence. Private capture and routing receipts are in
 `generated/pav-speech-private-20261118-ojqzzzjw/`. This verifies audible
 software output for the existing secret announcement and leaves ordinary
-advancement, completion, briefing and full mc-oi6.10 acceptance open.
+advancement, completion and full mc-oi6.10 acceptance open.
+
+An ordinary New Game opened the installed campaign map with the same native
+and all 30 package roles. It played one TRACK01 briefing request at 9999 ms
+with no repeated request while the map remained open. In the private mix,
+the phase-matched owner voice had gain 1.002 and correlation 0.366, compared
+with 0.060 for the largest off-alignment match. Eight voiced one-second
+windows held the same alignment with fitted gain within 7% of unity.
+Capture and routing receipts: `generated/map-briefing-private-20261118-301cw4zy/`.
 
 Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
 dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
