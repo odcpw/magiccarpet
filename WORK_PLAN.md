@@ -3400,6 +3400,20 @@ The check uses declared player geometry and typed damage contacts on the
 existing fixture. No production code changed. The retained installed
 Cave4 saves precede this trigger. See `generated/cave4-switch22-20261118/`.
 
+The exact Level2 group27 check now uses the actual group8 House producer:
+authored vault154 completes BUILD21 and its scheduled BUILD54 successor,
+then publishes `[156,157]` during final demolition. The zero-slot control
+publishes neither product. With one vacant address, pickup156 retains its
+new incarnation while Meteor157 is refused, both records are consumed,
+and the demolished House reclaims without a second publication. The
+unconstrained branch verifies the Meteor's first scheduled visit and
+three generation-bound Impact children, then exact reset. The check
+declares the preceding objective and damage contacts; all construction,
+allocation and reclaim execute in the real scheduler. The Rig-built
+exact test passed locally in 6.16 s with the owner package/cache.
+No production or installed player change. Full `mc-6qf.1` remains open.
+See `generated/level2-group27-partial-20261118.DyLYYw/`.
+
 In the earlier batch 4, configured final368/374 checks passed 7.388 s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
 row374 overlap to four authored model28 roots and following reclaim. That batch
