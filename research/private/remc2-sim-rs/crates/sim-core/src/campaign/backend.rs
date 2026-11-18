@@ -13863,6 +13863,89 @@ pub(crate) mod tests {
                     hidden && reclaimed,
                     "the paid lethal hit reaches hidden publication then reclaim"
                 );
+
+                // The reclaim pass may itself allocate the newly freed
+                // address. Otherwise let the ordinary left hand run through
+                // its tier-zero Fireball cooldown.
+                let current = |session: &GameSession<Mc2CampaignBackend>| {
+                    session
+                        .backend()
+                        .campaign
+                        .simulation()
+                        .source_arena()
+                        .handle(goat_slot)
+                };
+                let mut replacement = current(&public);
+                for _ in 0..12 {
+                    if replacement.is_some() {
+                        break;
+                    }
+                    public
+                        .step(
+                            guard(&public),
+                            GameCommand {
+                                cast_left: true,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    replacement = current(&public);
+                }
+                let arena = public.backend().campaign.simulation().source_arena();
+                let replacement = replacement.unwrap_or_else(|| {
+                    panic!(
+                        "ordinary continuation did not reallocate retired Goat {target_handle:?}; free head {:?}",
+                        arena.free_source_slots().last(),
+                    )
+                });
+                assert_eq!(replacement.source_slot, target_handle.source_slot);
+                assert_ne!(replacement.generation, target_handle.generation);
+                assert!(arena.resolve(target_handle).is_none());
+                let occupant = arena.resolve(replacement).expect("new occupant is current");
+                let replacement_id = public.backend().actor_lifetime_id(guard(&public), replacement);
+                assert_ne!(replacement_id, lifetime);
+                let page = public
+                    .actors(
+                        guard(&public),
+                        ActorPageRequest::new(0, MAX_ACTOR_PAGE_SIZE).unwrap(),
+                    )
+                    .unwrap()
+                    .value;
+                let contains = |id| page.actors.iter().any(|row| row.actor == id);
+                assert!(
+                    !contains(lifetime),
+                    "the old Goat lifetime cannot reappear on reuse"
+                );
+
+                use crate::campaign::source_arena::SourceEntityView;
+                use crate::native_world::Level2DynamicArenaKind;
+                let (is_goat, description) = match occupant {
+                    SourceEntityView::Dynamic(Level2DynamicArenaKind::AuthoredClass5) => {
+                        let actor = arena
+                            .authored_class5()
+                            .iter()
+                            .find(|row| row.source_entity_index == goat_slot && row.active)
+                            .expect("current authored class-5 replacement");
+                        (
+                            actor.model == crate::goat::GOAT_MODEL,
+                            format!("authored class 5 model {}", actor.model),
+                        )
+                    }
+                    SourceEntityView::Dynamic(kind) => (false, format!("dynamic {kind:?}")),
+                    SourceEntityView::Imported(row) => (
+                        (row.class, row.model) == (crate::goat::GOAT_CLASS, crate::goat::GOAT_MODEL),
+                        format!("class {} model {}", row.class, row.model),
+                    ),
+                };
+                assert_eq!(
+                    contains(replacement_id),
+                    is_goat,
+                    "only current Goats belong in this page"
+                );
+                eprintln!(
+                    "paid Goat reclaim reuse at tick {}: {target_handle:?} -> {replacement:?}, {description}",
+                    public.identity().tick,
+                );
             }
         }
 
@@ -13871,7 +13954,8 @@ pub(crate) mod tests {
         // maximum-life publication, old-session isolation, explicit
         // reopen/reset materialization, ordinary mailbox vectors and one real
         // paid public Fireball against each bound maximum. The controlled
-        // lethal maximum follows the same bound actor through reclaim.
+        // lethal maximum follows the same bound actor through reclaim and
+        // ordinary address reuse. Non-Goat occupants are outside the page.
     }
 
     #[test]

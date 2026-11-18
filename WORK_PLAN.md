@@ -810,8 +810,11 @@ profile advertises its Goat scope separately from the existing exact Unity
 capability arrays. Live Day2 paging and guard/read-purity checks passed in
 3.19s. The NightSpire paid Fireball test follows a Goat with a declared,
 published 200-life property through damage, dying, hide and reclaim in 5.51s.
-The original 600/1200-life cases remain in the same test. Same-slot reuse
-remains open. The older full snapshot's scoreboard contains `source_slot`;
+The original 600/1200-life cases remain in the same test. The extended check
+passed in 6.84s: ordinary allocation reused slot 50 at tick 9 for class 10
+model 14, changed the incarnation from 0 to 1, and kept the retired Goat out
+of the public page. This completes `mc-b9s.3`. The broader `mc-b9s` remains
+open. The older full snapshot's scoreboard contains `source_slot`;
 the untouched optimized registry test fails its existing guard too. The
 actor-page change preserves the original scoreboard consumers and guard.
 Original `build-41je7c5x` is installed with native
