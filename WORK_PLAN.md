@@ -969,6 +969,27 @@ text, 50 draws and replay purity pass in the exact 129.81 s GLCore check.
 Only the existing test changed. See
 `generated/fireball-search-ammyridia-20261118.dx3k373s/`.
 
+Canonical `496b8905`, published as `87d0f043`, connects the local Castle's
+remaining post-draw hit frames to help row 17. The existing Day HUD and
+compact render layouts are unchanged. The generation/tick-guarded read
+is observational and returns zero without a current linked Castle. In the
+retained Revealed Way route, the hostile hit at tick 2050 drops the real
+Castle from 20,000 to 17,400 life. At tick 2059 the panel still flashes while
+the remaining hit counter is already zero. The native check verifies that
+boundary, stale reads and replay purity. The exact GLCore test shows the
+original attack text from tick 2051 for 50 draws, with indexed pixels and
+source top-center placement. Source type 1 uses (320,80) rather than the
+authored row's stored axes. The focused pass took 29.50 s.
+
+Original `build-gvrp0e5f` installs the Rig release native `a8609040`.
+The normal launcher cold-loaded the strict pre-hit checkpoint with three
+owner roles and the matching mapped library, without input or retry.
+Only the help table and its manifest changed in the active owner cache;
+all 678 payloads were verified. UBS C# coverage was partial with no
+critical finding on a changed line. Full `mc-oi6.6` stays open. See
+`generated/castle-attack-help-20261118.YU2vndGe/` and
+`generated/castle-attack-help-native-20261118.zMzMpe/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
