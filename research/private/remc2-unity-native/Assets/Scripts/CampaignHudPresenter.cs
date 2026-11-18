@@ -406,6 +406,11 @@ namespace MagicCarpet.Native
                 {
                     currentRow.Age = 0;
                     currentRow.Priority = currentRow.Binding.Priority;
+                    // sub_889F0 promotes the retained minimap rows when the
+                    // objective-expiry context closes.
+                    if (currentRow.Binding.Row == 79)
+                        foreach (var row in rows)
+                            if (row.Binding.Row is 2 or 81) row.Priority = 6;
                 }
                 currentRow = null;
                 objectiveHelpSubject = 0;
