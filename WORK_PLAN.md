@@ -990,6 +990,23 @@ critical finding on a changed line. Full `mc-oi6.6` stays open. See
 `generated/castle-attack-help-20261118.YU2vndGe/` and
 `generated/castle-attack-help-native-20261118.zMzMpe/`.
 
+Canonical `87950d17`, published as `8ddc1426`, connects the live owned
+Castle and Collector minimap markers to English rows 24 and 23. The strict
+Day3 checkpoint admits both through the ordinary full-map command and
+selects Collector 258 at tick 2051 and Castle 261 at tick 2121. Each hint
+tracks its own indexed leader for 50 draws and closes without arming a
+spell cue. Repaints preserve the replay bytes. The exact GLCore check took
+31.69 s. The paid linked Castle rejection check also passes in 52.37 s;
+its decisive actual poll is the third recurring Collector hint, where
+all three refused rows 12–14 outrank the selected row in the source order.
+
+Original `build-0fgqnutb` reuses native `a8609040`. The normal launcher
+cold-loaded Revealed Way with three owner roles and the matching mapped
+library, without input or retry. The active owner cache differs only in
+the verified help table and manifest. UBS C# coverage was partial and
+reported no critical finding on changed lines. Full `mc-oi6.6` stays open.
+See `generated/owned-castle-map-help-20261118.lhliYyq3/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
