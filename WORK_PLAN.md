@@ -813,8 +813,9 @@ The current native is
 validated 678-output row 4 cache. The canonical Original launcher entered
 NightSpire with all 30 roles, one portal click, zero retries and the matching
 mapped native. The launch covers the installed build and default resources.
-Cave track continuity in the installed build and installed collector retirement
-remain separate checks. See `generated/collector-hostile-area-20261118/`.
+The installed Cave track continuity check passed below. Collector retirement
+in the installed minimap remains open. See
+`generated/collector-hostile-area-20261118/`.
 
 Canonical `63b8b0f2`, published as `ff7e2bea`, adds bounded campaign actor
 pages for `creature.goat`. The public read binds session, generation and tick;
@@ -852,9 +853,17 @@ head and displaced the tail. Removing that seek preserves the full
 176,464-frame diagnostic clip and its tail on both fresh start and restart.
 The game capture tap now keeps enable-state reads off the mixer thread.
 The short test uses controlled PCM with the production stream/source and real
-capture tap. A fresh installed Cave owner-track capture still needs to pass.
-See `generated/adaptive-stream-loop-discriminator-20261118/` and
-`generated/adaptive-cave-loop-timed-20261118/installed-cave4-timed/`.
+capture tap. The exact installed `build-4zmyev0o` Cave4 checkpoint then
+opened normally with four package/cache roles and one source track-3 start.
+Both private captures measured all 10,584,064 owner frames (240.001451s).
+The opening, final tail at 239.95s and repeating opening matched owner
+PCM with at least 0.986 stereo correlation in both readers. There was no
+matching duplicate at the 0.8s prefill offset, and the same gate rejected
+the older installed recording. All owned capture processes stopped.
+This verifies the first natural Cave loop. Installed Day and Night full
+loops are still open. See
+`generated/adaptive-cave-loop-timed-20261118/installed-cave4-build-4zmyev0o/`
+and `generated/adaptive-stream-loop-discriminator-20261118/`.
 
 The authored Karakir Cave switch at row 29, tile (201,204), can start Wind
 row 175 through ordinary overlap and group 4. Its owner sound 49 is Cave
@@ -889,7 +898,7 @@ The installed NightSpire checkpoint starts track 1 at tick 10363 and reaches
 combat and idle at the same ticks as native. Owner C2GAME1 matched the captured
 stereo PCM at 0.99956 correlation. Combat was 3.256 dB above idle, and pause
 silenced the capture. Day, Night and Cave now have installed adaptive PCM
-evidence. Full-track looping remains unverified. See
+evidence. The later exact Cave full loop is recorded above. See
 `generated/adaptive-night-music-20261118.ZsshtN/installed-night1/`.
 
 The focused paid Castle/collector check follows the actual typed minimap input
