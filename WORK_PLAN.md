@@ -958,6 +958,17 @@ was partial with no critical finding on a changed line. See
 `generated/spell-menu-reminder-20261118.YM4AfQhP/` and
 `generated/castle-recast-help-20261118.a2t5zV/native-affordability-proof.json`.
 
+The installed `build-nyblk8x9` Fireball search branch is verified in
+Ammyridia using a strict cold checkpoint reached through the campaign portal.
+The first four Wyvern marker closures lose to earlier or higher-priority
+prompts. Opening the real full map and making one short flight input resets
+the idle prompt and admits Wyvern 299. Its marker closes at tick 1242, the
+next eligible poll consumes the request, and row 7 draws at tick 1263.
+Fireball remains unacquired, Possession is assigned, and the original indexed
+text, 50 draws and replay purity pass in the exact 129.81 s GLCore check.
+Only the existing test changed. See
+`generated/fireball-search-ammyridia-20261118.dx3k373s/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:

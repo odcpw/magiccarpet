@@ -1961,11 +1961,18 @@ namespace MagicCarpet.Native.Tests
         public void ProductionFireballHelpConsumesTheOrdinaryObjectivePopupClose(bool centerCue, bool mapMasksCue) =>
             CheckProductionFireballHelp(centerCue, mapMasksCue, castleRecastCue: false);
 
-        private static void CheckProductionFireballHelp(bool centerCue, bool mapMasksCue, bool castleRecastCue)
+        [Test]
+        public void ProductionFireballSearchFollowsAnOrdinaryWyvernMarkerClose() =>
+            CheckProductionFireballHelp(centerCue: true, mapMasksCue: false, castleRecastCue: false, searchCue: true);
+
+        private static void CheckProductionFireballHelp(bool centerCue, bool mapMasksCue, bool castleRecastCue, bool searchCue = false)
         {
-            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
-            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
-            var root = new GameObject("ordinary Day3 Fireball help");
+            var replay = Path.Combine(PrivateRoot, searchCue
+                ? "generated/fireball-search-ammyridia-20261118.dx3k373s/ammyridia-fireball-search-entry.mcs"
+                : "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(searchCue ? 30 : 3)
+                .Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Fireball help");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             CampaignGuiWindow window = null;
@@ -1985,6 +1992,8 @@ namespace MagicCarpet.Native.Tests
                 var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
                 var pending = hintType.GetField("fireballHelpPending", flags);
                 var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("objectiveHelpSubject", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
                 bool Pending() => (bool)pending.GetValue(hint);
                 void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
                 void ToggleMap(bool expected)
@@ -2000,14 +2009,107 @@ namespace MagicCarpet.Native.Tests
                     var snapshot = transport.GameRuntimeCampaignSnapshot().value;
                     var fireball = snapshot.player_spells.Single(spell => spell.id == "spell.fireball");
                     var hud = native.DayHudState(native.Tick);
+                    if (searchCue)
+                    {
+                        var possession = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                        Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.availability,
+                            possession.availability, hud.left.rawSpellSelector),
+                            Is.EqualTo((true, false, "not_acquired", "ready", (short)1)));
+                        Assert.That(snapshot.objective_progress.current_objective, Is.EqualTo("objective.campaign.task_1"));
+                        return;
+                    }
                     Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.hand,
                         hud.left.rawSpellSelector, hud.right.rawSpellSelector),
                         Is.EqualTo((true, true, centerCue ? "none" : "left", (short)(centerCue ? 3 : 0), (short)1)));
                     if (castleRecastCue) Assert.That(snapshot.source_top_status.castle_rows, Is.Empty);
                 }
 
-                Assert.That(native.Tick, Is.EqualTo(2431));
-                if (centerCue)
+                ulong FindWyvernClose()
+                {
+                    ushort wyvern = 0;
+                    var pollDelay = hintType.GetField("pollDelay", flags);
+                    var idle = hintType.GetField("idleDraws", flags);
+                    var polls = 0;
+                    var previousRow = 0;
+                    ulong markerFirstDraw = 0, markerClose = 0, requestPoll = 0;
+                    // A source visit is at most 50 popup draws and 20 delay draws.
+                    for (var frame = 0; frame < 20 * (50 + 20); frame++)
+                    {
+                        // The neutral run's fourth loose-mana close leaves rows 18
+                        // and 21 cooling down, but the Wyvern is off the small map
+                        // and idle row 15 wins. Use the ordinary full map and a
+                        // brief forward/slowdown input before the next poll.
+                        if (native.Tick == 1172)
+                        {
+                            Assert.That((hint.VisibleRow, remaining.GetValue(hint), menus.MapOpen),
+                                Is.EqualTo((18, (object)0, false)));
+                            ToggleMap(true);
+                        }
+                        if (native.Tick == 1173) runtime.QualificationApplyGameRuntimeProductionMovement(true, false, false, false);
+                        if (native.Tick is 1174 or 1178) runtime.QualificationApplyGameRuntimeProductionMovement(false, false, false, false);
+                        if (native.Tick == 1177) runtime.QualificationApplyGameRuntimeProductionMovement(false, true, false, false);
+                        var polling = (int)remaining.GetValue(hint) == 0 && (int)pollDelay.GetValue(hint) <= 1;
+                        if (polling && polls == 20) break;
+                        if (polling) polls++;
+                        var wasPending = Pending();
+                        Draw();
+                        Assert.That(menus.MapOpen, Is.EqualTo(native.Tick > 1172));
+                        if (native.Tick == 1174)
+                        {
+                            Assert.That(transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed, Is.Positive);
+                            Assert.That(idle.GetValue(hint), Is.Zero, "ordinary motion resets the idle source counter");
+                        }
+                        if (native.Tick == 1178)
+                            Assert.That(transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed, Is.Zero);
+                        var row = hint.VisibleRow;
+                        var drawsLeft = (int)remaining.GetValue(hint);
+                        if (row != 0 && previousRow != row) TestContext.WriteLine($"Row {row} at {native.Tick}, poll {polls}.");
+                        previousRow = row;
+                        if (row == 82)
+                        {
+                            if (drawsLeft == 49)
+                            {
+                                markerFirstDraw = native.Tick;
+                                wyvern = (ushort)subjectField.GetValue(hint);
+                                if (menus.MapOpen) Assert.That(wyvern, Is.InRange((ushort)299, (ushort)302));
+                                else Assert.That(wyvern, Is.EqualTo((ushort)302));
+                            }
+                            var mark = surface.ObjectiveHelpMarks.Single(item => item.Row == 82 && item.Subject == wyvern);
+                            Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((mark.X, mark.Y)));
+                            if (drawsLeft != 0)
+                            {
+                                Assert.That(subjectField.GetValue(hint), Is.EqualTo(wyvern));
+                                Assert.That(Pending(), Is.False);
+                            }
+                            else
+                            {
+                                markerClose = native.Tick;
+                                Assert.That((markerFirstDraw != 0, markerClose - markerFirstDraw, wasPending, Pending()),
+                                    Is.EqualTo((true, 49UL, false, true)));
+                                CheckFireball();
+                                TestContext.WriteLine($"Wyvern {wyvern} naturally closed row 82 at {markerClose}.");
+                            }
+                        }
+                        if (wasPending && !Pending())
+                        {
+                            requestPoll = native.Tick;
+                            Assert.That((polling, markerClose != 0, requestPoll - markerClose, row),
+                                Is.EqualTo((true, true, 20UL, 0)));
+                            CheckFireball();
+                            TestContext.WriteLine($"Fireball request consumed at {requestPoll}.");
+                        }
+                        if (row != 7) continue;
+                        Assert.That((requestPoll != 0, native.Tick - requestPoll, native.Tick - markerClose, Pending(),
+                            menus.MapOpen, (int)idle.GetValue(hint) <= 100),
+                            Is.EqualTo((true, 1UL, 21UL, false, true, true)));
+                        return markerClose;
+                    }
+                    Assert.Fail($"No row 7 after {polls} ordinary polls. Last marker close {markerClose}, request poll {requestPoll}.");
+                    return 0;
+                }
+
+                Assert.That(native.Tick, Is.EqualTo(searchCue ? 0 : 2431));
+                if (centerCue && !searchCue)
                 {
                     runtime.QualificationAssignGameRuntimeProductionSpell("spell.speed", 0, rightHand: false);
                     Draw();
@@ -2017,31 +2119,39 @@ namespace MagicCarpet.Native.Tests
                 Assert.That((search.TextRecord, search.Flags, search.Duration, search.AgeThreshold, search.Priority),
                     Is.EqualTo((292, 4, 50, 600, 2)));
                 Assert.That(menu.GameplayLanguageText(search.TextRecord), Is.EqualTo("Search for fireball spell"));
-                ToggleMap(true);
-                Assert.That(Pending(), Is.False);
-                var objectiveLimit = menu.LocaleCache.HasLooseManaHelp ? 80 + 50 + 20 : 80;
-                for (var frame = 0; frame < objectiveLimit && hint.VisibleRow != 82; frame++)
+                if (searchCue)
                 {
-                    Draw();
+                    Assert.That(surface, Is.Not.Null);
                     Assert.That(Pending(), Is.False);
                 }
-                Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((82, (object)49)));
-                var subject = (ushort)hintType.GetField("objectiveHelpSubject", flags).GetValue(hint);
-                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
-                Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject == subject), Is.True);
-                for (var frame = 0; frame < 48; frame++)
+                var closedAt = searchCue ? FindWyvernClose() : 0UL;
+                if (!searchCue)
                 {
+                    ToggleMap(true);
+                    Assert.That(Pending(), Is.False);
+                    var objectiveLimit = menu.LocaleCache.HasLooseManaHelp ? 80 + 50 + 20 : 80;
+                    for (var frame = 0; frame < objectiveLimit && hint.VisibleRow != 82; frame++)
+                    {
+                        Draw();
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((82, (object)49)));
+                    var subject = (ushort)subjectField.GetValue(hint);
+                    Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject == subject), Is.True);
+                    for (var frame = 0; frame < 48; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.EqualTo(82));
+                        Assert.That(Pending(), Is.False, "the active objective hint has not closed");
+                    }
                     Draw();
-                    Assert.That(hint.VisibleRow, Is.EqualTo(82));
-                    Assert.That(Pending(), Is.False, "the active objective hint has not closed");
+                    Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()), Is.EqualTo((82, (object)0, true)));
+                    closedAt = native.Tick;
+                    var afterClose = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    Assert.That((native.Tick, Pending()), Is.EqualTo((closedAt, true)));
+                    CollectionAssert.AreEqual(afterClose, runtime.QualificationSaveGameRuntimeProductionReplay());
                 }
-                Draw();
-                Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()), Is.EqualTo((82, (object)0, true)));
-                var closedAt = native.Tick;
-                var afterClose = runtime.QualificationSaveGameRuntimeProductionReplay();
-                runtime.QualificationRefreshGameRuntimeProductionEvents();
-                Assert.That((native.Tick, Pending()), Is.EqualTo((closedAt, true)));
-                CollectionAssert.AreEqual(afterClose, runtime.QualificationSaveGameRuntimeProductionReplay());
 
                 if (mapMasksCue)
                 {
@@ -2063,7 +2173,7 @@ namespace MagicCarpet.Native.Tests
                     return;
                 }
 
-                var cue = castleRecastCue ? 14 : 10;
+                var cue = searchCue ? 7 : castleRecastCue ? 14 : 10;
                 if (castleRecastCue)
                 {
                     for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
@@ -2072,7 +2182,7 @@ namespace MagicCarpet.Native.Tests
                     Draw();
                     Assert.That(native.Tick - closedAt, Is.EqualTo(21UL));
                 }
-                else
+                else if (!searchCue)
                 {
                     ToggleMap(false);
                     for (var frame = 0; frame < 23 && hint.VisibleRow != cue; frame++)
@@ -2085,9 +2195,10 @@ namespace MagicCarpet.Native.Tests
                 var y = centerCue ? 80 : 32;
                 Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint), Pending()),
                     Is.EqualTo((cue, x, y, (object)49, false)));
-                var text = castleRecastCue ? CastleRecastHelpText : "Use fireball spell to destroy target";
+                var text = searchCue ? "Search for fireball spell" :
+                    castleRecastCue ? CastleRecastHelpText : "Use fireball spell to destroy target";
                 if (castleRecastCue) CheckCastleRecastHelpBinding(menu);
-                else
+                else if (!searchCue)
                 {
                     var binding = menu.GameplayHelpForRow(10);
                     Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
@@ -2138,7 +2249,14 @@ namespace MagicCarpet.Native.Tests
                 CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
                 Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
                 CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
-                runtime.QualificationDriveGameRuntimeFrames(49);
+                if (searchCue)
+                    for (var drawsLeft = 48; drawsLeft >= 0; drawsLeft--)
+                    {
+                        Draw();
+                        Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()),
+                            Is.EqualTo((7, (object)drawsLeft, false)));
+                    }
+                else runtime.QualificationDriveGameRuntimeFrames(49);
                 Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((cue, false)));
                 Draw();
                 Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
