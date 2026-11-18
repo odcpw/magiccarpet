@@ -967,6 +967,141 @@ namespace MagicCarpet.Native.Tests
         public void ProductionLargeMapHintRequiresClosedMapAndCurrentSubjectAbsence() =>
             CheckProductionMapHelp(largeMapHint: true);
 
+        [Test]
+        public void ProductionIdleMovementHelpUsesActualSpeedAndClosePromotion()
+        {
+            var caveReplay = Environment.GetEnvironmentVariable("MC_LARGE_MAP_HELP_CAVE_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/render-completion-20261117/incoming-cave4.mcs");
+            var arguments = InstalledOpeningArguments().Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+            var root = new GameObject("ordinary Cave idle movement help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                Assert.That(native.Tick, Is.EqualTo(1));
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                Assert.That(surface.LiveMinimapReady && !surface.HasObjectiveHelpSubject, Is.True);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                const string move = "Use cursor keys to move";
+                const string steer = "Use mouse to steer";
+                foreach (var (row, record, text) in new[] { (15, 300, move), (16, 301, steer) })
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority), Is.EqualTo((record, 50, 4, 320, 80, 600, 4)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                }
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var carrier = hintType.GetField("currentRow", flags);
+                var idle = hintType.GetField("idleDraws", flags);
+                var lifetime = hintType.GetField("remaining", flags);
+                var rows = ((Array)hintType.GetField("rows", flags).GetValue(hint)).Cast<object>().ToArray();
+                int Row(object state) => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                    state.GetType().GetField("Binding", flags).GetValue(state)).Row;
+                var steerRow = rows.Single(state => Row(state) == 16);
+                int SteerPriority() => (int)steerRow.GetType().GetField("Priority", flags).GetValue(steerRow);
+                short Speed() => transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed;
+
+                for (var frame = 0; frame < 12 && hint.VisibleRow != 4; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((4, (object)49)));
+                runtime.QualificationDriveGameRuntimeFrames(38);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(11));
+                Assert.That(Speed(), Is.Zero);
+                Assert.That((int)idle.GetValue(hint), Is.Positive);
+
+                transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0); // Ordinary forward speed key.
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Speed(), Is.Positive);
+                Assert.That(idle.GetValue(hint), Is.Zero, "actual movement resets the stopped-draw count");
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(10));
+                transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                for (var draw = 1; draw <= 100; draw++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(15).And.Not.EqualTo(16));
+                }
+                Assert.That(Speed(), Is.Zero);
+                Assert.That(idle.GetValue(hint), Is.EqualTo(100));
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(50), "frame 100 is a real selection poll");
+                Assert.That(Row(carrier.GetValue(hint)), Is.EqualTo(2), "the higher-priority idle rows require more than 100 stopped draws");
+                Assert.That(SteerPriority(), Is.EqualTo(4));
+
+                runtime.QualificationDriveGameRuntimeFrames(71);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((15, (object)49)),
+                    "the equal-priority movement rows retain source row order");
+                void AssertPaint(string text)
+                {
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var counter = idle.GetValue(hint);
+                    var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    var pixels = ReadObjectivePixels(output);
+                    var palette = surface.FramePaletteRgb8;
+                    var colour = menu.ObjectiveForProfile("cave").HelpTextColor * 3;
+                    Assert.That(pixels, Does.Contain(new Color32(palette[colour], palette[colour + 1], palette[colour + 2], 255)));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, idle.GetValue(hint), lifetime.GetValue(hint)), Is.EqualTo((tick, counter, (object)49)));
+                    CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                }
+                AssertPaint(move);
+                runtime.QualificationDriveGameRuntimeFrames(48);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(1));
+                Assert.That(SteerPriority(), Is.EqualTo(4), "painting or entering the last draw does not promote the second row");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, SteerPriority()), Is.EqualTo((15, 6)));
+                runtime.QualificationDriveGameRuntimeFrames(20);
+                Assert.That(hint.VisibleRow, Is.Zero);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((16, (object)49)));
+                AssertPaint(steer);
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That(hint.VisibleRow, Is.EqualTo(16));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.Zero);
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         private static void CheckProductionMapHelp(bool largeMapHint)
         {
             var activeBefore = NativeSession.ActiveSessionCount;

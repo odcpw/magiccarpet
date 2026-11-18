@@ -3033,6 +3033,8 @@ namespace MagicCarpet.Native
                 var identity = session.ObservedCampaignIdentity();
                 var hud = campaignSession.DayHudState(campaignSession.Tick);
                 var observation = gameRuntimeCampaignSnapshot;
+                gameRuntimeManaHint.ObservePlayerSpeed(observation.value.player_motion.actual_speed,
+                    identity.player_preferences.preferences.show_help);
                 if (gameRuntimeSpellMenuOpen && gameRuntimeSourceSpellMenu.HoveredSlot >= 0)
                 {
                     var slot = gameRuntimeSourceSpellMenu.HoveredSlot;
