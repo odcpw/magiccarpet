@@ -899,6 +899,19 @@ owner roles, matching native `4dbbe5fd`, no input and no retry. Row7 still
 needs a live positive witness; full `mc-oi6.6` remains open. See
 `generated/fireball-help-20261118.pHL9vpFC/`.
 
+Canonical `0bd5b24c`, published as `867241a2`, connects original building
+help row21 to the independent Possession cue. The source-distance winner
+in the Revealed Way full-map aperture is current subject50. Its indexed
+marker follows the same subject for 50 draws and closes at tick 2833.
+The actual assigned right-hand row11 paints at tick 2854 and expires
+normally. A full-map poll consumes the masked request; after closing the map
+row12 appears at tick 2924 without restoring it. All 11 scoped checks passed
+across the first run and the three timing-expectation reruns, with identical
+production code. Original `build-4vjz0mq3` cold-loaded Revealed Way with three
+roles, native `4dbbe5fd`, no input and no retry. The live unacquired variant
+and broader locale/other help acceptance remain open under `mc-oi6.6`.
+See `generated/possession-help-20261118.clbzbSVe/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
