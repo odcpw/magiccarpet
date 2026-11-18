@@ -836,6 +836,19 @@ preserve the counter and replay. Original `build-8ojdq7uu` installs the managed
 prompts and the rehashed active menu cache. See
 `generated/idle-help-20261118.BrSDUEaV/`. Full `mc-oi6.6` stays open.
 
+Original `build-qfa6a9rf` adds the English top-bar life and spell-mana
+prompts at source rows 36/37, with the same verified native `87863f39`.
+The exact Cave4 GLCore check exercises the large-map and hidden-HUD masks,
+original selection order, both indexed two-stroke leaders, and both 50-draw
+lifetimes. The first repaint legitimately advances the separate Shift+F5
+notice once; the checked subsequent reads and repaints leave replay bytes
+unchanged. The normal Original launcher cold-loaded the real Cave4
+checkpoint with four exact roles, no input and no retry. Both prompts are
+visible in the installed capture. Only the help table and its manifest
+digest changed in the active owner cache. See
+`generated/top-bar-vitals-help-20261118.Kb2v1CJL/`. Cast-key guidance,
+other source help and alternate-language verification remain open.
+
 The earned NightSpire exit checkpoint matches 13 historical pose/exit
 boundaries and reaches the real authored exit at tick 10695. The native
 runtime completes the 187-frame exit and emits ordinary Results. The prior

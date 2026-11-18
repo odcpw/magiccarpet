@@ -60,8 +60,8 @@ namespace MagicCarpet.Native
         {
             var manaAnchor = (anchorX == 540 || anchorX == 600) && anchorY == 48;
             var minimapAnchor = (anchorX == 64 && anchorY == 66) || (anchorX == 190 && anchorY == 202);
-            var lifeAnchor = anchorX == 470 && anchorY == 16;
-            if (!manaAnchor && !minimapAnchor && !lifeAnchor)
+            var vitalsAnchor = anchorX == 470 && anchorY is 16 or 32;
+            if (!manaAnchor && !minimapAnchor && !vitalsAnchor)
                 throw new ArgumentException("source gameplay hint anchor is invalid");
             return BuildSourcePointerHintForeground(text, glyphs, glyphMasks, corner, side,
                 horizontal, textColor, lineColor, lineHighlight, anchorX, anchorY);
