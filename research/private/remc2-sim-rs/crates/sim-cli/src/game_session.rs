@@ -181,7 +181,7 @@ enum Command {
     },
     Save {
         guard: RuntimeGuardInput,
-        session_guard: SessionGuardInput,
+        session_guard: Option<SessionGuardInput>,
         path: PathBuf,
     },
     Load {
@@ -401,7 +401,9 @@ impl Stream {
                     "completion": {"session_guard": "session_guard"},
                     "accept_transition": {"guard": "runtime_guard", "session_guard": "session_guard"},
                     "campaign_menu": {"guard": "runtime_guard", "input": {"action": "dismiss_results | select_mission | start_mission | return_title", "level_id": "select_mission only: semantic ID from campaign_menu.available_levels"}},
-                    "save": {"guard": "runtime_guard", "session_guard": "session_guard", "path": "new replay file; existing files refused"},
+                    "save": {"guard": "runtime_guard",
+                        "session_guard": "required in Playing or Paused; omit for a campaign map, results or retained Title",
+                        "path": "new replay file; existing files refused"},
                     "load": {"guard": "runtime_guard", "path": "existing replay file", "packages": "required only in a fresh process; same schema as open"},
                     "close": {"guard": "runtime_guard", "session_guard": "session_guard", "result": "Title; drops active gameplay and retains immutable package resolver"},
                     "shutdown": {"guard": "runtime_guard", "result": "drops runtime/resolver and exits; EOF also releases ownership"}
@@ -617,7 +619,28 @@ impl Stream {
                 path,
             } => {
                 self.validate_runtime(guard)?;
-                self.session(session_guard)?;
+                match self.runtime.presentation_identity().2 {
+                    RuntimeMode::Playing | RuntimeMode::Paused => {
+                        let session_guard = session_guard.ok_or_else(|| {
+                            StreamError::new("MISSING_SESSION_GUARD", "live save requires session_guard")
+                        })?;
+                        self.session(session_guard)?;
+                    }
+                    RuntimeMode::Campaign | RuntimeMode::Title => {
+                        if session_guard.is_some() {
+                            return Err(StreamError::new(
+                                "INVALID_CAMPAIGN_SAVE_GUARD",
+                                "campaign save requires no session_guard",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(StreamError::new(
+                            "INVALID_RUNTIME_MODE",
+                            "save requires Playing, Paused, Campaign or retained Title",
+                        ));
+                    }
+                }
                 let bytes = self.resolver()?.save_replay(&self.runtime)?;
                 let mut file = OpenOptions::new()
                     .write(true)
