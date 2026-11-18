@@ -1248,6 +1248,7 @@ impl RuntimeRecord {
             )
             .map_err(map_transition_error)?;
         self.completion_transition_receipt = None;
+        self.campaign_presentation = None;
         self.reset_audio()?;
         Ok(())
     }
