@@ -1457,6 +1457,7 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase(6, 4, "render-completion-20261117/incoming-cave4.mcs", false, "not_acquired")]
         [TestCase(8, 6, "hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs", true, "not_acquired")]
+        [TestCase(9, 6, "hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs", true, "not_acquired")]
         [TestCase(0, 3, "adaptive-day-night-loop-20261118/day-entrance-paused.mcs", true, "ready")]
         public void ProductionSpellSearchHelpUsesCurrentInventoryOnFullMap(int row, int packageCount,
             string replayPath, bool hasSpell, string castleAvailability)
@@ -1484,18 +1485,28 @@ namespace MagicCarpet.Native.Tests
                 var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
                 var lifetime = hintType.GetField("remaining", flags);
                 var pollDelay = hintType.GetField("pollDelay", flags);
+                var possessionPending = hintType.GetField("possessionHelpPending", flags);
+                var entitySubject = hintType.GetField("entityHelpSubject", flags);
+                bool PossessionPending() => (bool)possessionPending.GetValue(hint);
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
                 void CheckInventory()
                 {
                     var snapshot = transport.GameRuntimeCampaignSnapshot().value;
                     var castle = snapshot.player_spells.Single(spell => spell.id == "spell.castle");
                     Assert.That((snapshot.spell_menu_has_any_spell, castle.availability, castle.hand),
                         Is.EqualTo((hasSpell, castleAvailability, "none")));
-                    if (row == 8)
+                    if (row is 8 or 9)
                     {
                         Assert.That(snapshot.player_spells.Single(spell => spell.id == "spell.fireball").hand,
                             Is.EqualTo("left"));
                         var left = native.DayHudState(native.Tick).left;
                         Assert.That((left.rawSpellSelector, left.holderEntityIndex), Is.EqualTo(((short)0, (ushort)78)));
+                    }
+                    if (row == 9)
+                    {
+                        var possession = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                        Assert.That((possession.availability, possession.acquired, possession.hand),
+                            Is.EqualTo(("not_acquired", false, "none")));
                     }
                     if (row == 0) Assert.That(castle.acquired, Is.True, "an unassigned Castle still occupies the source slot");
                 }
@@ -1517,8 +1528,11 @@ namespace MagicCarpet.Native.Tests
                 var extraIntervals = menu.LocaleCache.HasCastleSpellHelp ? 6 : 2;
                 // Both Cave full maps also admit one row21 building cue.
                 var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) :
+                    row == 9 ? 350 + 5 * (50 + 20) :
                     row == 8 && looseManaHelp ? 350 + 3 * (50 + 20) :
                     possessionHelp ? 350 + 50 + 20 : 350;
+                ushort recurringManaSubject = 0;
+                ulong recurringManaFirstDraw = 0, recurringManaClose = 0;
                 for (var frame = 0; frame < frameLimit; frame++)
                 {
                     // With entity and Castle cues both present, ordinary
@@ -1532,7 +1546,35 @@ namespace MagicCarpet.Native.Tests
                         drawn[drawn.Count - 1].Row != hint.VisibleRow))
                         drawn.Add((hint.VisibleRow, native.Tick));
                     if (row != 6) Assert.That(hint.VisibleRow, Is.Not.EqualTo(6));
-                    if (row != 8) Assert.That(hint.VisibleRow, Is.Not.EqualTo(8));
+                    if (row is not (8 or 9)) Assert.That(hint.VisibleRow, Is.Not.EqualTo(8));
+                    if (row == 9 && drawn.Count == 9 && hint.VisibleRow == 18)
+                    {
+                        var remaining = (int)lifetime.GetValue(hint);
+                        if (remaining == 49)
+                        {
+                            recurringManaFirstDraw = native.Tick;
+                            recurringManaSubject = (ushort)entitySubject.GetValue(hint);
+                            Assert.That(recurringManaSubject, Is.Not.Zero);
+                            CheckInventory();
+                            var sphere = native.ManaSpheres().Single(sphere => sphere.sourceEntityIndex == recurringManaSubject);
+                            Assert.That((sphere.active, sphere.ownerEntityIndex), Is.EqualTo(((byte)1, (ushort)0)));
+                        }
+                        if (remaining != 0)
+                        {
+                            Assert.That((entitySubject.GetValue(hint), PossessionPending()),
+                                Is.EqualTo(((object)recurringManaSubject, false)));
+                            Assert.That(surface.EntityHelpMarks.Any(mark =>
+                                mark.Row == 18 && mark.Subject == recurringManaSubject), Is.True);
+                        }
+                        else
+                        {
+                            recurringManaClose = native.Tick;
+                            Assert.That((recurringManaClose - recurringManaFirstDraw, PossessionPending()),
+                                Is.EqualTo((49UL, true)));
+                        }
+                    }
+                    if (row == 9 && recurringManaClose != 0 && native.Tick > recurringManaClose)
+                        Assert.That(PossessionPending(), Is.EqualTo(native.Tick - recurringManaClose < 20));
                     if ((row != 0 && hint.VisibleRow == row) ||
                         (row == 0 && drawn.Any(item => item.Row == 2) && (int)pollDelay.GetValue(hint) < 0)) break;
                 }
@@ -1540,7 +1582,15 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(menus.MapOpen, Is.True);
                 var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
                 TestContext.WriteLine($"Full-map help draws {chronology}. Final tick {native.Tick}.");
-                if (possessionHelp && row != 0)
+                if (row == 9)
+                {
+                    Assert.That((possessionHelp, looseManaHelp, recurringManaSubject != 0, native.Tick - recurringManaClose),
+                        Is.EqualTo((true, true, true, 21UL)));
+                    CollectionAssert.AreEqual(new[] { 18, 21, 15, 16, 18, 1, 2, 8, 18, 9 },
+                        drawn.Select(item => item.Row), "the one-shot requests lose to the earlier source polls");
+                    TestContext.WriteLine($"Live sphere slot{recurringManaSubject} closed at tick {recurringManaClose}.");
+                }
+                else if (possessionHelp && row != 0)
                     CollectionAssert.AreEqual(row == 8 && looseManaHelp
                         ? new[] { 18, 21, 15, 16, 18, 1, 2, 8 } : new[] { 21, 1, 15, 16, 2, row },
                         drawn.Select(item => item.Row), "the live source markers precede the search cues");
@@ -1557,14 +1607,17 @@ namespace MagicCarpet.Native.Tests
                 }
                 Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((row, (object)49)));
                 var binding = menu.GameplayHelpForRow(row);
-                var record = row == 6 ? 291 : 293;
-                var text = row == 6 ? "Search for spells" : "Search for castle spell";
+                var (record, text) = row switch {
+                    6 => (291, "Search for spells"),
+                    8 => (293, "Search for castle spell"),
+                    9 => (294, "Search for possession spell"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(row))
+                };
                 Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
                     binding.Y, binding.AgeThreshold, binding.Priority),
                     Is.EqualTo((record, 50, row == 6 ? 0x404 : 0x004, 320, 80, 600, 2)));
                 Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
 
-                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
                 foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
                 {
                     if (camera.targetTexture == null) camera.targetTexture = display;

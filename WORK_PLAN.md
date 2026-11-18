@@ -928,6 +928,15 @@ and its manifest changed in the active cache. UBS C# coverage was partial;
 none of the reported critical findings fell on added lines. See
 `generated/loose-mana-help-20261118.gaDBxSF0/`.
 
+The installed Original `build-k3rzmq6w` Possession search branch is now
+verified with the genuine Cave6 checkpoint and its six owner roles. The
+recurring neutral mana marker draws from tick 603, closes after 50 draws,
+then the first eligible poll consumes its request and shows row 9 at
+tick 673. Fireball remains assigned and Possession is unacquired. The
+original English text, indexed pixels, draw lifetime and replay purity
+passed in the exact 32.76 s GLCore check. Only the existing test changed.
+See `generated/possession-search-help-20261118.0viovs0s/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
