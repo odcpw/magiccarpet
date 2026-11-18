@@ -17979,7 +17979,9 @@ impl Mc2Simulation {
                     }
                 }
             }
-            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
+            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                .with_particles(particles)
+                .with_map_type(live.terrain.map_type());
             let mut state = std::mem::take(&mut live.economy.effects);
             let mut apply = |arena: &mut SourceArena, pulse| {
                 area_damage::apply_effect(
@@ -31818,6 +31820,154 @@ mod tests {
             "NewEvent's balloon A4 is the shared source context");
         assert_eq!(campaign.simulation().shared_spells().local_player().balloon_hit_frame_time, 0,
             "ordinary balloon damage must not invent a local A4 alias");
+
+        // Qualify the area reader separately from the existing contact knob.
+        // Stage the terminal products of source tier-zero Fireballs at the
+        // live collector's pose. Ownership and damage are the ordinary
+        // launch tail's two inputs here; the real constructor and scheduled
+        // model0 callback retain their selectors, geometry, and map scan.
+        {
+            const RIVAL: u16 = 266;
+            let mut branch = campaign.clone();
+            let source = &branch.simulation().entities()[usize::from(RIVAL)];
+            assert!(
+                source.active && (source.class, source.model, source.source_id) == (3, 1, RIVAL)
+            );
+            let power = branch
+                .simulation()
+                .session
+                .definition
+                .fireball_properties
+                .tiers[0]
+                .power;
+            let emit = |campaign: &mut CampaignSession, caster: u16| {
+                let simulation = campaign.simulation_mut();
+                let particles = &simulation.session.definition.presentation.particles;
+                let live = &mut simulation.session.state.live;
+                let collector = live
+                    .economy
+                    .castle_children()
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == collector_slot)
+                    .unwrap();
+                let position = collector.position;
+                let slot = crate::world::effects::allocate(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    sim_definition::adapter::mc2_effect_definition(
+                        crate::level_definition::EffectKind::Impact,
+                    ),
+                    position,
+                    particles,
+                )
+                .unwrap()
+                .expect("ordinary Fireball impact allocation");
+                let impact = &mut live.economy.entities[usize::from(slot)];
+                assert_eq!((impact.class, impact.model, impact.action), (10, 0, 0));
+                impact.source_id = caster;
+                impact.record[30..32].copy_from_slice(&caster.to_le_bytes());
+                impact.set_subspell_index(power);
+                live.economy.handle(slot).expect("current staged impact")
+            };
+            let mut control = branch.clone();
+            frame(&mut control, PlayerCommand::default(), true, None);
+            let friendly = emit(&mut branch, owner);
+            area_damage::start_effect_damage_trace(collector_slot);
+            frame(&mut branch, PlayerCommand::default(), true, None);
+            let friendly_scan = area_damage::take_effect_damage_trace()
+                .into_iter()
+                .find(|receipt| receipt.source_handle == Some(friendly))
+                .expect("the scheduled friendly impact scans the current collector");
+            assert!(friendly_scan.target_in_scanned_cells);
+            assert!(friendly_scan.target.is_some_and(|target| (
+                target.class,
+                target.model,
+                target.source_id,
+                target.damage_mask
+            ) == (3, 3, owner, 1)));
+            assert_eq!(friendly_scan.mailbox_before, friendly_scan.mailbox_after);
+            let life_before_hostile = branch.simulation().source_top_status(goal).balloons[0].life;
+            assert_eq!(
+                life_before_hostile,
+                control.simulation().source_top_status(goal).balloons[0].life,
+                "a friendly impact leaves the collector at its normal same-turn life"
+            );
+
+            // The source death gate is strict (< 0); count from the current
+            // post-regeneration life, including the final lethal impact.
+            let stock = usize::try_from(life_before_hostile / i32::from(power) + 1).unwrap();
+            let hostile = (0..stock)
+                .map(|_| emit(&mut branch, RIVAL))
+                .collect::<Vec<_>>();
+            let mut hits = 0;
+            let mut hidden = false;
+            let mut reclaimed = false;
+            for _ in 0..8 {
+                area_damage::start_effect_damage_trace(collector_slot);
+                frame(&mut branch, PlayerCommand::default(), true, None);
+                for receipt in
+                    area_damage::take_effect_damage_trace()
+                        .into_iter()
+                        .filter(|receipt| {
+                            receipt
+                                .source_handle
+                                .is_some_and(|handle| hostile.contains(&handle))
+                        })
+                {
+                    assert_eq!((receipt.pulse.owner, receipt.pulse.payload), (RIVAL, power));
+                    if receipt.target_in_scanned_cells
+                        && receipt.mailbox_before != receipt.mailbox_after
+                    {
+                        assert_eq!(receipt.target_generation, collector_handle.generation);
+                        assert!(receipt.target.is_some_and(|actor| (
+                            actor.class,
+                            actor.model,
+                            actor.source_id
+                        ) == (3, 3, owner)));
+                        assert_eq!(receipt.mailbox_after.unwrap().1, RIVAL);
+                        hits += 1;
+                    }
+                }
+                let simulated = branch.simulation();
+                assert_eq!(
+                    simulated.source_arena().handle(root.source_entity_index),
+                    Some(root_handle),
+                    "the collector retires while its original Castle is still allocated"
+                );
+                if simulated.source_arena().resolve(collector_handle).is_none() {
+                    assert!(marker(simulated, collector_slot).is_none_or(|current| {
+                        simulated.source_arena().handle(collector_slot).is_some_and(
+                            |current_handle| {
+                                current_handle.generation != collector_handle.generation
+                                    && current.active
+                            },
+                        )
+                    }));
+                    reclaimed = true;
+                    break;
+                }
+                let current = simulated
+                    .economy()
+                    .castle_children()
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == collector_slot)
+                    .unwrap();
+                if current.drawing_disabled() {
+                    assert!(current.life < 0);
+                    assert!(!marker(simulated, collector_slot).unwrap().active);
+                    hidden = true;
+                }
+            }
+            assert_eq!(
+                hits, stock,
+                "every real hostile impact must write the typed collector mailbox"
+            );
+            assert!(
+                hidden && reclaimed,
+                "ordinary hostile area hits retire the collector naturally"
+            );
+        }
+
         // Use the ordinary odd Castle callback so the collector's own lethal
         // damage is observable separately from even stock maintenance.
         if campaign.simulation().economy().castle_for_owner(owner).unwrap().phase & 1 == 0 {

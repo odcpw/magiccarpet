@@ -874,6 +874,21 @@ in 4.20s. The damage is a declared test control. Rendering the actual death and
 reuse in the installed player remains unverified. See
 `generated/collector-map-retirement-20261118/collector-focused.log`.
 
+The shared scheduled area-effect reader now includes the current typed
+class 3/model 3 collector. It uses the canonical particle/map collision
+shape and source damage mask before the stale raw-row fallback. The exact
+Level5 regression passed in 5.40s: the paid Castle produced its real
+collector, a staged friendly Fireball impact left the mailbox unchanged,
+and 41 staged hostile terminal impacts at source tier-zero power caused
+ordinary mailbox consumption, hide, and reclaim with the Castle still
+allocated. The friendly comparison advances a matched no-impact frame
+because the collector naturally regenerates one point there. Existing
+refill/slot-incarnation and Cave collector controls pass; the affected
+ordinary all-tier Meteor path passes in 8.32s. These are controlled impact
+births, with no paid rival launch or installed minimap pixel claim. Keep
+`mc-bhq.10` and `mc-oi6.5` open. See
+`generated/collector-hostile-area-20261118/`.
+
 ### Objective-marker help, speech volume and Cave music — 2026-11-18
 
 Canonical `29b5ecea` and `813d8d00` shipped in qualified Original

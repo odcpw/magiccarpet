@@ -23,6 +23,7 @@ pub(crate) struct ActorDomains<'a> {
     villagers: &'a mut VillagerFamily,
     house_parameters: &'a std::collections::BTreeMap<u8, crate::house::HouseParameter>,
     particles: Option<&'a [super::ParticleParameter]>,
+    map_type: Option<super::MapType>,
 }
 
 impl<'a> ActorDomains<'a> {
@@ -36,11 +37,17 @@ impl<'a> ActorDomains<'a> {
             villagers: &mut ordinary.villagers,
             house_parameters: &ordinary.house_parameters,
             particles: None,
+            map_type: None,
         }
     }
 
     pub(crate) fn with_particles(mut self, particles: &'a [super::ParticleParameter]) -> Self {
         self.particles = Some(particles);
+        self
+    }
+
+    pub(crate) fn with_map_type(mut self, map_type: super::MapType) -> Self {
+        self.map_type = Some(map_type);
         self
     }
 
@@ -51,6 +58,7 @@ impl<'a> ActorDomains<'a> {
             villagers: &mut *self.villagers,
             house_parameters: self.house_parameters,
             particles: self.particles,
+            map_type: self.map_type,
         }
     }
 
@@ -61,6 +69,7 @@ impl<'a> ActorDomains<'a> {
             villagers: Some(self.villagers),
             house_parameters: Some(self.house_parameters),
             particles: self.particles,
+            map_type: self.map_type,
             ..super::source_target::Context::default()
         }
     }
@@ -1976,6 +1985,20 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             return None;
         }
         let economy = &self.arena.economy;
+        if economy.live_arena_kind(slot) == Some(super::Level2DynamicArenaKind::CastleDefender) {
+            let context = self.actors.as_ref()?.source_target_context();
+            let view = super::source_target::read(self.arena, context, slot).ok()??;
+            // sub_4ABA0 sets byte38=1 on the mapped class3/model3 collector.
+            return Some(Actor {
+                source_id: view.source_id,
+                class: view.class,
+                model: view.model,
+                position: view.position,
+                shape: view.collision?,
+                damage_mask: 1,
+                control_flags: view.control_flags,
+            });
+        }
         // SetSmoke4 leaves byte38 zero. Wind still contacts these rows; its
         // geometry comes from the current particle, not the old raw occupant.
         if let Some(current) = economy.live_arena_cursor_row(slot)
