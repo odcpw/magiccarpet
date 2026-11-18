@@ -19,8 +19,9 @@ use sim_core::{
 };
 use sim_session::{
     ActorPage, ActorPageRequest, EventPage, GameAudioCommand, GameCommand, GameSession,
-    GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, OpenSessionError, SessionGuard,
-    SessionGuardError, SessionGuardErrorCode, SessionObservation,
+    GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, MAX_OBJECTIVE_STAGES,
+    ObjectiveObservation, OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode,
+    SessionObservation,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -164,6 +165,23 @@ impl NeutralSession {
             }
         };
         session.actors(guard, request).map_err(map_guard_error)
+    }
+
+    fn objectives(
+        &self,
+        guard: SessionGuard,
+    ) -> AbiResult<SessionObservation<ObjectiveObservation>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "objective observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.objectives(guard).map_err(map_guard_error)
     }
 
     fn audio_for_event(
@@ -479,6 +497,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                         "kinds": Mc2CampaignBackend::actor_page_kinds().collect::<Vec<_>>(),
                         "maximum_page_size": MAX_ACTOR_PAGE_SIZE
                     },
+                    "objective_observation": {"maximum_stages": MAX_OBJECTIVE_STAGES},
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -726,6 +745,24 @@ pub extern "C" fn mc_game_session_actors_json_v1(
         with_neutral_session(handle, |session| {
             let page = session.actors(session_guard(handle, generation, expected_tick), request)?;
             write_json(&page, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_objectives_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_neutral_session(handle, |session| {
+            let observation =
+                session.objectives(session_guard(handle, generation, expected_tick))?;
+            write_json(&observation, buffer, capacity, out_length)
         })
     })
 }

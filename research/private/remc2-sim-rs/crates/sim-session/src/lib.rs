@@ -7,6 +7,7 @@
 //! reopen operation may advance that session's generation.
 
 use serde::{Deserialize, Serialize};
+use sim_definition::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
@@ -273,6 +274,31 @@ pub struct ObjectiveProgress {
     pub completed_count: u32,
     pub total_count: u32,
     pub all_objectives_satisfied: bool,
+}
+
+pub const MAX_OBJECTIVE_STAGES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectiveStageStatus {
+    Inactive,
+    Active,
+    Completed,
+}
+
+/// The effective, definition-bound condition and its current stage state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ObjectiveStageObservation {
+    pub id: LevelObjectiveId,
+    pub condition: ObjectiveCondition,
+    pub status: ObjectiveStageStatus,
+}
+
+/// An atomic read of the bounded local objective stages, in authored order.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ObjectiveObservation {
+    pub progress: ObjectiveProgress,
+    pub stages: Vec<ObjectiveStageObservation>,
 }
 
 /// Package-neutral pose for one live presentation entity. Coordinates use
@@ -866,6 +892,9 @@ pub trait GameSessionBackend {
     fn tick(&self) -> u64;
     fn completion_status(&self) -> GameCompletionStatus;
     fn snapshot(&self) -> Self::Snapshot;
+    fn observe_objectives(&self) -> ObjectiveObservation {
+        ObjectiveObservation::default()
+    }
     /// Project up to `count` actors from the requested offset in a stable
     /// backend order. The session validates identity before asking for rows.
     fn observe_actors(
@@ -1078,6 +1107,18 @@ impl<B: GameSessionBackend> GameSession<B> {
                 actors,
                 next_offset,
             },
+        })
+    }
+
+    /// Read the complete bounded objective state at the exact session tick.
+    pub fn objectives(
+        &self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<ObjectiveObservation>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: self.backend.observe_objectives(),
         })
     }
 

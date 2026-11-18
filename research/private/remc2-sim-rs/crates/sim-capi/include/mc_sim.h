@@ -1551,6 +1551,10 @@ int32_t mc_game_session_actors_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Read the bounded campaign objective stages at the exact generation/tick. */
+int32_t mc_game_session_objectives_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_session_audio_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,

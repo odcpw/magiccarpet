@@ -64,7 +64,8 @@ use crate::{
     game_session::{
         ActorObservation, CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
         GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
-        LateralControl, LongitudinalControl, ObjectiveProgress, PlayerMotion, PlayerPose,
+        LateralControl, LongitudinalControl, ObjectiveObservation, ObjectiveProgress, PlayerMotion,
+        PlayerPose,
         PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
         SessionGuard,
     },
@@ -4679,37 +4680,6 @@ impl Mc2CampaignBackend {
         let compatibility = self.campaign.simulation();
         let shared_spells = compatibility.shared_spells();
         let player_entity = shared_spells.player_entity();
-        let level = compatibility
-            .semantic_level_definition()
-            .expect("campaign backend retains its bound semantic level definition");
-        let local_objective = compatibility
-            .runtime()
-            .objectives
-            .first()
-            .expect("campaign runtime retains its local objective carrier");
-        let total_count = u32::try_from(level.objectives().len())
-            .expect("validated level objective count fits u32");
-        let completed_count = u32::try_from(
-            local_objective
-                .stage_selectors
-                .iter()
-                .take(level.objectives().len())
-                .filter(|selector| **selector == 2)
-                .count(),
-        )
-        .expect("validated level objective count fits u32");
-        let all_objectives_satisfied = local_objective.is_level_end != 0;
-        let current_objective = (!all_objectives_satisfied)
-            .then(|| {
-                level
-                    .objectives()
-                    .get(usize::from(local_objective.text_selector))
-            })
-            .flatten()
-            .map(|objective| {
-                SemanticId::parse(objective.id().as_str())
-                    .expect("validated level objective ID is a semantic ID")
-            });
         let presentation_entities = self
             .fireball_projectile_asset
             .as_ref()
@@ -4817,12 +4787,7 @@ impl Mc2CampaignBackend {
                     128
                 }
             },
-            objective_progress: ObjectiveProgress {
-                current_objective,
-                completed_count,
-                total_count,
-                all_objectives_satisfied,
-            },
+            objective_progress: compatibility.semantic_objective_progress(),
             objective_textbox_ticks: compatibility.runtime().objective_textbox_ticks,
             objective_secret_announcement_record: compatibility.secret_announcement().text_record(),
             exit_sequence_active: compatibility.level_exit_sequence().active,
@@ -4838,6 +4803,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
 
     fn tick(&self) -> u64 {
         self.campaign.tick()
+    }
+
+    fn observe_objectives(&self) -> ObjectiveObservation {
+        self.campaign.simulation().observe_semantic_objectives()
     }
 
     fn observe_actors(
