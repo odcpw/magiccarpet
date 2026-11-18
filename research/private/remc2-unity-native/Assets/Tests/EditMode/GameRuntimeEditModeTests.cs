@@ -2561,6 +2561,141 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [Test]
+        public void ProductionCastleAttackHelpFollowsAnOrdinaryHostileHit()
+        {
+            var replay = Path.Combine(PrivateRoot,
+                "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle attack help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var remaining = hintType.GetField("remaining", flags);
+                var attackPolls = hintType.GetField("castleAttackPolls", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                int Remaining() => (int)remaining.GetValue(hint);
+                int AttackPolls() => (int)attackPolls.GetValue(hint);
+                EngineSessionTransport.SourceCastleStatus Castle() =>
+                    transport.GameRuntimeCampaignSnapshot().value.source_top_status.castle_rows.Single();
+                NativeSim.CampaignEntitySnapshot Root() => native.Entities()[261];
+
+                const string text = "Your castle has been attacked";
+                var binding = menu.GameplayHelpForRow(17);
+                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.X, binding.Y,
+                    binding.AgeThreshold, binding.Priority), Is.EqualTo((302, 0x624, 50, 214, 16, 400, 5)));
+                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                Assert.That((native.Tick, menus.MapOpen, runtime.GameRuntimeProductionIdentity.display_settings.top_bar,
+                    runtime.GameRuntimeProductionIdentity.display_settings.minimap), Is.EqualTo((2048UL, false, true, true)));
+                var first = Root();
+                void CheckRoot()
+                {
+                    var current = Root();
+                    Assert.That((current.entityIndex, current.sourceId, current.classId, current.model, current.active,
+                        current.x, current.y), Is.EqualTo(((ushort)261, (ushort)252, (byte)3, (byte)2, (byte)1,
+                        first.x, first.y)));
+                    Assert.That(Castle().stage, Is.EqualTo(1));
+                }
+                CheckRoot();
+                Assert.That((Castle().life, native.CastleHudHitFrames(native.Tick), AttackPolls()),
+                    Is.EqualTo((20000, (byte)0, 0)));
+                Draw();
+                Assert.That((native.Tick, Castle().life, native.CastleHudHitFrames(native.Tick), AttackPolls(),
+                    hint.VisibleRow, Remaining()), Is.EqualTo((2049UL, 20000, (byte)0, 0, 0, 0)));
+
+                // The retained coast input lets the real hostile attack
+                // consume the linked Castle's mailbox on the source visit.
+                Draw();
+                CheckRoot();
+                var phase = native.DayHudState(native.Tick).colorPhase1;
+                Assert.That((native.Tick, Castle().life, Castle().panel_selector,
+                    native.CastleHudHitFrames(native.Tick), AttackPolls(), hint.VisibleRow, Remaining()),
+                    Is.EqualTo((2050UL, 17400, (ushort)(phase != 0 ? 55 : 41),
+                        (byte)(4 - phase), 99, 0, 50)));
+                Draw();
+                Assert.That((native.Tick, hint.VisibleRow, hint.AnchorX, hint.AnchorY, Remaining(), AttackPolls()),
+                    Is.EqualTo((2051UL, 17, 320, 80, 49, 99)));
+
+                display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show();
+                window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var frames = native.CastleHudHitFrames(tick);
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                Assert.That(output?.IsCreated(), Is.True);
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                var artwork = menu.ObjectiveForProfile("day");
+                var palette = surface.FramePaletteRgb8;
+                var color = artwork.HelpTextColor * 3;
+                var pixels = ReadObjectivePixels(output);
+                Assert.That(pixels, Does.Contain(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((native.Tick, Remaining(), AttackPolls(), native.CastleHudHitFrames(tick)),
+                    Is.EqualTo((tick, 49, 99, frames)));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                var sawFinalNativeFlash = false;
+                for (var elapsed = 1; elapsed <= 49; elapsed++)
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Remaining(), AttackPolls()), Is.EqualTo((17, 49 - elapsed, 99)));
+                    if (Castle().panel_selector == 55 && native.CastleHudHitFrames(native.Tick) == 0)
+                        sawFinalNativeFlash = true;
+                }
+                Assert.That(sawFinalNativeFlash, Is.True, "the final hit panel can draw after the native counter reaches zero");
+                CheckRoot();
+                Draw();
+                Assert.That((hint.VisibleRow, Remaining()), Is.EqualTo((0, 0)));
+                TestContext.WriteLine($"Day3 root 261 took 2600 damage at 2050. Indexed row17 drew from {tick} for 50 draws.");
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         private static void CheckProductionMapHelp(bool largeMapHint)
         {
             var activeBefore = NativeSession.ActiveSessionCount;

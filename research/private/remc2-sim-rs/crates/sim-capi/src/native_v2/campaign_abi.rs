@@ -1340,6 +1340,37 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
     })
 }
 
+/// Read the current owner's Castle hit counter after the source HUD draw.
+/// A frame which used the final hit-panel flash can return zero here.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_castle_hud_hit_frames(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_frames: *mut u8,
+) -> i32 {
+    boundary_value(out_frames, struct_size::<u8>(), || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle HUD hit frames require a campaign session",
+                ));
+            };
+            if generation != session.generation || expected_tick != reset.state.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "Castle HUD hit frames generation/tick {generation}/{expected_tick} does not match {}/{}",
+                        session.generation, reset.state.tick
+                    ),
+                ));
+            }
+            Ok(reset.economy().player_castle_aux_flags())
+        })
+    })
+}
+
 pub(super) fn campaign_day_music_snapshot(
     generation: u64,
     tick: u64,

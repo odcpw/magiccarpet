@@ -764,6 +764,11 @@ int32_t mc_native_campaign_opponent_state(
 int32_t mc_native_campaign_day_hud_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayHudSnapshotV2 *out_state, uint32_t out_state_size);
+/* Read the local Castle hit counter after HUD draw, or zero with no linked
+ * Castle. The read does not consume a hit frame. */
+int32_t mc_native_campaign_castle_hud_hit_frames(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *out_frames);
 
 int32_t mc_native_campaign_day_music_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,

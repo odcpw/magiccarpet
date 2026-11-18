@@ -930,6 +930,16 @@ namespace MagicCarpet.Native
             return state;
         }
 
+        internal byte CastleHudHitFrames(ulong expectedTick)
+        {
+            var status = NativeSim.mc_native_campaign_castle_hud_hit_frames(
+                Handle, generation, expectedTick, out var frames);
+            NativeSession.Check(status, "read campaign Castle HUD hit frames");
+            if (frames > 4)
+                throw new InvalidOperationException("native Castle HUD hit counter is outside the source range");
+            return frames;
+        }
+
         internal static void ValidateDayHudState(
             NativeSim.CampaignDayHudSnapshot state,
             ulong expectedGeneration,

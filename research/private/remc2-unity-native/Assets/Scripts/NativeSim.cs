@@ -2389,6 +2389,13 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_castle_hud_hit_frames(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            out byte frames);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_day_music_state(
             ulong handle,
             ulong generation,
