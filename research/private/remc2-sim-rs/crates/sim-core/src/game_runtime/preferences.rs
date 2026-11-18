@@ -372,8 +372,15 @@ impl PreferenceStore {
             }
         }
         let (temp, mut file) = candidate.ok_or("cannot allocate preferences publication file")?;
-        file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|error| error.to_string())?;
-        fs::rename(temp, path).map_err(|error| error.to_string())
+        let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+        drop(file);
+        let published = written.and_then(|()| fs::rename(&temp, path));
+        if published.is_err() {
+            // This attempt owns the create_new file exclusively. Retire it so
+            // repeated failures cannot exhaust the publication names.
+            let _ = fs::remove_file(&temp);
+        }
+        published.map_err(|error| error.to_string())
     }
 
     /// Commit an admitted source audio toggle without disturbing other owners.
@@ -1768,11 +1775,24 @@ mod tests {
         expected.flight_assistance = true;
         assert_eq!(cold.current, expected, "source action preserves every unrelated preference");
         let saved_path = store.path.clone().unwrap();
-        store.path = Some(profile.clone()); // Actual rename failure: destination is a directory.
+        let blocked_path = profile.join("blocked-destination");
+        fs::create_dir(&blocked_path).unwrap();
+        store.path = Some(blocked_path.clone());
         let before = store.snapshot();
-        assert!(store.source_flight_assistance_toggle().is_err());
+        // Force more failures than the number of candidate names. Every
+        // failure must discard its staging file and preserve the live/profile state.
+        for _ in 0..129 {
+            assert!(store.source_flight_assistance_toggle().is_err());
+        }
         assert_eq!(store.snapshot(), before);
-        assert_eq!(fs::read(saved_path).unwrap(), bytes);
+        assert_eq!(fs::read(&saved_path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&profile).unwrap().count(), 2);
+
+        fs::remove_dir(blocked_path).unwrap();
+        store.path = Some(saved_path);
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(false));
+        let mut restarted = PreferenceStore::default();
+        assert_eq!(restarted.command(install()).unwrap().preferences, store.snapshot().preferences);
         fs::remove_dir_all(profile).unwrap();
     }
 
