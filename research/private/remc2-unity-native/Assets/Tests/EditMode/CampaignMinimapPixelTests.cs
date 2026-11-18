@@ -67,6 +67,16 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(marks.Where(row => row.helpSelector == 82).All(row => row.visible == 0), Is.True);
                 Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject != 0), Is.True,
                     "ordinary authored rectangles offer help before the next visible blink");
+                if (hint.HasLargeMapHelp)
+                {
+                    Assert.That(surface.LiveMinimapReady && surface.HasObjectiveHelpSubject, Is.True);
+                    var mapHint = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasLargeMapHelp: true);
+                    for (var frame = 0; frame < 3; frame++)
+                        mapHint.Advance(false, false, true, false, false,
+                            hasObjectiveHelpSubject: surface.HasObjectiveHelpSubject);
+                    Assert.That(mapHint.VisibleRow, Is.EqualTo(1),
+                        "the real blink-hidden Day rectangle suppresses row 4 before priority selection");
+                }
                 for (var frame = 0; frame < 80 && hint.VisibleRow != 82; frame++)
                     runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(hint.VisibleRow, Is.EqualTo(82));

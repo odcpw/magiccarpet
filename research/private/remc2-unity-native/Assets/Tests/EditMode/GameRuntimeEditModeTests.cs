@@ -960,10 +960,17 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void ProductionMinimapHelpUsesSourceRowAndDrawLifetime()
+        public void ProductionMinimapHelpUsesSourceRowAndDrawLifetime() =>
+            CheckProductionMapHelp(largeMapHint: false);
+
+        [Test]
+        public void ProductionLargeMapHintRequiresClosedMapAndCurrentSubjectAbsence() =>
+            CheckProductionMapHelp(largeMapHint: true);
+
+        private static void CheckProductionMapHelp(bool largeMapHint)
         {
             var activeBefore = NativeSession.ActiveSessionCount;
-            var root = new GameObject("ordinary Night minimap help");
+            var root = new GameObject("ordinary source map help");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
@@ -975,7 +982,14 @@ namespace MagicCarpet.Native.Tests
             object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
             try
             {
-                runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
+                var arguments = InstalledOpeningArguments();
+                if (largeMapHint)
+                {
+                    var caveReplay = Environment.GetEnvironmentVariable("MC_LARGE_MAP_HELP_CAVE_REPLAY") ??
+                        Path.Combine(PrivateRoot, "generated/render-completion-20261117/incoming-cave4.mcs");
+                    arguments = arguments.Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+                }
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.True);
                 var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
@@ -984,6 +998,89 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo((287, 50, 0x0200, 600, 2)));
                 Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo("You are here"));
                 var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ??
+                    Field("gameRuntimeNightSurface"));
+                void PrepareCurrentFrameForOnGui()
+                {
+                    var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                    Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in cameras)
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                    window.minSize = new Vector2(640, 480);
+                    window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                }
+                var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                if (largeMapHint)
+                {
+                    var identity = runtime.GameRuntimeProductionIdentity;
+                    Assert.That(identity.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.spider_cave"));
+                    Assert.That(((NativeCampaignSession)Field("campaignSession")).Tick, Is.EqualTo(1));
+                    Assert.That(hint.HasLargeMapHelp, Is.True, "requires the current hash-qualified row 4 cache");
+                    var mapHint = menu.GameplayHelpForRow(4);
+                    Assert.That((mapHint.TextRecord, mapHint.Duration, mapHint.Flags, mapHint.X,
+                        mapHint.Y, mapHint.AgeThreshold, mapHint.Priority), Is.EqualTo((289, 50, 0x24, 320, 80, 300, 4)));
+                    const string mapHelp = "Press RETURN for large map";
+                    Assert.That(menu.GameplayLanguageText(mapHint.TextRecord), Is.EqualTo(mapHelp));
+                    Assert.That(surface.LiveMinimapReady, Is.True);
+                    Assert.That(surface.HasObjectiveHelpSubject, Is.False, "ordinary Cave entrance has a known empty aperture");
+                    var missingSubjectData = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasLargeMapHelp: true);
+                    for (var frame = 0; frame < 3; frame++)
+                        missingSubjectData.Advance(false, false, true, false, false);
+                    Assert.That(missingSubjectData.VisibleRow, Is.EqualTo(1), "an unavailable aperture does not admit row 4");
+                    var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                    void ToggleMap(bool expected)
+                    {
+                        var action = menus.Step(true, false, false, false, false, true);
+                        Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                            menus.PlayerInformationOpen, action), Is.True);
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                    }
+                    ToggleMap(true);
+                    for (var frame = 0; frame < 90 && !hint.Visible; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(1), "opening the actual map excludes the higher-priority row 4");
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 150 && hint.VisibleRow != 4; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(4));
+                    Assert.That(remaining.GetValue(hint), Is.EqualTo(49));
+                    PrepareCurrentFrameForOnGui();
+                    var beforeHint = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    var prior = ReadObjectivePixels(display);
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var mapPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(mapPresenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(mapPresenter), Is.EqualTo(mapHelp));
+                    var mapRaster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(mapPresenter);
+                    var mapArtwork = menu.ObjectiveForProfile("cave");
+                    Assert.That(mapRaster.BlendX + mapRaster.BlendWidth / 2, Is.EqualTo(320));
+                    Assert.That(mapRaster.BlendY + (mapRaster.BlendHeight - 14) / 2,
+                        Is.EqualTo(80 + mapArtwork.Corner.Height), "top-center help retains the source frame margin");
+                    var mapPixels = ReadObjectivePixels((RenderTexture)presenterType.GetField("output", flags).GetValue(mapPresenter));
+                    var colourIndex = mapArtwork.HelpTextColor * 3;
+                    var rgb = surface.FramePaletteRgb8;
+                    Assert.That(mapPixels, Does.Contain(new Color32(rgb[colourIndex], rgb[colourIndex + 1],
+                        rgb[colourIndex + 2], 255)), "selected English glyphs reach the indexed popup output");
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    Assert.That(remaining.GetValue(hint), Is.EqualTo(49));
+                    CollectionAssert.AreEqual(beforeHint, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    CollectionAssert.AreEqual(prior, ReadObjectivePixels(display), "help leaves the underlying camera frame intact");
+                    runtime.QualificationDriveGameRuntimeFrames(49);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(4));
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                    TestContext.WriteLine("Real Cave map input and selected row 4 indexed lifetime verified");
+                    return;
+                }
+
                 for (var frame = 0; frame < 90 && !hint.Visible; frame++)
                     runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(hint.VisibleRow, Is.EqualTo(1), "equal source priority retains row 1 first");
@@ -991,22 +1088,11 @@ namespace MagicCarpet.Native.Tests
                     runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((2, 64, 66)));
 
-                var surface = (CampaignPresentationSurface)Field("gameRuntimeNightSurface");
-                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
-                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
-                foreach (var camera in cameras)
-                {
-                    if (camera.targetTexture == null) camera.targetTexture = display;
-                    camera.Render();
-                }
-                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
-                window.minSize = new Vector2(640, 480);
-                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                PrepareCurrentFrameForOnGui();
                 var tick = runtime.GameRuntimeProductionIdentity.session.tick;
                 var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
                 var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
                 var plays = speech.PlayCount;
-                var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
                 Assert.That(remaining.GetValue(hint), Is.EqualTo(49), "the first visible draw consumes one pass");
                 window.SendEvent(new Event { type = EventType.Layout });
                 window.SendEvent(new Event { type = EventType.Repaint });
@@ -1042,8 +1128,8 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDisposeGameRuntimeProduction();
                 display.Release(); UnityEngine.Object.DestroyImmediate(display);
                 UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             }
-            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
         [Test]

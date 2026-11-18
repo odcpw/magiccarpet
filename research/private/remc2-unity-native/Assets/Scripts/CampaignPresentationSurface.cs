@@ -543,6 +543,7 @@ namespace MagicCarpet.Native
         internal bool HudReady { get; private set; }
         internal bool MinimapPanelReady { get; private set; }
         internal bool LiveMinimapReady { get; private set; }
+        internal bool HasObjectiveHelpSubject { get; private set; }
         private readonly List<(byte Row, ushort Subject, int X, int Y)> objectiveHelpMarks = new();
         internal IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> ObjectiveHelpMarks => objectiveHelpMarks;
         internal int EntitySurfaceCount => entities.Count;
@@ -608,7 +609,7 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
-            CollectObjectiveHelpMarks(minimapMarks, false);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, false);
             var palette = cache.ReadOutput("palette/paln.rgb8");
             EnsureWorld(presentedIndices, palette);
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
@@ -664,7 +665,7 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(session.DayIndexedFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
-            CollectObjectiveHelpMarks(minimapMarks, false);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, false);
             EnsureWorld(presentedIndices, session.DayIndexedFramePalette);
             if (cache.Level3Materials.minimap_symbols != null)
             {
@@ -767,7 +768,7 @@ namespace MagicCarpet.Native
             if (fullMap) MaterializeMapCross(presentedIndices, minimapTables, fullMapCrossColor);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick,
                 fullMap, minimapOverlay.RecordPixel);
-            CollectObjectiveHelpMarks(minimapMarks, fullMap);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, fullMap);
             EnsureWorld(fullMap ? presentedIndices : session.SceneFrameIndices, palette);
             if (!fullMap)
             {
@@ -921,7 +922,8 @@ namespace MagicCarpet.Native
             return written;
         }
 
-        private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapMark[] marks, bool fullMap)
+        private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapEntity[] entities,
+            NativeSim.CampaignMinimapMark[] marks, bool fullMap)
         {
             objectiveHelpMarks.Clear();
             var scale = fullMap ? 1 : 2;
@@ -935,6 +937,25 @@ namespace MagicCarpet.Native
                 // center is admitted, even during the three invisible pulse frames.
                 if (ObjectiveMarkInsideAperture(x, y, minimapTables, fullMap))
                     objectiveHelpMarks.Add((mark.helpSelector, mark.subjectEntityIndex, x * 2, y * 2));
+            }
+            // sub_885E0 also sets the Type8 presence bit for entity selector 83.
+            // Its unshifted sprite anchor uses the entity aperture without the
+            // three-pixel objective-rectangle margin.
+            HasObjectiveHelpSubject = objectiveHelpMarks.Count != 0;
+            if (HasObjectiveHelpSubject || fullMap) return;
+            foreach (var entity in entities)
+            {
+                if (entity.helpSelector != 0x53 || entity.visible == 0 ||
+                    entity.x < 0 || entity.y < 0) continue;
+                var x = entity.x / scale;
+                var y = entity.y / scale;
+                if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+                var sourceY = y * 2;
+                var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                var halfSpan = (64 * minimapTables[0x14300 + phase * 4]) >> 8;
+                if (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan) continue;
+                HasObjectiveHelpSubject = true;
+                return;
             }
         }
 
@@ -1347,6 +1368,7 @@ namespace MagicCarpet.Native
             HudReady = false;
             MinimapPanelReady = false;
             LiveMinimapReady = false;
+            HasObjectiveHelpSubject = false;
             objectiveHelpMarks.Clear();
         }
 

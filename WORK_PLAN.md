@@ -851,6 +851,18 @@ while installed sound 49 playback and natural release still need that route
 or an ordinary acquired and funded Cave cast. Existing Cave door and drip
 captures are separate evidence. Keep `mc-oi6.8` open.
 
+Ordinary English large-map help now binds source row 4 to record 289,
+the current indexed minimap subject state and the normal closed-map
+poll. Unavailable subject data cannot select it. Actual Cave4 cold replay
+and normal map actions verified selection, rendered text, dismissal
+cadence and replay purity. The existing Night row 2 check passed on the
+same files; the unchanged Day3 blink-hidden subject check passed in the
+first run. The default Night start itself has a source subject and cannot
+serve as the positive row 4 case. Previous verified cache receipts remain
+admitted. Evidence: `generated/large-map-help-20261118.zeY5ft6H/`.
+Other source help rows, tutorial and alternate-language acceptance remain
+open under `mc-oi6.6`.
+
 ### Objective popup closure, Night music and collector retirement — 2026-11-18
 
 Canonical `c3e5cd77` is installed in Original `build-nstm28wl` with native

@@ -101,21 +101,24 @@ namespace MagicCarpet.Native
             internal int AnchorY { get; private set; }
             internal bool SpellVisible { get; private set; }
             internal bool HasObjectiveMarkHelp { get; }
+            internal bool HasLargeMapHelp { get; }
             internal bool PollsObjectiveMarkHelp =>
                 HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
             internal ushort[] VisibleSpellRecords { get; private set; }
             internal int VisibleSpellHighlight { get; private set; } = -1;
 
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
-                bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false)
+                bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
+                HasLargeMapHelp = hasLargeMapHelp;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
                 var ids = new List<int> { 1, 3, 40, 41, 42, 69, 70, 71,
                     72, 73, 74, 75, 76, 77, 78, 79, 80, 85 };
                 if (hasMinimapHelp) ids.Insert(1, 2);
+                if (hasLargeMapHelp) ids.Insert(ids.IndexOf(40), 4);
                 if (hasObjectiveMarkHelp) ids.InsertRange(ids.IndexOf(85), new[] { 81, 82 });
                 rows = new RowState[ids.Count];
                 for (var index = 0; index < ids.Count; index++) rows[index] = new RowState(rowFor(ids[index]));
@@ -158,7 +161,7 @@ namespace MagicCarpet.Native
                 bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
                 bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> objectiveMarks = null,
-                ushort nearestObjectiveSubject = 0)
+                ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -220,6 +223,7 @@ namespace MagicCarpet.Native
                                 var eligible = row.Binding.Row switch {
                                     1 or 2 => true,
                                     3 => wallContactCounter != 0,
+                                    4 => !mapOpen && hasObjectiveHelpSubject == false,
                                     41 => leftUnavailable || rightUnavailable,
                                     81 => hasFixedObjectiveMark,
                                     82 => nearestObjectiveSubject != 0,
@@ -718,7 +722,7 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("Missing source language record 329");
             gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
             gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
-                languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp);
+                languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -753,6 +757,7 @@ namespace MagicCarpet.Native
             if (hint == null) return;
             IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> marks = null;
             ushort nearest = 0;
+            bool? hasObjectiveHelpSubject = null;
             if (hint.HasObjectiveMarkHelp && showHelp && !paused && !suppressed && minimapEnabled)
             {
                 var surface = gameRuntimeSecretSurface ?? level3PresentationSurface ??
@@ -762,11 +767,16 @@ namespace MagicCarpet.Native
                 {
                     marks = surface.ObjectiveHelpMarks;
                     if (hint.PollsObjectiveMarkHelp)
+                    {
                         nearest = NearestObjectiveHelpSubject(marks);
+                        if (hint.HasLargeMapHelp && surface.LiveMinimapReady)
+                            hasObjectiveHelpSubject = surface.HasObjectiveHelpSubject;
+                    }
                 }
             }
             hint.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
-                wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen, marks, nearest);
+                wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen,
+                marks, nearest, hasObjectiveHelpSubject);
         }
 
         private ushort NearestObjectiveHelpSubject(
