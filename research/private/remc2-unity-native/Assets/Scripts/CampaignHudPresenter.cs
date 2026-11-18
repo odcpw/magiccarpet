@@ -109,6 +109,7 @@ namespace MagicCarpet.Native
             internal bool HasLargeMapHelp { get; }
             internal bool HasFireballHelp { get; }
             internal bool HasPossessionHelp { get; }
+            internal bool HasLooseManaHelp { get; }
             internal bool PollsObjectiveMarkHelp =>
                 HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
             internal ushort[] VisibleSpellRecords { get; private set; }
@@ -119,13 +120,14 @@ namespace MagicCarpet.Native
                 bool hasLowLifeHelp = false, bool hasIdleHelp = false, bool hasVitalsHelp = false,
                 bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false,
                 bool hasFireballHelp = false, Func<sbyte> sourceObjectiveStageKind = null,
-                bool hasPossessionHelp = false)
+                bool hasPossessionHelp = false, bool hasLooseManaHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
                 HasLargeMapHelp = hasLargeMapHelp;
                 HasFireballHelp = hasFireballHelp;
                 HasPossessionHelp = hasPossessionHelp;
+                HasLooseManaHelp = hasLooseManaHelp;
                 this.sourceObjectiveStageKind = sourceObjectiveStageKind;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
@@ -145,6 +147,7 @@ namespace MagicCarpet.Native
                 if (hasPossessionHelp)
                     foreach (var row in new[] { 9, 11, 21 })
                         ids.Insert(ids.FindIndex(later => later > row), row);
+                if (hasLooseManaHelp) ids.Insert(ids.FindIndex(row => row > 18), 18);
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
                 if (hasObjectiveMarkHelp) ids.InsertRange(ids.IndexOf(85), new[] { 81, 82 });
@@ -207,7 +210,7 @@ namespace MagicCarpet.Native
                 bool? fireballSpellEnabled = null, int? fireballHandAnchorX = null,
                 bool? possessionSpellEnabled = null, int? possessionHandAnchorX = null,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> entityMarks = null,
-                ushort nearestEntitySubject = 0)
+                ushort nearestEntitySubject = 0, ushort nearestManaSubject = 0)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -230,9 +233,9 @@ namespace MagicCarpet.Native
                 }
                 if (remaining != 0)
                 {
-                    if (currentRow.Binding.Row is 21 or 81 or 82)
+                    if (currentRow.Binding.Row is 18 or 21 or 81 or 82)
                     {
-                        var entityHint = currentRow.Binding.Row == 21;
+                        var entityHint = currentRow.Binding.Row is 18 or 21;
                         if (!RefreshMinimapHelpAnchor(entityHint ? entityMarks : objectiveMarks,
                             entityHint ? entityHelpSubject : objectiveHelpSubject))
                         {
@@ -289,6 +292,7 @@ namespace MagicCarpet.Native
                                     12 => hasCastleSpellWithoutCastle && !mapOpen,
                                     13 => hasCastleSpellWithoutCastle && castleHandAnchorX == null,
                                     15 or 16 => idleDraws > 100,
+                                    18 => nearestManaSubject != 0,
                                     21 => nearestEntitySubject != 0,
                                     36 or 37 => !mapOpen,
                                     38 => leftAssigned && !mapOpen,
@@ -334,6 +338,8 @@ namespace MagicCarpet.Native
                         }
                         else if (currentRow.Binding.Row == 82)
                             objectiveHelpSubject = nearestObjectiveSubject;
+                        else if (currentRow.Binding.Row == 18)
+                            entityHelpSubject = nearestManaSubject;
                         else if (currentRow.Binding.Row == 21)
                             entityHelpSubject = nearestEntitySubject;
                         remaining = currentRow.Binding.Duration;
@@ -814,7 +820,8 @@ namespace MagicCarpet.Native
                 languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp,
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
                 languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp,
-                languageCache.HasFireballHelp, ReadCurrentHelpObjectiveStageKind, languageCache.HasPossessionHelp);
+                languageCache.HasFireballHelp, ReadCurrentHelpObjectiveStageKind, languageCache.HasPossessionHelp,
+                languageCache.HasLooseManaHelp);
         }
 
         private sbyte ReadCurrentHelpObjectiveStageKind()
@@ -860,6 +867,7 @@ namespace MagicCarpet.Native
             IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> entityMarks = null;
             ushort nearest = 0;
             ushort nearestEntity = 0;
+            ushort nearestMana = 0;
             bool? hasObjectiveHelpSubject = null;
             if (hint.HasObjectiveMarkHelp && showHelp && !paused && !suppressed && minimapEnabled)
             {
@@ -876,7 +884,11 @@ namespace MagicCarpet.Native
                         NativeSim.CampaignEntitySnapshot[] entities = null;
                         nearest = NearestMinimapHelpSubject(marks, 82, ref entities);
                         if (entityMarks != null)
+                        {
                             nearestEntity = NearestMinimapHelpSubject(entityMarks, 21, ref entities);
+                            if (hint.HasLooseManaHelp)
+                                nearestMana = NearestMinimapHelpSubject(entityMarks, 18, ref entities);
+                        }
                         if (hint.HasLargeMapHelp && surface.LiveMinimapReady)
                             hasObjectiveHelpSubject = surface.HasObjectiveHelpSubject;
                     }
@@ -911,7 +923,7 @@ namespace MagicCarpet.Native
                 hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
                 !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX,
                 fireballSpellEnabled, fireballHandAnchorX, possessionSpellEnabled, possessionHandAnchorX,
-                entityMarks, nearestEntity);
+                entityMarks, nearestEntity, nearestMana);
         }
 
         private ushort NearestMinimapHelpSubject(
@@ -920,14 +932,29 @@ namespace MagicCarpet.Native
         {
             ushort nearest = 0;
             var distance = int.MaxValue;
+            NativeSim.ManaSphereSnapshot[] spheres = null;
             var player = gameRuntimeCampaignSnapshot.value.player_pose;
             foreach (var mark in marks)
             {
                 if (mark.Row != row || mark.Subject == 0) continue;
-                entities ??= campaignSession.Entities();
-                var entity = entities[mark.Subject];
-                var dx = unchecked((short)(entity.x - player.x));
-                var dy = unchecked((short)(entity.y - player.y));
+                // A live model-39 sphere has an authoritative moving pose
+                // outside the raw entity packet used by other map subjects.
+                if (row == 18) spheres ??= campaignSession.ManaSpheres();
+                var sphere = spheres == null ? default : Array.Find(spheres,
+                    candidate => candidate.sourceEntityIndex == mark.Subject);
+                ushort x, y;
+                if (sphere.sourceEntityIndex != 0)
+                {
+                    (x, y) = (sphere.x, sphere.y);
+                }
+                else
+                {
+                    entities ??= campaignSession.Entities();
+                    var entity = entities[mark.Subject];
+                    (x, y) = (entity.x, entity.y);
+                }
+                var dx = unchecked((short)(x - player.x));
+                var dy = unchecked((short)(y - player.y));
                 var current = (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
                 if (current >= distance) continue;
                 distance = current;
@@ -980,10 +1007,10 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellPriorPixels = null;
                 gameRuntimeSpellPriorGeneration = 0;
                 var helpText = gameRuntimeMenu.GameplayLanguageText(helpRow.TextRecord);
-                if (helpRow.Row is 21 or 82)
+                if (helpRow.Row is 18 or 21 or 82)
                     gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen,
-                        entityAnchor: helpRow.Row == 21);
+                        entityAnchor: helpRow.Row is 18 or 21);
                 else if (helpRow.Row is 2 or 5 or 36 or 37 or 38 or 39 or 41 ||
                     (helpRow.Row is 10 or 11 or 12 && gameRuntimeManaHint.AnchorY == 32))
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,

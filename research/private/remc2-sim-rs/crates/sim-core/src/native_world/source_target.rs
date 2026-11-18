@@ -221,13 +221,24 @@ impl super::Mc2Simulation {
                         .ok_or_else(|| format!("current balloon {slot} lost its minimap owner"))?;
                     (row.source_byte_3e, row.chain_previous_slot, row.parent_entity_index, 0)
                 }
+                Kind::ManaSphere => {
+                    let sphere = arena
+                        .economy
+                        .spheres
+                        .iter()
+                        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+                        .ok_or_else(|| format!("current mana sphere {slot} lost its minimap owner"))?;
+                    // Model 39 uses the current source player link below to
+                    // distinguish loose mana from a player-owned marker.
+                    (sphere.phase, 0, 0, 0)
+                }
                 _ => continue,
             };
             let view = read(arena, context, slot)?
                 .ok_or_else(|| format!("current class5 {slot} lost its source view"))?;
             let (class, action) = arena.economy.live_arena_class_action(slot, kind)
                 .ok_or_else(|| format!("current class5 {slot} lost its source action"))?;
-            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3)) {
+            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3) | (10, 39)) {
                 return Err(format!("current owner {slot} changed class/model during minimap projection"));
             }
             let player_link = rival_target_relation(arena, context, slot, kind);

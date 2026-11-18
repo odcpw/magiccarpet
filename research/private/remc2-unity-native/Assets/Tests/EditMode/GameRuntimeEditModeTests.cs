@@ -1457,7 +1457,7 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase(6, 4, "render-completion-20261117/incoming-cave4.mcs", false, "not_acquired")]
         [TestCase(8, 6, "hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs", true, "not_acquired")]
-        [TestCase(0, 3, "low-health-help-20261118.bc502sO6/day3-health-recovered.mcs", true, "ready")]
+        [TestCase(0, 3, "adaptive-day-night-loop-20261118/day-entrance-paused.mcs", true, "ready")]
         public void ProductionSpellSearchHelpUsesCurrentInventoryOnFullMap(int row, int packageCount,
             string replayPath, bool hasSpell, string castleAvailability)
         {
@@ -1513,9 +1513,11 @@ namespace MagicCarpet.Native.Tests
                 // Day 3's full map also admits the priority-5 objective
                 // reminder. With an unassigned Castle, row 13 also recurs.
                 var possessionHelp = menu.LocaleCache.HasPossessionHelp;
+                var looseManaHelp = menu.LocaleCache.HasLooseManaHelp;
                 var extraIntervals = menu.LocaleCache.HasCastleSpellHelp ? 6 : 2;
                 // Both Cave full maps also admit one row21 building cue.
                 var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) :
+                    row == 8 && looseManaHelp ? 350 + 3 * (50 + 20) :
                     possessionHelp ? 350 + 50 + 20 : 350;
                 for (var frame = 0; frame < frameLimit; frame++)
                 {
@@ -1539,8 +1541,9 @@ namespace MagicCarpet.Native.Tests
                 var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
                 TestContext.WriteLine($"Full-map help draws {chronology}. Final tick {native.Tick}.");
                 if (possessionHelp && row != 0)
-                    CollectionAssert.AreEqual(new[] { 21, 1, 15, 16, 2, row }, drawn.Select(item => item.Row),
-                        "the source building cue precedes the stationary and search cues");
+                    CollectionAssert.AreEqual(row == 8 && looseManaHelp
+                        ? new[] { 18, 21, 15, 16, 18, 1, 2, 8 } : new[] { 21, 1, 15, 16, 2, row },
+                        drawn.Select(item => item.Row), "the live source markers precede the search cues");
                 Assert.That(drawn.Any(item => item.Row == 2), Is.True,
                     $"the earlier equal-priority source prompt precedes spell search. Draws {chronology}");
                 if (row == 0)
@@ -1549,6 +1552,7 @@ namespace MagicCarpet.Native.Tests
                         $"the real objective reminder preempts later polls more than once. Draws {chronology}");
                     Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
                         $"an actual open poll skips both rows while Castle remains acquired. Draws {chronology}");
+                    AssertSourceHelpWouldWin(hint, 8, 0, menus.MapOpen, runtime.GameRuntimeProductionIdentity.display_settings.minimap);
                     return;
                 }
                 Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((row, (object)49)));
@@ -1607,6 +1611,37 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        private static void AssertSourceHelpWouldWin(MagicCarpetRuntime.ManaHelpHint hint,
+            int refusedRow, int winnerRow, bool mapOpen, bool minimapEnabled)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            var rows = ((Array)hint.GetType().GetField("rows", flags).GetValue(hint)).Cast<object>();
+            (OwnerCampaignMenuCache.GameplayHelpBinding Binding, int Priority, int Overdue) Read(int id)
+            {
+                var row = rows.Single(candidate => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                    candidate.GetType().GetField("Binding", flags).GetValue(candidate)).Row == id);
+                var type = row.GetType();
+                var binding = (OwnerCampaignMenuCache.GameplayHelpBinding)type.GetField("Binding", flags).GetValue(row);
+                return (binding, (int)type.GetField("Priority", flags).GetValue(row),
+                    (int)type.GetField("Age", flags).GetValue(row) - binding.AgeThreshold);
+            }
+
+            Assert.That(hint.VisibleRow, Is.EqualTo(winnerRow));
+            var refused = Read(refusedRow);
+            Assert.That(refused.Overdue, Is.Positive);
+            Assert.That(mapOpen && (refused.Binding.Flags & 0x20) != 0, Is.False);
+            Assert.That(!minimapEnabled && (refused.Binding.Flags & 0x2ff) != 0, Is.False);
+            if (winnerRow == 0) return;
+            var winner = Read(winnerRow);
+            Assert.That(refused.Priority > winner.Priority ||
+                refused.Priority == winner.Priority && (refused.Overdue > winner.Overdue ||
+                    refused.Overdue == winner.Overdue && refusedRow < winnerRow), Is.True,
+                $"eligible row{refusedRow} ({refused.Priority}/{refused.Overdue}) would beat row{winnerRow} ({winner.Priority}/{winner.Overdue})");
+            TestContext.WriteLine($"Refused row{refusedRow} priority/overdue {refused.Priority}/{refused.Overdue}; " +
+                $"actual row{winnerRow} {winner.Priority}/{winner.Overdue}; map {mapOpen}, minimap {minimapEnabled}.");
+        }
+
         [TestCase(false, false)]
         [TestCase(true, false)]
         [TestCase(true, true)]
@@ -1635,6 +1670,7 @@ namespace MagicCarpet.Native.Tests
                 var lifetime = hintType.GetField("remaining", flags);
                 var pollDelay = hintType.GetField("pollDelay", flags);
                 var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var looseManaHelp = menu.LocaleCache.HasLooseManaHelp;
                 EngineSessionTransport.CampaignSnapshotValue Snapshot() => transport.GameRuntimeCampaignSnapshot().value;
                 void CheckSource(short right, int ownedCastles)
                 {
@@ -1674,8 +1710,13 @@ namespace MagicCarpet.Native.Tests
                     // Fireball help from the marker close adds an interval
                     // and can give the marker time to become overdue again.
                     var intervals = menu.LocaleCache.HasPossessionHelp ? 6 : menu.LocaleCache.HasFireballHelp ? 4 : 2;
-                    for (var frame = 0; frame < 170 + intervals * (50 + 20) && hint.VisibleRow != 1; frame++)
+                    var decisiveRow = looseManaHelp ? 21 : 1;
+                    for (var frame = 0; frame < 170 + intervals * (50 + 20) && hint.VisibleRow != decisiveRow; frame++)
                     {
+                        if (looseManaHelp && frame % 80 == 78)
+                            transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                        if (looseManaHelp && frame > 0 && frame % 80 == 0)
+                            transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
                         runtime.QualificationDriveGameRuntimeFrames(1);
                         Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13));
                         if (hint.VisibleRow != 0 && (drawn.Count == 0 || drawn[drawn.Count - 1].Row != hint.VisibleRow))
@@ -1683,10 +1724,15 @@ namespace MagicCarpet.Native.Tests
                     }
                     var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
                     TestContext.WriteLine($"Owned Castle help draws {chronology}. Final tick {native.Tick}.");
-                    Assert.That(drawn.Any(item => item.Row == 16), Is.True, "the earlier idle steering reminder retains priority");
-                    Assert.That(hint.VisibleRow, Is.EqualTo(1),
+                    if (!looseManaHelp)
+                        Assert.That(drawn.Any(item => item.Row == 16), Is.True, "the earlier idle steering reminder retains priority");
+                    Assert.That(hint.VisibleRow, Is.EqualTo(decisiveRow),
                         $"a lower-priority poll wins after both Castle cues are refused. Draws {chronology}");
                     CheckSource(1, 1);
+                    Assert.That(menus.MapOpen, Is.False);
+                    var minimap = runtime.GameRuntimeProductionIdentity.display_settings.minimap;
+                    foreach (var refused in new[] { 12, 13 })
+                        AssertSourceHelpWouldWin(hint, refused, decisiveRow, menus.MapOpen, minimap);
                     return;
                 }
 
@@ -1765,6 +1811,7 @@ namespace MagicCarpet.Native.Tests
 
                 ToggleMap(true);
                 var seenMinimap = false;
+                var buildingProvesRefusal = assignRight && looseManaHelp;
                 var frameLimit = menu.LocaleCache.HasPossessionHelp ? 500 + 2 * (50 + 20) : 500;
                 for (var frame = 0; frame < frameLimit; frame++)
                 {
@@ -1773,21 +1820,32 @@ namespace MagicCarpet.Native.Tests
                     seenMinimap |= hint.VisibleRow == 2;
                     if (assignRight) Assert.That(hint.VisibleRow, Is.Not.EqualTo(13));
                     if ((!assignRight && hint.VisibleRow == 13) ||
-                        (assignRight && seenMinimap && (int)pollDelay.GetValue(hint) < 0)) break;
+                        (buildingProvesRefusal && hint.VisibleRow == 21) ||
+                        (assignRight && !buildingProvesRefusal && seenMinimap && (int)pollDelay.GetValue(hint) < 0)) break;
                 }
                 if (assignRight)
                 {
-                    Assert.That(seenMinimap, Is.True);
-                    Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
-                        "the assigned Castle spell suppresses the unassigned-hand prompt at an open full-map poll");
+                    if (buildingProvesRefusal)
+                    {
+                        CheckSource(2, 0);
+                        Assert.That(menus.MapOpen, Is.True);
+                        AssertSourceHelpWouldWin(hint, 13, 21, menus.MapOpen,
+                            runtime.GameRuntimeProductionIdentity.display_settings.minimap);
+                    }
+                    else
+                    {
+                        Assert.That(seenMinimap, Is.True);
+                        Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
+                            "the assigned Castle spell suppresses the unassigned-hand prompt at an open full-map poll");
+                    }
                 }
                 else PaintAndExpire(13, 298, "Press control for spell menu");
                 ToggleMap(false);
                 var intervening = new System.Collections.Generic.List<(int Row, ulong Tick)>();
                 // The assigned case now encounters one extra natural
                 // Fireball cue after the full-map building guidance.
-                var fireballPrecedesCastle = assignRight && menu.LocaleCache.HasPossessionHelp;
-                var castleLimit = fireballPrecedesCastle ? 110 + 50 + 20 : 110;
+                var fireballPrecedesCastle = assignRight && menu.LocaleCache.HasPossessionHelp && !looseManaHelp;
+                var castleLimit = fireballPrecedesCastle || buildingProvesRefusal ? 110 + 50 + 20 : 110;
                 for (var frame = 0; frame < castleLimit && hint.VisibleRow != 12; frame++)
                 {
                     runtime.QualificationDriveGameRuntimeFrames(1);
@@ -1800,6 +1858,8 @@ namespace MagicCarpet.Native.Tests
                     TestContext.WriteLine($"Assigned Castle world draws {order}.");
                     Assert.That(intervening.Any(item => item.Row == 10), Is.True, "the real Fireball cue retains its priority");
                 }
+                if (buildingProvesRefusal)
+                    TestContext.WriteLine($"Assigned Castle world draws {string.Join(", ", intervening.Select(item => $"{item.Row}@{item.Tick}"))}.");
                 CheckSource(assignRight ? (short)2 : (short)1, 0);
                 PaintAndExpire(12, 297, "Use castle spell to build a safe haven", assignRight ? 600 : null);
             }
@@ -1877,7 +1937,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(menu.GameplayLanguageText(search.TextRecord), Is.EqualTo("Search for fireball spell"));
                 ToggleMap(true);
                 Assert.That(Pending(), Is.False);
-                for (var frame = 0; frame < 80 && hint.VisibleRow != 82; frame++)
+                var objectiveLimit = menu.LocaleCache.HasLooseManaHelp ? 80 + 50 + 20 : 80;
+                for (var frame = 0; frame < objectiveLimit && hint.VisibleRow != 82; frame++)
                 {
                     Draw();
                     Assert.That(Pending(), Is.False);
@@ -2001,7 +2062,63 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase(false)]
         [TestCase(true)]
-        public void ProductionPossessionHelpFollowsTheOrdinaryBuildingMarkerClose(bool mapMasksCue)
+        public void ProductionPossessionHelpFollowsTheOrdinaryBuildingMarkerClose(bool mapMasksCue) =>
+            CheckProductionPossessionMapCue(21, mapMasksCue);
+
+        [Test]
+        public void ProductionPossessionHelpFollowsAnOrdinaryLooseManaMarkerClose() =>
+            CheckProductionPossessionMapCue(18, mapMasksCue: false);
+
+        [Test]
+        public void ProductionLooseManaMarkerLosesItsHelpWhenActuallyClaimed()
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 loose-mana claim");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                const ushort subject = 259;
+                NativeSim.CampaignMinimapEntity Marker() => native.MinimapEntities(native.Tick, native.MinimapState(native.Tick))
+                    .Single(mark => mark.subjectEntityIndex == subject);
+                NativeSim.ManaSphereSnapshot Sphere() => native.ManaSpheres().Single(sphere => sphere.sourceEntityIndex == subject);
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                Assert.That((Sphere().active, Sphere().ownerEntityIndex, Sphere().mana, Marker().helpSelector),
+                    Is.EqualTo(((byte)1, (ushort)0, 500, (byte)18)));
+                Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 18 && mark.Subject == subject), Is.True);
+                Assert.That(native.DayHudState(native.Tick).right.rawSpellSelector, Is.EqualTo(1));
+                // The retained pose can reach this sphere with a single
+                // ordinary right-hand Possession shot and neutral turns.
+                transport.GameRuntimeCampaignStep(0, 0, 0x20, unchecked((ushort)(-165)), 16);
+                for (var frame = 0; frame < 12; frame++)
+                    transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var sphere = Sphere();
+                var marker = Marker();
+                Assert.That((sphere.active, sphere.ownerEntityIndex, sphere.mana), Is.EqualTo(((byte)1, (ushort)252, 500)));
+                Assert.That((marker.visible, marker.helpSelector), Is.EqualTo(((byte)1, (byte)0)),
+                    "claimed source word94 retains the owned dot and removes its loose-mana hint");
+                Assert.That(surface.EntityHelpMarks.Any(mark => mark.Subject == subject), Is.False);
+                TestContext.WriteLine($"Live model39 slot{subject} retained its owned map dot and lost row18 at tick {native.Tick}.");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        private static void CheckProductionPossessionMapCue(int sourceRow, bool mapMasksCue)
         {
             var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
             var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
@@ -2089,36 +2206,61 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo((true, "right", (short)1)));
                 Assert.That(surface, Is.Not.Null);
                 ToggleMap(true);
-                for (var frame = 0; frame < 430 && hint.VisibleRow != 21; frame++)
+                var looseManaPrecedesBuilding = sourceRow == 21 && menu.LocaleCache.HasLooseManaHelp;
+                var frameLimit = looseManaPrecedesBuilding ? 430 + 4 * (50 + 20) : 430;
+                var sawLooseMana = false;
+                for (var frame = 0; frame < frameLimit && hint.VisibleRow != sourceRow; frame++)
                 {
+                    var wasPending = Pending();
                     Draw();
-                    Assert.That(Pending(), Is.False, "raw map markers do not request Possession by themselves");
+                    if (!wasPending && Pending())
+                    {
+                        Assert.That(looseManaPrecedesBuilding, Is.True);
+                        Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((18, (object)0)),
+                            "only the real preceding sphere popup closure requests Possession");
+                        sawLooseMana = true;
+                    }
                 }
-                Assert.That(hint.VisibleRow, Is.EqualTo(21));
-                Assert.That(surface.EntityHelpMarks.Count, Is.GreaterThan(1), "the real aperture has competing building subjects");
+                Assert.That(hint.VisibleRow, Is.EqualTo(sourceRow));
+                Assert.That(Pending(), Is.False);
+                if (looseManaPrecedesBuilding) Assert.That(sawLooseMana, Is.True);
+                var candidates = surface.EntityHelpMarks.Where(mark => mark.Row == sourceRow).ToArray();
+                Assert.That(candidates.Length, Is.GreaterThan(1), "the real aperture has competing map subjects");
                 var entities = native.Entities();
                 var player = transport.GameRuntimeCampaignSnapshot().value.player_pose;
+                var spheres = sourceRow == 18 ? native.ManaSpheres().ToDictionary(sphere => sphere.sourceEntityIndex) : null;
                 int Distance(ushort slot)
                 {
-                    var dx = unchecked((short)(entities[slot].x - player.x));
-                    var dy = unchecked((short)(entities[slot].y - player.y));
+                    var (x, y) = spheres != null && spheres.TryGetValue(slot, out var sphere) ?
+                        (sphere.x, sphere.y) : (entities[slot].x, entities[slot].y);
+                    var dx = unchecked((short)(x - player.x));
+                    var dy = unchecked((short)(y - player.y));
                     return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
                 }
-                var nearest = surface.EntityHelpMarks.Where(mark => mark.Row == 21)
-                    .OrderBy(mark => Distance(mark.Subject)).First();
+                var nearest = candidates.OrderBy(mark => Distance(mark.Subject)).First();
                 var subject = (ushort)subjectField.GetValue(hint);
                 Assert.That(subject, Is.EqualTo(nearest.Subject), "first source candidate wins equal floored distances");
-                CheckIndexedCue(21, 309, "Possess this building to increase your spells mana", nearest.X, nearest.Y);
+                if (sourceRow == 18)
+                {
+                    Assert.That(subject, Is.EqualTo(259));
+                    var sphere = spheres[subject];
+                    Assert.That((sphere.ownerEntityIndex, sphere.active, sphere.mana), Is.EqualTo(((ushort)0, (byte)1, 500)));
+                    var binding = menu.GameplayHelpForRow(18);
+                    Assert.That((binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((0x400, 50, 160, 5)));
+                    CheckIndexedCue(18, 306, "Possess This Mana", nearest.X, nearest.Y);
+                }
+                else CheckIndexedCue(21, 309, "Possess this building to increase your spells mana", nearest.X, nearest.Y);
                 for (var frame = 0; frame < 48; frame++)
                 {
                     Draw();
-                    var current = surface.EntityHelpMarks.Single(mark => mark.Row == 21 && mark.Subject == subject);
+                    var current = surface.EntityHelpMarks.Single(mark => mark.Row == sourceRow && mark.Subject == subject);
                     Assert.That((hint.VisibleRow, subjectField.GetValue(hint), hint.AnchorX, hint.AnchorY, Pending()),
-                        Is.EqualTo((21, (object)subject, current.X, current.Y, false)));
+                        Is.EqualTo((sourceRow, (object)subject, current.X, current.Y, false)));
                 }
                 Draw();
                 Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending(), fireball.GetValue(hint)),
-                    Is.EqualTo((21, (object)0, true, (object)false)));
+                    Is.EqualTo((sourceRow, (object)0, true, (object)false)));
                 var closedAt = native.Tick;
                 if (mapMasksCue)
                 {
@@ -2132,7 +2274,7 @@ namespace MagicCarpet.Native.Tests
                         Assert.That(Pending(), Is.False);
                     }
                     Assert.That(hint.VisibleRow, Is.EqualTo(12), "a real post-map world poll proves the masked cue does not return");
-                    TestContext.WriteLine($"Row21 subject {subject} closed at {closedAt}; full-map poll consumed Possession before row12 at {native.Tick}.");
+                    TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; full-map poll consumed Possession before row12 at {native.Tick}.");
                     return;
                 }
 
@@ -2144,7 +2286,7 @@ namespace MagicCarpet.Native.Tests
                 }
                 CheckIndexedCue(11, 296, "Use possession spell to possess mana", 600, 32);
                 Assert.That(Pending(), Is.False);
-                TestContext.WriteLine($"Row21 subject {subject} closed at {closedAt}; row11 painted at {native.Tick}.");
+                TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; row11 painted at {native.Tick}.");
                 runtime.QualificationDriveGameRuntimeFrames(49);
                 Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((11, false)));
                 Draw();

@@ -288,6 +288,7 @@ namespace MagicCarpet.Native
                         4303 => "472d70de35f78b3545fcfeaa864a29ea4a8706583b6eb400a33e5b2451a2efa1",
                         4525 => "5b18ce4a633f19ebc951d387cc2669553767c316d18f623cf60ac3f44e7a01db",
                         4857 => "6f4cedce621770af8f0a1ea92cf3cc9e79d6375ebe9057899be1ea2516a2a1be",
+                        4967 => "a1262ada4fb8bf14f8d0e7077748636ea4190b4773d3dcee810fff36eee585c2",
                         _ => throw new InvalidDataException("source gameplay help receipt is incomplete")
                     };
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
@@ -313,12 +314,13 @@ namespace MagicCarpet.Native
                     }
                     if (helpReceipt.bytes >= 3406) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 15, 16 });
                     if (helpReceipt.bytes >= 3630) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 36, 37 });
-                    if (helpReceipt.bytes == 4857)
+                    if (helpReceipt.bytes >= 4857)
                     {
                         sourceRows.Insert(sourceRows.IndexOf(10), 9);
                         sourceRows.Insert(sourceRows.IndexOf(12), 11);
                         sourceRows.Insert(sourceRows.IndexOf(36), 21);
                     }
+                    if (helpReceipt.bytes == 4967) sourceRows.Insert(sourceRows.IndexOf(21), 18);
                     if (helpReceipt.bytes >= 3856) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 38, 39 });
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
@@ -328,7 +330,7 @@ namespace MagicCarpet.Native
                     {
                         var row = help.rows[index];
                         var expectedRow = sourceRows[index];
-                        var expectedKind = expectedRow <= 16 ? 1 : expectedRow == 21 ? 2 : expectedRow <= 37 ? 4 : expectedRow <= 42 ? 5 : expectedRow <= 71 ? 6 :
+                        var expectedKind = expectedRow <= 16 ? 1 : expectedRow is 18 or 21 ? 2 : expectedRow <= 37 ? 4 : expectedRow <= 42 ? 5 : expectedRow <= 71 ? 6 :
                             expectedRow <= 80 ? 7 : expectedRow <= 82 ? 8 : expectedRow == 85 ? 10 : 11;
                         if (row == null || row.row != expectedRow || row.kind != expectedKind ||
                             row.text_record < 0 || row.text_record >= 471 ||
@@ -611,6 +613,7 @@ namespace MagicCarpet.Native
         internal bool HasFireballHelp => gameplayHelp.ContainsKey(7) && gameplayHelp.ContainsKey(10);
         internal bool HasPossessionHelp => gameplayHelp.ContainsKey(9) && gameplayHelp.ContainsKey(11) &&
             gameplayHelp.ContainsKey(21);
+        internal bool HasLooseManaHelp => gameplayHelp.ContainsKey(18);
         internal bool HasObjectiveMarkHelp => gameplayHelp.ContainsKey(81) && gameplayHelp.ContainsKey(82);
 
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
