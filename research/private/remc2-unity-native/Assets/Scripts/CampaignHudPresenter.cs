@@ -111,7 +111,7 @@ namespace MagicCarpet.Native
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
                 bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false,
                 bool hasLowLifeHelp = false, bool hasIdleHelp = false, bool hasVitalsHelp = false,
-                bool hasCastHelp = false)
+                bool hasCastHelp = false, bool hasSpellSearchHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -123,6 +123,7 @@ namespace MagicCarpet.Native
                 if (hasMinimapHelp) ids.Insert(1, 2);
                 if (hasLargeMapHelp) ids.Insert(ids.IndexOf(40), 4);
                 if (hasLowLifeHelp) ids.Insert(ids.IndexOf(40), 5);
+                if (hasSpellSearchHelp) ids.InsertRange(ids.IndexOf(40), new[] { 6, 8 });
                 if (hasIdleHelp) ids.InsertRange(ids.IndexOf(40), new[] { 15, 16 });
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
@@ -177,7 +178,8 @@ namespace MagicCarpet.Native
                 bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> objectiveMarks = null,
                 ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null,
-                bool lowLife = false, bool leftAssigned = false, bool rightAssigned = false)
+                bool lowLife = false, bool leftAssigned = false, bool rightAssigned = false,
+                bool noAcquiredSpells = false, bool missingCastleSpell = false)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -241,6 +243,8 @@ namespace MagicCarpet.Native
                                     3 => wallContactCounter != 0,
                                     4 => !mapOpen && hasObjectiveHelpSubject == false,
                                     5 => lowLife && !mapOpen,
+                                    6 => noAcquiredSpells,
+                                    8 => missingCastleSpell,
                                     15 or 16 => idleDraws > 100,
                                     36 or 37 => !mapOpen,
                                     38 => leftAssigned && !mapOpen,
@@ -748,7 +752,7 @@ namespace MagicCarpet.Native
             gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
                 languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp,
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
-                languageCache.HasCastHelp);
+                languageCache.HasCastHelp, languageCache.HasSpellSearchHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -804,10 +808,15 @@ namespace MagicCarpet.Native
             var lowLife = vitals != null && vitals.life <= (vitals.max_life >> 2);
             // Source v29 gates the signed assignments separately from cast readiness.
             var hasSpell = gameRuntimeCampaignSnapshot.value.spell_menu_has_any_spell;
+            // "not_acquired" is the empty family-2 source slot. An invalid
+            // nonempty holder does not trigger the Castle search reminder.
+            var missingCastle = hasSpell && Array.Find(gameRuntimeCampaignSnapshot.value.player_spells,
+                spell => spell.id == "spell.castle")?.availability == "not_acquired";
             hint.Advance(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0, showHelp, paused, suppressed,
                 wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen,
                 marks, nearest, hasObjectiveHelpSubject, lowLife,
-                hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0);
+                hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
+                !hasSpell, missingCastle);
         }
 
         private ushort NearestObjectiveHelpSubject(
