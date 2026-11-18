@@ -660,6 +660,64 @@ pub struct ActorPage {
     pub next_offset: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyPosition {
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CastleStatus {
+    Constructing,
+    Standing,
+    Destroying,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EconomyAsset {
+    Castle {
+        stage: u8,
+        status: CastleStatus,
+        life: i32,
+        max_life: i32,
+        mana: i32,
+        mana_capacity: i32,
+    },
+    Collector {
+        castle: Option<RuntimeActorId>,
+        /// Zero-based position in the current Castle's ordered stock.
+        castle_order: Option<u8>,
+        target: Option<RuntimeActorId>,
+        life: i32,
+        max_life: i32,
+        mana: i32,
+        mana_capacity: i32,
+    },
+    ManaSphere {
+        mana: i32,
+        assigned_collector: Option<RuntimeActorId>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyObservation {
+    pub actor: RuntimeActorId,
+    pub owner: Option<RuntimeParticipantId>,
+    pub position: EconomyPosition,
+    pub lifecycle: ActorLifecycle,
+    #[serde(flatten)]
+    pub asset: EconomyAsset,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyPage {
+    pub assets: Vec<EconomyObservation>,
+    pub next_offset: Option<u32>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
 
@@ -905,6 +963,14 @@ pub trait GameSessionBackend {
     ) -> Vec<ActorObservation> {
         Vec::new()
     }
+    fn observe_economy(
+        &self,
+        _guard: SessionGuard,
+        _offset: usize,
+        _count: usize,
+    ) -> Vec<EconomyObservation> {
+        Vec::new()
+    }
     /// Whether the authoritative game menu excludes idle flight assistance.
     fn flight_assistance_menu_open(&self) -> bool {
         false
@@ -1105,6 +1171,28 @@ impl<B: GameSessionBackend> GameSession<B> {
             identity: self.identity(),
             value: ActorPage {
                 actors,
+                next_offset,
+            },
+        })
+    }
+
+    /// Read an identity-bound page of existing world economy assets.
+    pub fn economy(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> Result<SessionObservation<EconomyPage>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        let limit = request.limit as usize;
+        let mut assets = self
+            .backend
+            .observe_economy(guard, request.offset as usize, limit + 1);
+        let next_offset = (assets.len() > limit).then_some(request.offset + request.limit);
+        assets.truncate(limit);
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: EconomyPage {
+                assets,
                 next_offset,
             },
         })

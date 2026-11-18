@@ -18,7 +18,7 @@ use sim_core::{
     },
 };
 use sim_session::{
-    ActorPage, ActorPageRequest, EventPage, GameAudioCommand, GameCommand, GameSession,
+    ActorPage, ActorPageRequest, EconomyPage, EventPage, GameAudioCommand, GameCommand, GameSession,
     GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, MAX_OBJECTIVE_STAGES,
     ObjectiveObservation, OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode,
     SessionObservation,
@@ -182,6 +182,24 @@ impl NeutralSession {
             }
         };
         session.objectives(guard).map_err(map_guard_error)
+    }
+
+    fn economy(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> AbiResult<SessionObservation<EconomyPage>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "economy observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.economy(guard, request).map_err(map_guard_error)
     }
 
     fn audio_for_event(
@@ -498,6 +516,10 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                         "maximum_page_size": MAX_ACTOR_PAGE_SIZE
                     },
                     "objective_observation": {"maximum_stages": MAX_OBJECTIVE_STAGES},
+                    "economy_pages": {
+                        "kinds": ["castle", "collector", "mana_sphere"],
+                        "maximum_page_size": MAX_ACTOR_PAGE_SIZE
+                    },
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -762,6 +784,29 @@ pub extern "C" fn mc_game_session_objectives_json_v1(
         with_neutral_session(handle, |session| {
             let observation =
                 session.objectives(session_guard(handle, generation, expected_tick))?;
+            write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_economy_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    offset: u32,
+    limit: u32,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = ActorPageRequest::new(offset, limit).ok_or_else(|| {
+            AbiError::new(MC_STATUS_BOUNDS, "invalid economy page offset or limit")
+        })?;
+        with_neutral_session(handle, |session| {
+            let observation =
+                session.economy(session_guard(handle, generation, expected_tick), request)?;
             write_json(&observation, buffer, capacity, out_length)
         })
     })

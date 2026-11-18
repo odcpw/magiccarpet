@@ -1555,6 +1555,12 @@ int32_t mc_game_session_actors_json_v1(
 int32_t mc_game_session_objectives_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+/* Read the current Castle, Collector and mana sphere lifetimes.
+ * Pass next_offset with the same generation/tick to continue a page. */
+int32_t mc_game_session_economy_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
 int32_t mc_game_session_audio_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,

@@ -131,6 +131,11 @@ enum Command {
     Objectives {
         session_guard: SessionGuardInput,
     },
+    Economy {
+        session_guard: SessionGuardInput,
+        offset: Option<u32>,
+        limit: Option<usize>,
+    },
     Describe {
         cursor: Option<String>,
         limit: Option<usize>,
@@ -370,6 +375,10 @@ impl Stream {
                         "result": "guarded page of current semantic actor lifetimes"},
                     "objectives": {"session_guard": "session_guard", "maximum_stages": MAX_OBJECTIVE_STAGES,
                         "result": "guarded campaign objective progress and definition-bound conditions and statuses"},
+                    "economy": {"session_guard": "session_guard", "limit": "1..100, default 100",
+                        "offset": "start at 0; continue with value.next_offset and the same session guard",
+                        "kinds": ["castle", "collector", "mana_sphere"],
+                        "result": "guarded page of current economy lifetimes"},
                     "describe": {"limit": "1..100, default 100", "cursor": "optional returned next_cursor", "result": "semantic catalog descriptors; effective values when a session is bound"},
                     "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0", "limit": "1..100"},
                     "step": {"guard": "runtime_guard", "session_guard": "session_guard", "input": GameCommand::default(), "ticks": 1},
@@ -444,14 +453,7 @@ impl Stream {
                 offset,
                 limit,
             } => {
-                let limit = page_limit(limit)?;
-                let request =
-                    ActorPageRequest::new(offset.unwrap_or(0), limit as u32).ok_or_else(|| {
-                        StreamError::new(
-                            "INVALID_CURSOR",
-                            "actor page offset exceeds the bounded range; start a new page",
-                        )
-                    })?;
+                let request = lifetime_page_request("actor", offset, limit)?;
                 let page = self
                     .session(session_guard)?
                     .actors(session_guard.into(), request)
@@ -462,6 +464,18 @@ impl Stream {
                 let observation = self
                     .session(session_guard)?
                     .objectives(session_guard.into())
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(observation))
+            }
+            Command::Economy {
+                session_guard,
+                offset,
+                limit,
+            } => {
+                let request = lifetime_page_request("economy", offset, limit)?;
+                let observation = self
+                    .session(session_guard)?
+                    .economy(session_guard.into(), request)
                     .map_err(|error| StreamError::new(error.code.as_str(), error))?;
                 Ok(json!(observation))
             }
@@ -693,6 +707,20 @@ fn page_limit(limit: Option<usize>) -> Result<usize> {
             "limit must be 1..100",
         ))
     }
+}
+
+fn lifetime_page_request(
+    kind: &str,
+    offset: Option<u32>,
+    limit: Option<usize>,
+) -> Result<ActorPageRequest> {
+    let limit = page_limit(limit)?;
+    ActorPageRequest::new(offset.unwrap_or(0), limit as u32).ok_or_else(|| {
+        StreamError::new(
+            "INVALID_CURSOR",
+            format!("{kind} page offset exceeds the bounded range; start a new page"),
+        )
+    })
 }
 
 fn page_offset(cursor: Option<&str>, prefix: &str) -> Result<usize> {

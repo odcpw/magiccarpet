@@ -13,6 +13,7 @@
 #[path = "global_context_tests.rs"]
 mod global_context_tests;
 mod actor_pages;
+mod economy_observation;
 mod marked_spells;
 mod player_notifications;
 mod runtime_catalog;
@@ -62,7 +63,7 @@ use crate::{
         creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
-        ActorObservation, CampaignSnapshot, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
+        ActorObservation, CampaignSnapshot, EconomyObservation, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
         GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
         LateralControl, LongitudinalControl, ObjectiveObservation, ObjectiveProgress, PlayerMotion,
         PlayerPose,
@@ -4816,6 +4817,15 @@ impl GameSessionBackend for Mc2CampaignBackend {
         count: usize,
     ) -> Vec<ActorObservation> {
         actor_pages::observe(self, guard, offset, count)
+    }
+
+    fn observe_economy(
+        &self,
+        guard: SessionGuard,
+        offset: usize,
+        count: usize,
+    ) -> Vec<EconomyObservation> {
+        economy_observation::observe(self, guard, offset, count)
     }
 
     fn flight_assistance_menu_open(&self) -> bool {
