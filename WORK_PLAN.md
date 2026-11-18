@@ -829,9 +829,21 @@ See `generated/goat-actor-pages-20261118.Lk77Lx/`.
 Cave track 3 audibly repeated in a 250s private capture from installed
 `build-nstm28wl`. The two head preludes were 239.201458s apart against the
 owner render's 240.001451s period. Phase remained aligned through 238s and
-the repetitive ending prevents a unique terminal fit. Exact length remains
-open pending timestamped capture evidence. See
-`generated/adaptive-cave-loop-20261118.2y8of3mi/`.
+the repetitive ending prevents a unique terminal fit. The next integrated
+capture on `build-41je7c5x` measured 239.201451s in Pulse and 239.201474s
+with direct PipeWire versus the owner's 240.001451s. Pulse packet timing
+was continuous within 10ms. Both readers saw the same early repeat at the
+private sink; the audio source emitted one track start. The responsible
+boundary upstream of the readers remains open. Evidence:
+`generated/adaptive-cave-loop-timed-20261118/installed-cave4-timed/`.
+
+The authored Karakir Cave switch at row 29, tile (201,204), can start Wind
+row 175 through ordinary overlap and group 4. Its owner sound 49 is Cave
+bank 2 TORNADO.WAV. No retained strict Original save reaches that encounter.
+The direct role-26 package exposes the native producer,
+while installed sound 49 playback and natural release still need that route
+or an ordinary acquired and funded Cave cast. Existing Cave door and drip
+captures are separate evidence. Keep `mc-oi6.8` open.
 
 ### Objective popup closure, Night music and collector retirement — 2026-11-18
 
