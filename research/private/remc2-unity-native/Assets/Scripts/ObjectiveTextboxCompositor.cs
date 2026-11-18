@@ -69,15 +69,16 @@ namespace MagicCarpet.Native
 
         internal static Raster BuildSourceObjectiveMarkHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
             Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
-            byte lineHighlight, int anchorX, int anchorY, bool fullMap)
+            byte lineHighlight, int anchorX, int anchorY, bool fullMap, bool entityAnchor = false)
         {
             var width = fullMap ? 191 : 64;
             var height = fullMap ? 200 : 64;
-            // The marked rectangle uses the indexed pane's three-pixel
-            // interior. The source leader doubles the admitted VGA pixel.
+            // Only the objective rectangle requires a three-pixel margin.
+            // Both source leaders double their admitted VGA coordinates.
+            var margin = entityAnchor ? 0 : 3;
             if (((anchorX | anchorY) & 1) != 0 ||
-                anchorX < 6 || anchorX >= (width - 3) * 2 ||
-                anchorY < 6 || anchorY >= (height - 3) * 2)
+                anchorX < margin * 2 || anchorX >= (width - margin) * 2 ||
+                anchorY < margin * 2 || anchorY >= (height - margin) * 2)
                 throw new ArgumentException("source objective mark hint anchor is invalid");
             return BuildSourcePointerHintForeground(text, glyphs, glyphMasks, corner, side,
                 horizontal, textColor, lineColor, lineHighlight, anchorX, anchorY);

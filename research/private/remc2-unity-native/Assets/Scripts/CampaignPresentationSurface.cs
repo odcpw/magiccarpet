@@ -545,7 +545,9 @@ namespace MagicCarpet.Native
         internal bool LiveMinimapReady { get; private set; }
         internal bool HasObjectiveHelpSubject { get; private set; }
         private readonly List<(byte Row, ushort Subject, int X, int Y)> objectiveHelpMarks = new();
+        private readonly List<(byte Row, ushort Subject, int X, int Y)> entityHelpMarks = new();
         internal IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> ObjectiveHelpMarks => objectiveHelpMarks;
+        internal IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> EntityHelpMarks => entityHelpMarks;
         internal int EntitySurfaceCount => entities.Count;
         internal int RenderedEntitySurfaceCount => entities.Values.Count(row => row.SpriteReady);
         internal bool NativeSceneComplete => nativeSpritesComposited && WorldReady;
@@ -807,8 +809,6 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("Campaign minimap pixel inputs have invalid extents");
             var written = 0;
             var scale = fullMap ? 1 : 2;
-            var mapWidth = fullMap ? 191 : 64;
-            var mapHeight = fullMap ? 200 : 64;
             foreach (var command in commands)
             {
                 if (command.generation != generation || command.tick != tick)
@@ -837,11 +837,7 @@ namespace MagicCarpet.Native
                     if (symbol != null && symbol.Mask[source] == 0) continue;
                     var x = left + dx;
                     var y = top + dy;
-                    if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight) continue;
-                    var sourceY = y * 2;
-                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                    var halfSpan = fullMap ? 0 : (64 * tables[0x14300 + phase * 4]) >> 8;
-                    if (!fullMap && (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan)) continue;
+                    if (!MinimapEntityInsideAperture(x, y, tables, fullMap)) continue;
                     var offset = y * 320 + x;
                     frame[offset] = command.kind == 3
                         ? tables[0x4000 + (frame[offset] << 8) + command.paletteIndex]
@@ -926,6 +922,7 @@ namespace MagicCarpet.Native
             NativeSim.CampaignMinimapMark[] marks, bool fullMap)
         {
             objectiveHelpMarks.Clear();
+            entityHelpMarks.Clear();
             var scale = fullMap ? 1 : 2;
             foreach (var mark in marks)
             {
@@ -942,21 +939,28 @@ namespace MagicCarpet.Native
             // Its unshifted sprite anchor uses the entity aperture without the
             // three-pixel objective-rectangle margin.
             HasObjectiveHelpSubject = objectiveHelpMarks.Count != 0;
-            if (HasObjectiveHelpSubject || fullMap) return;
             foreach (var entity in entities)
             {
-                if (entity.helpSelector != 0x53 || entity.visible == 0 ||
+                if (entity.helpSelector is not (21 or 0x53) || entity.visible == 0 ||
                     entity.x < 0 || entity.y < 0) continue;
                 var x = entity.x / scale;
                 var y = entity.y / scale;
-                if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
-                var sourceY = y * 2;
-                var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                var halfSpan = (64 * minimapTables[0x14300 + phase * 4]) >> 8;
-                if (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan) continue;
-                HasObjectiveHelpSubject = true;
-                return;
+                if (!MinimapEntityInsideAperture(x, y, minimapTables, fullMap)) continue;
+                if (entity.helpSelector == 21)
+                    entityHelpMarks.Add((entity.helpSelector, entity.subjectEntityIndex, x * 2, y * 2));
+                else if (!fullMap)
+                    HasObjectiveHelpSubject = true;
             }
+        }
+
+        private static bool MinimapEntityInsideAperture(int x, int y, byte[] tables, bool fullMap)
+        {
+            if (fullMap) return x >= 0 && x < 191 && y >= 0 && y < 200;
+            if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
+            var sourceY = y * 2;
+            var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+            var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+            return x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
         }
 
         private static bool ObjectiveMarkInsideAperture(int x, int y, byte[] tables, bool fullMap)
@@ -1370,6 +1374,7 @@ namespace MagicCarpet.Native
             LiveMinimapReady = false;
             HasObjectiveHelpSubject = false;
             objectiveHelpMarks.Clear();
+            entityHelpMarks.Clear();
         }
 
         private static Mesh CreateQuad()

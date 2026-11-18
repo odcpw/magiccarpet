@@ -76,16 +76,17 @@ namespace MagicCarpet.Native
         }
 
         internal void PresentObjectiveMarkHint(string sourceText, ulong sessionGeneration,
-            int anchorX, int anchorY, bool fullMap)
+            int anchorX, int anchorY, bool fullMap, bool entityAnchor = false)
         {
             if (anchorX < 0 || anchorX >= 640 || anchorY < 0 || anchorY >= 480)
                 throw new ArgumentException("source objective mark hint position is outside the frame");
-            var key = checked((fullMap ? 2 : 1) * 640 * 480 + anchorY * 640 + anchorX);
+            var key = checked(((fullMap ? 2 : 1) + (entityAnchor ? 2 : 0)) * 640 * 480 +
+                anchorY * 640 + anchorX);
             if (raster != null && generation == sessionGeneration && currentText == sourceText && currentAnchor == key) return;
             var next = ObjectiveTextboxCompositor.BuildSourceObjectiveMarkHintForeground(
                 SourceBytes(sourceText), assets.Glyphs, assets.GlyphMasks, assets.Corner, assets.Side,
                 assets.Horizontal, assets.HelpTextColor, assets.BlendSelector, assets.TextColor,
-                anchorX, anchorY, fullMap);
+                anchorX, anchorY, fullMap, entityAnchor);
             PresentRaster(next, sourceText, sessionGeneration, key);
         }
 

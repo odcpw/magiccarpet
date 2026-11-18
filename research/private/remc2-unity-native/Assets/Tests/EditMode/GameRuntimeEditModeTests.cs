@@ -1512,10 +1512,19 @@ namespace MagicCarpet.Native.Tests
                 var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
                 // Day 3's full map also admits the priority-5 objective
                 // reminder. With an unassigned Castle, row 13 also recurs.
+                var possessionHelp = menu.LocaleCache.HasPossessionHelp;
                 var extraIntervals = menu.LocaleCache.HasCastleSpellHelp ? 6 : 2;
-                var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) : 350;
+                // Both Cave full maps also admit one row21 building cue.
+                var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) :
+                    possessionHelp ? 350 + 50 + 20 : 350;
                 for (var frame = 0; frame < frameLimit; frame++)
                 {
+                    // With entity and Castle cues both present, ordinary
+                    // short speed pulses avoid the stationary-help cycle.
+                    if (row == 0 && possessionHelp && frame % 80 == 78)
+                        transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                    if (row == 0 && possessionHelp && frame > 80 && frame % 80 == 0)
+                        transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
                     runtime.QualificationDriveGameRuntimeFrames(1);
                     if (hint.VisibleRow != 0 && (drawn.Count == 0 ||
                         drawn[drawn.Count - 1].Row != hint.VisibleRow))
@@ -1529,6 +1538,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(menus.MapOpen, Is.True);
                 var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
                 TestContext.WriteLine($"Full-map help draws {chronology}. Final tick {native.Tick}.");
+                if (possessionHelp && row != 0)
+                    CollectionAssert.AreEqual(new[] { 21, 1, 15, 16, 2, row }, drawn.Select(item => item.Row),
+                        "the source building cue precedes the stationary and search cues");
                 Assert.That(drawn.Any(item => item.Row == 2), Is.True,
                     $"the earlier equal-priority source prompt precedes spell search. Draws {chronology}");
                 if (row == 0)
@@ -1661,7 +1673,7 @@ namespace MagicCarpet.Native.Tests
                     // before the first lower-priority objective-key hint.
                     // Fireball help from the marker close adds an interval
                     // and can give the marker time to become overdue again.
-                    var intervals = menu.LocaleCache.HasFireballHelp ? 4 : 2;
+                    var intervals = menu.LocaleCache.HasPossessionHelp ? 6 : menu.LocaleCache.HasFireballHelp ? 4 : 2;
                     for (var frame = 0; frame < 170 + intervals * (50 + 20) && hint.VisibleRow != 1; frame++)
                     {
                         runtime.QualificationDriveGameRuntimeFrames(1);
@@ -1753,7 +1765,8 @@ namespace MagicCarpet.Native.Tests
 
                 ToggleMap(true);
                 var seenMinimap = false;
-                for (var frame = 0; frame < 500; frame++)
+                var frameLimit = menu.LocaleCache.HasPossessionHelp ? 500 + 2 * (50 + 20) : 500;
+                for (var frame = 0; frame < frameLimit; frame++)
                 {
                     runtime.QualificationDriveGameRuntimeFrames(1);
                     Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "the full map masks row 12");
@@ -1770,8 +1783,23 @@ namespace MagicCarpet.Native.Tests
                 }
                 else PaintAndExpire(13, 298, "Press control for spell menu");
                 ToggleMap(false);
-                for (var frame = 0; frame < 110 && hint.VisibleRow != 12; frame++)
+                var intervening = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                // The assigned case now encounters one extra natural
+                // Fireball cue after the full-map building guidance.
+                var fireballPrecedesCastle = assignRight && menu.LocaleCache.HasPossessionHelp;
+                var castleLimit = fireballPrecedesCastle ? 110 + 50 + 20 : 110;
+                for (var frame = 0; frame < castleLimit && hint.VisibleRow != 12; frame++)
+                {
                     runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (hint.VisibleRow != 0 && (intervening.Count == 0 || intervening[intervening.Count - 1].Row != hint.VisibleRow))
+                        intervening.Add((hint.VisibleRow, native.Tick));
+                }
+                if (fireballPrecedesCastle)
+                {
+                    var order = string.Join(", ", intervening.Select(item => $"{item.Row}@{item.Tick}"));
+                    TestContext.WriteLine($"Assigned Castle world draws {order}.");
+                    Assert.That(intervening.Any(item => item.Row == 10), Is.True, "the real Fireball cue retains its priority");
+                }
                 CheckSource(assignRight ? (short)2 : (short)1, 0);
                 PaintAndExpire(12, 297, "Use castle spell to build a safe haven", assignRight ? 600 : null);
             }
@@ -1966,6 +1994,168 @@ namespace MagicCarpet.Native.Tests
                 }
                 runtime.QualificationDisposeGameRuntimeProduction();
                 if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ProductionPossessionHelpFollowsTheOrdinaryBuildingMarkerClose(bool mapMasksCue)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Possession help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var pending = hintType.GetField("possessionHelpPending", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                bool Pending() => (bool)pending.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void CheckIndexedCue(int row, int record, string text, int x, int y)
+                {
+                    Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint)),
+                        Is.EqualTo((row, x, y, (object)49)));
+                    Assert.That(menu.GameplayHelpForRow(row).TextRecord, Is.EqualTo(record));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var type = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(type.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)type.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True);
+                    var raster = (ObjectiveTextboxCompositor.Raster)type.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var sourceX = x + 1 - raster.X;
+                    var sourceY = y - raster.Y;
+                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                }
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                var spells = transport.GameRuntimeCampaignSnapshot().value.player_spells;
+                var possession = spells.Single(spell => spell.id == "spell.possession");
+                Assert.That((possession.acquired, possession.hand, native.DayHudState(native.Tick).right.rawSpellSelector),
+                    Is.EqualTo((true, "right", (short)1)));
+                Assert.That(surface, Is.Not.Null);
+                ToggleMap(true);
+                for (var frame = 0; frame < 430 && hint.VisibleRow != 21; frame++)
+                {
+                    Draw();
+                    Assert.That(Pending(), Is.False, "raw map markers do not request Possession by themselves");
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(21));
+                Assert.That(surface.EntityHelpMarks.Count, Is.GreaterThan(1), "the real aperture has competing building subjects");
+                var entities = native.Entities();
+                var player = transport.GameRuntimeCampaignSnapshot().value.player_pose;
+                int Distance(ushort slot)
+                {
+                    var dx = unchecked((short)(entities[slot].x - player.x));
+                    var dy = unchecked((short)(entities[slot].y - player.y));
+                    return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                }
+                var nearest = surface.EntityHelpMarks.Where(mark => mark.Row == 21)
+                    .OrderBy(mark => Distance(mark.Subject)).First();
+                var subject = (ushort)subjectField.GetValue(hint);
+                Assert.That(subject, Is.EqualTo(nearest.Subject), "first source candidate wins equal floored distances");
+                CheckIndexedCue(21, 309, "Possess this building to increase your spells mana", nearest.X, nearest.Y);
+                for (var frame = 0; frame < 48; frame++)
+                {
+                    Draw();
+                    var current = surface.EntityHelpMarks.Single(mark => mark.Row == 21 && mark.Subject == subject);
+                    Assert.That((hint.VisibleRow, subjectField.GetValue(hint), hint.AnchorX, hint.AnchorY, Pending()),
+                        Is.EqualTo((21, (object)subject, current.X, current.Y, false)));
+                }
+                Draw();
+                Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending(), fireball.GetValue(hint)),
+                    Is.EqualTo((21, (object)0, true, (object)false)));
+                var closedAt = native.Tick;
+                if (mapMasksCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen), Is.EqualTo((false, 20UL, true)));
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 210 && hint.VisibleRow != 12; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(9).And.Not.EqualTo(11));
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That(hint.VisibleRow, Is.EqualTo(12), "a real post-map world poll proves the masked cue does not return");
+                    TestContext.WriteLine($"Row21 subject {subject} closed at {closedAt}; full-map poll consumed Possession before row12 at {native.Tick}.");
+                    return;
+                }
+
+                ToggleMap(false);
+                for (var frame = 0; frame < 23 && hint.VisibleRow != 11; frame++)
+                {
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "row11 wins an equally overdue Castle cue");
+                }
+                CheckIndexedCue(11, 296, "Use possession spell to possess mana", 600, 32);
+                Assert.That(Pending(), Is.False);
+                TestContext.WriteLine($"Row21 subject {subject} closed at {closedAt}; row11 painted at {native.Tick}.");
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((11, false)));
+                Draw();
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
                 UnityEngine.Object.DestroyImmediate(root);
                 Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             }

@@ -144,14 +144,14 @@ def source_gameplay_help() -> bytes:
     if len(rows) != 105:
         raise cache.CacheError("pinned gameplay help table extent changed")
     bindings = []
-    for index in (1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 15, 16, 36, 37, *range(38, 43), 69, 70, 71, *range(72, 83), 85, *range(86, 91)):
+    for index in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 21, 36, 37, *range(38, 43), 69, 70, 71, *range(72, 83), 85, *range(86, 91)):
         kind, axes, tail = rows[index]
         values = [int(value.strip(), 0) for value in axes.split(",")]
         extra = [int(value.strip(), 0) for value in tail.split(",")]
         if len(values) != 5 or len(extra) != 6:
             raise cache.CacheError("pinned gameplay help row shape changed")
         kind = int(kind, 0)
-        expected_kind = (1 if index <= 16 else 4 if index <= 37 else 5 if index <= 42
+        expected_kind = (1 if index <= 16 else 2 if index == 21 else 4 if index <= 37 else 5 if index <= 42
                          else 6 if index in (69, 70, 71) else 7 if index <= 80 else 8 if index <= 82
                          else 10 if index == 85 else 11)
         if kind != expected_kind or (values[2] == 0) != (expected_kind == 11):
