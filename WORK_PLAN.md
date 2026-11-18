@@ -865,8 +865,12 @@ Day capture on the same build passed at 16,695,296 owner frames in Pulse
 (378.578141s), within one resampled frame in direct PipeWire. Head, final
 tail, and next head matched the owner in both readers, with no 0.8s
 duplicate. The same neutral interval produced the ordinary native
-idle/battle/idle transition and matching PCM gains. Installed Night's
-full loop is still open. See
+idle/battle/idle transition and matching PCM gains. The installed Night
+checkpoint selected track 1 once and measured 19,472,384 owner frames
+(441.550658s) in both capture paths. Its final tail and next opening matched
+the owner without the duplicate prefill. All three environments now have
+installed natural-loop evidence. The same-client mission replacement check
+and the gameplay-sound dependency remain open under `mc-oi6.9`. See
 `generated/adaptive-cave-loop-timed-20261118/installed-cave4-build-4zmyev0o/`
 `generated/adaptive-stream-loop-discriminator-20261118/` and
 `generated/adaptive-day-night-loop-20261118/`.
@@ -898,8 +902,13 @@ follows combat damage at low life through indexed text and the 50-draw
 lifetime. A continuation crosses 2500 to 2505 with normal regeneration
 and stays ineligible at the next open poll. Repaints leave timer and replay
 unchanged. The older four table receipts remain admitted, and only the help
-output differs in the independently rehashed 678-output cache. See
-`generated/low-health-help-20261118.bc502sO6/row5-proof.xml`.
+output differs in the independently rehashed 678-output cache. Canonical
+`b05676f9` is published as `c8f0e2dd` and installed in Original
+`build-lfyj29b2` with verified native `3f3744cf`. The default launcher
+loaded NightSpire with 30 roles, one portal click and zero retries. That
+smoke qualifies the installed launch and load; the injured encounter evidence
+comes from the focused GLCore tests. See
+`generated/low-health-help-20261118.bc502sO6/`.
 
 ### Objective popup closure, Night music and collector retirement — 2026-11-18
 
