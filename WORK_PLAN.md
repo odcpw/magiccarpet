@@ -801,6 +801,45 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+### Objective-marker help, speech volume and Cave music — 2026-11-18
+
+Canonical `29b5ecea` and `813d8d00` shipped in qualified Original
+`build-i9hrj52v`. When the real Pav speech is active, changing one volume in
+the paused owner now updates that channel immediately and keeps the other
+channel's fade. The focused test reproduced a 5.25 mixer gain before the fix,
+then passed the real preference, pause/resume and speech/cue guards. See
+`generated/speech-slider-20261118/{baseline-paused,candidate-paused}.xml`.
+
+The objective-marker help consumer uses the current minimap aperture before
+blink filtering, source-ordered nearest subject selection and the existing
+indexed leader. The new digest-verified owner menu cache preserves admission
+of the previous two variants. The Day3 checkpoint reached the real row82
+text and anchor. Repeated reads and repaints preserved the lifetime and
+replay. Evidence: `generated/minimap-help-20261118.ovAjIr/objective-help-anchor-gl.xml`.
+Row79's close-time priority promotion and broader recursive help stay open.
+
+On the same installed player, strict cold load of the Cave4 ordinary retreat
+checkpoint and neutral input reached track3 combat then idle. Captured PCM
+matched owner C2GAME3 at 0.99543 stereo correlation and measured a 3.26 dB
+change. Pause silenced the private capture. Evidence:
+`generated/adaptive-cave-music-20261118.JvQJNs/installed-cave4/`. Night adaptive
+PCM and full-track looping remain open. No full campaign or hardware proof.
+
+Canonical `6940934c`, published as `d012ff1d`, joins Whirlwind sound49 to
+the current scheduled field actor. The ordinary source package check now
+prepares audio after field motion using the typed actor and actual updated
+listener, emits the terminal End49 before hiding the field, and follows
+natural reclaim. The first run caught the blank raw arena position; the
+corrected check passed in 14.48s. The earlier native replay test verified
+the independent optional Wind audio boundary alongside the existing Goat
+boundary. The finite-voice consumer check verifies reuse, stop, completion
+and reset. The installed refresh `build-fbtna7ng` on the same Unity player
+uses native `1ba74ee68b2cefc75e64237e9d03593f0da4d5a12a8501c17dd569dfd7b47c8a`.
+All 626 recorded inputs match the local, Rig and published source. The
+matching client opened NightSpire with all 30 roles, one portal click and
+zero retries. See `generated/wind-audio-20261118/`. The Wind chain exercised a bounded
+source scenario; actual Cave49 PCM at an admitted Wind encounter remains open.
+
 ### Original audio, minimap and campaign continuity — 2026-11-18
 
 Canonical `936b3bd8`, `255f6dfc`, `000a391e`, and `3adf0176` are published on
