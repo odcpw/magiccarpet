@@ -874,6 +874,18 @@ regular-directory guard; using its resolved path passed. The focused
 GLCore runs supply the prompt evidence. Full `mc-oi6.6` remains open.
 See `generated/spell-search-help-20261118.2GyLq1eO/`.
 
+Canonical `5b6cf275`, published as `faa2fcbb`, adds English Castle help
+rows 12 and 13. The three focused GLCore cases passed in 115.194 s on the
+retained Revealed Way checkpoint. They cover the full-map spell-menu cue,
+centered build cue and right-hand build pointer, with indexed pixels,
+50-draw expiry and unchanged replay bytes. An ordinary 1,000-mana paid
+Castle followed by ordinary reassignment suppresses both reminders through
+the next lower-priority poll. The three spell-search regressions also
+passed. Original `build-0q5zw5gs` cold-loaded Revealed Way with three owner
+roles, the rehashed menu cache and verified native `3987657a`, with no
+input or retry. Full `mc-oi6.6` remains open. See
+`generated/castle-help-20261118.eQq6W9MF/`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
