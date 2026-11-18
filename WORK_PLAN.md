@@ -801,6 +801,29 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+### Objective popup closure, Night music and collector retirement — 2026-11-18
+
+Canonical `c3e5cd77` is installed in Original `build-nstm28wl` with native
+`1ba74ee6`. A real NightSpire objective-text expiry emits help row 79.
+Its popup draws the owner text, closes after its 50-draw lifetime and promotes
+minimap rows 2 and 81 for subsequent polling. Reads and repaints leave the
+timer alone. Both this check and the Day3 objective-marker regression passed.
+See `generated/minimap-help-20261118.ovAjIr/objective-row79-gl.xml`.
+
+The installed NightSpire checkpoint starts track 1 at tick 10363 and reaches
+combat and idle at the same ticks as native. Owner C2GAME1 matched the captured
+stereo PCM at 0.99956 correlation. Combat was 3.256 dB above idle, and pause
+silenced the capture. Day, Night and Cave now have installed adaptive PCM
+evidence. Full-track looping remains unverified. See
+`generated/adaptive-night-music-20261118.ZsshtN/installed-night1/`.
+
+The focused paid Castle/collector check follows the actual typed minimap input
+through the collector's own lethal hit, hidden state, reclaim and same-slot
+stock refill with a new incarnation. It passed against the authored package
+in 4.20s. The damage is a declared test control. Rendering the actual death and
+reuse in the installed player remains unverified. See
+`generated/collector-map-retirement-20261118/collector-focused.log`.
+
 ### Objective-marker help, speech volume and Cave music — 2026-11-18
 
 Canonical `29b5ecea` and `813d8d00` shipped in qualified Original
