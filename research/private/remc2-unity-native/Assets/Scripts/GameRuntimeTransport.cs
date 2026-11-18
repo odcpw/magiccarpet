@@ -675,6 +675,9 @@ namespace MagicCarpet.Native
 
         internal Identity Current { get; private set; }
         private readonly CampaignRenderTransport renderTransport = new();
+        private Identity lastStepObservationIdentity;
+        private bool lastStepExitActive;
+        private string lastStepExitStateHash;
         private static readonly bool JsonRenderObservations =
             Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-render-json") >= 0;
 
@@ -1390,7 +1393,7 @@ namespace MagicCarpet.Native
             return true;
         }
 
-        private static ulong SourceSpeedStepTick(Identity before, Identity after, bool recoverPlayer)
+        private static ulong ExpectedSourceSpeedStepTick(Identity before, Identity after, bool recoverPlayer)
         {
             // A successful source revival resets speed before entity passes.
             if (after.source_speed_index != before.source_speed_index &&
@@ -1402,10 +1405,17 @@ namespace MagicCarpet.Native
                 2 => 8UL,
                 _ => throw new InvalidDataException("source speed is outside its range")
             };
-            var expectedTick = checked(ParseCounter(before.session.tick, "tick") + passes);
-            if (ParseCounter(after.session.tick, "tick") != expectedTick)
+            return checked(ParseCounter(before.session.tick, "tick") + passes);
+        }
+
+        internal static void ValidateSourceSpeedStepTick(ulong beforeTick, ulong afterTick,
+            ulong expectedTick, bool beforeExitActive, bool afterExitActive)
+        {
+            // Action 12/26 can interrupt the ordinary entity passes and continues
+            // at the bound gameplay tick until its separate completion boundary.
+            if (afterTick != expectedTick &&
+                (!(beforeExitActive || afterExitActive) || afterTick < beforeTick || afterTick > expectedTick))
                 throw new InvalidDataException("campaign step did not advance its source speed passes");
-            return expectedTick;
         }
 
         internal bool SourceGraphics(SourceGraphicsAction action, out Identity identity)
@@ -1650,10 +1660,18 @@ namespace MagicCarpet.Native
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
-            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
-            var beforeSessionGeneration =
-                ParseCounter(before.session.generation, "session_generation");
             var beforeTick = ParseCounter(before.session.tick, "tick");
+            if (!ReferenceEquals(lastStepObservationIdentity, before) &&
+                !SameIdentity(lastStepObservationIdentity, before))
+            {
+                lastStepExitActive = RenderObservation().value.exit_sequence_active;
+                lastStepExitStateHash = null;
+                lastStepObservationIdentity = before;
+            }
+            var beforeExitActive = lastStepExitActive;
+            var beforeExitStateHash = beforeExitActive
+                ? lastStepExitStateHash ?? CampaignSnapshot().value.state_hash
+                : null;
             EngineSessionTransport.StepHandle(
                 RequireHandle(),
                 before.session,
@@ -1664,44 +1682,69 @@ namespace MagicCarpet.Native
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
                 selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
-            if (!JsonRenderObservations)
+            EngineSessionTransport.CampaignRenderObservation observation;
+            ulong expectedTick;
+            if (JsonRenderObservations)
+            {
+                var updated = IdentitySnapshot();
+                ValidateCampaignStepIdentity(before, updated);
+                expectedTick = ExpectedSourceSpeedStepTick(before, updated, recoverPlayer);
+                observation = JsonRenderObservation();
+            }
+            else
             {
                 // Revival may clear speed, and enabled flight assistance can
                 // advance its recenter sequence without a runtime generation change.
                 Identity updated = null;
-                var steppedTick = checked(beforeTick + 1);
-                if (before.source_speed_index != 0 || before.player_preferences.preferences.flight_assistance)
+                if (beforeExitActive || before.source_speed_index != 0 ||
+                    before.player_preferences.preferences.flight_assistance)
                 {
                     updated = IdentitySnapshot();
-                    if (before.source_speed_index != 0)
-                        steppedTick = SourceSpeedStepTick(before, updated, recoverPlayer);
+                    ValidateCampaignStepIdentity(before, updated);
                 }
-                var publication = ReadRenderPublication(before, steppedTick);
-                if (updated != null)
+                expectedTick = ExpectedSourceSpeedStepTick(before, updated ?? before, recoverPlayer);
+                var steppedTick = updated == null ? expectedTick : ParseCounter(updated.session.tick, "tick");
+                try
                 {
-                    var observed = publication.Observation.identity;
-                    if (updated.mode != PlayingMode || updated.generation != before.generation ||
-                        !PreservesSessionBinding(observed, updated.session) ||
-                        updated.session.generation != observed.generation || updated.session.tick != observed.tick)
-                        throw new InvalidDataException("source step identity does not match the stepped session");
+                    observation = ReadRenderPublication(before, steppedTick).Observation;
                 }
-                else
-                    PublishCampaignIdentity(before, publication.Observation.identity);
-                return publication.Observation;
+                catch (EngineSessionTransport.CommandException exception) when (
+                    updated == null && exception.Status == NativeSim.InvalidArgument &&
+                    exception.Message.EndsWith(": stale render tick", StringComparison.Ordinal))
+                {
+                    updated = IdentitySnapshot();
+                    ValidateCampaignStepIdentity(before, updated);
+                    expectedTick = ExpectedSourceSpeedStepTick(before, updated, recoverPlayer);
+                    observation = ReadRenderPublication(before, ParseCounter(updated.session.tick, "tick")).Observation;
+                }
+                if (updated == null)
+                    PublishCampaignIdentity(before, observation.identity);
+                else if (!SameSessionIdentity(updated.session, observation.identity))
+                    throw new InvalidDataException("source step identity does not match the stepped session");
             }
-            var identity = IdentitySnapshot();
-            if (identity.mode != PlayingMode ||
-                ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
-                !PreservesSessionBinding(before.session, identity.session) ||
-                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
-                ParseCounter(identity.session.generation, "session_generation") !=
-                    beforeSessionGeneration)
+            var afterExitActive = observation.value.exit_sequence_active;
+            ValidateSourceSpeedStepTick(beforeTick, ParseCounter(observation.identity.tick, "tick"),
+                expectedTick, beforeExitActive, afterExitActive);
+            var exitStateHash = beforeExitActive ? CampaignSnapshot().value.state_hash : null;
+            if (beforeExitActive && beforeExitStateHash == exitStateHash)
+                throw new InvalidDataException("campaign exit step did not advance its authoritative state");
+            lastStepObservationIdentity = Current;
+            lastStepExitActive = afterExitActive;
+            lastStepExitStateHash = afterExitActive ? exitStateHash : null;
+            return observation;
+        }
+
+        private void ValidateCampaignStepIdentity(Identity before, Identity after)
+        {
+            if (after.mode != PlayingMode || after.runtime_id != before.runtime_id ||
+                after.generation != before.generation ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow) ||
+                after.session.generation != before.session.generation)
             {
                 throw new InvalidOperationException(
                     "campaign step did not advance only the bound gameplay tick");
             }
-            SourceSpeedStepTick(before, identity, recoverPlayer);
-            return JsonRenderObservation();
         }
 
         internal EngineSessionTransport.EventObservation CampaignEvents(

@@ -801,6 +801,55 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
+### Extended creature observations and the NightSpire exit — 2026-11-18
+
+Canonical `127397fd`, published as `814c738d`, adds guarded actor pages
+for Bee, Dragon, Archer, Skeleton, Villager and Trader alongside Goat.
+Dragon parts keep distinct opaque identities, pose and lifetime. Health
+belongs to the root, and an authored parent must own the current body chain.
+Nine exact lifecycle checks pass, including real paid Bee and Villager
+damage, authored Dragon retirement, and converted Dragon slot reuse.
+Same-record authored reuse has no separate gameplay fixture.
+
+Native `87863f39` is installed and all 627 checked inputs match canonical,
+Rig and published source. A direct query of that installed library returns
+176 real Level5 actors in 16-entry pages, including 80 moving Dragon parts
+with stable parent identities. Repeated reads preserve the state snapshot, and
+the guard rejects stale ticks. The normal Original launcher loaded NightSpire with
+30 roles, one portal click and zero retries. The launch covers packaging;
+the guarded query and exact lifecycle checks cover the observation behavior.
+See `generated/actor-pages-20261118/`. Broader `mc-b9s` remains open.
+
+English idle movement help is implemented and published as `cdbf29f7`.
+The exact GLCore check cold-loads Cave4, resets the idle counter through
+normal movement, checks eligibility at 100 stopped draws, and displays both
+owner prompts for 50 draws with the source successor priority. Repaints
+preserve the counter and replay. Original `build-8ojdq7uu` installs the managed
+prompts and the rehashed active menu cache. See
+`generated/idle-help-20261118.BrSDUEaV/`. Full `mc-oi6.6` stays open.
+
+The earned NightSpire exit checkpoint matches 13 historical pose/exit
+boundaries and reaches the real authored exit at tick 10695. The native
+runtime completes the 187-frame exit and emits ordinary Results. The prior
+installed Original `build-lfyj29b2` fatals on the first cinematic step:
+its managed validator demands ordinary speed passes while the source exit
+intentionally retains the gameplay tick. The correction admits the bound
+cinematic clock and requires changing authoritative state. Ordinary stall and
+speed-pass guards remain active. The exact earned exit and ordinary-stall
+checks passed in the qualified JSON and canonical binary render routes.
+
+Original `build-8ojdq7uu` with native `87863f39` completed the earned exit,
+displayed Jahwl Results and opened Payahandra via the normal map in the same
+process. Night track 1 at session generation 3 and Day track 2 at generation
+4 each started once. The private software PCM matched their owner heads at
+0.999979 and 0.999994 correlation. Results and the map used their own track 4.
+Loading had 17.29 seconds of exact digital silence and the new Day output
+had no detected old-track carryover. Root viewed Results and the Payahandra
+selection. All six owned capture processes stopped. See
+`generated/night-day-music-replacement-20261118/`. Full campaign and
+remaining gameplay sound acceptance stay open under `mc-paj.1`,
+`mc-oi6.9` and `mc-oi6.8`.
+
 ### Goat lifetime pages and Cave loop timing — 2026-11-18
 
 Original `build-4zmyev0o` now installs the audio rewind and capture-tap
@@ -869,8 +918,8 @@ idle/battle/idle transition and matching PCM gains. The installed Night
 checkpoint selected track 1 once and measured 19,472,384 owner frames
 (441.550658s) in both capture paths. Its final tail and next opening matched
 the owner without the duplicate prefill. All three environments now have
-installed natural-loop evidence. The same-client mission replacement check
-and the gameplay-sound dependency remain open under `mc-oi6.9`. See
+installed natural-loop evidence. The later same-client mission replacement is
+recorded above. The gameplay-sound dependency remains open under `mc-oi6.9`. See
 `generated/adaptive-cave-loop-timed-20261118/installed-cave4-build-4zmyev0o/`
 `generated/adaptive-stream-loop-discriminator-20261118/` and
 `generated/adaptive-day-night-loop-20261118/`.
@@ -878,6 +927,9 @@ and the gameplay-sound dependency remain open under `mc-oi6.9`. See
 The authored Karakir Cave switch at row 29, tile (201,204), can start Wind
 row 175 through ordinary overlap and group 4. Its owner sound 49 is Cave
 bank 2 TORNADO.WAV. No retained strict Original save reaches that encounter.
+The retained map save cold-loads with all 30 roles but rejects Karakir as
+locked. Its available Spider Cave opens normally, with the carried Whirlwind
+insufficiently funded at 1000 mana and no Castle.
 The direct role-26 package exposes the native producer,
 while installed sound 49 playback and natural release still need that route
 or an ordinary acquired and funded Cave cast. Existing Cave door and drip
@@ -930,7 +982,11 @@ The focused paid Castle/collector check follows the actual typed minimap input
 through the collector's own lethal hit, hidden state, reclaim and same-slot
 stock refill with a new incarnation. It passed against the authored package
 in 4.20s. The damage is a declared test control. Rendering the actual death and
-reuse in the installed player remains unverified. See
+reuse in the installed player remains unverified. The retained Payahandra
+checkpoint admits all 30 roles and has live rival Nyphur at tick 354, with
+zero Castle or Collector markers. Its recorded input ends at pause. The
+installed witness still needs a current checkpoint with an exposed hostile
+Collector and ordinary inputs that retire it in view. See
 `generated/collector-map-retirement-20261118/collector-focused.log`.
 
 The shared scheduled area-effect reader now includes the current typed
