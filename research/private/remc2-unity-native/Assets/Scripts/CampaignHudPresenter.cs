@@ -108,7 +108,8 @@ namespace MagicCarpet.Native
             internal int VisibleSpellHighlight { get; private set; } = -1;
 
             internal ManaHelpHint(Func<int, OwnerCampaignMenuCache.GameplayHelpBinding> binding,
-                bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false)
+                bool hasMinimapHelp = false, bool hasObjectiveMarkHelp = false, bool hasLargeMapHelp = false,
+                bool hasLowLifeHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -119,6 +120,7 @@ namespace MagicCarpet.Native
                     72, 73, 74, 75, 76, 77, 78, 79, 80, 85 };
                 if (hasMinimapHelp) ids.Insert(1, 2);
                 if (hasLargeMapHelp) ids.Insert(ids.IndexOf(40), 4);
+                if (hasLowLifeHelp) ids.Insert(ids.IndexOf(40), 5);
                 if (hasObjectiveMarkHelp) ids.InsertRange(ids.IndexOf(85), new[] { 81, 82 });
                 rows = new RowState[ids.Count];
                 for (var index = 0; index < ids.Count; index++) rows[index] = new RowState(rowFor(ids[index]));
@@ -161,7 +163,8 @@ namespace MagicCarpet.Native
                 bool enabled, bool paused, bool suppressed, sbyte wallContactCounter = 0,
                 bool levelEnd = false, bool minimapEnabled = true, bool mapOpen = false,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> objectiveMarks = null,
-                ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null)
+                ushort nearestObjectiveSubject = 0, bool? hasObjectiveHelpSubject = null,
+                bool lowLife = false)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -224,6 +227,7 @@ namespace MagicCarpet.Native
                                     1 or 2 => true,
                                     3 => wallContactCounter != 0,
                                     4 => !mapOpen && hasObjectiveHelpSubject == false,
+                                    5 => lowLife && !mapOpen,
                                     41 => leftUnavailable || rightUnavailable,
                                     81 => hasFixedObjectiveMark,
                                     82 => nearestObjectiveSubject != 0,
@@ -250,6 +254,8 @@ namespace MagicCarpet.Native
                             AnchorX = mapOpen ? 190 : 64;
                             AnchorY = mapOpen ? 202 : 66;
                         }
+                        else if (currentRow.Binding.Row == 5)
+                            (AnchorX, AnchorY) = (currentRow.Binding.X, currentRow.Binding.Y);
                         else if (currentRow.Binding.Row == 41)
                         {
                             AnchorX = leftUnavailable ? 540 : 600;
@@ -722,7 +728,8 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("Missing source language record 329");
             gameRuntimeAbilityNotification = new AbilityImprovedNotification(languageCache.LanguageText);
             gameRuntimeManaHint = new ManaHelpHint(languageCache.GameplayHelpForRow,
-                languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp);
+                languageCache.HasMinimapHelp, languageCache.HasObjectiveMarkHelp, languageCache.HasLargeMapHelp,
+                languageCache.HasLowLifeHelp);
         }
 
         private void ConsumeGameRuntimeHelpHint(NativeSim.NativeEvent effect)
@@ -774,9 +781,11 @@ namespace MagicCarpet.Native
                     }
                 }
             }
+            var vitals = gameRuntimeCampaignSnapshot?.value?.player_vitals;
+            var lowLife = vitals != null && vitals.life <= (vitals.max_life >> 2);
             hint.Advance(leftUnavailable, rightUnavailable, showHelp, paused, suppressed,
                 wallContactCounter, levelEnd, minimapEnabled, gameRuntimeSourceMenus.MapOpen,
-                marks, nearest, hasObjectiveHelpSubject);
+                marks, nearest, hasObjectiveHelpSubject, lowLife);
         }
 
         private ushort NearestObjectiveHelpSubject(
@@ -848,7 +857,7 @@ namespace MagicCarpet.Native
                 if (helpRow.Row == 82)
                     gameRuntimeManaHintPresenter.PresentObjectiveMarkHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY, gameRuntimeSourceMenus.MapOpen);
-                else if (helpRow.Row == 2 || helpRow.Row == 41)
+                else if (helpRow.Row is 2 or 5 or 41)
                     gameRuntimeManaHintPresenter.PresentHint(helpText, campaignSession.Generation,
                         gameRuntimeManaHint.AnchorX, gameRuntimeManaHint.AnchorY);
                 else

@@ -860,10 +860,16 @@ The opening, final tail at 239.95s and repeating opening matched owner
 PCM with at least 0.986 stereo correlation in both readers. There was no
 matching duplicate at the 0.8s prefill offset, and the same gate rejected
 the older installed recording. All owned capture processes stopped.
-This verifies the first natural Cave loop. Installed Day and Night full
-loops are still open. See
+This verifies the first natural Cave loop. The later installed Revealed Way
+Day capture on the same build passed at 16,695,296 owner frames in Pulse
+(378.578141s), within one resampled frame in direct PipeWire. Head, final
+tail, and next head matched the owner in both readers, with no 0.8s
+duplicate. The same neutral interval produced the ordinary native
+idle/battle/idle transition and matching PCM gains. Installed Night's
+full loop is still open. See
 `generated/adaptive-cave-loop-timed-20261118/installed-cave4-build-4zmyev0o/`
-and `generated/adaptive-stream-loop-discriminator-20261118/`.
+`generated/adaptive-stream-loop-discriminator-20261118/` and
+`generated/adaptive-day-night-loop-20261118/`.
 
 The authored Karakir Cave switch at row 29, tile (201,204), can start Wind
 row 175 through ordinary overlap and group 4. Its owner sound 49 is Cave
@@ -884,6 +890,16 @@ serve as the positive row 4 case. Previous verified cache receipts remain
 admitted. Evidence: `generated/large-map-help-20261118.zeY5ft6H/`.
 Other source help rows, tutorial and alternate-language acceptance remain
 open under `mc-oi6.6`.
+
+The English low-health prompt binds source row 5 to owner record 290 and
+uses the published live quarter-life threshold at ordinary help polling.
+Two exact GLCore cases passed in 84.87s. The real Day3 retreat checkpoint
+follows combat damage at low life through indexed text and the 50-draw
+lifetime. A continuation crosses 2500 to 2505 with normal regeneration
+and stays ineligible at the next open poll. Repaints leave timer and replay
+unchanged. The older four table receipts remain admitted, and only the help
+output differs in the independently rehashed 678-output cache. See
+`generated/low-health-help-20261118.bc502sO6/row5-proof.xml`.
 
 ### Objective popup closure, Night music and collector retirement — 2026-11-18
 
