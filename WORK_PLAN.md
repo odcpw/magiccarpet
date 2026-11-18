@@ -3363,6 +3363,17 @@ again republishes the same ordered rows. The switch keeps its identity and the
 new field reaches its ordinary callback. Only the test changed. See
 `generated/level10-repeat-exit-20261118/`.
 
+Cave4's subtype22 absence switch now has an exact connected check in the
+existing Spider mission test (7.64 s). The real objective and proximity
+chain admits row119 and ten authored Skeletons. A living Skeleton and
+its fatal visit block the timer. After seventeen empty visits, sound41
+precedes ordered group2 publication, and the controller hides and reclaims.
+Ten XP scrolls and both successor switches are live; switch585 publishes
+the genuine group41 corridor command, which runs its scheduled callback.
+The check uses declared player geometry and typed damage contacts on the
+existing fixture. No production code changed. The retained installed
+Cave4 saves precede this trigger. See `generated/cave4-switch22-20261118/`.
+
 The configured final368/374 checks passed7.388s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
 row374 overlap to four authored model28 roots and following reclaim. Final392
