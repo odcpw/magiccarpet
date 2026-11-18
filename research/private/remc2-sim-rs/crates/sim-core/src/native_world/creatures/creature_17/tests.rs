@@ -2062,6 +2062,7 @@ fn evirith_gor_real_objectives_wave_and_exit_follow_source_order() {
         }
     }
     assert_eq!(group3, 1, "source switch22 publishes its actual wave once");
+    assert_evirith_repeat_checkpoint(sim(&game).clone(), player);
     let wave = sim(&game)
         .creature_runtime_census()
         .roots_of_kind(CreatureKind::Creature17)
@@ -2202,6 +2203,193 @@ fn evirith_gor_real_objectives_wave_and_exit_follow_source_order() {
     );
     assert_eq!(sim(&game).level_exit_sequence().portal_entity_index, portal.source_entity_index);
     assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+fn assert_evirith_repeat_checkpoint(mut session: crate::native_world::Mc2Simulation, player: u16) {
+    use crate::campaign::schedule::ScheduleReceipt;
+    use crate::campaign::spec::BehaviorSelector;
+    use crate::native_world::{Mc2DispatchEvent, Mc2Simulation};
+
+    let switch = |sim: &Mc2Simulation| {
+        *sim.economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.active && row.authored_index == 119)
+            .expect("actual group3 row119 is a live switch")
+    };
+    let trigger = switch(&session);
+    assert_eq!(
+        (
+            trigger.model,
+            trigger.action,
+            trigger.stage_tag,
+            trigger.word_10
+        ),
+        (2, 2, 13, 19)
+    );
+    assert_eq!(trigger.dword_0x10, 0);
+    let slot = trigger.source_entity_index;
+    let handle = session.source_arena().handle(slot).unwrap();
+    let extent = trigger.word_10.wrapping_shl(8);
+    let player_overlaps = |sim: &Mc2Simulation| {
+        let player_row = &sim.entities()[usize::from(player)];
+        let size = |start| {
+            i16::from_le_bytes(
+                player_row.record_bytes()[start..start + 2]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        crate::level1_mission::source_entities_overlap_xy(
+            switch(sim).position,
+            extent,
+            extent,
+            sim.state.position,
+            size(88),
+            size(90),
+        )
+    };
+    let place = |sim: &mut Mc2Simulation, x: u16| {
+        let mut pose = Position {
+            x,
+            ..trigger.position
+        };
+        pose.z = sim
+            .canonical_terrain()
+            .ground_height(pose)
+            .wrapping_add(768);
+        sim.set_level2_entity_position(player, pose)
+            .expect("declared player geometry at the real checkpoint");
+    };
+    let visit = |sim: &mut Mc2Simulation, inside: bool| {
+        let before = switch(sim);
+        assert_eq!(
+            player_overlaps(sim),
+            inside,
+            "actual player overlap before switch visit"
+        );
+        sim.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !sim.dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "repeat switch source dispatch: {:?}",
+            sim.dispatch_events()
+        );
+        assert_eq!(
+            sim.source_arena().handle(slot),
+            Some(handle),
+            "repeat does not replace its controller"
+        );
+        let after = switch(sim);
+        assert_eq!(after.phase, before.phase.wrapping_add(1));
+        assert!(after.drawing_enabled && !after.fired);
+        let groups = sim
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    group: 13,
+                    source_slot,
+                    authored_indices,
+                    ..
+                } => Some((*source_slot, authored_indices.as_ref())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let due = inside && before.dword_0x10 == 0 && before.phase & 7 == 0;
+        if due {
+            assert_eq!(groups, [(slot, &[120, 125][..])]);
+            assert_eq!(after.dword_0x10, 10, "rearm is written after publication");
+        } else {
+            assert!(
+                groups.is_empty(),
+                "group13 must wait for overlap, rearm and phase"
+            );
+        }
+        due
+    };
+    let checkpoint_handles = |sim: &Mc2Simulation| {
+        sim.economy()
+            .authored_model59()
+            .iter()
+            .filter(|row| row.active && matches!(row.authored_index, 120 | 125))
+            .map(|row| {
+                assert_eq!((row.source_class, row.model, row.action), (10, 59, 64));
+                (
+                    row.authored_index,
+                    sim.source_arena().handle(row.source_entity_index).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Only the real player's position is controlled on this clone. All
+    // countdown writes, visits, allocations and emitter callbacks are live.
+    place(&mut session, trigger.position.x);
+    assert!(checkpoint_handles(&session).is_empty());
+    assert!((0..8).any(|_| visit(&mut session, true)));
+    let first = checkpoint_handles(&session);
+    assert_eq!(
+        first.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+        [120, 125]
+    );
+    for _ in 0..16 {
+        assert!(!visit(&mut session, true));
+        assert_eq!(
+            switch(&session).dword_0x10,
+            10,
+            "inside hold does not clear rearm"
+        );
+    }
+    assert_eq!(checkpoint_handles(&session), first);
+
+    let clear_x = trigger.position.x.wrapping_add(32 * 256);
+    place(&mut session, clear_x);
+    for remaining in (1..10).rev() {
+        assert!(!visit(&mut session, false));
+        assert_eq!(switch(&session).dword_0x10, remaining);
+    }
+    place(&mut session, trigger.position.x);
+    assert!(!visit(&mut session, true));
+    assert_eq!(
+        switch(&session).dword_0x10,
+        1,
+        "nine clear visits cannot rearm"
+    );
+    place(&mut session, clear_x);
+    assert!(!visit(&mut session, false));
+    assert_eq!(
+        switch(&session).dword_0x10,
+        0,
+        "the tenth clear visit rearms"
+    );
+    assert_eq!(checkpoint_handles(&session), first);
+
+    place(&mut session, trigger.position.x);
+    assert!((0..8).any(|_| visit(&mut session, true)));
+    let all = checkpoint_handles(&session);
+    let second = all
+        .strip_prefix(first.as_slice())
+        .expect("repeat retains the living first pair");
+    assert_eq!(
+        second.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+        [120, 125]
+    );
+    assert!(
+        second
+            .iter()
+            .all(|(_, second)| first.iter().all(|(_, first)| second != first))
+    );
+    assert!(!visit(&mut session, true));
+    let receipts = session.cf10_production_schedule_receipts();
+    for (_, emitter) in second {
+        assert!(receipts.iter().any(|receipt| matches!(receipt,
+            ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == emitter.source_slot
+                    && selector.registry_key().selector == (BehaviorSelector::ClassAction { class: 10, action: 64 })
+        )), "new checkpoint emitter reaches its ordinary numeric callback");
+    }
 }
 
 #[test]

@@ -3330,6 +3330,17 @@ real defects or close existing finite coverage gaps without inventing missing
 behavior. A configured constructor boundary is not an earned final mission;
 recorded public inputs are fixed regression evidence, not an AI playthrough.
 
+The current Level9 Evirith Gor route now verifies the real repeat-entry
+switch as well. After authored group3 activates, the test controls only
+player geometry on a clone of that live session. Row119 publishes group13
+twice in order as `[120,125]`; it keeps the same controller lifetime,
+does not rearm during overlap or after nine clear visits, and rearms on
+the tenth. Both fresh emitters reach their normal action64 callbacks.
+The same exact test retains and passes all prior mission assertions
+(231.77 s, one test). No runtime code changed or player build was needed.
+Full `mc-6qf.1` stays open. See
+`generated/level9-repeat-switch-20261118/`.
+
 The configured final368/374 checks passed7.388s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
 row374 overlap to four authored model28 roots and following reclaim. Final392
