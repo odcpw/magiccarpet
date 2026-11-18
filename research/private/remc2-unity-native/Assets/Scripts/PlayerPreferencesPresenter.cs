@@ -348,7 +348,8 @@ namespace MagicCarpet.Native
                 return true;
             }
             var key = input.keyCode.ToString();
-            if (slot < 4 && (input.keyCode is KeyCode.C or KeyCode.L or KeyCode.Space))
+            // sub_79E10 does not offer these fixed gameplay controls in any slot.
+            if (input.keyCode is KeyCode.C or KeyCode.L or KeyCode.Space)
             {
                 keyCaptureRejected = true;
                 status = "That key conflicts with a reserved control.";

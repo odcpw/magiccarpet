@@ -189,15 +189,31 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
                     Assert.That(preferences.Current.preferences.keys[1], Is.EqualTo("Minus"));
                     Assert.That(preferences.Current.preferences.player_name, Is.EqualTo("PLAYER"));
-                    var confirmed = File.ReadAllBytes(Path.Combine(profile, "player-preferences.json"));
+                    var profilePath = Path.Combine(profile, "player-preferences.json");
+                    var confirmed = File.ReadAllBytes(profilePath);
+
+                    preferences.Open();
+                    preferences.BeginKeyCapture(4);
+                    foreach (var fixedKey in new[] { KeyCode.C, KeyCode.L, KeyCode.Space })
+                    {
+                        var reserved = new Event { type = EventType.KeyDown, keyCode = fixedKey };
+                        Assert.That(preferences.CaptureKey(reserved), Is.True);
+                        Assert.That(reserved.type, Is.EqualTo(EventType.Used));
+                        Assert.That(preferences.Apply(), Is.False, $"{fixedKey} cannot be assigned to the map");
+                        Assert.That(preferences.IsOpen, Is.True);
+                        Assert.That(preferences.Current.preferences.keys[4], Is.EqualTo("Q"));
+                        Assert.That(File.ReadAllBytes(profilePath), Is.EqualTo(confirmed));
+                    }
+                    Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape }),
+                        Is.True, "Escape still exits a rejected capture");
+                    preferences.Cancel();
 
                     preferences.Open();
                     preferences.BeginKeyCapture(0);
                     Assert.That(preferences.CaptureKey(Event.KeyboardEvent("s")), Is.True);
                     preferences.Cancel();
                     Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
-                    Assert.That(File.ReadAllBytes(Path.Combine(profile, "player-preferences.json")),
-                        Is.EqualTo(confirmed));
+                    Assert.That(File.ReadAllBytes(profilePath), Is.EqualTo(confirmed));
 
                     preferences.Open();
                     preferences.BeginKeyCapture(0);
