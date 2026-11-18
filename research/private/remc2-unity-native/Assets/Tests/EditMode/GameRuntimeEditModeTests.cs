@@ -1771,7 +1771,7 @@ namespace MagicCarpet.Native.Tests
                         if (looseManaHelp && frame > 0 && frame % 80 == 0)
                             transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
                         runtime.QualificationDriveGameRuntimeFrames(1);
-                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13));
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13).And.Not.EqualTo(14));
                         if (hint.VisibleRow != 0 && (drawn.Count == 0 || drawn[drawn.Count - 1].Row != hint.VisibleRow))
                             drawn.Add((hint.VisibleRow, native.Tick));
                     }
@@ -1786,6 +1786,17 @@ namespace MagicCarpet.Native.Tests
                     var minimap = runtime.GameRuntimeProductionIdentity.display_settings.minimap;
                     foreach (var refused in new[] { 12, 13 })
                         AssertSourceHelpWouldWin(hint, refused, decisiveRow, menus.MapOpen, minimap);
+                    if (menu.LocaleCache.HasCastleReturnReminder)
+                    {
+                        var current = Snapshot();
+                        var holder = current.player_spells.Single(spell => spell.id == "spell.castle");
+                        var hud = native.DayHudState(native.Tick);
+                        Assert.That((current.source_top_status.castle_rows.Single().stage,
+                            holder.acquired, holder.mana_cost, hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                            Is.EqualTo(((byte)1, true, 10000, (short)0, (short)1)));
+                        Assert.That(current.player_vitals.mana, Is.LessThan(holder.mana_cost));
+                        AssertSourceHelpWouldWin(hint, 14, decisiveRow, menus.MapOpen, minimap);
+                    }
                     return;
                 }
 
@@ -1930,10 +1941,27 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        private const string CastleRecastHelpText = "Return to castle and recast castle spell";
+
+        private static void CheckCastleRecastHelpBinding(CampaignMenuPresenter menu)
+        {
+            var binding = menu.GameplayHelpForRow(14);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.X, binding.Y,
+                binding.AgeThreshold, binding.Priority), Is.EqualTo((299, 0x404, 50, 320, 80, 600, 5)));
+            Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(CastleRecastHelpText));
+        }
+
+        [Test]
+        public void ProductionCastleRecastHelpFollowsAnOrdinaryFireballMarkerClose() =>
+            CheckProductionFireballHelp(centerCue: true, mapMasksCue: false, castleRecastCue: true);
+
         [TestCase(false, false)]
         [TestCase(true, false)]
         [TestCase(false, true)]
-        public void ProductionFireballHelpConsumesTheOrdinaryObjectivePopupClose(bool centerCue, bool mapMasksCue)
+        public void ProductionFireballHelpConsumesTheOrdinaryObjectivePopupClose(bool centerCue, bool mapMasksCue) =>
+            CheckProductionFireballHelp(centerCue, mapMasksCue, castleRecastCue: false);
+
+        private static void CheckProductionFireballHelp(bool centerCue, bool mapMasksCue, bool castleRecastCue)
         {
             var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
             var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
@@ -1975,6 +2003,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.hand,
                         hud.left.rawSpellSelector, hud.right.rawSpellSelector),
                         Is.EqualTo((true, true, centerCue ? "none" : "left", (short)(centerCue ? 3 : 0), (short)1)));
+                    if (castleRecastCue) Assert.That(snapshot.source_top_status.castle_rows, Is.Empty);
                 }
 
                 Assert.That(native.Tick, Is.EqualTo(2431));
@@ -2034,21 +2063,37 @@ namespace MagicCarpet.Native.Tests
                     return;
                 }
 
-                ToggleMap(false);
-                for (var frame = 0; frame < 23 && hint.VisibleRow != 10; frame++)
+                var cue = castleRecastCue ? 14 : 10;
+                if (castleRecastCue)
                 {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen, hint.VisibleRow),
+                        Is.EqualTo((false, 20UL, true, 0)));
                     Draw();
-                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "Fireball wins its source-order tie with Castle");
+                    Assert.That(native.Tick - closedAt, Is.EqualTo(21UL));
+                }
+                else
+                {
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 23 && hint.VisibleRow != cue; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "Fireball wins its source-order tie with Castle");
+                    }
                 }
                 var x = centerCue ? 320 : 540;
                 var y = centerCue ? 80 : 32;
                 Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint), Pending()),
-                    Is.EqualTo((10, x, y, (object)49, false)));
-                var binding = menu.GameplayHelpForRow(10);
-                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
-                    Is.EqualTo((295, 0x624, 50, 600, 5)));
-                const string text = "Use fireball spell to destroy target";
-                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                    Is.EqualTo((cue, x, y, (object)49, false)));
+                var text = castleRecastCue ? CastleRecastHelpText : "Use fireball spell to destroy target";
+                if (castleRecastCue) CheckCastleRecastHelpBinding(menu);
+                else
+                {
+                    var binding = menu.GameplayHelpForRow(10);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((295, 0x624, 50, 600, 5)));
+                    Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                }
                 CheckFireball();
                 display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
                 foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
@@ -2094,10 +2139,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
                 CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
                 runtime.QualificationDriveGameRuntimeFrames(49);
-                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((10, false)));
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((cue, false)));
                 Draw();
                 Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
-                TestContext.WriteLine($"Fireball request armed at {closedAt}, row10 painted at {tick}, anchor ({x}, {y}).");
+                TestContext.WriteLine($"Fireball request armed at {closedAt}, row{cue} painted at {tick}, anchor ({x}, {y}).");
             }
             finally
             {
@@ -2121,6 +2166,10 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void ProductionPossessionHelpFollowsAnOrdinaryLooseManaMarkerClose() =>
             CheckProductionPossessionMapCue(18, mapMasksCue: false);
+
+        [Test]
+        public void ProductionCastleRecastHelpFollowsAnOrdinaryPossessionMarkerClose() =>
+            CheckProductionPossessionMapCue(18, mapMasksCue: false, castleRecastCue: true);
 
         [Test]
         public void ProductionLooseManaMarkerLosesItsHelpWhenActuallyClaimed()
@@ -2171,7 +2220,7 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
-        private static void CheckProductionPossessionMapCue(int sourceRow, bool mapMasksCue)
+        private static void CheckProductionPossessionMapCue(int sourceRow, bool mapMasksCue, bool castleRecastCue = false)
         {
             var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
             var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
@@ -2242,10 +2291,18 @@ namespace MagicCarpet.Native.Tests
                     Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
                     var pixels = ReadObjectivePixels(output);
                     Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
-                    var sourceX = x + 1 - raster.X;
-                    var sourceY = y - raster.Y;
-                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
-                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    if (row == 14)
+                    {
+                        Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(x));
+                        Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(y + artwork.Corner.Height));
+                    }
+                    else
+                    {
+                        var sourceX = x + 1 - raster.X;
+                        var sourceY = y - raster.Y;
+                        Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                        Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    }
                     runtime.QualificationRefreshGameRuntimeProductionEvents();
                     window.SendEvent(new Event { type = EventType.Repaint });
                     CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
@@ -2257,6 +2314,21 @@ namespace MagicCarpet.Native.Tests
                 var possession = spells.Single(spell => spell.id == "spell.possession");
                 Assert.That((possession.acquired, possession.hand, native.DayHudState(native.Tick).right.rawSpellSelector),
                     Is.EqualTo((true, "right", (short)1)));
+                void CheckUnassignedPossession()
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    var holder = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((holder.acquired, holder.hand, hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo((true, "none", (short)0, (short)3)));
+                    Assert.That(snapshot.source_top_status.castle_rows, Is.Empty);
+                }
+                if (castleRecastCue)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.speed", 0, rightHand: true);
+                    Draw();
+                    CheckUnassignedPossession();
+                }
                 Assert.That(surface, Is.Not.Null);
                 ToggleMap(true);
                 var looseManaPrecedesBuilding = sourceRow == 21 && menu.LocaleCache.HasLooseManaHelp;
@@ -2331,17 +2403,32 @@ namespace MagicCarpet.Native.Tests
                     return;
                 }
 
-                ToggleMap(false);
-                for (var frame = 0; frame < 23 && hint.VisibleRow != 11; frame++)
+                var cue = castleRecastCue ? 14 : 11;
+                if (castleRecastCue)
                 {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen, hint.VisibleRow, fireball.GetValue(hint)),
+                        Is.EqualTo((false, 20UL, true, 0, (object)false)));
                     Draw();
-                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "row11 wins an equally overdue Castle cue");
+                    Assert.That(native.Tick - closedAt, Is.EqualTo(21UL));
+                    CheckUnassignedPossession();
+                    CheckCastleRecastHelpBinding(menu);
+                    CheckIndexedCue(14, 299, CastleRecastHelpText, 320, 80);
                 }
-                CheckIndexedCue(11, 296, "Use possession spell to possess mana", 600, 32);
+                else
+                {
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 23 && hint.VisibleRow != cue; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "row11 wins an equally overdue Castle cue");
+                    }
+                    CheckIndexedCue(11, 296, "Use possession spell to possess mana", 600, 32);
+                }
                 Assert.That(Pending(), Is.False);
-                TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; row11 painted at {native.Tick}.");
+                TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; row{cue} painted at {native.Tick}.");
                 runtime.QualificationDriveGameRuntimeFrames(49);
-                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((11, false)));
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((cue, false)));
                 Draw();
                 Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
             }

@@ -120,7 +120,7 @@ namespace MagicCarpet.Native
                 bool hasLowLifeHelp = false, bool hasIdleHelp = false, bool hasVitalsHelp = false,
                 bool hasCastHelp = false, bool hasSpellSearchHelp = false, bool hasCastleSpellHelp = false,
                 bool hasFireballHelp = false, Func<sbyte> sourceObjectiveStageKind = null,
-                bool hasPossessionHelp = false, bool hasLooseManaHelp = false)
+                bool hasPossessionHelp = false, bool hasLooseManaHelp = false, bool hasCastleReturnReminder = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -144,6 +144,7 @@ namespace MagicCarpet.Native
                     ids.Insert(ids.FindIndex(row => row > 10), 10);
                 }
                 if (hasIdleHelp) ids.InsertRange(ids.IndexOf(40), new[] { 15, 16 });
+                if (hasCastleReturnReminder) ids.Insert(ids.FindIndex(row => row > 14), 14);
                 if (hasPossessionHelp)
                     foreach (var row in new[] { 9, 11, 21 })
                         ids.Insert(ids.FindIndex(later => later > row), row);
@@ -210,7 +211,8 @@ namespace MagicCarpet.Native
                 bool? fireballSpellEnabled = null, int? fireballHandAnchorX = null,
                 bool? possessionSpellEnabled = null, int? possessionHandAnchorX = null,
                 IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> entityMarks = null,
-                ushort nearestEntitySubject = 0, ushort nearestManaSubject = 0)
+                ushort nearestEntitySubject = 0, ushort nearestManaSubject = 0,
+                bool canFundCastleUpgrade = false)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -291,6 +293,10 @@ namespace MagicCarpet.Native
                                     11 => possessionRequested && possessionSpellEnabled == true && !mapOpen,
                                     12 => hasCastleSpellWithoutCastle && !mapOpen,
                                     13 => hasCastleSpellWithoutCastle && castleHandAnchorX == null,
+                                    // The marker-close and Castle-mana branches share the same source row.
+                                    14 => canFundCastleUpgrade ||
+                                        (fireballRequested && fireballSpellEnabled == true && !fireballHandAnchorX.HasValue) ||
+                                        (possessionRequested && possessionSpellEnabled == true && !possessionHandAnchorX.HasValue),
                                     15 or 16 => idleDraws > 100,
                                     18 => nearestManaSubject != 0,
                                     21 => nearestEntitySubject != 0,
@@ -329,7 +335,7 @@ namespace MagicCarpet.Native
                             (AnchorX, AnchorY) = (possessionHandAnchorX.Value, 32);
                         else if (currentRow.Binding.Row == 12 && castleHandAnchorX.HasValue)
                             (AnchorX, AnchorY) = (castleHandAnchorX.Value, 32);
-                        else if (currentRow.Binding.Row is 5 or 7 or 9 or 10 or 11 or 12 or 13 or 36 or 37 or 38 or 39)
+                        else if (currentRow.Binding.Row is 5 or 7 or 9 or 10 or 11 or 12 or 13 or 14 or 36 or 37 or 38 or 39)
                             (AnchorX, AnchorY) = (currentRow.Binding.X, currentRow.Binding.Y);
                         else if (currentRow.Binding.Row == 41)
                         {
@@ -821,7 +827,7 @@ namespace MagicCarpet.Native
                 languageCache.HasLowLifeHelp, languageCache.HasIdleHelp, languageCache.HasVitalsHelp,
                 languageCache.HasCastHelp, languageCache.HasSpellSearchHelp, languageCache.HasCastleSpellHelp,
                 languageCache.HasFireballHelp, ReadCurrentHelpObjectiveStageKind, languageCache.HasPossessionHelp,
-                languageCache.HasLooseManaHelp);
+                languageCache.HasLooseManaHelp, languageCache.HasCastleReturnReminder);
         }
 
         private sbyte ReadCurrentHelpObjectiveStageKind()
@@ -903,8 +909,11 @@ namespace MagicCarpet.Native
             // nonempty holder does not trigger the Castle search reminder.
             var castleSpell = hasSpell ? Array.Find(observation.player_spells, spell => spell.id == "spell.castle") : null;
             var missingCastle = castleSpell?.availability == "not_acquired";
+            var castleRows = observation.source_top_status?.castle_rows;
             var hasCastleSpellWithoutCastle = castleSpell != null && !missingCastle &&
-                observation.source_top_status?.castle_rows?.Length == 0;
+                castleRows?.Length == 0;
+            var canFundCastleUpgrade = castleSpell?.acquired == true && castleRows is { Length: 1 } &&
+                castleRows[0].stage < 6 && vitals != null && vitals.mana >= castleSpell.mana_cost;
             int? castleHandAnchorX = hud.left.rawSpellSelector == 2 ? 540 :
                 hud.right.rawSpellSelector == 2 ? 600 : null;
             var fireballSpell = hasSpell && hint.HasFireballHelp
@@ -923,7 +932,7 @@ namespace MagicCarpet.Native
                 hasSpell && hud.left.rawSpellSelector >= 0, hasSpell && hud.right.rawSpellSelector >= 0,
                 !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX,
                 fireballSpellEnabled, fireballHandAnchorX, possessionSpellEnabled, possessionHandAnchorX,
-                entityMarks, nearestEntity, nearestMana);
+                entityMarks, nearestEntity, nearestMana, canFundCastleUpgrade);
         }
 
         private ushort NearestMinimapHelpSubject(

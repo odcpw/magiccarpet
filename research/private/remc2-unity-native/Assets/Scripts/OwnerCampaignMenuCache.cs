@@ -289,6 +289,7 @@ namespace MagicCarpet.Native
                         4525 => "5b18ce4a633f19ebc951d387cc2669553767c316d18f623cf60ac3f44e7a01db",
                         4857 => "6f4cedce621770af8f0a1ea92cf3cc9e79d6375ebe9057899be1ea2516a2a1be",
                         4967 => "a1262ada4fb8bf14f8d0e7077748636ea4190b4773d3dcee810fff36eee585c2",
+                        5080 => "6dfd1ca61db643b2ef2ae94b9dda41c3de03bcd5acb1c861e6417426ffdb2f75",
                         _ => throw new InvalidDataException("source gameplay help receipt is incomplete")
                     };
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
@@ -320,7 +321,8 @@ namespace MagicCarpet.Native
                         sourceRows.Insert(sourceRows.IndexOf(12), 11);
                         sourceRows.Insert(sourceRows.IndexOf(36), 21);
                     }
-                    if (helpReceipt.bytes == 4967) sourceRows.Insert(sourceRows.IndexOf(21), 18);
+                    if (helpReceipt.bytes >= 4967) sourceRows.Insert(sourceRows.IndexOf(21), 18);
+                    if (helpReceipt.bytes == 5080) sourceRows.Insert(sourceRows.IndexOf(15), 14);
                     if (helpReceipt.bytes >= 3856) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 38, 39 });
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
@@ -614,6 +616,7 @@ namespace MagicCarpet.Native
         internal bool HasPossessionHelp => gameplayHelp.ContainsKey(9) && gameplayHelp.ContainsKey(11) &&
             gameplayHelp.ContainsKey(21);
         internal bool HasLooseManaHelp => gameplayHelp.ContainsKey(18);
+        internal bool HasCastleReturnReminder => gameplayHelp.ContainsKey(14);
         internal bool HasObjectiveMarkHelp => gameplayHelp.ContainsKey(81) && gameplayHelp.ContainsKey(82);
 
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
