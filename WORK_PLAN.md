@@ -937,6 +937,27 @@ original English text, indexed pixels, draw lifetime and replay purity
 passed in the exact 32.76 s GLCore check. Only the existing test changed.
 See `generated/possession-search-help-20261118.0viovs0s/`.
 
+Canonical `744e27d2`, published as `85860242`, binds Castle return reminder
+row 14 to the original one-shot Fireball/Possession requests and the linked
+Castle mana predicate. Three exact GLCore checks passed in 105.05 s on
+Revealed Way. The real objective-marker close after normal hand reassignment
+shows row 14 at tick 2592. The real sphere 259 close after reassignment shows
+it at tick 2522. Both verified the owner text, centered indexed pixels,
+50 draws and replay purity. An actual paid stage-1 Castle below the current
+holder cost refused row 14 at a poll it would otherwise win. In the strict
+NightSpire continuation the affordable t1739 seed has no current owner
+link; the link appears at t1740 when the cost is already 10,000. An
+affordable linked Castle positive remains open under `mc-oi6.6`.
+
+Original `build-nyblk8x9` reuses the verified native `1d235e04`; since that
+native build the only Rust source change is the test-only Level2 regression.
+The normal launcher cold-loaded Revealed Way with three owner roles and
+the matching mapped native, without input or retry. Only the help table
+and its manifest differ in the verified active menu cache. UBS C# coverage
+was partial with no critical finding on a changed line. See
+`generated/spell-menu-reminder-20261118.YM4AfQhP/` and
+`generated/castle-recast-help-20261118.a2t5zV/native-affordability-proof.json`.
+
 Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
 condition, authored ID and live stage in one guarded native/CLI read. Both
 consumers matched the retained ordinary NightSpire tick 168→169 boundary:
