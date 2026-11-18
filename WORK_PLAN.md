@@ -1190,6 +1190,10 @@ All 626 recorded inputs match the local, Rig and published source. The
 matching client opened NightSpire with all 30 roles, one portal click and
 zero retries. See `generated/wind-audio-20261118/`. The Wind chain exercised a bounded
 source scenario; actual Cave49 PCM at an admitted Wind encounter remains open.
+The retained save and input census found no earned Karakir route. The
+shortest admissible witness is a Karakir save before the row29 overlap
+at tile (201,204). The retained Phyrydia Whirlwind state has neither the
+2,000 player mana nor the 60,000 Castle mana required for the first tier.
 
 ### Original audio, minimap and campaign continuity — 2026-11-18
 
@@ -1212,6 +1216,12 @@ uses the scheduler's current creature chain. The same input that previously
 failed published all ten remaining Skeletons in source order after the dying
 member was unlinked. The Castle marker retired after combat loss and reuse.
 Its collector stayed alive, so direct collector-marker removal remains open.
+Repeating that bounded Day3 route against installed native `1d235e04`
+verified that a real hostile impact at tick 2110 damaged Collector 258
+(incarnation 21) for 500 life on the next tick, with its selector 66
+marker retained. The Castle marker retired at tick 2252 and the Collector
+was still alive at tick 2257. Its ordinary death and reuse remain open.
+See `generated/collector-map-retirement-20261118/ordinary-day3-1d235e04/`.
 
 Optimized music callbacks run during accepted gameplay steps. The selected
 owner XMIDI track changes gain from 0.55 at idle to 0.80 in combat. The first
