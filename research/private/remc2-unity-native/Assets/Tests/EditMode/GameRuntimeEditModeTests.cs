@@ -390,7 +390,7 @@ namespace MagicCarpet.Native.Tests
                 SerializeBoundaryEnvelope(envelope), 1024 * 1024);
         }
 
-        private static string[] InstalledOpeningArguments()
+        private static string[] InstalledOpeningArguments(int packageCount = 4)
         {
             var generated = Path.Combine(PrivateRoot, "generated");
             var arguments = new System.Collections.Generic.List<string> {
@@ -399,7 +399,7 @@ namespace MagicCarpet.Native.Tests
                 "-mc-runtime-speech-cache", CampaignSpeechCache,
                 "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded")
             };
-            AppendInstalledPackageArguments(arguments, ReadInstalledCampaignResources(4));
+            AppendInstalledPackageArguments(arguments, ReadInstalledCampaignResources(packageCount));
             return arguments.ToArray();
         }
 
@@ -1277,6 +1277,165 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(hint.VisibleRow, Is.EqualTo(row), "the fiftieth draw still displays its source text");
                     runtime.QualificationDriveGameRuntimeFrames(1);
                     Assert.That(hint.VisibleRow, Is.Zero, "the following frame clears the popup");
+                }
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionCastHelpUsesOrdinarilyAssignedHandsAndSourceDrawClocks()
+        {
+            var caveReplay = Environment.GetEnvironmentVariable("MC_CAST_HELP_CAVE_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs");
+            var arguments = InstalledOpeningArguments(6).Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+            var root = new GameObject("ordinary Cave cast help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                void CheckHands(short rightSelector, ushort rightHolder)
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    Assert.That(snapshot.spell_menu_has_any_spell, Is.True);
+                    Assert.That(snapshot.player_spells.Single(spell => spell.id == "spell.fireball").acquired, Is.True);
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((hud.left.rawSpellSelector, hud.left.holderEntityIndex), Is.EqualTo(((short)0, (ushort)78)));
+                    Assert.That((hud.right.rawSpellSelector, hud.right.holderEntityIndex), Is.EqualTo((rightSelector, rightHolder)));
+                }
+
+                Assert.That(native.Tick, Is.EqualTo(40));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                CheckHands(-1, 0);
+                Assert.That(runtime.QualificationResumeGameRuntimeProduction().mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var draw = 0;
+                void DrawFrame()
+                {
+                    // Brief ordinary speed-key pulses keep the stationary
+                    // movement reminder from preempting the cast-help poll.
+                    draw++;
+                    if (draw % 80 == 79) transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                    if (draw % 80 == 1 && draw > 80) transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                }
+
+                var preceding = new System.Collections.Generic.List<int>();
+                foreach (var (row, record, x, text) in new[] {
+                    (38, 326, 540, "Click on LMB to cast this spell"),
+                    (39, 327, 600, "Click on RMB to cast this spell")
+                })
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority), Is.EqualTo((record, 50, 0x620, x, 32, 800, 2)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    for (var frame = 0; frame < (row == 38 ? 380 : 24) && hint.VisibleRow != row; frame++)
+                    {
+                        DrawFrame();
+                        if (row == 38)
+                        {
+                            Assert.That(hint.VisibleRow, Is.Not.EqualTo(39));
+                            if (hint.VisibleRow > 0 && !preceding.Contains(hint.VisibleRow))
+                                preceding.Add(hint.VisibleRow);
+                        }
+                    }
+                    Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((row, x, 32)),
+                        $"draw {draw}, native tick {native.Tick}");
+                    Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                    if (row == 38)
+                    {
+                        CollectionAssert.AreEqual(new[] { 36, 37, 38 }, preceding.Where(value => value >= 36));
+                        CheckHands(-1, 0);
+                    }
+                    else CheckHands(0, 78);
+
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var indexedHud = (Texture)Field("gameRuntimeHudIndices");
+                    Assert.That(indexedHud, Is.Not.Null);
+                    var material = (Material)presenterType.GetField("material", flags).GetValue(presenter);
+                    Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(indexedHud));
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    var pixels = ReadObjectivePixels(output);
+                    var palette = surface.FramePaletteRgb8;
+                    var artwork = menu.ObjectiveForProfile("cave");
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var leader = new[] { artwork.BlendSelector, artwork.TextColor };
+                    var sourceAnchor = (32 - raster.Y) * raster.Width + x - raster.X;
+                    CollectionAssert.AreEqual(leader, raster.IndicesThenMask.Skip(sourceAnchor).Take(2));
+                    Assert.That(raster.IndicesThenMask.Skip(raster.Width * raster.Height + sourceAnchor).Take(2), Is.All.EqualTo(1));
+                    var anchor = (raster.Height - 1 - (32 - raster.Y)) * raster.Width + x - raster.X;
+                    CollectionAssert.AreEqual(leader.Select(index => Colour(index)), pixels.Skip(anchor).Take(2));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                    for (var frame = 0; frame < 49; frame++) DrawFrame();
+                    Assert.That(hint.VisibleRow, Is.EqualTo(row), "the fiftieth draw still shows the popup");
+                    DrawFrame();
+                    Assert.That(hint.VisibleRow, Is.Zero, "the draw after expiry clears the popup");
+                    if (row != 38) continue;
+
+                    // The large-map reminder can become overdue again after
+                    // 300 draws and wins priority 4 over the cast rows' 2.
+                    var sawLargeMapHint = false;
+                    for (var frame = 0; frame < 96 && (int)pollDelay.GetValue(hint) >= 0; frame++)
+                    {
+                        DrawFrame();
+                        Assert.That(hint.VisibleRow, Is.Zero.Or.EqualTo(4),
+                            $"after the left hint, draw {draw}, native tick {native.Tick}");
+                        sawLargeMapHint |= hint.VisibleRow == 4;
+                    }
+                    Assert.That(sawLargeMapHint, Is.True, "a newly overdue larger-priority reminder is retained");
+                    Assert.That(pollDelay.GetValue(hint), Is.Negative,
+                        $"a real open poll skips the empty right hand at draw {draw}, native tick {native.Tick}");
+                    CheckHands(-1, 0);
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.fireball", 0, rightHand: true);
                 }
             }
             finally

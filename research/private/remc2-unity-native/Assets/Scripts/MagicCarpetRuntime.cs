@@ -3049,7 +3049,7 @@ namespace MagicCarpet.Native
                         panel.x, panel.y, tier.x, tier.y);
                     return;
                 }
-                AdvanceGameRuntimeHelpHint(hud.left.helpUnavailable != 0, hud.right.helpUnavailable != 0,
+                AdvanceGameRuntimeHelpHint(hud,
                     identity.player_preferences.preferences.show_help,
                     identity.mode == GameRuntimeTransport.PausedMode,
                     observation.value.objective_textbox_ticks != 0 || observation.value.exit_sequence_active ||
