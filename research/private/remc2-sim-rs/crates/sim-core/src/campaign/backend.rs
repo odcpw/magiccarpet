@@ -49,7 +49,7 @@ use crate::{
     campaign::{
         CampaignOpenError, CampaignSession,
         dispatch::CAMPAIGN_BEHAVIOR_REGISTRY,
-        journal::{CampaignEffect, EffectCursor, EffectPageError, EffectRecord},
+        journal::{CampaignEffect, EconomyEffect, EffectCursor, EffectPageError, EffectRecord},
         spec::{CampaignDefinition as CampaignDescriptor, CampaignSelection},
     },
     game_definition::{
@@ -63,12 +63,12 @@ use crate::{
         creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
-        ActorObservation, CampaignSnapshot, EconomyObservation, EventPage, GameAdapter, GameAssetReference, GameAudioCommand,
-        GameCommand, GameCompletion, GameCompletionStatus, GameEvent, GameSessionBackend,
-        LateralControl, LongitudinalControl, ObjectiveObservation, ObjectiveProgress, PlayerMotion,
-        PlayerPose,
-        PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
-        SessionGuard, TerrainSample, TerrainWindowRequest,
+        ActorObservation, CampaignSnapshot, EconomyEventPayload, EconomyObservation, EventPage,
+        GameAdapter, GameAssetReference, GameAudioCommand, GameCommand, GameCompletion,
+        GameCompletionStatus, GameEvent, GameSessionBackend, LateralControl, LongitudinalControl,
+        ObjectiveObservation, ObjectiveProgress, PlayerMotion, PlayerPose, PlayerVitals,
+        PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId, SessionGuard,
+        TerrainSample, TerrainWindowRequest,
     },
     level_definition::SpellKind,
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
@@ -4934,7 +4934,12 @@ impl GameSessionBackend for Mc2CampaignBackend {
         }
     }
 
-    fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error> {
+    fn events_after(
+        &self,
+        guard: SessionGuard,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<EventPage, Self::Error> {
         let head = self.campaign.effect_cursor().next_sequence;
         let requested = EffectCursor {
             generation: self.campaign.generation(),
@@ -4963,7 +4968,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let records: &[EffectRecord] = if limit == 0 { &[] } else { &page.records };
         let events = records
             .iter()
-            .map(|record| self.game_event(record))
+            .map(|record| self.game_event(guard, record))
             .collect::<Result<Vec<_>, _>>()?;
         let next_cursor = events.last().map_or(cursor, |event| event.sequence);
         Ok(EventPage {
@@ -5625,10 +5630,74 @@ impl Mc2CampaignBackend {
         ))
     }
 
-    fn game_event(&self, record: &EffectRecord) -> Result<GameEvent, CampaignBackendError> {
-        let (event_id, actor, participant) = match &record.effect {
-            CampaignEffect::Dispatch(event) => match event {
+    fn game_event(
+        &self,
+        guard: SessionGuard,
+        record: &EffectRecord,
+    ) -> Result<GameEvent, CampaignBackendError> {
+        let lifetime = |handle| self.actor_lifetime_id(guard, handle);
+        let economy = record.economy.as_deref().and_then(|record| {
+            let tick = record.tick;
+            Some(match record.effect {
+                EconomyEffect::CastleConstructionStarted {
+                    castle,
+                    owner_slot,
+                    stage,
+                } => EconomyEventPayload::CastleConstructionStarted {
+                    tick,
+                    castle: lifetime(castle),
+                    owner: self.participant(owner_slot.into())?,
+                    stage,
+                },
+                EconomyEffect::ManaSphereCollected {
+                    collector,
+                    sphere,
+                    mana,
+                } => EconomyEventPayload::ManaSphereCollected {
+                    tick,
+                    collector: lifetime(collector),
+                    sphere: lifetime(sphere),
+                    mana,
+                },
+                EconomyEffect::ManaDeposited {
+                    collector,
+                    castle,
+                    mana,
+                } => EconomyEventPayload::ManaDeposited {
+                    tick,
+                    collector: lifetime(collector),
+                    castle: lifetime(castle),
+                    mana,
+                },
+            })
+        });
+        let (event_id, actor, participant) = match (economy, &record.effect) {
+            (
+                Some(
+                    payload @ EconomyEventPayload::CastleConstructionStarted {
+                        castle, owner, ..
+                    },
+                ),
+                _,
+            ) => (payload.event_id(), Some(castle), Some(owner)),
+            (
+                Some(
+                    payload @ (EconomyEventPayload::ManaSphereCollected { collector, .. }
+                    | EconomyEventPayload::ManaDeposited { collector, .. }),
+                ),
+                _,
+            ) => (payload.event_id(), Some(collector), None),
+            (None, CampaignEffect::Dispatch(event)) => match event {
                 Mc2DispatchEvent::Error { .. } => ("session.dispatch_fault", None, None),
+                Mc2DispatchEvent::Economy {
+                    event:
+                        crate::native_world::Level2EconomyEvent::CastleConstructionSound { .. }
+                        | crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                            ..
+                        }
+                        | crate::native_world::Level2EconomyEvent::CastleDefenderArrived { .. },
+                    ..
+                } => ("actor.behavior_dispatched", None, None),
                 _ => {
                     let (_, _, _, _, source_slot) = event.campaign_projection();
                     (
@@ -5638,7 +5707,7 @@ impl Mc2CampaignBackend {
                     )
                 }
             },
-            CampaignEffect::SharedSpell(event) => match *event {
+            (None, CampaignEffect::SharedSpell(event)) => match *event {
                 Level2SharedSpellEvent::SpellCollected {
                     source_slot,
                     player_entity_index,
@@ -5675,7 +5744,7 @@ impl Mc2CampaignBackend {
                 ),
                 Level2SharedSpellEvent::AbilityImproved { .. } => ("ability.improved", None, None),
             },
-            CampaignEffect::Flight(event) => match *event {
+            (None, CampaignEffect::Flight(event)) => match *event {
                 FlightEvent::PrepareSound {
                     entity_index,
                     player_index,
@@ -5714,8 +5783,10 @@ impl Mc2CampaignBackend {
                 FlightEvent::ShowHelpHint { .. } => ("ui.help_hint_requested", None, None),
                 FlightEvent::CloseHelpPopup => ("ui.help_popup_closed", None, None),
             },
-            CampaignEffect::SceneChange { .. } => ("session.scene_changed", None, None),
-            CampaignEffect::ObjectivePresentation { .. } => ("ui.objective_presented", None, None),
+            (None, CampaignEffect::SceneChange { .. }) => ("session.scene_changed", None, None),
+            (None, CampaignEffect::ObjectivePresentation { .. }) => {
+                ("ui.objective_presented", None, None)
+            }
         };
         Ok(GameEvent {
             sequence: record.sequence.wrapping_add(1),
@@ -5727,6 +5798,7 @@ impl Mc2CampaignBackend {
             actor,
             participant,
             asset: None,
+            economy,
         })
     }
 }

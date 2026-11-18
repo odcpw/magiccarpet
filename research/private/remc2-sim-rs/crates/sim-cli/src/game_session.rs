@@ -13,8 +13,8 @@ use sim_core::game_runtime::{
     RuntimeGuard, RuntimeMode, RuntimeTransitionError,
 };
 use sim_core::game_session::{
-    ActorPageRequest, CampaignSnapshot, GAME_SESSION_CONTRACT, GameCommand, GameSession,
-    GameSessionError, MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, SessionGuard,
+    ActorPageRequest, CampaignSnapshot, ECONOMY_EVENT_IDS, GAME_SESSION_CONTRACT, GameCommand,
+    GameSession, GameSessionError, MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, SessionGuard,
     SessionObservation, TERRAIN_GRID_SIDE, TerrainWindowRequest,
 };
 use std::fs::{File, OpenOptions};
@@ -393,7 +393,8 @@ impl Stream {
                         "grid_side": TERRAIN_GRID_SIDE, "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,
                         "wraps": false, "result": "guarded row-major terrain samples"},
                     "describe": {"limit": "1..100, default 100", "cursor": "optional returned next_cursor", "result": "semantic catalog descriptors; effective values when a session is bound"},
-                    "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0", "limit": "1..100"},
+                    "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0",
+                        "limit": "1..100", "economy_event_payloads": ECONOMY_EVENT_IDS},
                     "step": {"guard": "runtime_guard", "session_guard": "session_guard", "input": GameCommand::default(), "ticks": 1},
                     "pause": {"guard": "runtime_guard"}, "resume": {"guard": "runtime_guard"},
                     "paused_frame": {"guard": "runtime_guard", "session_guard": "session_guard"},

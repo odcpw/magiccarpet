@@ -18,11 +18,11 @@ use sim_core::{
     },
 };
 use sim_session::{
-    ActorPage, ActorPageRequest, EconomyPage, EventPage, GameAudioCommand, GameCommand, GameSession,
-    GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE, MAX_OBJECTIVE_STAGES,
-    ObjectiveObservation, OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode,
-    SessionObservation, MAX_TERRAIN_WINDOW_SIDE, TERRAIN_GRID_SIDE, TerrainWindow,
-    TerrainWindowRequest,
+    ActorPage, ActorPageRequest, ECONOMY_EVENT_IDS, EconomyPage, EventPage, GameAudioCommand,
+    GameCommand, GameSession, GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE,
+    MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, ObjectiveObservation, OpenSessionError,
+    SessionGuard, SessionGuardError, SessionGuardErrorCode, SessionObservation, TERRAIN_GRID_SIDE,
+    TerrainWindow, TerrainWindowRequest,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -541,6 +541,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                         "kinds": ["castle", "collector", "mana_sphere"],
                         "maximum_page_size": MAX_ACTOR_PAGE_SIZE
                     },
+                    "economy_event_payloads": ECONOMY_EVENT_IDS,
                     "terrain_window": {
                         "grid_side": TERRAIN_GRID_SIDE,
                         "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,

@@ -7236,10 +7236,19 @@ impl Mc2Simulation {
     /// event slice. The latter remains a compatibility projection until the
     /// generic CF-12 reader replaces it.
     fn push_dispatch_effect(&mut self, event: Mc2DispatchEvent) {
+        self.push_dispatch_effect_with_economy(event, None);
+    }
+
+    fn push_dispatch_effect_with_economy(
+        &mut self,
+        event: Mc2DispatchEvent,
+        economy: Option<crate::campaign::journal::EconomyEffect>,
+    ) {
         self.flush_shared_effects();
         let turn = self.session.state.live.core.runtime.global_turn;
+        let tick = self.state.tick;
         self.effect_journal_mut()
-            .append_dispatch(turn, event.clone());
+            .append_economy_dispatch(turn, event.clone(), tick, economy);
         Vec::push(&mut self.session.state.scratch.dispatch_events, event);
     }
 
@@ -12533,11 +12542,79 @@ impl Mc2Simulation {
                 );
             }
             let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
-            self.push_dispatch_effect(Mc2DispatchEvent::Economy {
-                pass,
-                source_slot,
-                event,
-            });
+            let economy = self.capture_economy_effect(event);
+            self.push_dispatch_effect_with_economy(
+                Mc2DispatchEvent::Economy {
+                    pass,
+                    source_slot,
+                    event,
+                },
+                economy,
+            );
+        }
+    }
+
+    fn capture_economy_effect(
+        &self,
+        event: Level2EconomyEvent,
+    ) -> Option<crate::campaign::journal::EconomyEffect> {
+        use crate::campaign::{journal::EconomyEffect, source_arena::SourceEntityView};
+        use crate::native_world::Level2DynamicArenaKind as Kind;
+
+        let arena = self.source_arena();
+        let actor = |slot, kind| {
+            let handle = arena.handle(slot)?;
+            matches!(arena.resolve(handle), Some(SourceEntityView::Dynamic(current)) if current == kind)
+                .then_some(handle)
+        };
+        match event {
+            // This existing dispatch is emitted after the construction child
+            // is successfully allocated, including the held Castle path.
+            Level2EconomyEvent::CastleConstructionSound {
+                source_entity_index,
+                ..
+            } => {
+                let castle = actor(source_entity_index, Kind::CastleRoot)?;
+                let root = arena.economy.castle_entry(source_entity_index)?;
+                let owner_slot = root.owner_entity_index;
+                let owner = arena.handle(owner_slot)?;
+                if owner.generation != root.owner_slot_generation
+                    || !matches!(arena.resolve(owner), Some(SourceEntityView::Imported(row)) if row.class == 3 && matches!(row.model, 0 | 1))
+                    || !self.players().iter().any(|player| {
+                        player.entity_index == owner_slot && player.active_player_index >= 0
+                    })
+                {
+                    return None;
+                }
+                Some(EconomyEffect::CastleConstructionStarted {
+                    castle,
+                    owner_slot,
+                    stage: root.level,
+                })
+            }
+            Level2EconomyEvent::CastleDefenderCollectedSphere {
+                defender_slot,
+                sphere_id,
+                mana,
+            } => {
+                // The collector has hidden the sphere, but it occupies this
+                // incarnation until its own later reclaim callback.
+                Some(EconomyEffect::ManaSphereCollected {
+                    collector: actor(defender_slot, Kind::CastleDefender)?,
+                    sphere: actor(u16::try_from(sphere_id).ok()?, Kind::ManaSphere)?,
+                    mana,
+                })
+            }
+            Level2EconomyEvent::CastleDefenderArrived {
+                defender_slot,
+                castle_id,
+                mana,
+            } => Some(EconomyEffect::ManaDeposited {
+                collector: actor(defender_slot, Kind::CastleDefender)?,
+                castle: actor(castle_id, Kind::CastleRoot)?,
+                mana,
+            }),
+            _ => None,
         }
     }
 
@@ -31248,6 +31325,10 @@ impl Mc2Simulation {
     ) -> Vec<crate::StepEvidence> {
         #[cfg(test)]
         CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
+        let first_effect = self
+            .effect_journal()
+            .cursor(self.session.generation)
+            .next_sequence;
         let state_before = self.session.state.clone();
         self.session.state.live.core.context.source_speed_index = speed_index;
         self.advance_campaign_palette_frame();
@@ -31558,6 +31639,9 @@ impl Mc2Simulation {
         if !self.session.state.scratch.source_hud_tail_deferred && !self.session.state.scratch.source_hud_tail_legacy {
             self.finish_source_hud_frame(true);
         }
+        let tick = self.state.tick;
+        self.effect_journal_mut()
+            .publish_economy_tick(first_effect, tick);
         evidence
     }
 

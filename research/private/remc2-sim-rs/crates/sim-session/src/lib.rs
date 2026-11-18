@@ -782,6 +782,52 @@ pub struct GameAssetReference {
     pub content_address: String,
 }
 
+const CASTLE_CONSTRUCTION_STARTED: &str = "economy.castle_construction_started";
+const MANA_SPHERE_COLLECTED: &str = "economy.mana_sphere_collected";
+const MANA_DEPOSITED: &str = "economy.mana_deposited";
+pub const ECONOMY_EVENT_IDS: [&str; 3] = [
+    CASTLE_CONSTRUCTION_STARTED,
+    MANA_SPHERE_COLLECTED,
+    MANA_DEPOSITED,
+];
+
+/// Economy facts captured at the authoritative simulation turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EconomyEventPayload {
+    CastleConstructionStarted {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        castle: RuntimeActorId,
+        owner: RuntimeParticipantId,
+        stage: u8,
+    },
+    ManaSphereCollected {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        collector: RuntimeActorId,
+        sphere: RuntimeActorId,
+        mana: i32,
+    },
+    ManaDeposited {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        collector: RuntimeActorId,
+        castle: RuntimeActorId,
+        mana: i32,
+    },
+}
+
+impl EconomyEventPayload {
+    pub const fn event_id(self) -> &'static str {
+        match self {
+            Self::CastleConstructionStarted { .. } => CASTLE_CONSTRUCTION_STARTED,
+            Self::ManaSphereCollected { .. } => MANA_SPHERE_COLLECTED,
+            Self::ManaDeposited { .. } => MANA_DEPOSITED,
+        }
+    }
+}
+
 /// One ordered semantic event. Adapter-private numeric kinds, payload slots,
 /// and source identities are projected to a semantic ID, package asset
 /// identity, and opaque runtime handles. Event-specific semantic payloads may
@@ -797,6 +843,8 @@ pub struct GameEvent {
     pub actor: Option<RuntimeActorId>,
     pub participant: Option<RuntimeParticipantId>,
     pub asset: Option<GameAssetReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub economy: Option<EconomyEventPayload>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1038,7 +1086,12 @@ pub trait GameSessionBackend {
     fn source_speed_index(&self) -> u8 {
         0
     }
-    fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
+    fn events_after(
+        &self,
+        guard: SessionGuard,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     /// Prepare the runtime owner's TopBar value for one guarded frame. This
     /// is a frame argument, not another persisted preference; implementations
@@ -1308,7 +1361,7 @@ impl<B: GameSessionBackend> GameSession<B> {
             .map_err(GameSessionError::Guard)?;
         let page = self
             .backend
-            .events_after(cursor, limit)
+            .events_after(guard, cursor, limit)
             .map_err(GameSessionError::Backend)?;
         Ok(SessionObservation {
             identity: self.identity(),
@@ -1599,7 +1652,12 @@ mod tests {
             }
         }
 
-        fn events_after(&self, cursor: u64, _limit: usize) -> Result<EventPage, Self::Error> {
+        fn events_after(
+            &self,
+            _guard: SessionGuard,
+            cursor: u64,
+            _limit: usize,
+        ) -> Result<EventPage, Self::Error> {
             Ok(EventPage {
                 requested_cursor: cursor,
                 next_cursor: cursor,
