@@ -607,6 +607,119 @@ fn level_nine_switch_publishes_ordered_group_and_binds_live_type_two_target() {
 }
 
 #[test]
+fn baraghan_root_switch_produces_tier_one_gravity_field_and_terrain_consequence() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/campaign-original-environments/level19");
+    let campaign = CampaignSession::open_with_owner_cache(
+        package.join("level19"), owner_cache, CampaignSelection::ordinary(19).unwrap(),
+    ).expect("real Baraghan package and installed owner cache");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = features.iter().find(|f| f.index == 633).copied().unwrap();
+    let field = features.iter().find(|f| f.index == 634).copied().unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 0, 0, 17));
+    assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, 17, 1));
+    let player = session.state.entity_index;
+    let position = switch.world_position(0);
+    session.set_level2_entity_position(player, position).unwrap();
+    let before = session.canonical_terrain().clone();
+    let mut root = None;
+    let mut terrain_changed = false;
+    let mut reclaimed = false;
+    let mut actor_pulled = false;
+    for _ in 0..100 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "switch dispatch errors: {:?}", session.dispatch_events());
+        if root.is_none() && session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 17, authored_indices, .. } if authored_indices.as_ref() == [634, 653, 655])) {
+            let source = session.entities().iter().find(|e| {
+                e.active && e.class == 10 && e.model == 67
+                    && e.position.x == field.world_position(0).x
+                    && e.position.y == field.world_position(0).y
+            }).expect("group17 constructs the actual Gravity Well");
+            assert_eq!(source.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[1].power);
+            assert!(source.life <= i32::from(crate::level_definition::GRAVITY_WELL_TIERS[1].effect_parameter));
+            assert_eq!((source.position.x, source.position.y), (field.world_position(0).x, field.world_position(0).y));
+            root = Some((source.index, session.economy().slot_generation(source.index)));
+        }
+        if root.is_some() && !terrain_changed {
+            let center = field.world_position(0);
+            for y in -15..15_i16 {
+                for x in -15..15_i16 {
+                    let p = Position { x: center.x.wrapping_add_signed(x * 256), y: center.y.wrapping_add_signed(y * 256), z: 0 };
+                    terrain_changed |= before.ground_height(p) != session.canonical_terrain().ground_height(p);
+                }
+            }
+        }
+        if let Some((slot, generation)) = root {
+            let entity = &session.entities()[usize::from(slot)];
+            if !entity.active || session.economy().slot_generation(slot) != generation { reclaimed = true; break; }
+            if !actor_pulled && crate::world::fields::gravity::pull_is_active(entity) {
+                let p = Position {
+                    x: entity.position.x.wrapping_add(768),
+                    y: entity.position.y,
+                    z: entity.source_word_2c().wrapping_add(256),
+                };
+                session.set_level2_entity_position(player, p).unwrap();
+                let mut control = session.clone();
+                control.session.state.live.economy.entities[usize::from(slot)].disable_drawing();
+                control.step_outer_turn(PlayerCommand::default(), 0);
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                actor_pulled = session.state.position != control.state.position;
+            }
+        }
+    }
+    assert!(root.is_some(), "ordinary authored switch must publish its field");
+    assert!(terrain_changed, "the real field must produce a terrain consequence");
+    assert!(actor_pulled, "the real field must pull the player compared with the same turn without the field");
+    assert!(reclaimed, "the real field must be reclaimed after its source lifetime");
+}
+
+#[test]
+fn galiphur_repeating_switch_constructs_tier_two_gravity_well() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL13").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/volcano-quake-20261104-integration/current-owner-package/level13"),
+        PathBuf::from,
+    );
+    let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/campaign-original-environments/level13");
+    let campaign = CampaignSession::open_with_owner_cache(
+        package, owner_cache, CampaignSelection::ordinary(13).unwrap(),
+    ).expect("real Galiphur package and installed owner cache");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = features.iter().find(|f| f.index == 412).copied().unwrap();
+    let field = features.iter().find(|f| f.index == 413).copied().unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 2, 0, 13));
+    assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, 13, 2));
+    let player = session.state.entity_index;
+    let inside = switch.world_position(0);
+    session.set_level2_entity_position(player, inside).unwrap();
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        if session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 13, authored_indices, .. } if authored_indices.as_ref() == [413])) {
+            let source = session.entities().iter().find(|e| {
+                e.active && e.class == 10 && e.model == 67
+                    && e.position.x == field.world_position(0).x && e.position.y == field.world_position(0).y
+            }).expect("group13 constructs its real Gravity Well");
+            assert_eq!(source.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[2].power);
+            assert!(source.life <= i32::from(crate::level_definition::GRAVITY_WELL_TIERS[2].effect_parameter));
+            assert!(!session.session.state.live.authored_features_consumed.contains(&413), "repeat publisher retains its authored source row");
+            return;
+        }
+    }
+    panic!("real Galiphur switch did not construct its tier-two field");
+}
+
+#[test]
 fn level_two_group27_model17_companion_activates_from_objective_production_route() {
     use crate::campaign::source_arena::SourceEntityView;
     use crate::house::{

@@ -1,5 +1,28 @@
 # Shared-engine delivery plan
 
+### Mission-triggered Gravity Wells — November 23
+
+Baraghan's area switches and Galiphur's repeating switch can now create a
+Gravity Well through the ordinary mission group publisher. Previously the
+group rejected class 10, model 67 before creating anything. The shared
+constructor takes the authored tier's power and lifetime and links the well
+into the terrain and scheduler. Casting the spell still uses that constructor.
+
+On the installed Baraghan package, placing the player in switch 633 activated
+group 17 in order (634, 653, 655). Its tier-one well changed the terrain,
+pulled the player compared with the same turn without the field, and was
+reclaimed. The check controls player position at the switch and in the pull
+band. Galiphur's real repeating switch 412 created the tier-two well at row
+413 and retained the source row for the next activation. The existing
+spell-cast Gravity and Wind check also passed. All three ran with the final
+source. The separate branches beyond Baraghan switches 653 and 655 were
+traced in source only. Full switched-group acceptance remains open.
+
+The Original player uses native `83d27f3b7e93` with the Castle HUD build.
+The normal launcher loaded Baraghan from a previously unlocked campaign map
+and mapped the matching library. This launch check ended at mission entry.
+Evidence is in `research/private/generated/baraghan-gravity-20261123/`.
+
 ### Castle and balloon status guidance — November 23
 
 Original build `build-3cqlrcw2` uses 61 English help rows and native

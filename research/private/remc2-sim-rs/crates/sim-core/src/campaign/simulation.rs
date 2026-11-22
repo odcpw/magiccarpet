@@ -13333,7 +13333,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 25 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
+                        0..=9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 25 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 67 | 70 | 71 | 76 | 80..=88 | 90 | 91
                     )
                     | (11, 0..=44)
                     | (14, 0 | 1 | 2 | 3 | 4 | 5)
@@ -13363,6 +13363,20 @@ impl Mc2Simulation {
                     feature.index, feature.word_10
                 )
             })?;
+        }
+        for feature in rows
+            .iter()
+            .filter(|feature| feature.kind == 10 && feature.subtype == 67)
+        {
+            if crate::level_definition::GRAVITY_WELL_TIERS
+                .get(usize::from(feature.parameter_1))
+                .is_none()
+            {
+                return Err(format!(
+                    "authored Gravity Well row {} has invalid tier {}",
+                    feature.index, feature.parameter_1
+                ));
+            }
         }
         for feature in rows.iter().filter(|feature| {
             feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 14 | 19)
@@ -13502,6 +13516,25 @@ impl Mc2Simulation {
             // sources live in HouseResident, not authored_class5 or Bee arenas.
             let mut constructed_authored_source_slot = None;
             match (feature.kind, feature.subtype) {
+                (10, 67) => {
+                    // sub_4A310 applies the authored spell tier after the
+                    // ordinary sub_51730 constructor, before sub_58DA0.
+                    let tier = crate::level_definition::GRAVITY_WELL_TIERS
+                        [usize::from(feature.parameter_1)];
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = crate::world::fields::gravity::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        tier.power,
+                        i32::from(tier.effect_parameter),
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
                 (5, model @ (12 | 13)) => {
                     let defaults = if model == 12 {
                         crate::level_definition::BUILDER_CLASS_PROPERTIES
