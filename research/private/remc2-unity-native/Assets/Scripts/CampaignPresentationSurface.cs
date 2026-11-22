@@ -918,7 +918,7 @@ namespace MagicCarpet.Native
             return written;
         }
 
-        internal static bool IsMinimapEntityHelpRow(int row) => row is >= 18 and <= 26;
+        internal static bool IsMinimapEntityHelpRow(int row) => row is >= 18 and <= 27;
 
         private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapEntity[] entities,
             NativeSim.CampaignMinimapMark[] marks, bool fullMap)
@@ -944,7 +944,9 @@ namespace MagicCarpet.Native
             foreach (var entity in entities)
             {
                 var entityHelp = IsMinimapEntityHelpRow(entity.helpSelector);
-                if ((!entityHelp && entity.helpSelector != 0x53) || entity.visible == 0 ||
+                // Source sub_885E0 still observes a marker stone when its
+                // blinking dot is hidden. Other hidden entities stay omitted.
+                if ((!entityHelp && entity.helpSelector != 0x53) || (entity.visible == 0 && entity.helpSelector != 27) ||
                     entity.x < 0 || entity.y < 0) continue;
                 var x = entity.x / scale;
                 var y = entity.y / scale;

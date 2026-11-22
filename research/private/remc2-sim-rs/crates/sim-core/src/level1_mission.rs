@@ -1424,7 +1424,8 @@ pub fn level1_minimap_entity_command(
     player: &FlightState,
     input: Level1MinimapEntityInput,
 ) -> Option<Level1MinimapEntityCommand> {
-    level1_minimap_entity_command_for_view(player, input, 128, 128, 256)
+    level1_minimap_entity_command_with_visibility(player, input, false)
+        .and_then(|(command, visible)| visible.then_some(command))
 }
 
 /// Exact entity classifier projected into the VGA1 full-map writer.
@@ -1433,16 +1434,19 @@ pub fn level1_map_entity_command(
     player: &FlightState,
     input: Level1MinimapEntityInput,
 ) -> Option<Level1MinimapEntityCommand> {
-    level1_minimap_entity_command_for_view(player, input, 191, 200, 408)
+    level1_minimap_entity_command_with_visibility(player, input, true)
+        .and_then(|(command, visible)| visible.then_some(command))
 }
 
-fn level1_minimap_entity_command_for_view(
+/// Classify a map subject independently of whether its source dot is drawn.
+/// Marker stones still publish help during the invisible half of their blink.
+#[must_use]
+pub fn level1_minimap_entity_command_with_visibility(
     player: &FlightState,
     input: Level1MinimapEntityInput,
-    width: i32,
-    height: i32,
-    scaling: i32,
-) -> Option<Level1MinimapEntityCommand> {
+    full_map: bool,
+) -> Option<(Level1MinimapEntityCommand, bool)> {
+    let (width, height, scaling) = if full_map { (191, 200, 408) } else { (128, 128, 256) };
     if !input.active || input.source_slot == 0 {
         return None;
     }
@@ -1462,15 +1466,14 @@ fn level1_minimap_entity_command_for_view(
     let mut selector = 0_u16;
     let mut size = 1_u8;
     let mut help = 0_u8;
+    let mut visible = true;
 
     match input.class {
         2 => match input.model {
             0 => palette = NIGHT_GENERIC,
             1 => {
                 help = 27;
-                if !phase_3 {
-                    return None;
-                }
+                visible = if full_map { phase_2 } else { phase_3 };
                 palette = MARKER_STONE;
             }
             2 => {
@@ -1615,7 +1618,7 @@ fn level1_minimap_entity_command_for_view(
     }
 
     let (x, y) = level1_minimap_project_rect(player, input.position, width, height, scaling);
-    Some(Level1MinimapEntityCommand {
+    Some((Level1MinimapEntityCommand {
         source_slot: input.source_slot,
         x,
         y,
@@ -1635,7 +1638,34 @@ fn level1_minimap_entity_command_for_view(
             LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER
         },
         help_selector: help,
-    })
+    }, visible))
+}
+
+#[test]
+fn marker_stone_help_survives_both_source_blink_cadences() {
+    let marker = Level1MinimapEntityInput {
+        source_slot: 220,
+        class: 2,
+        model: 1,
+        active: true,
+        ..Level1MinimapEntityInput::default()
+    };
+    let mut player = FlightState::default();
+    for tick in 0..12 {
+        player.tick = tick;
+        for full_map in [false, true] {
+            let (command, visible) =
+                level1_minimap_entity_command_with_visibility(&player, marker, full_map).unwrap();
+            let expected = if full_map { tick / 2 & 1 != 0 } else { tick / 3 & 1 != 0 };
+            assert_eq!((command.source_slot, command.help_selector, visible), (220, 27, expected));
+            let rendered = if full_map {
+                level1_map_entity_command(&player, marker)
+            } else {
+                level1_minimap_entity_command(&player, marker)
+            };
+            assert_eq!(rendered.is_some(), expected);
+        }
+    }
 }
 
 /// Source-style dotted castle rope samples drawn before the entity-slot walk.

@@ -29,9 +29,10 @@ class CampaignGameplayHelpTests(unittest.TestCase):
             spec.loader.exec_module(menu)
             exported = json.loads(menu.source_gameplay_help())
         rows = {row["row"]: row for row in exported["rows"]}
-        self.assertEqual(len(rows), 53)
+        self.assertEqual(len(rows), 54)
         for index, record, age, priority in [(22, 310, 320, 4), (24, 312, 160, 5),
-                                             (25, 313, 160, 5), (26, 314, 160, 5)]:
+                                             (25, 313, 160, 5), (26, 314, 160, 5),
+                                             (27, 315, 320, 3)]:
             self.assertEqual(rows[index], dict(row=index, kind=2, flags=0, text_record=record,
                 duration=50, x=0, y=0, age_threshold=age, priority=priority))
         records = cache.language_records((cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes())
@@ -39,6 +40,7 @@ class CampaignGameplayHelpTests(unittest.TestCase):
         self.assertEqual(records[312], b"This is your castle")
         self.assertEqual(records[313], b"This is an enemy castle")
         self.assertEqual(records[314], b"This is an enemy balloon")
+        self.assertEqual(records[315], b"Marker stone")
 
 
 LEVEL2_V4_PACKAGE = cache.GENERATED / "l2-debug3.fJ3PaM-v4/level2"

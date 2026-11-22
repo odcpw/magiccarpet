@@ -18,6 +18,7 @@ use sim_core::{
         LEVEL1_MINIMAP_ANCHOR_BOTTOM_LEFT, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_COMMAND_DOT, LEVEL1_MINIMAP_COMMAND_SPRITE, Level1MinimapEntityCommand,
         Level1MinimapEntityInput, Level1MinimapMarks, level1_minimap_entity_command,
+        level1_minimap_entity_command_with_visibility,
         level1_minimap_project, minimap_objective_arrow, minimap_objective_distance,
     },
     native_world::{
@@ -426,7 +427,8 @@ fn level2_day_minimap_command(
     family12_enabled: bool,
     parameter_record_index: u8,
     palette: &CampaignMinimapPalette,
-) -> Option<Level1MinimapEntityCommand> {
+    full_map: bool,
+) -> Option<(Level1MinimapEntityCommand, bool)> {
     // DrawMinimapEntities_B_61A00 excludes class-3/model-1 Nyphur.  A
     // separate active objective carrier would be required to represent that
     // participant through DrawMinimapMarks_644F0; this entity adapter does not
@@ -445,7 +447,7 @@ fn level2_day_minimap_command(
         )?;
         let (x, y) =
             level1_minimap_project(&session.state, input.position, LEVEL2_MINIMAP_SIDE, 256);
-        return Some(Level1MinimapEntityCommand {
+        return Some((Level1MinimapEntityCommand {
             source_slot: input.source_slot,
             x,
             y,
@@ -455,9 +457,10 @@ fn level2_day_minimap_command(
             size: 1,
             anchor: LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER,
             help_selector: level2_day_minimap_help_selector(input, 23),
-        });
+        }, true));
     }
-    let mut command = level1_minimap_entity_command(&session.state, classified_input)?;
+    let (mut command, visible) =
+        level1_minimap_entity_command_with_visibility(&session.state, classified_input, full_map)?;
     if input.class == 3 {
         let source_player = if input.source_id_is_player {
             input.source_id
@@ -482,7 +485,7 @@ fn level2_day_minimap_command(
                 level2_day_model45_help_selector(session, input, parameter_record_index)?;
         }
     }
-    Some(command)
+    Some((command, visible))
 }
 
 /// Builds the bounded Level 2 minimap projection from the live authoritative
@@ -669,10 +672,11 @@ fn campaign_map_plan(
 
     let mut entities = Vec::new();
     for (input, parameter_record_index) in inputs {
+        let full_map = geometry == MapGeometry::FULL_MAP;
         let command = if selection.map_type_id == 1 && !(input.class == 3 && input.model == 3) {
             // Preserve the qualified Night classifier. Mines use the shared
             // source owner/active-Beyond gate and actual player-colour selector.
-            level1_minimap_entity_command(&session.state, input)
+            level1_minimap_entity_command_with_visibility(&session.state, input, full_map)
         } else {
             level2_day_minimap_command(
                 session,
@@ -680,9 +684,10 @@ fn campaign_map_plan(
                 family12_enabled,
                 parameter_record_index,
                 palette,
+                full_map,
             )
         };
-        let Some(mut command) = command else {
+        let Some((mut command, visible)) = command else {
             continue;
         };
         (command.x, command.y) = geometry.project(map_view, input.position);
@@ -697,7 +702,7 @@ fn campaign_map_plan(
             size: command.size,
             anchor: command.anchor,
             help_selector: command.help_selector,
-            visible: 1,
+            visible: u8::from(visible),
         });
     }
 
@@ -902,6 +907,29 @@ fn append_objective_arrow(
             visible: u8::from(player.tick & 0x40 != 0 && (player.tick / 6) & 1 != 0),
             ..Level2MinimapMark::default()
         });
+    }
+}
+
+#[test]
+fn real_day3_marker_stone_publishes_help_when_its_map_dot_blinks_off() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level3");
+    let mut campaign = sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL3)
+        .expect("real Day3 package opens");
+    let session = campaign.simulation_mut();
+    let marker = session.entities().iter().find(|row|
+        row.active && (row.class, row.model) == (2, 1))
+        .expect("Day3 has a real initial marker stone").index;
+    for tick in 0..12 {
+        session.state.tick = tick;
+        let camera = session.world_map_camera();
+        let corner = campaign_minimap_plan(session, CampaignSelection::LEVEL3).unwrap();
+        let full = campaign_world_map_plan(session, CampaignSelection::LEVEL3, camera).unwrap();
+        for (plan, visible) in [(&corner, tick / 3 & 1 != 0), (&full, tick / 2 & 1 != 0)] {
+            let row = plan.entities.iter().find(|row| row.subject_entity_index == marker)
+                .expect("marker remains a help subject in both blink phases");
+            assert_eq!((row.help_selector, row.visible), (27, u8::from(visible)));
+        }
     }
 }
 

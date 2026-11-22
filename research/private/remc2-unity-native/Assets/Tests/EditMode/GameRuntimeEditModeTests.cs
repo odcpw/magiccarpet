@@ -3179,6 +3179,235 @@ namespace MagicCarpet.Native.Tests
             Assert.That((bool)fireball.GetValue(hint), Is.True, "source row25 closure requests Fireball guidance");
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ProductionMarkerStoneHintTracksRealSubjectAcrossBlink(bool fullMap)
+        {
+            var replay = Environment.GetEnvironmentVariable(fullMap ? "MC_MARKER_STONE_REPLAY" : "MC_MARKER_STONE_CORNER_REPLAY") ??
+                Path.Combine(PrivateRoot, fullMap ? "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs" :
+                    "generated/original-marker-stone-20261122/jaleen-entry.mcs");
+            var arguments = InstalledOpeningArguments(fullMap ? 3 : 30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("real marker stone help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface") ??
+                    Field("level2DayPresentationSurface") ?? Field("gameRuntimeNightSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                var remainingField = hintType.GetField("remaining", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                ushort Subject() => (ushort)subjectField.GetValue(hint);
+                int Remaining() => (int)remainingField.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                NativeSim.CampaignMinimapEntity[] Commands() => fullMap ? native.WorldMap(native.Tick).entities :
+                    native.MinimapEntities(native.Tick, native.MinimapState(native.Tick));
+                var binding = menu.GameplayHelpForRow(27);
+                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((315, 0, 50, 320, 3)));
+                Assert.That(menu.GameplayLanguageText(315), Is.EqualTo("Marker stone"));
+                Assert.That(hint.HasMarkerStoneMinimapHelp, Is.True);
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, native.Tick)));
+                if (fullMap)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                }
+                Assert.That(menus.MapOpen, Is.EqualTo(fullMap));
+                var tables = (byte[])typeof(CampaignPresentationSurface).GetField("minimapTables", flags).GetValue(surface);
+                bool InsideCorner(NativeSim.CampaignMinimapEntity command)
+                {
+                    var x = command.x / 2;
+                    var y = command.y / 2;
+                    if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
+                    var sourceY = y * 2;
+                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                    var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+                    return x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
+                }
+                if (fullMap)
+                {
+                    // Both native views are read at this same tick. Check an
+                    // actual full-map Stone that lies outside the corner,
+                    // including the source circle rather than just its box.
+                    var cornerState = native.MinimapState(native.Tick);
+                    var corner = native.MinimapEntities(native.Tick, cornerState);
+                    var full = surface.EntityHelpMarks.Where(mark => mark.Row == 27).ToArray();
+                    var outside = corner.First(command => command.helpSelector == 27 && !InsideCorner(command) &&
+                        full.Any(mark => mark.Subject == command.subjectEntityIndex));
+                    var cornerMarks = native.MinimapMarks(native.Tick, cornerState);
+                    using var cornerProbe = new CampaignPresentationSurface();
+                    typeof(CampaignPresentationSurface).GetField("minimapTables", flags).SetValue(cornerProbe, tables);
+                    typeof(CampaignPresentationSurface).GetMethod("CollectObjectiveHelpMarks", flags)
+                        .Invoke(cornerProbe, new object[] { corner, cornerMarks, false });
+                    Assert.That(cornerProbe.EntityHelpMarks.Any(mark => mark.Row == 27 && mark.Subject == outside.subjectEntityIndex), Is.False,
+                        "the same actual Stone is excluded from the corner aperture at this tick");
+                    TestContext.WriteLine($"Same-tick Stone {outside.subjectEntityIndex} admitted in full map and excluded from corner.");
+                }
+                var chronology = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                var previous = 0;
+                for (var frame = 0; frame < 1800 && hint.VisibleRow != 27; frame++)
+                {
+                    Draw();
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != previous)
+                        chronology.Add((hint.VisibleRow, native.Tick));
+                    previous = hint.VisibleRow;
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(27), $"real stone must win an ordinary poll; draws {string.Join(", ", chronology)}");
+                var subject = Subject();
+                Assert.That(subject, Is.Not.Zero);
+                Assert.That(Remaining(), Is.EqualTo(49));
+                var initialMarks = surface.EntityHelpMarks.Where(mark => mark.Row == 27).ToArray();
+                Assert.That(initialMarks.Length, Is.GreaterThanOrEqualTo(1));
+                var entities = native.Entities();
+                var player = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                int Distance(ushort slot)
+                {
+                    var entity = entities[slot];
+                    var dx = unchecked((short)(entity.x - player.x));
+                    var dy = unchecked((short)(entity.y - player.y));
+                    return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                }
+                Assert.That(subject, Is.EqualTo(initialMarks.OrderBy(mark => Distance(mark.Subject)).First().Subject),
+                    "source distance chooses the nearest actual admitted Stone");
+                var stone = entities[subject];
+                Assert.That((stone.active, stone.classId, stone.model, stone.action),
+                    Is.EqualTo(((byte)1, (byte)2, (byte)1, (byte)3)));
+                var sawVisible = false;
+                var sawHidden = false;
+                var validatedHidden = false;
+                void CheckMarker()
+                {
+                    var command = Commands().Single(item => item.helpSelector == 27 && item.subjectEntityIndex == subject);
+                    var mark = surface.EntityHelpMarks.Single(item => item.Row == 27 && item.Subject == subject);
+                    var scale = fullMap ? 1 : 2;
+                    Assert.That((mark.X, mark.Y), Is.EqualTo((2 * (command.x / scale), 2 * (command.y / scale))));
+                    Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((mark.X, mark.Y)));
+                    var singleFrame = new byte[320 * 200];
+                    var writes = CampaignPresentationSurface.MaterializeMinimapPixels(singleFrame, new[] { command }, tables,
+                        native.Generation, native.Tick, fullMap: fullMap);
+                    Assert.That(writes > 0, Is.EqualTo(command.visible != 0), "hidden blink suppresses dot pixels but retains hint subject");
+                    if (command.visible == 0 && !validatedHidden)
+                    {
+                        var validate = typeof(NativeCampaignSession).GetMethod("ValidateMinimapEntities",
+                            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                        validate.Invoke(null, new object[] { new[] { command }, native.Generation, native.Tick });
+                        var invalid = command;
+                        invalid.helpSelector = 26;
+                        var wrongKind = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+                            validate.Invoke(null, new object[] { new[] { invalid }, native.Generation, native.Tick }));
+                        Assert.That(wrongKind.InnerException, Is.TypeOf<InvalidOperationException>());
+                        invalid = command;
+                        invalid.visible = 2;
+                        var invalidVisibility = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+                            validate.Invoke(null, new object[] { new[] { invalid }, native.Generation, native.Tick }));
+                        Assert.That(invalidVisibility.InnerException, Is.TypeOf<InvalidOperationException>());
+                        validatedHidden = true;
+                    }
+                    sawVisible |= command.visible != 0;
+                    sawHidden |= command.visible == 0;
+                }
+                CheckMarker();
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter), Is.EqualTo("Marker stone"));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var assets = menu.ObjectiveForProfile(native.Selection.mapType switch { 0 => "day", 1 => "night", 2 => "cave", _ => throw new InvalidOperationException("unknown campaign map type") });
+                var sx = hint.AnchorX + 1 - raster.X;
+                var sy = hint.AnchorY - raster.Y;
+                Assert.That(raster.IndicesThenMask[sy * raster.Width + sx], Is.EqualTo(assets.TextColor));
+                var palette = surface.FramePaletteRgb8;
+                var color = assets.TextColor * 3;
+                Assert.That(ReadObjectivePixels(output)[(raster.Height - 1 - sy) * raster.Width + sx],
+                    Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var trackedFrames = fullMap ? 8 : 48;
+                for (var frame = 0; frame < trackedFrames; frame++)
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((27, subject, 48 - frame)));
+                    CheckMarker();
+                }
+                Assert.That(sawVisible && sawHidden && validatedHidden, Is.True, "the same source Stone must remain selected in both blink phases");
+                var cueBefore = fireball.GetValue(hint);
+                if (fullMap)
+                {
+                    var selected = Subject();
+                    Assert.That(selected, Is.Not.Zero);
+                    var remainingBeforeSwitch = Remaining();
+                    Assert.That(remainingBeforeSwitch, Is.GreaterThan(1));
+                    var cue = fireball.GetValue(hint);
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.False);
+                    var cornerState = native.MinimapState(native.Tick);
+                    var projected = native.MinimapEntities(native.Tick, cornerState).Single(command =>
+                        command.helpSelector == 27 && command.subjectEntityIndex == selected);
+                    if (InsideCorner(projected))
+                    {
+                        var mark = surface.EntityHelpMarks.Single(item => item.Row == 27 && item.Subject == selected);
+                        Assert.That((hint.VisibleRow, Subject(), Remaining(), hint.AnchorX, hint.AnchorY),
+                            Is.EqualTo((27, selected, remainingBeforeSwitch - 1, mark.X, mark.Y)),
+                            "the actual Stone remains selected and reanchors when it is inside the corner");
+                    }
+                    else
+                    {
+                        Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 27 && mark.Subject == selected), Is.False);
+                        Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((0, (ushort)0, 0)),
+                            "losing the actual Stone immediately clears the pointer and subject");
+                    }
+                    Assert.That(fireball.GetValue(hint), Is.EqualTo(cue));
+                }
+                else
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((27, (ushort)0, 0)));
+                    Assert.That(fireball.GetValue(hint), Is.EqualTo(cueBefore), "stone closure does not arm the Fireball cue");
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         private static void CheckProductionMapHelp(bool largeMapHint)
         {
             var activeBefore = NativeSession.ActiveSessionCount;

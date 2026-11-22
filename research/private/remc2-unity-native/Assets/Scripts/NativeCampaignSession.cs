@@ -1203,7 +1203,7 @@ namespace MagicCarpet.Native
                     row.tick != expectedTick ||
                     row.sourceOrder <= previousOrder ||
                     row.subjectEntityIndex == 0 ||
-                    row.visible != 1 ||
+                    (row.visible != 1 && !(row.visible == 0 && row.helpSelector == 27 && row.kind == 1)) ||
                     row.kind == 0 ||
                     row.size == 0 ||
                     !AllZero(row.reserved))

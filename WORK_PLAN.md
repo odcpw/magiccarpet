@@ -1,5 +1,24 @@
 # Shared-engine delivery plan
 
+### Marker stones on the Original maps — November 23
+
+Original build `build-8nx1869r` and native `bd6d2711cd66` keep the stone
+available for help while its dot blinks off. The corner map changes phase
+every three turns and the full map every two. The 54th English help row is
+“Marker stone”. Its arrow stays with the live stone inside the map aperture.
+
+Both native map readers retained the same stone IDs across all twelve phases
+on The Revealed Way, Cymmeria, Jaleen, and the ordinary entries to Levels 17
+and 24. The previous native lost the IDs during the dark phase and used the
+corner cadence on the full map. Four focused Rust checks passed. The final
+Unity cases used a real Day 3 full-map stone and a Jaleen corner-map stone.
+They verified the pointer through visible and hidden frames, off-map exclusion,
+and the source lifetime. Jaleen started from a previously unlocked mission on
+a retained controlled campaign map. The installed Perilium screenshot from the
+preceding build also shows “This is an enemy castle” over the actual Castle.
+Evidence is in `research/private/generated/original-marker-stone-20261122/`
+and `original-world-hints-20261122/return-map-20.png`.
+
 ### Rival Castle, balloon and Dolmen map hints — November 22
 
 Original player `build-fgp79ian` reads 53 English help rows. The HUD follows

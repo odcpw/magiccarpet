@@ -116,6 +116,7 @@ namespace MagicCarpet.Native
             internal bool HasRivalCastleMinimapHelp { get; }
             internal bool HasRivalCollectorMinimapHelp { get; }
             internal bool HasBuildingMinimapHelp { get; }
+            internal bool HasMarkerStoneMinimapHelp { get; }
             private bool HasCastleAttackHelp { get; }
             internal bool PollsObjectiveMarkHelp =>
                 HasObjectiveMarkHelp && remaining == 0 && pollDelay <= 1 && pendingRow == 0;
@@ -131,7 +132,8 @@ namespace MagicCarpet.Native
                 bool hasPossessionHelp = false, bool hasLooseManaHelp = false, bool hasCastleReturnReminder = false,
                 bool hasCastleAttackHelp = false, bool hasOwnedCastleMinimapHelp = false,
                 bool hasCreaturePickupMinimapHelp = false, bool hasRivalCastleMinimapHelp = false,
-                bool hasBuildingMinimapHelp = false, bool hasRivalCollectorMinimapHelp = false)
+                bool hasBuildingMinimapHelp = false, bool hasRivalCollectorMinimapHelp = false,
+                bool hasMarkerStoneMinimapHelp = false)
             {
                 rowFor = binding ?? throw new ArgumentNullException(nameof(binding));
                 HasObjectiveMarkHelp = hasObjectiveMarkHelp;
@@ -145,6 +147,7 @@ namespace MagicCarpet.Native
                 HasRivalCastleMinimapHelp = hasRivalCastleMinimapHelp;
                 HasRivalCollectorMinimapHelp = hasRivalCollectorMinimapHelp;
                 HasBuildingMinimapHelp = hasBuildingMinimapHelp;
+                HasMarkerStoneMinimapHelp = hasMarkerStoneMinimapHelp;
                 this.sourceObjectiveStageKind = sourceObjectiveStageKind;
                 // Keep source row order: equal overdue ages retain the first
                 // eligible row in GetHelpPopupIndex_88450.
@@ -171,6 +174,7 @@ namespace MagicCarpet.Native
                 if (hasRivalCastleMinimapHelp) ids.Insert(ids.FindIndex(row => row > 25), 25);
                 if (hasRivalCollectorMinimapHelp) ids.Insert(ids.FindIndex(row => row > 26), 26);
                 if (hasBuildingMinimapHelp) ids.Insert(ids.FindIndex(row => row > 22), 22);
+                if (hasMarkerStoneMinimapHelp) ids.Insert(ids.FindIndex(row => row > 27), 27);
                 if (hasCreaturePickupMinimapHelp) ids.InsertRange(ids.FindIndex(row => row > 20), new[] { 19, 20 });
                 if (hasVitalsHelp) ids.InsertRange(ids.IndexOf(40), new[] { 36, 37 });
                 if (hasCastHelp) ids.InsertRange(ids.IndexOf(40), new[] { 38, 39 });
@@ -239,7 +243,8 @@ namespace MagicCarpet.Native
                 bool canFundCastleUpgrade = false, byte? castleHitFrames = null,
                 (ushort Collector, ushort Castle) nearestCastleMarkers = default,
                 (ushort Creature, ushort SpellPickup) nearestCreaturePickupMarkers = default,
-                (ushort Castle, ushort Collector) nearestRivalMarkers = default, ushort nearestBuildingSubject = 0)
+                (ushort Castle, ushort Collector) nearestRivalMarkers = default, ushort nearestBuildingSubject = 0,
+                ushort nearestStoneSubject = 0)
             {
                 Visible = false;
                 VisibleRow = 0;
@@ -342,6 +347,7 @@ namespace MagicCarpet.Native
                                     24 => nearestCastleMarkers.Castle != 0,
                                     25 => nearestRivalMarkers.Castle != 0,
                                     26 => nearestRivalMarkers.Collector != 0,
+                                    27 => nearestStoneSubject != 0,
                                     36 or 37 => !mapOpen,
                                     38 => leftAssigned && !mapOpen,
                                     39 => rightAssigned && !mapOpen,
@@ -407,6 +413,8 @@ namespace MagicCarpet.Native
                             entityHelpSubject = nearestRivalMarkers.Castle;
                         else if (currentRow.Binding.Row == 26)
                             entityHelpSubject = nearestRivalMarkers.Collector;
+                        else if (currentRow.Binding.Row == 27)
+                            entityHelpSubject = nearestStoneSubject;
                         remaining = currentRow.Binding.Duration;
                     }
                     // SetHelpPopupTextAndCoords_884D0 selects this frame;
@@ -889,7 +897,7 @@ namespace MagicCarpet.Native
                 languageCache.HasLooseManaHelp, languageCache.HasCastleReturnReminder, languageCache.HasCastleAttackHelp,
                 languageCache.HasOwnedCastleMinimapHelp, languageCache.HasCreaturePickupMinimapHelp,
                 languageCache.HasRivalCastleMinimapHelp, languageCache.HasBuildingMinimapHelp,
-                languageCache.HasRivalCollectorMinimapHelp);
+                languageCache.HasRivalCollectorMinimapHelp, languageCache.HasMarkerStoneMinimapHelp);
         }
 
         private sbyte ReadCurrentHelpObjectiveStageKind()
@@ -937,6 +945,7 @@ namespace MagicCarpet.Native
             ushort nearestEntity = 0;
             ushort nearestMana = 0;
             ushort nearestBuilding = 0;
+            ushort nearestStone = 0;
             (ushort Collector, ushort Castle) nearestCastleMarkers = default;
             (ushort Creature, ushort SpellPickup) nearestCreaturePickupMarkers = default;
             (ushort Castle, ushort Collector) nearestRivalMarkers = default;
@@ -950,7 +959,8 @@ namespace MagicCarpet.Native
                 {
                     marks = surface.ObjectiveHelpMarks;
                     if (hint.HasPossessionHelp || hint.HasOwnedCastleMinimapHelp || hint.HasCreaturePickupMinimapHelp ||
-                        hint.HasRivalCastleMinimapHelp || hint.HasRivalCollectorMinimapHelp || hint.HasBuildingMinimapHelp)
+                        hint.HasRivalCastleMinimapHelp || hint.HasRivalCollectorMinimapHelp || hint.HasBuildingMinimapHelp ||
+                        hint.HasMarkerStoneMinimapHelp)
                         entityMarks = surface.EntityHelpMarks;
                     if (hint.PollsObjectiveMarkHelp)
                     {
@@ -972,6 +982,8 @@ namespace MagicCarpet.Native
                                     hint.HasRivalCollectorMinimapHelp ? NearestMinimapHelpSubject(entityMarks, 26, ref entities) : (ushort)0);
                             if (hint.HasBuildingMinimapHelp)
                                 nearestBuilding = NearestMinimapHelpSubject(entityMarks, 22, ref entities);
+                            if (hint.HasMarkerStoneMinimapHelp)
+                                nearestStone = NearestMinimapHelpSubject(entityMarks, 27, ref entities);
                         }
                         if (hint.HasLargeMapHelp && surface.LiveMinimapReady)
                             hasObjectiveHelpSubject = surface.HasObjectiveHelpSubject;
@@ -1013,7 +1025,7 @@ namespace MagicCarpet.Native
                 !hasSpell, missingCastle, hasCastleSpellWithoutCastle, castleHandAnchorX,
                 fireballSpellEnabled, fireballHandAnchorX, possessionSpellEnabled, possessionHandAnchorX,
                 entityMarks, nearestEntity, nearestMana, canFundCastleUpgrade, castleHitFrames, nearestCastleMarkers,
-                nearestCreaturePickupMarkers, nearestRivalMarkers, nearestBuilding);
+                nearestCreaturePickupMarkers, nearestRivalMarkers, nearestBuilding, nearestStone);
         }
 
         private ushort NearestMinimapHelpSubject(
