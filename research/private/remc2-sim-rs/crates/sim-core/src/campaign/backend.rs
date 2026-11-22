@@ -4748,7 +4748,7 @@ impl Mc2CampaignBackend {
             participant_notifications: self.participant_notifications(),
             player_wall_contact_counter: flight.water_counter,
             player_hand_selection_flash_ticks: self.campaign.simulation().hand_selection_flash_ticks(),
-            source_top_status: self.campaign.simulation().source_top_status(self.campaign.inspection().source_mana_goal_percent()),
+            source_top_status: self.campaign.simulation().source_top_status(),
             player_spells: spells::observe(
                 shared_spells,
                 |holder| self.spell_holder_actor(holder),
@@ -48240,6 +48240,45 @@ pub(crate) mod tests {
             2
         );
         std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn campaign_backend_current_castle_mana_goal_reaches_hud_and_clears_on_completion() {
+        // Package-bound goals and ordinary objective scans; prior objectives,
+        // Castle construction and funding are explicitly staged controls.
+        let catalog = default_catalog().unwrap();
+        for (case, (root, stage, goal)) in [
+            (level_one_descriptor_fixture_path(), 3_usize, 15_i16),
+            (level_three_descriptor_fixture_path(), 2_usize, 30_i16),
+        ].into_iter().enumerate() {
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let mut session = GameSession::open(
+                &Mc2CampaignAdapter, Arc::new(definition), 90 + case as u64,
+                Mc2CampaignInputs::new(&root),
+            ).unwrap();
+            assert_eq!(session.backend().snapshot().source_top_status.mana_goal_percent, 0,
+                "InitStages clears the package header goal");
+            {
+                let runtime = &mut session.backend_mut().campaign.simulation_mut().session.state.live.core.runtime;
+                let objective = &mut runtime.objectives[0];
+                objective.stage_selectors.fill(0);
+                objective.stage_selectors[stage] = 1;
+                objective.text_selector = stage as u8;
+                objective.done = 0;
+                objective.is_level_end = 0;
+            }
+            session.step(guard(&session), GameCommand::default()).unwrap();
+            assert_eq!(session.backend().snapshot().source_top_status.mana_goal_percent, goal,
+                "the current unsatisfied mana objective publishes its authored goal");
+            let (_, owner) = stage_castle_mana_objective_percent(&mut session, stage, 100);
+            session.step(guard(&session), GameCommand::default()).unwrap();
+            assert_eq!(session.backend().campaign.simulation().runtime().objectives[owner].stage_selectors[stage], 2,
+                "the ordinary scan must complete the real objective");
+            assert_eq!(session.backend().snapshot().source_top_status.mana_goal_percent, 0,
+                "the completed objective clears the HUD goal in the same scan");
+            session.reset(guard(&session)).unwrap();
+            assert_eq!(session.backend().snapshot().source_top_status.mana_goal_percent, 0);
+        }
     }
 
     #[test]

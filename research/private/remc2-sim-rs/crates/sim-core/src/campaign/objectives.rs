@@ -75,6 +75,11 @@ pub(crate) fn all_other_players_banished(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectiveState {
     pub stage_index: u8,
+    /// Live signed `terrain_2FECE.word_0x2FED5`, reset by InitStages and
+    /// updated by the ordered Castle-mana objective scan. Replays reconstruct
+    /// it from the objective history; it is excluded from legacy state hashes
+    /// so earlier operation receipts remain loadable.
+    pub mana_goal_percent: i16,
     /// `byte_0x36E02`, consumed by remc2's objective-presentation service.
     pub objective_presentation_phase: u8,
     /// Frame-local palette cadence used by the objective-presentation gate.
@@ -102,6 +107,7 @@ impl ObjectiveState {
     ) -> Self {
         Self {
             stage_index,
+            mana_goal_percent: 0,
             objective_presentation_phase,
             objective_presentation_palette_mod: 1,
             objective_textbox_ticks,

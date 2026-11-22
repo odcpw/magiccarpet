@@ -1,5 +1,30 @@
 # Shared-engine delivery plan
 
+## Castle mana objective in the installed Original client — November 22
+
+Original native `3b77e98571bd` publishes the live Castle mana percentage from
+remc2's ordered objective scan. Stage initialization clears the marker and the
+successful mana check clears it in the same scan. Four focused release checks
+passed, including NightSpire at 15% and The Revealed Way at 30%, with the
+prior stages, Castle and funding controlled in the threshold check.
+
+The recorded NightSpire cast produced a Castle at tick 1740 with a 15% goal.
+The completed NightSpire save had all five objectives satisfied and a zero
+goal. Cave 4 published 40% after its first turn and restored that value from
+its saved game. The old native reported 10% in all three situations. The
+Original player loaded the retained Day 3 Castle during the Skeleton objective;
+both erroneous 10% dots disappeared from the HUD. This was a native refresh
+of the existing Unity player. Evidence is in
+`research/private/generated/original-castle-mana-20261122/`.
+
+Separate historical checks remain open. The scripted Day 3 Skeleton aim and
+burst-cleanup checks and the NightSpire Archer route stopped before the mana
+objective. The older editable-threshold setup settled at 26% against a 30%
+requirement. These results establish neither a campaign progression defect
+nor completion of those routes.
+
+The next confirmed gap is rival map guidance. The installed native publishes Perilium’s actual rival Castle at slot 366 inside the full map at (94, 155) on the opening frame. The Original help exporter and Unity row filter omit its row 25 and the foreign collector’s Beyond Sight row 26. The collector condition still needs a live subject.
+
 ## Installed Original HUD and controls — November 22
 
 Original build `build-i1a2zazh` ships the 50-row English help cache and native
