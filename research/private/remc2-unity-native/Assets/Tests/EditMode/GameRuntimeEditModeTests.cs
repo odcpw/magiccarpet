@@ -3067,6 +3067,118 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [TestCase(22, 310, "This stone restores your life")]
+        [TestCase(26, 314, "This is an enemy balloon")]
+        public void SourceBuildingAndRivalCollectorHelpFollowsAndClearsControlledMarker(int row, int record, string text)
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            Assert.That(cache.HasBuildingMinimapHelp && cache.HasRivalCollectorMinimapHelp, Is.True);
+            var binding = cache.GameplayHelpForRow(row);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                Is.EqualTo(row == 22 ? (record, 0, 50, 320, 4) : (record, 0, 50, 160, 5)));
+            Assert.That(cache.LanguageText(record), Is.EqualTo(text));
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow, hasFireballHelp: true,
+                hasRivalCollectorMinimapHelp: true, hasBuildingMinimapHelp: true);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var subject = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("entityHelpSubject", flags);
+            var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+            var fireball = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("fireballHelpPending", flags);
+            var marks = new[] { ((byte)row, (ushort)77, 180, 220) };
+            void Advance() => hint.Advance(false, false, true, false, false, mapOpen: true, entityMarks: marks,
+                nearestRivalMarkers: row == 26 ? ((ushort)0, (ushort)77) : default,
+                nearestBuildingSubject: row == 22 ? (ushort)77 : (ushort)0);
+            for (var frame = 0; frame < 300 && hint.VisibleRow != row; frame++) Advance();
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((row, (ushort)77, 49)));
+            marks[0] = ((byte)row, (ushort)77, 182, 224);
+            for (var frame = 0; frame < 48; frame++)
+            {
+                Advance();
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, (int)remaining.GetValue(hint)),
+                    Is.EqualTo((row, 182, 224, 48 - frame)));
+            }
+            Advance();
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((row, (ushort)0, 0)), "the fiftieth draw expires and releases the subject");
+            Assert.That((bool)fireball.GetValue(hint), Is.EqualTo(row == 26), "only rival collector closure arms Fireball help");
+        }
+
+        [Test]
+        public void PeriliumRivalCastleFullMapHelpUsesRealMarkerAndSourcePresenter()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "settlement-20261105-integration/owner-collision-closure-v4/level7");
+            var environment = Path.Combine(generated, "campaign-original-environments/level7-complete");
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            Assert.That(cache.HasRivalCastleMinimapHelp, Is.True, "requires the candidate source help cache");
+            var binding = cache.GameplayHelpForRow(25);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                Is.EqualTo((313, 0, 50, 160, 5)));
+            const string text = "This is an enemy castle";
+            Assert.That(cache.LanguageText(313), Is.EqualTo(text));
+            var assets = cache.ObjectiveForProfile("night");
+            var materials = OwnerAssetCache.OpenAndValidateEnvironment(environment, package);
+            using var native = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(7, 6, 1), environment);
+            using var surface = new CampaignPresentationSurface();
+            using var presenter = new SourceObjectiveTextboxPresenter(assets);
+            surface.PresentEnvironment(native, materials, fullMap: true);
+            Assert.That((native.Generation, native.Tick), Is.EqualTo((0UL, 0UL)));
+            var command = native.WorldMap(native.Tick).entities.Single(mark => mark.helpSelector == 25 && mark.subjectEntityIndex == 366);
+            Assert.That((command.visible, command.x, command.y), Is.EqualTo(((byte)1, (short)94, (short)155)));
+            var marker = surface.EntityHelpMarks.Single(mark => mark.Row == 25 && mark.Subject == 366);
+            Assert.That((marker.X, marker.Y), Is.EqualTo((188, 310)));
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow,
+                hasFireballHelp: true, hasRivalCastleMinimapHelp: true);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var subject = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("entityHelpSubject", flags);
+            var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+            var fireball = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("fireballHelpPending", flags);
+            for (var frame = 0; frame < 200 && hint.VisibleRow != 25; frame++)
+                hint.Advance(false, false, true, false, false, mapOpen: true,
+                    entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (366, 0));
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint), hint.AnchorX, hint.AnchorY),
+                Is.EqualTo((25, (ushort)366, 49, 188, 310)));
+            presenter.PresentObjectiveMarkHint(text, native.Generation, hint.AnchorX, hint.AnchorY, fullMap: true, entityAnchor: true);
+            var output = presenter.Render(49, surface.HudUnderlayIndices, native.Generation, native.Tick, surface.FramePaletteRgb8);
+            Assert.That(output?.IsCreated(), Is.True);
+            var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+            var sourceX = hint.AnchorX + 1 - raster.X;
+            var sourceY = hint.AnchorY - raster.Y;
+            Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(assets.TextColor));
+            var palette = surface.FramePaletteRgb8;
+            var color = assets.TextColor * 3;
+            var pixels = ReadObjectivePixels(output);
+            Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX],
+                Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)),
+                "the actual source presenter paints the pointer at the live Castle marker");
+            // Keep the native opening frame fixed while exercising the
+            // presentation clock; this tests duration, not fifty simulation turns.
+            var timed = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow,
+                hasFireballHelp: true, hasRivalCastleMinimapHelp: true);
+            void TimedDraw() => timed.Advance(false, false, true, false, false, mapOpen: true,
+                entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (366, 0));
+            for (var frame = 0; frame < 200 && timed.VisibleRow != 25; frame++) TimedDraw();
+            Assert.That((timed.VisibleRow, (int)remaining.GetValue(timed)), Is.EqualTo((25, 49)));
+            for (var frame = 0; frame < 48; frame++)
+            {
+                TimedDraw();
+                Assert.That((timed.VisibleRow, (ushort)subject.GetValue(timed), (int)remaining.GetValue(timed)),
+                    Is.EqualTo((25, (ushort)366, 48 - frame)));
+            }
+            TimedDraw();
+            Assert.That((timed.VisibleRow, (ushort)subject.GetValue(timed), (int)remaining.GetValue(timed)),
+                Is.EqualTo((25, (ushort)0, 0)));
+            Assert.That((bool)fireball.GetValue(timed), Is.True);
+            surface.PresentEnvironment(native, materials, fullMap: false);
+            Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 25 && mark.Subject == 366), Is.False,
+                "the actual Castle is outside the corner minimap aperture");
+            hint.Advance(false, false, true, false, false, mapOpen: false,
+                entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (0, 0));
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((0, (ushort)0, 0)));
+            Assert.That((bool)fireball.GetValue(hint), Is.True, "source row25 closure requests Fireball guidance");
+        }
+
         private static void CheckProductionMapHelp(bool largeMapHint)
         {
             var activeBefore = NativeSession.ActiveSessionCount;

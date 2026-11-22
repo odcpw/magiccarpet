@@ -6,8 +6,10 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 TOOL = Path(__file__).resolve().parents[1] / "build_cache.py"
@@ -15,6 +17,28 @@ SPEC = importlib.util.spec_from_file_location("asset_cache", TOOL)
 assert SPEC and SPEC.loader
 cache = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cache)
+
+
+class CampaignGameplayHelpTests(unittest.TestCase):
+    def test_world_markers_bind_pinned_rows_and_real_english_records(self):
+        tool = TOOL.parent / "build_campaign_menu_cache.py"
+        spec = importlib.util.spec_from_file_location("campaign_menu_cache", tool)
+        assert spec and spec.loader
+        menu = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"build_cache": cache}):
+            spec.loader.exec_module(menu)
+            exported = json.loads(menu.source_gameplay_help())
+        rows = {row["row"]: row for row in exported["rows"]}
+        self.assertEqual(len(rows), 53)
+        for index, record, age, priority in [(22, 310, 320, 4), (24, 312, 160, 5),
+                                             (25, 313, 160, 5), (26, 314, 160, 5)]:
+            self.assertEqual(rows[index], dict(row=index, kind=2, flags=0, text_record=record,
+                duration=50, x=0, y=0, age_threshold=age, priority=priority))
+        records = cache.language_records((cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes())
+        self.assertEqual(records[310], b"This stone restores your life")
+        self.assertEqual(records[312], b"This is your castle")
+        self.assertEqual(records[313], b"This is an enemy castle")
+        self.assertEqual(records[314], b"This is an enemy balloon")
 
 
 LEVEL2_V4_PACKAGE = cache.GENERATED / "l2-debug3.fJ3PaM-v4/level2"

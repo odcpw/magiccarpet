@@ -918,7 +918,7 @@ namespace MagicCarpet.Native
             return written;
         }
 
-        internal static bool IsMinimapEntityHelpRow(int row) => row is (>= 18 and <= 21) or 23 or 24;
+        internal static bool IsMinimapEntityHelpRow(int row) => row is >= 18 and <= 26;
 
         private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapEntity[] entities,
             NativeSim.CampaignMinimapMark[] marks, bool fullMap)

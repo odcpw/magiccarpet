@@ -1,5 +1,26 @@
 # Shared-engine delivery plan
 
+### Rival Castle, balloon and Dolmen map hints — November 22
+
+Original player `build-fgp79ian` reads 53 English help rows. The HUD follows
+the map subject for a rival Castle (25), a rival balloon revealed by Beyond
+Sight (26), or a healing Dolmen (22), using the original text, timing and
+dismissal behavior. All 678 menu-cache outputs were checked. Only the help
+table changed. The native library is the existing `3b77e98571bd`.
+
+On Perilium the real full-map Castle at slot 366 produced the pointer and
+text “This is an enemy castle” in the Unity presenter. Switching to the corner
+map cleared it. Seven Unity cases passed, including the established creature,
+spell-pickup and friendly Castle/balloon paths. Payahandra published three real
+Dolmens. The controlled balloon and Dolmen hints completed their 50-draw
+lifetimes. Perilium produced a real rival balloon at slot 370 after 32 neutral
+turns. A retained campaign gave the player Beyond Sight, but only 1,000 of
+the 1,800 mana required for the cast. The positive live-balloon hint remains
+unverified. Evidence is in `research/private/generated/original-world-hints-20261122/`.
+The installed Original loaded Perilium from a previously unlocked, controlled
+campaign map and opened its full map with Return. The broader HUD bead
+`mc-oi6.6` remains open.
+
 ## Castle mana objective in the installed Original client — November 22
 
 Original native `3b77e98571bd` publishes the live Castle mana percentage from
