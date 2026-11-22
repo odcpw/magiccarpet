@@ -29,7 +29,7 @@ class CampaignGameplayHelpTests(unittest.TestCase):
             spec.loader.exec_module(menu)
             exported = json.loads(menu.source_gameplay_help())
         rows = {row["row"]: row for row in exported["rows"]}
-        self.assertEqual(len(rows), 54)
+        self.assertEqual(len(rows), 61)
         for index, record, age, priority in [(22, 310, 320, 4), (24, 312, 160, 5),
                                              (25, 313, 160, 5), (26, 314, 160, 5),
                                              (27, 315, 320, 3)]:
@@ -41,6 +41,25 @@ class CampaignGameplayHelpTests(unittest.TestCase):
         self.assertEqual(records[313], b"This is an enemy castle")
         self.assertEqual(records[314], b"This is an enemy balloon")
         self.assertEqual(records[315], b"Marker stone")
+
+    def test_castle_status_binds_pinned_rows_and_real_english_records(self):
+        tool = TOOL.parent / "build_campaign_menu_cache.py"
+        spec = importlib.util.spec_from_file_location("campaign_menu_cache", tool)
+        assert spec and spec.loader
+        menu = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"build_cache": cache}):
+            spec.loader.exec_module(menu)
+            rows = {row["row"]: row for row in json.loads(menu.source_gameplay_help())["rows"]}
+        positions = [(214, 32), (214, 16), (130, 16), (320, 32),
+                     (260, 16), (320, 16), (0, 0)]
+        records = cache.language_records((cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes())
+        texts = [b"Castled mana, current and capacity", b"Castle life", b"Current size of castle",
+                 b"Mana held by balloons", b"Number of balloons", b"Balloons life",
+                 b"Castle mana required"]
+        for index, (x, y), text in zip(range(29, 36), positions, texts):
+            self.assertEqual(rows[index], dict(row=index, kind=3, flags=0x620 if index == 35 else 0x220,
+                text_record=index + 288, duration=50, x=x, y=y, age_threshold=800, priority=2))
+            self.assertEqual(records[index + 288], text)
 
 
 LEVEL2_V4_PACKAGE = cache.GENERATED / "l2-debug3.fJ3PaM-v4/level2"

@@ -3179,6 +3179,163 @@ namespace MagicCarpet.Native.Tests
             Assert.That((bool)fireball.GetValue(hint), Is.True, "source row25 closure requests Fireball guidance");
         }
 
+        [Test]
+        public void CastleStatusHelpRespectsRealNonGoalStageAndCastlePresence()
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/original-castle-status-20261123/night-paid-castle-t1740.mcs");
+            var root = new GameObject("real non-goal Castle stage");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var activeBefore = NativeSession.ActiveSessionCount;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    InstalledOpeningArguments(30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray());
+                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(runtime);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var hud = native.DayHudState(native.Tick);
+                var first = native.ObjectiveStageState(hud.localPlayerSlot, hud.localPlayerSlot);
+                var selected = native.ObjectiveStageState(hud.localPlayerSlot, (byte)first.stageFlags);
+                var status = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
+                Assert.That(first.isLevelEnd, Is.Zero);
+                Assert.That(selected.stageKind, Is.EqualTo(5));
+                Assert.That(status.mana_goal_percent, Is.EqualTo(15));
+                Assert.That(status.castle_rows.Single().stage, Is.EqualTo((byte)1));
+                var eligible = first.isLevelEnd == 0 && selected.stageKind == 0;
+                foreach (var (hasCastle, mapOpen) in new[] { (true, false), (false, false), (true, true) })
+                {
+                    var hint = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasCastleStatusHelp: true);
+                    var seenStatus = false;
+                    for (var frame = 0; frame < 650; frame++)
+                    {
+                        hint.Advance(false, false, true, false, false, mapOpen: mapOpen,
+                            hasCastleStatus: hasCastle, castleGoalHintEligible: eligible, castleGoalAnchorX: 73);
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(35));
+                        seenStatus |= hint.VisibleRow is >= 29 and <= 34;
+                    }
+                    Assert.That(seenStatus, Is.EqualTo(hasCastle && !mapOpen));
+                }
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionCastleStatusHelpUsesActualGoalAndSourceText()
+        {
+            var replay = Environment.GetEnvironmentVariable("MC_CASTLE_STATUS_HELP_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/original-castle-mana-20261122/cave4-paid-row35.mcs");
+            var arguments = InstalledOpeningArguments(30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("actual Castle status help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            var activeBefore = NativeSession.ActiveSessionCount;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface") ??
+                    Field("level2DayPresentationSurface") ?? Field("gameRuntimeNightSurface"));
+                Assert.That(hint.HasCastleStatusHelp, Is.True);
+                Assert.That(menu.LocaleCache.Font1Record40Width, Is.EqualTo(4));
+                var texts = new[] { "Castled mana, current and capacity", "Castle life", "Current size of castle",
+                    "Mana held by balloons", "Number of balloons", "Balloons life", "Castle mana required" };
+                var axes = new[] { (214, 32), (214, 16), (130, 16), (320, 32), (260, 16), (320, 16), (0, 0) };
+                for (var row = 29; row <= 35; row++)
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority, binding.X, binding.Y),
+                        Is.EqualTo((row + 288, row == 35 ? 0x620 : 0x220, 50, 800, 2, axes[row - 29].Item1, axes[row - 29].Item2)));
+                    Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(texts[row - 29]));
+                }
+                var status = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
+                Assert.That(native.Tick, Is.EqualTo(5UL));
+                Assert.That(status.castle_rows.Single().stage, Is.EqualTo(1));
+                Assert.That(status.mana_goal_percent, Is.EqualTo(40));
+                var stage = native.ObjectiveStageState(0, 0);
+                Assert.That((stage.isLevelEnd, stage.stageFlags), Is.EqualTo(((byte)0, (sbyte)0)));
+                Assert.That(native.ObjectiveStageState(0, (byte)stage.stageFlags).stageKind, Is.Zero);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var advance = typeof(MagicCarpetRuntime).GetMethod("AdvanceGameRuntimeHelpFrame", flags);
+                void DrawHelpFrame() => advance.Invoke(runtime, null);
+                var observed = new System.Collections.Generic.List<int>();
+                var statusRows = new System.Collections.Generic.HashSet<int>();
+                var previous = 0;
+                // Keep the real tick-5 Castle, map subjects, controls and
+                // observation fixed while driving the ordinary help-frame
+                // boundary. This does not simulate subsequent combat turns.
+                for (var frame = 0; frame < 10000 && hint.VisibleRow != 35; frame++)
+                {
+                    DrawHelpFrame();
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != previous) observed.Add(hint.VisibleRow);
+                    if (hint.VisibleRow is >= 29 and <= 35 && statusRows.Add(hint.VisibleRow))
+                    {
+                        var row = hint.VisibleRow;
+                        var expected = row == 35 ? (89, 38) : axes[row - 29];
+                        Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(expected));
+                        window.SendEvent(new Event { type = EventType.Layout });
+                        window.SendEvent(new Event { type = EventType.Repaint });
+                        var rendered = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                        Assert.That(rendered, Is.Not.Null);
+                        Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(rendered),
+                            Is.EqualTo(texts[row - 29]));
+                    }
+                    previous = hint.VisibleRow;
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(35), "the retained eligible Castle goal must win an ordinary help poll; rows " + string.Join(",", observed));
+                CollectionAssert.AreEquivalent(new[] { 29, 30, 31, 32, 33, 34, 35 }, statusRows);
+                Assert.That(native.Tick, Is.EqualTo(5UL), "help draws do not advance the retained world");
+                Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((89, 38)));
+                var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                Assert.That((int)remaining.GetValue(hint), Is.EqualTo(49));
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter), Is.EqualTo(texts[6]));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var assets = menu.ObjectiveForProfile("cave");
+                var palette = surface.FramePaletteRgb8;
+                var color = assets.TextColor * 3;
+                var anchor = (38 - raster.Y) * raster.Width + 90 - raster.X;
+                Assert.That(raster.IndicesThenMask[anchor], Is.EqualTo(assets.TextColor));
+                Assert.That(ReadObjectivePixels(output)[(raster.Height - 1 - (38 - raster.Y)) * raster.Width + 90 - raster.X],
+                    Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                for (var frame = 0; frame < 49; frame++) DrawHelpFrame();
+                Assert.That(hint.VisibleRow, Is.EqualTo(35));
+                DrawHelpFrame();
+                Assert.That(hint.VisibleRow, Is.Zero);
+                Assert.That(native.Tick, Is.EqualTo(5UL));
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void ProductionMarkerStoneHintTracksRealSubjectAcrossBlink(bool fullMap)

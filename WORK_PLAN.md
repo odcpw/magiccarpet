@@ -1,5 +1,24 @@
 # Shared-engine delivery plan
 
+### Castle and balloon status guidance — November 23
+
+Original build `build-3cqlrcw2` uses 61 English help rows and native
+`bd6d2711cd66`. Six labels point to the Castle's mana, life and size and
+the balloons' mana, number and life. The seventh, “Castle mana required”,
+uses the live objective percentage and the selected FONT1 glyph width.
+Eligibility follows the two stage lookups in remc2's
+`GetHelpPopupTextAndCoords_87CF0`. A displayed percentage by itself is
+insufficient. Only the help table changed among the 678 cache outputs.
+
+A normal Castle cast in Spider Cave spent 1,000 mana. The saved game
+reloaded with a stage-one Castle and a 40% goal. With that real tick-5
+observation held fixed, the Original help loop selected and drew all seven
+labels. The goal pointer reached (89,38) and expired after 50 draws.
+The live NightSpire Castle at tick 1740 showed a 15% goal but did not qualify
+for this label. An earlier 4,000-turn Spider Cave run selected higher-priority
+help; that run did not display the goal label. Evidence is in
+`research/private/generated/original-castle-status-20261123/`.
+
 ### Marker stones on the Original maps — November 23
 
 Original build `build-8nx1869r` and native `bd6d2711cd66` keep the stone

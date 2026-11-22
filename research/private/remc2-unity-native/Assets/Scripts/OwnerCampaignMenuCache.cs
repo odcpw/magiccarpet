@@ -295,6 +295,7 @@ namespace MagicCarpet.Native
                         5624 => "6cbf278b437fb90e25a0f7712185f2a0f9df86cd678720c97f106d3824c374cd",
                         5945 => "a50150983ec1a827520a8f6c471e26beb0cff852908bd4a86f273733758cd1d9",
                         6052 => "624603b9dfbcf670672e28ebb555ecfac57cd96de8a603f62c2bc6a569a5ba29",
+                        6834 => "670380d5da12834b117652fb750ff2e6105658927061aa10153b9c1ae44757fe",
                         _ => throw new InvalidDataException("source gameplay help receipt is incomplete")
                     };
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
@@ -336,7 +337,8 @@ namespace MagicCarpet.Native
                         sourceRows.Insert(sourceRows.IndexOf(23), 22);
                         sourceRows.InsertRange(sourceRows.IndexOf(36), new[] { 25, 26 });
                     }
-                    if (helpReceipt.bytes == 6052) sourceRows.Insert(sourceRows.IndexOf(36), 27);
+                    if (helpReceipt.bytes >= 6052) sourceRows.Insert(sourceRows.IndexOf(36), 27);
+                    if (helpReceipt.bytes >= 6834) sourceRows.InsertRange(sourceRows.IndexOf(36), new[] { 29, 30, 31, 32, 33, 34, 35 });
                     if (helpReceipt.bytes >= 3856) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 38, 39 });
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
@@ -346,7 +348,7 @@ namespace MagicCarpet.Native
                     {
                         var row = help.rows[index];
                         var expectedRow = sourceRows[index];
-                        var expectedKind = expectedRow <= 17 ? 1 : expectedRow <= 27 ? 2 : expectedRow <= 37 ? 4 : expectedRow <= 42 ? 5 : expectedRow <= 71 ? 6 :
+                        var expectedKind = expectedRow <= 17 ? 1 : expectedRow <= 27 ? 2 : expectedRow <= 35 ? 3 : expectedRow <= 37 ? 4 : expectedRow <= 42 ? 5 : expectedRow <= 71 ? 6 :
                             expectedRow <= 80 ? 7 : expectedRow <= 82 ? 8 : expectedRow == 85 ? 10 : 11;
                         if (row == null || row.row != expectedRow || row.kind != expectedKind ||
                             row.text_record < 0 || row.text_record >= 471 ||
@@ -358,6 +360,8 @@ namespace MagicCarpet.Native
                         gameplayHelp.Add(row.row, new GameplayHelpBinding(row.row, row.text_record,
                             row.duration, row.flags, row.x, row.y, row.age_threshold, row.priority));
                     }
+                    if (helpReceipt.bytes >= 6834 && Font1Record40Width <= 0)
+                        throw new InvalidDataException("source status FONT1 record 40 is unbound");
                 }
                 if (manifest.schema == "mc2-owner-campaign-menu-cache/v3")
                 {
@@ -635,6 +639,8 @@ namespace MagicCarpet.Native
         internal bool HasOwnedCastleMinimapHelp => gameplayHelp.ContainsKey(23) && gameplayHelp.ContainsKey(24);
         internal bool HasBuildingMinimapHelp => gameplayHelp.ContainsKey(22);
         internal bool HasMarkerStoneMinimapHelp => gameplayHelp.ContainsKey(27);
+        internal bool HasCastleStatusHelp => gameplayHelp.ContainsKey(29) && gameplayHelp.ContainsKey(35);
+        internal int Font1Record40Width { get; private set; }
         internal bool HasRivalCastleMinimapHelp => gameplayHelp.ContainsKey(25);
         internal bool HasRivalCollectorMinimapHelp => gameplayHelp.ContainsKey(26);
         internal bool HasCreaturePickupMinimapHelp => gameplayHelp.ContainsKey(19) && gameplayHelp.ContainsKey(20);
@@ -795,6 +801,12 @@ namespace MagicCarpet.Native
                 if (bytes.Length != output.bytes || Digest(bytes) != output.sha256 || !payloads.TryAdd(output.path, bytes))
                     throw new InvalidDataException("campaign language output identity mismatch");
             }
+            var statusFont = language.fonts?.SingleOrDefault(row => row.id == "font1");
+            if (statusFont?.glyphs != null && statusFont.glyphs.Length > 40 &&
+                statusFont.glyphs[40] != null && statusFont.glyphs[40].index == 40 &&
+                statusFont.glyphs[40].width > 0 && statusFont.masks_path == "fonts/font1.masks.u8" &&
+                payloads.ContainsKey(statusFont.masks_path))
+                Font1Record40Width = statusFont.glyphs[40].width;
             if (menu.objective != null)
             {
                 var font = language.fonts?.SingleOrDefault(row => row.id == "hfont3");
