@@ -199,7 +199,9 @@ namespace MagicCarpet.Native.Tests
 
                     preferences.Open();
                     preferences.BeginKeyCapture(4);
-                    foreach (var (fixedKey, character) in new[] { (KeyCode.C, 'c'), (KeyCode.L, 'l'), (KeyCode.Space, ' ') })
+                    foreach (var (fixedKey, character) in new[] {
+                        (KeyCode.C, 'c'), (KeyCode.L, 'l'), (KeyCode.O, 'o'), (KeyCode.Space, ' ')
+                    })
                     {
                         var reserved = new Event { type = EventType.KeyDown, keyCode = fixedKey };
                         Assert.That(preferences.CaptureKey(reserved), Is.True);

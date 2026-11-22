@@ -1,5 +1,20 @@
 # Shared-engine delivery plan
 
+## Installed Original HUD and controls — November 22
+
+Original build `build-i1a2zazh` ships the 50-row English help cache and native
+`da15d844f920`. Creature and spell-pickup hints use remc2 rows 19 and 20
+(text records 307 and 308). Focused Unity checks on The Revealed Way selected
+the nearest of multiple real markers, checked the drawn pointer and English
+text, followed the creature, and cleared the pickup hint when the marker left
+the corner map. That check did not collect the pickup. The binding dialog and
+native preferences reserve O. An otherwise valid older profile that already
+assigned O keeps its other settings. In the installed player, holding O showed
+the skeleton-horde objective and releasing O dismissed it. The installation
+check and the running process matched the new native. Evidence is in
+`research/private/generated/original-minimap-objective-20261122/`.
+The broader HUD and input beads (`mc-oi6.6`, `mc-5r5.2`) stay open.
+
 ## Active Modern/Voxel Level 1 asset completion — 2026-11-09
 
 Oliver confirms Rust Level 1 is playable and requests completing its Modern

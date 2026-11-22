@@ -144,6 +144,10 @@ impl Default for PlayerPreferences {
 
 impl PlayerPreferences {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_legacy_objective_key(false)
+    }
+
+    fn validate_with_legacy_objective_key(&self, allow_objective_key: bool) -> Result<(), String> {
         if self.schema != PREFERENCES_SCHEMA {
             return Err("unsupported preferences schema".into());
         }
@@ -166,6 +170,9 @@ impl PlayerPreferences {
         {
             return Err("preference value outside its supported range".into());
         }
+        if !allow_objective_key && self.keys.contains(&InputKey::O) {
+            return Err("key conflicts with the fixed objective control".into());
+        }
         for i in 0..4 {
             if matches!(self.keys[i], InputKey::C | InputKey::L | InputKey::Space) {
                 return Err(
@@ -186,6 +193,29 @@ impl PlayerPreferences {
             return Err("invalid installed locale identity".into());
         }
         Ok(())
+    }
+
+    // Old profiles could bind O despite the fixed objective control. Keep all
+    // other assignments, preferring the original slot default when it is free.
+    // The fallback keys are all offered by source sub_79E10, and outnumber the
+    // other nine slots, so a free key always exists.
+    fn repair_legacy_objective_keys(&mut self) {
+        use InputKey::*;
+        const FALLBACKS: [InputKey; 16] = [
+            UpArrow, DownArrow, LeftArrow, RightArrow, Return, LeftControl, LeftAlt,
+            RightShift, Q, W, T, Y, U, A, F, G,
+        ];
+        let defaults = Self::default().keys;
+        for slot in 0..self.keys.len() {
+            if self.keys[slot] != O {
+                continue;
+            }
+            let replacement = std::iter::once(defaults[slot])
+                .chain(FALLBACKS)
+                .find(|key| !self.keys.contains(key))
+                .expect("more fallback keys than other assignment slots");
+            self.keys[slot] = replacement;
+        }
     }
 }
 
@@ -512,7 +542,11 @@ impl PreferenceStore {
                             if !value.is_boolean() {return Err(format!("legacy graphics field {name} must be boolean"));}
                         }
                     }
-                    let value:PlayerPreferences=serde_json::from_value(serde_json::Value::Object(fields)).map_err(|e|e.to_string())?;
+                    let mut value:PlayerPreferences=serde_json::from_value(serde_json::Value::Object(fields)).map_err(|e|e.to_string())?;
+                    // Only an otherwise-valid old profile receives this repair;
+                    // invalid profiles still take the existing recovery path.
+                    value.validate_with_legacy_objective_key(true)?;
+                    value.repair_legacy_objective_keys();
                     value.validate()?;
                     Ok(value)
                 })();
@@ -1854,6 +1888,74 @@ mod tests {
             assert!(assist.observe(AssistanceInput::default(), true, policy));
         }
         assert!(!command_has_player_activity(&GameCommand::default()));
+    }
+
+    #[test]
+    fn legacy_objective_key_is_repaired_without_losing_other_preferences() {
+        let time_tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mc-objective-key-test-{}-{time_tag}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("player-preferences.json");
+        let install = || PreferencesCommand::Install {
+            profile_dir: dir.to_string_lossy().into_owned(),
+        };
+        for slot in 0..10 {
+            let mut old = PlayerPreferences::default();
+            old.player_name = "OLIVER".into();
+            old.sound_volume = 23;
+            old.keys[slot] = InputKey::O;
+            // Occupy the slot's default elsewhere to exercise fallback selection.
+            if slot == 0 {
+                old.keys[4] = InputKey::UpArrow;
+            }
+            assert!(old.validate_with_legacy_objective_key(true).is_ok());
+            assert!(old.validate().is_err());
+            let bytes = serde_json::to_vec(&old).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let mut store = PreferenceStore::default();
+            let loaded = store.command(install()).unwrap();
+            assert_eq!(loaded.load_status, "loaded");
+            assert_eq!(loaded.preferences.player_name, old.player_name);
+            assert_eq!(loaded.preferences.sound_volume, old.sound_volume);
+            assert_ne!(loaded.preferences.keys[slot], InputKey::O);
+            for other in 0..10 {
+                if other != slot {
+                    assert_eq!(loaded.preferences.keys[other], old.keys[other]);
+                }
+            }
+            assert!(loaded.preferences.validate().is_ok());
+            assert_eq!(fs::read(&path).unwrap(), bytes, "load must not overwrite the old profile");
+
+            let before = store.snapshot();
+            assert!(store.command(PreferencesCommand::Apply { preferences: old }).is_err());
+            assert_eq!(store.snapshot(), before);
+            assert_eq!(fs::read(&path).unwrap(), bytes, "rejected Apply is atomic");
+        }
+        let mut old = PlayerPreferences::default();
+        old.keys[4] = InputKey::O;
+        old.keys[5] = InputKey::O;
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut store = PreferenceStore::default();
+        let loaded = store.command(install()).unwrap();
+        assert!(loaded.preferences.validate().is_ok());
+        assert_ne!(loaded.preferences.keys[4], loaded.preferences.keys[5]);
+        for slot in [0, 1, 2, 3, 6, 7, 8, 9] {
+            assert_eq!(loaded.preferences.keys[slot], old.keys[slot]);
+        }
+        old.sound_volume = 128;
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut invalid = PreferenceStore::default();
+        assert!(invalid.command(install()).unwrap().load_status.starts_with("defaults:"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
     #[test]
