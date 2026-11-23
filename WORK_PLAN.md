@@ -1,5 +1,38 @@
 # Shared-engine delivery plan
 
+### Perilium: paid Beyond Sight and the rival balloon — November 23
+
+The player entered Perilium from a controlled campaign carry with Possession
+and Beyond Sight. One ordinary Possession cast claimed three nearby mana
+spheres and raised capacity from 1,000 to 2,536. Beyond Sight spent 1,800.
+Both native maps published the existing rival balloon at slot 370 with help
+row 26. The row was present at tick 180 and gone by tick 184; the same
+collector still belonged to player 357. Its Castle marker remained throughout.
+
+The installed Original loaded the tick-36 paid save. Opening the full map
+showed the balloons and rival names, then the Castle markers as Sight expired.
+Other hints won the displayed popup during this run. The earlier controlled
+Unity check covers the English balloon text and pointer. The source checks
+and installed captures are in `research/private/generated/beyond-sight-balloon-20261123/`
+and `research/private/generated/perilium-paid-sight-20261123/`.
+
+### Night Castle colours on the Original maps — November 23
+
+The Night map gave every Castle sprite 58. In Perilium the rival Castle at
+slot 366 belongs to player 357, whose colour is 3. remc2 selects sprite 61.
+Both map sizes now use the existing single-player owner-colour lookup for
+Castles as well as balloons. The Perilium check reads the live Castle owner
+and checks both map sizes. The NightSpire minimap and full-map camera checks
+across four missions also pass.
+
+The paid Perilium save reproduced the change from 58 to 61 on both maps.
+At tick 180 three rival Castles had distinct sprites (59, 62, 61). After
+Beyond Sight expired, all three Castles remained and all three balloon
+markers disappeared. Reopening the real Spider Cave save preserved the
+player's Castle sprite 58. Original native `d5932a518476` is installed with
+the Castle HUD player. Evidence is in
+`research/private/generated/original-night-castles-20261123/`.
+
 ### Mission-triggered Gravity Wells — November 23
 
 Baraghan's area switches and Galiphur's repeating switch can now create a

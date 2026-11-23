@@ -673,7 +673,7 @@ fn campaign_map_plan(
     let mut entities = Vec::new();
     for (input, parameter_record_index) in inputs {
         let full_map = geometry == MapGeometry::FULL_MAP;
-        let command = if selection.map_type_id == 1 && !(input.class == 3 && input.model == 3) {
+        let command = if selection.map_type_id == 1 && input.class != 3 {
             // Preserve the qualified Night classifier. Mines use the shared
             // source owner/active-Beyond gate and actual player-colour selector.
             level1_minimap_entity_command_with_visibility(&session.state, input, full_map)
@@ -1039,6 +1039,44 @@ fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors()
     let live = campaign_minimap_plan(campaign.simulation(), CampaignSelection::LEVEL1).unwrap();
     assert!(!live.entities.is_empty());
     assert_eq!(campaign.state_hash(), after);
+}
+
+#[test]
+fn perilium_night_castle_uses_its_owner_colour_on_both_maps() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-current/level7");
+    let selection = CampaignSelection::ordinary(7).unwrap();
+    let campaign = sim_core::campaign::CampaignSession::open(package, selection)
+        .expect("real Perilium package opens");
+    let session = campaign.simulation();
+    let owner = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index == 357)
+        .expect("Perilium Castle owner");
+    assert_eq!(owner.player_color_index(), 3);
+    let castle_source = session
+        .campaign_minimap_owned_inputs()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.source_slot == 366)
+        .expect("live Castle owner input");
+    assert_eq!(
+        (castle_source.class, castle_source.model, castle_source.source_id),
+        (3, 2, 357)
+    );
+    for geometry in [MapGeometry::MINIMAP, MapGeometry::FULL_MAP] {
+        let plan = campaign_map_plan(session, selection, &session.state, geometry).unwrap();
+        let castle = plan
+            .entities
+            .iter()
+            .find(|row| row.subject_entity_index == 366)
+            .expect("Perilium rival Castle marker");
+        assert_eq!(
+            (castle.selector, castle.help_selector, castle.visible),
+            (61, 25, 1)
+        );
+    }
 }
 
 #[test]
