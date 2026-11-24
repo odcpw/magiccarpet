@@ -5282,6 +5282,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         candidate
             .simulation_mut()
             .apply_objective_input(show_objective);
+        if command.surrender_player {
+            candidate.simulation_mut().apply_source_surrender_input();
+        }
         let menu_admitted = command.abandon_action.is_some_and(|action| {
             candidate
                 .simulation_mut()
@@ -6309,6 +6312,76 @@ pub(crate) mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn nightspire_surrender_replays_death_camera_and_real_no_castle_retry() {
+        use crate::campaign::journal::CampaignEffect;
+        use crate::game_runtime::GameRuntime;
+
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let neutral = serde_json::to_value(GameCommand::default()).unwrap();
+        assert!(neutral.get("surrender_player").is_none());
+        let surrender = GameCommand { surrender_player: true, ..GameCommand::default() };
+        assert_eq!(serde_json::from_slice::<GameCommand>(&serde_json::to_vec(&surrender).unwrap()).unwrap(), surrender);
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8130).unwrap();
+        let title_guard = runtime.identity().guard();
+        let loading = resolver.new_game(&mut runtime, title_guard).unwrap();
+        resolver.open_pending(&mut runtime, loading.guard(), 8130).unwrap();
+        let game = runtime.session_mut().unwrap();
+        let sim = game.backend().campaign.simulation();
+        let player = sim.state.entity_index;
+        let before = &sim.entities()[usize::from(player)];
+        assert!(before.life > 0 && before.action == 0);
+        assert_eq!(sim.economy().player_castle_entity_index(), 0);
+        // Separately controlled negative branches use the same real player;
+        // the connected positive below has no altered player state or pose.
+        for gate in 0..3 {
+            let mut blocked = sim.clone();
+            match gate {
+                0 => blocked.session.state.live.player_menu_state = 3,
+                1 => blocked.session.state.live.level_exit.player_status_flags |= 0x20,
+                _ => {
+                    let local = usize::from(blocked.session.state.live.core.runtime.local_player_slot);
+                    blocked.session.state.live.core.runtime.player_inputs[local].opcode = 42;
+                }
+            }
+            blocked.apply_source_surrender_input();
+            assert_eq!(blocked.entities()[usize::from(player)].life, before.life);
+        }
+        let attacker = before.word_26();
+        let cursor = sim.effect_journal().cursor(0);
+        game.step(guard(game), surrender).unwrap();
+        let sim = game.backend().campaign.simulation();
+        let actor = &sim.entities()[usize::from(player)];
+        assert_eq!((actor.life, actor.action, actor.word_26()), (-1, 2, attacker));
+        assert_eq!(sim.session.state.live.player_pending_damage, 0);
+        assert_eq!(sim.session.state.live.player_pending_attacker, 0);
+        assert!(sim.effect_journal().page(0, cursor, usize::MAX).unwrap().records.iter()
+            .any(|record| matches!(record.effect, CampaignEffect::SceneChange { scene: 4 })));
+        for _ in 0..512 {
+            if game.backend().campaign.simulation().entities()[usize::from(player)].action == 3 { break; }
+            game.step(guard(game), GameCommand::default()).unwrap();
+        }
+        assert_eq!(game.backend().campaign.simulation().entities()[usize::from(player)].action, 3);
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8131).unwrap();
+        let cold_guard = cold.identity().guard();
+        resolver.load_replay(&mut cold, cold_guard, 8131, &saved).unwrap();
+        assert_eq!(cold.session().unwrap().backend().snapshot(), runtime.session().unwrap().backend().snapshot());
+        let game = runtime.session_mut().unwrap();
+        game.step(guard(game), GameCommand { recover_player: true, ..GameCommand::default() }).unwrap();
+        assert!(game.backend().mission_retry_requested());
+        let before = runtime.identity();
+        let session_guard = runtime.session().unwrap().identity().guard();
+        assert!(runtime.retry_mission_if_ready(before.guard(), session_guard).unwrap());
+        let after = runtime.session().unwrap().backend().campaign.simulation();
+        assert_eq!(after.entities()[usize::from(after.state.entity_index)].life, 10_000);
+        assert!(runtime.completed_levels().is_empty());
     }
 
     #[test]
@@ -50169,6 +50242,7 @@ pub(crate) mod tests {
             look_yaw: -17,
             look_pitch: 23,
             recover_player: false,
+            surrender_player: false,
             remove_castle_stage: false,
             abandon_action: None,
             elapsed_centiseconds: 0,

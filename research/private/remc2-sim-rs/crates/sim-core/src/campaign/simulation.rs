@@ -9293,6 +9293,27 @@ impl Mc2Simulation {
         self.session.state.live.player_menu_state
     }
 
+    /// ProcessKeyboardPresses writes the local entity directly, before
+    /// PlayerEvents and the scheduled player body. No damage is attributed.
+    pub(crate) fn apply_source_surrender_input(&mut self) {
+        let live = &mut self.session.state.live;
+        let slot = usize::from(live.core.runtime.local_player_slot);
+        if !matches!(live.player_menu_state, 0 | 1 | 4 | 5 | 6 | 7 | 8)
+            || live.level_exit.player_status_flags & 0x20 != 0
+            || !live.core.runtime.player_inputs.get(slot).is_some_and(|input| input.opcode == 0)
+        {
+            return;
+        }
+        let Some(player) = live.economy.entities.get_mut(usize::from(live.core.state.entity_index)) else {
+            return;
+        };
+        if !player.active { return; }
+        player.set_life(-1);
+        live.player_life = -1;
+        live.shared_spells.sync_player_entity_from_authority(player);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+    }
+
     /// Admit a semantic menu input into the same local source input slot used
     /// by PlayerEvents. An occupied slot cannot be replaced by action 29.
     pub(crate) fn prepare_source_menu_action(
@@ -21529,7 +21550,8 @@ impl Mc2Simulation {
                         let player_after_upkeep =
                             self.session.state.live.shared_spells.player_entity.clone();
                         self.session.state.live.player_life = player_after_upkeep.life;
-                        let numeric_player = &mut self.session.state.live.economy.entities
+                        let live = &mut self.session.state.live;
+                        let numeric_player = &mut live.economy.entities
                             [usize::from(player_after_upkeep.index)];
                         numeric_player.set_life(player_after_upkeep.life);
                         numeric_player.set_mana(player_after_upkeep.mana);
@@ -21538,6 +21560,14 @@ impl Mc2Simulation {
                         numeric_player.record[144..148]
                             .copy_from_slice(&player_after_upkeep.max_mana.to_le_bytes());
                         numeric_player.set_control_flags(player_after_upkeep.control_flags);
+                        // AddPlayer03_00 enters its death action after the
+                        // flight body whenever life is negative, including
+                        // direct keyboard loss with no damage mailbox.
+                        // Mailbox deaths already entered action 2 earlier.
+                        if player_after_upkeep.life < 0 && numeric_player.action == 0 {
+                            numeric_player.set_player_death_state();
+                            live.shared_spells.sync_player_entity_from_authority(numeric_player);
+                        }
                         self.session
                             .state
                             .live

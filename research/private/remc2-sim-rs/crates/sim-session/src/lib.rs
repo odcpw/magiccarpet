@@ -556,6 +556,9 @@ pub struct GameCommand {
     /// when the source player has a surviving linked Castle.
     #[serde(skip_serializing_if = "is_false")]
     pub recover_player: bool,
+    /// Request the source's direct local-player surrender input.
+    #[serde(skip_serializing_if = "is_false")]
+    pub surrender_player: bool,
     /// Remove one stage of the player's linked Castle through its ordinary
     /// lifecycle. The game adapter owns admission and the source command.
     #[serde(skip_serializing_if = "is_false")]

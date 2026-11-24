@@ -930,6 +930,7 @@ fn command_has_player_activity(command: &sim_session::GameCommand) -> bool {
         || command.cycle_marked_spell.is_some()
         || command.abandon_action.is_some()
         || command.recover_player
+        || command.surrender_player
         || command.remove_castle_stage
         || command.look_yaw != 0
         || command.look_pitch != 0
