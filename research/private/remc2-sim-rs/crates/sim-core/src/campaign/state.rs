@@ -312,6 +312,8 @@ pub struct CampaignSession {
     /// The restore candidate suppresses the Wind sound only during operations
     /// recorded before source-49 preparation and termination were joined.
     pub(crate) replay_legacy_wind_audio: bool,
+    /// Preserve historical Results writers only during the recorded prefix.
+    pub(crate) replay_legacy_source_results: bool,
 }
 
 impl CampaignSession {
@@ -331,6 +333,7 @@ impl CampaignSession {
             generation: 0,
             replay_legacy_goat_audio: false,
             replay_legacy_wind_audio: false,
+            replay_legacy_source_results: false,
         }
     }
 

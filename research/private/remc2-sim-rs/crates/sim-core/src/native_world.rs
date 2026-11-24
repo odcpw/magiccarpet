@@ -3088,6 +3088,9 @@ pub struct Mc2LiveState {
     /// Source A4 word0x159, absent from the compact exported player record.
     pub(crate) player_protection_ticks: u16,
     pub(crate) elapsed_centiseconds: u32,
+    /// Last `sub_574A0` spell census when a player was revived. `None` is
+    /// the census deterministically derived from this mission's entry state.
+    pub(crate) source_spell_census_override: Option<([bool; 26], bool)>,
     pub(crate) player_life: i32,
     /// Source per-player `MenuState_0x3DF`, distinct from the spell-fire
     /// holder's `spell_menu_stage` byte.

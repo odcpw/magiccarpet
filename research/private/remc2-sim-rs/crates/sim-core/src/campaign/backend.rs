@@ -994,6 +994,9 @@ struct Mc2CampaignReplaySave {
     /// The first operation recorded with the Wind sound producer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wind_audio_start_operation: Option<usize>,
+    /// First operation using source-correct Results producers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_results_start_operation: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     global_context_changes: Vec<Mc2GlobalContextChange>,
     #[serde(
@@ -1060,6 +1063,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     goat_audio_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wind_audio_start_operation: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_results_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "<[Mc2GlobalContextChange]>::is_empty")]
     global_context_changes: &'a [Mc2GlobalContextChange],
     #[serde(skip_serializing_if = "dynamic_lighting_is_default")]
@@ -1121,6 +1126,7 @@ impl Mc2CampaignReplaySave {
             hand_selection_flash_start_operation: None,
             goat_audio_start_operation: Some(0),
             wind_audio_start_operation: Some(0),
+            source_results_start_operation: Some(0),
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
@@ -1162,6 +1168,7 @@ impl Mc2CampaignReplaySave {
             hand_selection_flash_start_operation: self.hand_selection_flash_start_operation,
             goat_audio_start_operation: self.goat_audio_start_operation,
             wind_audio_start_operation: self.wind_audio_start_operation,
+            source_results_start_operation: self.source_results_start_operation,
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
@@ -1195,6 +1202,7 @@ impl Mc2CampaignReplaySave {
             && self.hand_selection_flash_start_operation.is_none()
             && self.goat_audio_start_operation.is_none()
             && self.wind_audio_start_operation.is_none()
+            && self.source_results_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
             && self.palette_changes.is_empty()
             && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none()
@@ -2501,6 +2509,7 @@ impl Mc2RuntimePackageResolver {
         save.hand_selection_flash_start_operation = session.backend().hand_selection_flash_start_operation;
         save.goat_audio_start_operation = Some(session.backend().goat_audio_start_operation);
         save.wind_audio_start_operation = Some(session.backend().wind_audio_start_operation);
+        save.source_results_start_operation = Some(session.backend().source_results_start_operation);
         save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
         save.global_context_changes = session.backend().global_context_changes.clone();
         save.initial_dynamic_lighting = session
@@ -2795,6 +2804,11 @@ impl Mc2RuntimePackageResolver {
                 message: "source Wind audio has an invalid replay boundary".to_owned(),
             });
         }
+        if save.source_results_start_operation.is_some_and(|start| start > save.operations.len()) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source Results have an invalid replay boundary".to_owned(),
+            });
+        }
         if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 || save.initial_final_reward == Some(false) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid campaign return state".to_owned() });
         }
@@ -2987,6 +3001,7 @@ impl Mc2RuntimePackageResolver {
         } else { save.operations.len() };
         let goat_audio_start = save.goat_audio_start_operation.unwrap_or(save.operations.len());
         let wind_audio_start = save.wind_audio_start_operation.unwrap_or(save.operations.len());
+        let source_results_start = save.source_results_start_operation.unwrap_or(save.operations.len());
         let initial_secret_announcement = save.initial_secret_announcement;
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
@@ -3060,6 +3075,8 @@ impl Mc2RuntimePackageResolver {
                     backend.campaign.simulation_mut().set_replay_legacy_goat_audio(goat_audio_start != 0);
                     backend.wind_audio_start_operation = wind_audio_start;
                     backend.campaign.simulation_mut().set_replay_legacy_wind_audio(wind_audio_start != 0);
+                    backend.source_results_start_operation = source_results_start;
+                    backend.campaign.simulation_mut().set_replay_legacy_source_results(source_results_start != 0);
                     candidate.backend_mut().hud_admission = None;
                     candidate.backend_mut().pending_hud_top_bar = None;
                     candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
@@ -3087,6 +3104,9 @@ impl Mc2RuntimePackageResolver {
                     }
                     if operation_index == wind_audio_start {
                         candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_wind_audio(false);
+                    }
+                    if operation_index == source_results_start {
+                        candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_source_results(false);
                     }
                     if voxel_mode_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
                         let change = voxel_mode_changes.next().expect("matched voxel replay boundary");
@@ -3293,6 +3313,7 @@ impl Mc2RuntimePackageResolver {
         if save.completed_levels.is_none() {
             save.goat_audio_start_operation = None;
             save.wind_audio_start_operation = None;
+            save.source_results_start_operation = None;
         }
         save.receipt_sha256 = save.compute_receipt_sha256();
         serde_json::to_vec(&save).unwrap()
@@ -3766,6 +3787,7 @@ pub struct Mc2CampaignBackend {
     hand_selection_flash_start_operation: Option<usize>,
     goat_audio_start_operation: usize,
     wind_audio_start_operation: usize,
+    source_results_start_operation: usize,
     hud_admission_changes: Vec<Mc2HudAdmissionChange>,
     palette_changes: Vec<Mc2PaletteChange>,
     pending_palette_brightness: Option<[u8; 3]>,
@@ -4428,6 +4450,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             hand_selection_flash_start_operation: None,
             goat_audio_start_operation: 0,
             wind_audio_start_operation: 0,
+            source_results_start_operation: 0,
             hud_admission_changes: Vec::new(),
             hud_admission: Some(true),
             pending_hud_top_bar: None,
@@ -5201,6 +5224,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.hand_selection_flash_start_operation = None;
         self.goat_audio_start_operation = 0;
         self.wind_audio_start_operation = 0;
+        self.source_results_start_operation = 0;
         self.primary_visibility_changes.clear();
         self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
@@ -5976,6 +6000,110 @@ pub(crate) mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn paid_water_fireball_replay_preserves_old_accuracy_then_uses_source_writer() {
+        use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeTransitionError};
+        use crate::native_world::{start_fireball_terminal_trace, take_fireball_terminal_trace};
+
+        let root = descriptor_fixture_path();
+        let definition = Arc::new(load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap());
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(&root),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        // Open the authored Level 2 from a controlled campaign frontier via
+        // the real runtime, so its save producer records every entry field.
+        let first = resolver.flow().entry_level_id().clone();
+        let level = definition.runtime_flow().unwrap().bound_level_id().clone();
+        let map_save = CampaignSaveState {
+            definition: resolver.package(&first).unwrap().definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None,
+            selected_level_id: Some(level),
+            completed_levels: vec![first],
+            level_statistics: Vec::new(),
+        };
+        let mut historical = GameRuntime::<Mc2CampaignBackend>::title(8101).unwrap();
+        let title = historical.identity();
+        let map = historical.restore_campaign_resolved(title.guard(), map_save, Default::default(),
+            |definition, selected| {
+                resolver.exact_package_for_definition(definition)?;
+                resolver.package(selected).map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "test campaign package is not installed".to_owned(),
+                    })
+            }).unwrap();
+        let loading = resolver.campaign_menu_command(
+            &mut historical, map.guard(), CampaignMenuCommand::StartMission,
+        ).unwrap();
+        resolver.open_pending(&mut historical, loading.guard(), 8101).unwrap();
+        let session = historical.session_mut().unwrap();
+        session.backend_mut().campaign.simulation_mut().set_replay_legacy_source_results(true);
+        for _ in 0..16 {
+            session.step(guard(session), GameCommand { pitch_axis: 127, ..GameCommand::default() }).unwrap();
+        }
+        assert_eq!(session.backend().campaign.simulation().state.display_pitch, 250);
+        start_fireball_terminal_trace();
+        session.step(guard(session), GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            cast_selected: true, pitch_axis: 127, ..GameCommand::default()
+        }).unwrap();
+        for _ in 0..3 {
+            session.step(guard(session), GameCommand::default()).unwrap();
+        }
+        let player = session.backend().campaign.simulation().state.entity_index;
+        assert!(take_fireball_terminal_trace().iter().any(|row|
+            row.owner == player && row.collision_target.is_none() && row.impact.is_some()
+                && session.backend().campaign.simulation().canonical_terrain().material_mask(row.position) == 1),
+            "the paid family-0 cast must actually create its water splash");
+        let sim = session.backend().campaign.simulation();
+        assert_eq!((sim.shared_spells().local_player().projectile_attempts,
+                    sim.shared_spells().local_player().projectile_hits), (1, 0));
+        assert_eq!(sim.completion_statistics().hit_accuracy_percent, 0);
+        let expected = session.backend().snapshot();
+        // This is an explicit old-writer control encoded by the production
+        // save path; an actual old installed save is checked separately.
+        let produced = resolver.save_replay(&historical).unwrap();
+        let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&produced).unwrap();
+        old.source_results_start_operation = None;
+        old.receipt_sha256 = old.compute_receipt_sha256();
+        let old_bytes = serde_json::to_vec(&old).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8102).unwrap();
+        let title = restored.identity();
+        resolver.load_replay(&mut restored, title.guard(), 8102, &old_bytes).unwrap();
+        assert_eq!(restored.session().unwrap().backend().snapshot(), expected);
+        let migrated_bytes = resolver.save_replay(&restored).unwrap();
+        let migrated: Mc2CampaignReplaySave = serde_json::from_slice(&migrated_bytes).unwrap();
+        assert_eq!(migrated.source_results_start_operation, Some(old.operations.len()));
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8103).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8103, &migrated_bytes).unwrap();
+        assert_eq!(cold.session().unwrap().backend().snapshot(), expected);
+
+        // The next live cast must use the corrected writer while preserving
+        // the old prefix's already-recorded attempt in both state and Results.
+        start_fireball_terminal_trace();
+        let live = restored.session_mut().unwrap();
+        live.step(guard(live), GameCommand { cast_selected: true, ..GameCommand::default() }).unwrap();
+        for _ in 0..8 {
+            live.step(guard(live), GameCommand::default()).unwrap();
+        }
+        assert!(take_fireball_terminal_trace().iter().any(|row|
+            row.owner == player && row.collision_target.is_none() && row.impact.is_some()
+                && live.backend().campaign.simulation().canonical_terrain().material_mask(row.position) == 1),
+            "the new public cast must also terminate on water");
+        let sim = live.backend().campaign.simulation();
+        assert_eq!((sim.shared_spells().local_player().projectile_attempts,
+                    sim.shared_spells().local_player().projectile_hits), (1, 0));
+        assert_eq!(sim.completion_statistics().hit_accuracy_percent, 0);
+        let continued = resolver.save_replay(&restored).unwrap();
+        let mut replayed = GameRuntime::<Mc2CampaignBackend>::title(8104).unwrap();
+        let title = replayed.identity();
+        resolver.load_replay(&mut replayed, title.guard(), 8104, &continued).unwrap();
+        assert_eq!(replayed.session().unwrap().backend().snapshot(), restored.session().unwrap().backend().snapshot());
     }
 
     #[test]
@@ -7162,6 +7290,7 @@ pub(crate) mod tests {
         old.save_contract = PRE_HAND_FLASH_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned();
         old.goat_audio_start_operation = None;
         old.wind_audio_start_operation = None;
+        old.source_results_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         assert!(old.verify());
         let old_bytes = serde_json::to_vec(&old).unwrap();

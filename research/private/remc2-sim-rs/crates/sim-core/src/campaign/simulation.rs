@@ -42,6 +42,27 @@ pub(crate) struct CarriedSpellProgress {
     pub selected_tier: i8,
 }
 
+/// `sub_574A0` scans the remaining authored spell rows after group zero has
+/// been consumed, excluding families already enabled or retained as learned.
+fn source_spell_census(
+    mission: &MissionContentSession,
+    player: &PlayerSnapshot,
+    consumed: &BTreeSet<u16>,
+) -> [bool; 26] {
+    let mut available = [false; 26];
+    for feature in mission.authored_features() {
+        let Ok(family) = usize::try_from(feature.subtype) else { continue };
+        if feature.index != 0 && feature.kind == 15 && feature.activation_group != 0
+            && !consumed.contains(&feature.index) && family < available.len()
+            && player.enabled_spell_holders[family] == 0
+            && player.spell_enabled_flags[family] == 0
+        {
+            available[family] = true;
+        }
+    }
+    available
+}
+
 /// sub6D8B0 accepts a human wizard owner. Keep all player projections at
 /// the same progression boundary as the source hit award. A counted award
 /// adds its signed amount once, then performs one source tier visit.
@@ -6611,6 +6632,7 @@ impl Mc2Simulation {
             player_pending_damage: initial_player_pending_damage,
             player_protection_ticks: 100,
             elapsed_centiseconds: 0,
+            source_spell_census_override: None,
             player_pending_attacker: initial_player_pending_attacker,
             player_life: initial_player_life,
             player_menu_state: 0,
@@ -21442,11 +21464,35 @@ impl Mc2Simulation {
                     terrain,
                 );
                 match result {
-                    Ok(result) => self.push_dispatch_effect(Mc2DispatchEvent::SharedPickup {
-                        pass,
-                        source_slot,
-                        result,
-                    }),
+                    Ok(result) => {
+                        if !self.session.replay_legacy_source_results
+                            && result.as_ref().is_some_and(|step| step.collected)
+                        {
+                            // The reset-imported Speed callback writes its local
+                            // player projection. Publish the same acquisition
+                            // fields as the ordinary class-15 callback before
+                            // later player/source visits consume the roster.
+                            let live = &mut self.session.state.live;
+                            let owner = live.shared_spells.local_player.clone();
+                            let shared = live.shared_spells.players.iter_mut()
+                                .find(|player| player.entity_index == owner.entity_index)
+                                .ok_or_else(|| "Speed pickup owner missing from spell roster".to_owned())?;
+                            shared.sync_spell_acquisition_from(&owner);
+                            let core = live.core.players.iter_mut()
+                                .find(|player| player.entity_index == owner.entity_index)
+                                .ok_or_else(|| "Speed pickup owner missing from player roster".to_owned())?;
+                            core.sync_spell_acquisition_from(&owner);
+                            // Publish before the scheduler resolves the same
+                            // source address again for its common epilogue.
+                            self.commit_imported_spell_source_projection(source_slot)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        self.push_dispatch_effect(Mc2DispatchEvent::SharedPickup {
+                            pass,
+                            source_slot,
+                            result,
+                        });
+                    }
                     Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
@@ -22715,7 +22761,7 @@ impl Mc2Simulation {
                         } else {
                             (&[][..], &empty_models)
                         };
-                        crate::native_world::effects::step_projectile(
+                        crate::native_world::effects::step_projectile_with_accuracy_policy(
                             &mut live.economy,
                             &mut live.terrain,
                             &self.session.definition.presentation.particles,
@@ -22724,6 +22770,7 @@ impl Mc2Simulation {
                             capture_slots,
                             owner_range,
                             Some(frozen_targets),
+                            self.session.replay_legacy_source_results,
                         )?
                     };
                     if let Some(reflection) = step.reflection {
@@ -29852,6 +29899,10 @@ impl Mc2Simulation {
             hasher.update(b"campaign-elapsed-centiseconds-v1");
             hasher.update(self.session.state.live.elapsed_centiseconds.to_le_bytes());
         }
+        if let Some((available, true)) = self.session.state.live.source_spell_census_override {
+            hasher.update(b"source-spell-census-v1");
+            hasher.update(available.map(u8::from));
+        }
         hasher.update(self.session.state.live.player_pending_damage.to_le_bytes());
         hasher.update(
             self.session
@@ -29977,6 +30028,10 @@ impl Mc2Simulation {
 
     pub(crate) fn set_replay_legacy_wind_audio(&mut self, historical: bool) {
         self.session.replay_legacy_wind_audio = historical;
+    }
+
+    pub(crate) fn set_replay_legacy_source_results(&mut self, historical: bool) {
+        self.session.replay_legacy_source_results = historical;
     }
 
     pub(crate) fn apply_warm_hand_selection_flash(&mut self, ticks: [u8; 2]) {
@@ -30598,6 +30653,7 @@ impl Mc2Simulation {
         live.core.state.ambient_loop_5_distance = 2048;
         live.core.state.ambient_loop_31_distance = 2048;
         live.economy.finish_source_group();
+        self.refresh_source_spell_census();
         self.sync_level2_spell_fire_context();
         self.refresh_level2_spell_fire_holder_projection();
         Ok(true)
@@ -30701,7 +30757,9 @@ impl Mc2Simulation {
             arena: &mut live.economy, terrain: &mut live.terrain,
             shared: &mut live.shared_spells, players: &mut live.core.players,
             roster: &mut live.nyphur_dispatcher,
-        }, targets, owner, castle_slot).map_err(NativeWorldError::new)
+        }, targets, owner, castle_slot).map_err(NativeWorldError::new)?;
+        self.refresh_source_spell_census();
+        Ok(())
     }
 
     fn release_level2_player_spell_holders(&mut self, player_position: Position) -> std::result::Result<(), String> {
@@ -31192,26 +31250,27 @@ impl Mc2Simulation {
             .wrapping_add(elapsed);
     }
 
+    /// A new or revived player invokes sub_5CF40, whose final sub_574A0
+    /// visit replaces the global local-player census from the remaining rows.
+    fn refresh_source_spell_census(&mut self) {
+        let baseline = source_spell_census(&self.session.baseline.mission,
+            &self.session.baseline.shared_spells.local_player, &BTreeSet::new());
+        let live = &mut self.session.state.live;
+        let available = source_spell_census(&live.mission, &live.shared_spells.local_player,
+            &live.authored_features_consumed);
+        live.source_spell_census_override = (available != baseline).then_some((available,
+            !self.session.replay_legacy_source_results));
+    }
+
     pub(crate) fn completion_statistics(&self) -> sim_session::GameCompletionStatistics {
         use crate::campaign::completion_statistics::{SourceCompletionCounters, collect};
         let live = &self.session.state.live;
-        let entry = &self.session.baseline.shared_spells.local_player;
         let player = &live.shared_spells.local_player;
-        let mut available = [false; 26];
-        // sub_574A0 runs at entry after carried/enabled spells are installed.
-        // Its authored histogram includes dormant groups, not just live rows.
-        for feature in self.session.baseline.mission.authored_features() {
-            let Ok(family) = usize::try_from(feature.subtype) else {
-                continue;
-            };
-            if feature.kind == 15
-                && family < 26
-                && entry.enabled_spell_holders[family] == 0
-                && entry.spell_enabled_flags[family] == 0
-            {
-                available[family] = true;
-            }
-        }
+        let available = live.source_spell_census_override.map_or_else(
+            || source_spell_census(&self.session.baseline.mission,
+                &self.session.baseline.shared_spells.local_player, &BTreeSet::new()),
+            |(available, _)| available,
+        );
         let castle = live.economy.castle().filter(|castle| {
             castle.active && castle.source_entity_index == live.economy.player_castle_entity_index()
         });
@@ -31768,6 +31827,105 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payahandra_source_spell_census_tracks_group_zero_pickup_and_revival() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::PlayerCommand;
+
+        fn collect(campaign: &mut CampaignSession, slot: u16, family: u8, historical: bool) {
+            let pickup = campaign.simulation().shared_spells().pickup(slot)
+                .expect("the actual source pickup is present").clone();
+            assert_eq!((pickup.class, pickup.model, pickup.action), (15, family, family * 3 + 1));
+            let player = campaign.simulation().state.entity_index;
+            // Hold the declared arrival pose at the real pickup while its
+            // source callback relaxes Z and waits for its phase&3 visit.
+            for _ in 0..12 {
+                let position = campaign.simulation().shared_spells().pickup(slot)
+                    .expect("the uncollected source pickup remains present").position;
+                campaign.simulation_mut().set_level2_entity_position(player, position).unwrap();
+                campaign.simulation_mut().step_outer_turn(PlayerCommand::default(), 0);
+                let sim = campaign.simulation();
+                assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "ordinary pickup dispatch failed: {:?}", sim.dispatch_events());
+                let collected_legacy_speed = historical && sim.dispatch_events().iter().any(|event| matches!(event,
+                    Mc2DispatchEvent::SharedPickup { source_slot, result: Some(step), .. }
+                        if *source_slot == slot && step.collected));
+                if collected_legacy_speed || sim.shared_spells().local_player().acquired_spell_flags[usize::from(family)] != 0 {
+                    return;
+                }
+            }
+            let sim = campaign.simulation();
+            let pickup = sim.shared_spells().pickup(slot).unwrap();
+            panic!("real family {family} pickup was not acquired; action={} owner={} phase={}",
+                pickup.action, pickup.source_spell_parent_entity_index(), pickup.phase);
+        }
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-level2-vault-successor-closure-20261025");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2).unwrap();
+        // The retained earned NightSpire result carries these three families.
+        // This declares that entry boundary, then leaves both actual jar
+        // acquisition callbacks and the source statistics collector live.
+        campaign.rebuild_for_spell_carry(&[0, 1, 2], Some(0)).unwrap();
+        let speed_slot = campaign.simulation().entities().iter()
+            .find(|row| row.active && row.class == 15 && row.model == 3 && row.action == 10
+                && row.position.x == 167 * 256 + 128 && row.position.y == 59 * 256 + 128)
+            .expect("group-zero authored Speed row 207 is an actual live pickup").index;
+        assert_eq!(campaign.simulation().completion_statistics().spells_found_percent, 0);
+        let mut old_contact = campaign.clone();
+        old_contact.simulation_mut().set_replay_legacy_source_results(true);
+        collect(&mut old_contact, speed_slot, 3, true);
+        assert_eq!(old_contact.simulation().shared_spells().local_player().acquired_spell_flags[3], 0,
+            "historical Speed contact retains its original publication behavior");
+        let old_hash = old_contact.state_hash();
+        old_contact.simulation_mut().set_replay_legacy_source_results(false);
+        assert_eq!(old_contact.state_hash(), old_hash,
+            "crossing the replay boundary does not rewrite the recorded Speed contact");
+        collect(&mut campaign, speed_slot, 3, false);
+        let sim = campaign.simulation();
+        let owner = sim.state.entity_index;
+        let holder = &sim.entities()[usize::from(speed_slot)];
+        assert_eq!((holder.action, holder.source_spell_parent_entity_index()), (9, owner));
+        let owners = sim.session.state.live.core.players.iter()
+            .chain(sim.session.state.live.shared_spells.players.iter())
+            .filter(|player| player.entity_index == owner)
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2, "both authoritative player projections are present");
+        for player in owners {
+            assert_eq!(player.acquired_spell_flags[3], 1);
+            assert_eq!(player.enabled_spell_holders[3], speed_slot);
+        }
+        assert_eq!(campaign.simulation().completion_statistics().spells_found_percent, 0,
+            "group-zero Speed is collectible but was consumed before the source availability census");
+
+        // This is an explicit group prerequisite, not a claimed earned route.
+        // The ordinary constructor and pickup callback produce the real Heal.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(22).unwrap();
+        let heal_slot = *campaign.simulation().shared_spells().authored_pickup_slots().get(&155)
+            .expect("group 22 materializes the real authored Heal jar");
+        collect(&mut campaign, heal_slot, 6, false);
+        assert_eq!(campaign.simulation().completion_statistics().spells_found_percent, 50,
+            "the entry census retains Heal and Invisibility until a revival refresh");
+        assert!(!campaign.simulation().session.state.live.authored_features_consumed.contains(&156));
+
+        let mut historical = campaign.clone();
+        historical.simulation_mut().set_replay_legacy_source_results(true);
+        for candidate in [&mut campaign, &mut historical] {
+            candidate.step(PlayerCommand { opcode: 0x0f, ..Default::default() }, 0);
+            let sim = candidate.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "source revival dispatch failed: {:?}", sim.dispatch_events());
+            assert_eq!(sim.completion_statistics().spells_found_percent, 0,
+                "revival recounts only still-authored Invisibility");
+        }
+        assert_ne!(campaign.state_hash(), historical.state_hash(),
+            "a new revival's distinct census contributes to the current state hash");
+        let historical_hash = historical.state_hash();
+        historical.simulation_mut().set_replay_legacy_source_results(false);
+        assert_eq!(historical.state_hash(), historical_hash,
+            "crossing the replay boundary alone must not alter an existing census hash");
+    }
 
     #[test]
     fn raw_objective_scan_publishes_the_current_mana_goal_and_reset_clears_it() {

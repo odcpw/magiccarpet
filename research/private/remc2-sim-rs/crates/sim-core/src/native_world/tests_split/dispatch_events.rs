@@ -6326,6 +6326,16 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         );
     }
     assert_eq!(session.state.display_pitch, 250);
+    // Replay the exact same paid source input under the old writer, so the
+    // discriminator observes the water branch rather than invented counters.
+    let mut historical = session.clone();
+    historical.set_replay_legacy_source_results(true);
+    let mut no_cast = session.clone();
+    no_cast.step_outer_turn(PlayerCommand { pitch: 127, ..PlayerCommand::default() }, 0);
+    let before_accuracy = (
+        session.shared_spells().local_player().projectile_attempts,
+        session.shared_spells().local_player().projectile_hits,
+    );
     let events_before = session.shared_spells().activation_events().len();
     let flyer_slots_before = session
         .economy()
@@ -6365,6 +6375,11 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         0,
     );
     assert_eq!(session.state.display_pitch, 251);
+    let charged = session.shared_spells().player_entity();
+    let uncharged = no_cast.shared_spells().player_entity();
+    assert!(i64::from(charged.mana) + i64::from(charged.mana_regen.min(0))
+        < i64::from(uncharged.mana) + i64::from(uncharged.mana_regen.min(0)),
+        "the ordinary holder charges or queues mana relative to the same turn without casting");
 
     let flyer = session
         .economy()
@@ -6378,6 +6393,7 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (9, 0, 0)
     );
     assert_eq!(flyer.owner_entity_index, session.state.entity_index);
+    assert_eq!(flyer.source_mana, 20, "the paid cast retains its authored projectile mana");
     assert!(flyer.source_entity_index < session.state.entity_index);
     assert!(flyer.active && !flyer.drawing_disabled);
     assert_eq!(flyer.phase, flyer.source_entity_index as u8);
@@ -6515,6 +6531,27 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         .expect("qualified type-0 water constructs the model-5 splash");
     assert_eq!(splash.source_id, session.state.entity_index);
     assert!(session.economy().map_chains().is_linked(splash.index));
+    assert_eq!(
+        (session.shared_spells().local_player().projectile_attempts,
+         session.shared_spells().local_player().projectile_hits),
+        before_accuracy,
+        "source water splash does not reach sub_65780"
+    );
+    assert_eq!(session.completion_statistics().hit_accuracy_percent, 100);
+
+    historical.step_outer_turn(PlayerCommand {
+        opcode: 6, argument_1: 0, pitch: 127, flags: 0x40,
+        ..PlayerCommand::default()
+    }, 0);
+    historical.step_outer_turn(PlayerCommand::default(), 0);
+    historical.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        (historical.shared_spells().local_player().projectile_attempts,
+         historical.shared_spells().local_player().projectile_hits),
+        (before_accuracy.0 + 1, before_accuracy.1),
+        "the actual historical writer counted this splash as a miss"
+    );
+    assert_eq!(historical.completion_statistics().hit_accuracy_percent, 0);
 
     let cast_events = &session.shared_spells().activation_events()[events_before..];
     assert!(cast_events.iter().any(|event| matches!(
