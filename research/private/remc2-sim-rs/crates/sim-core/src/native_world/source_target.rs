@@ -232,13 +232,22 @@ impl super::Mc2Simulation {
                     // distinguish loose mana from a player-owned marker.
                     (sphere.phase, 0, 0, 0)
                 }
+                Kind::AuthoredSwitchProducer => {
+                    let row = arena.economy.authored_switch_producers.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current switch {slot} lost its minimap owner"))?;
+                    if !matches!(row.model, 12 | 31) {
+                        continue;
+                    }
+                    (row.phase, 0, 0, 0)
+                }
                 _ => continue,
             };
             let view = read(arena, context, slot)?
                 .ok_or_else(|| format!("current class5 {slot} lost its source view"))?;
             let (class, action) = arena.economy.live_arena_class_action(slot, kind)
                 .ok_or_else(|| format!("current class5 {slot} lost its source action"))?;
-            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3) | (10, 39)) {
+            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3) | (10, 39) | (11, 12 | 31)) {
                 return Err(format!("current owner {slot} changed class/model during minimap projection"));
             }
             let player_link = rival_target_relation(arena, context, slot, kind);

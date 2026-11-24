@@ -1368,14 +1368,96 @@ mod tests {
                 (trigger.position.x >> 8, trigger.position.y >> 8),
                 (161, 222)
             );
+            assert!(trigger.active && trigger.drawing_enabled);
+            let local = &sim.players()[usize::from(sim.runtime().local_player_slot)];
+            assert_eq!(sim.runtime().objectives[usize::from(local.player_color_index())].is_level_end, 0);
+            let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+            let camera = sim.world_map_camera();
+            let corner_plan = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+            let full_plan = crate::presentation_bridge::campaign_world_map_plan(sim, selection, camera).unwrap();
+            for plan in [&corner_plan, &full_plan] {
+                let matches = plan.entities.iter().filter(|row| row.subject_entity_index == trigger.source_entity_index).collect::<Vec<_>>();
+                assert_eq!(matches.len(), 1);
+                assert_eq!((matches[0].selector, matches[0].help_selector, matches[0].visible), (84, 83, 1));
+            }
+            let full_row = full_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index).unwrap();
+            assert!(full_row.x >= 0 && full_row.x < 191 && full_row.y >= 0 && full_row.y < 200,
+                "actual secret controller must be inside the full-map aperture: {full_row:?}");
+            if std::env::var_os("MC_EXIT_HINT_OBSERVATION").is_some() {
+                use sim_core::presentation::world_map::{MapGeometry, WorldMapView};
+                let camera = sim.world_map_camera();
+                let corner_view = WorldMapView { x: sim.state.position.x, y: sim.state.position.y, yaw: sim.state.yaw };
+                let corner = MapGeometry::MINIMAP.project(corner_view, trigger.position);
+                let full = MapGeometry::FULL_MAP.project(camera.into(), trigger.position);
+                let table_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/secret-lifecycle-20261111-source4-environment/palette/tables.u8");
+                let tables = std::fs::read(table_path).expect("source4 actual map aperture table");
+                let (x, y) = (i32::from(corner.0) / 2, i32::from(corner.1) / 2);
+                let inside_corner = if corner.0 < 0 || corner.1 < 0 || x >= 64 || y >= 64 { false } else {
+                    let source_y = y * 2;
+                    let phase = if source_y < 64 { 63 - source_y } else { source_y - 64 };
+                    let half_span = (64 * i32::from(tables[0x14300 + phase as usize * 4])) >> 8;
+                    x * 2 >= 64 - half_span && x * 2 < 64 + half_span
+                };
+                let inside_full = full.0 >= 0 && full.0 < 191 && full.1 >= 0 && full.1 < 200;
+                let local = &sim.players()[usize::from(sim.runtime().local_player_slot)];
+                let is_level_end = sim.runtime().objectives[usize::from(local.player_color_index())].is_level_end;
+                let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+                let corner_plan = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+                let full_plan = crate::presentation_bridge::campaign_world_map_plan(sim, selection, camera).unwrap();
+                eprintln!("exit-hint-observation: tick={} is_level_end={} all_satisfied={} player={:?} camera={:?} portal={portal:?} trigger={trigger:?} corner={corner:?} inside_corner={inside_corner} full={full:?} inside_full={inside_full} corner_row={:?} full_row={:?} typed={:?}",
+                    session.identity().tick, is_level_end, session.snapshot().value.objective_progress.all_objectives_satisfied,
+                    sim.state, camera,
+                    corner_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index),
+                    full_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index),
+                    sim.campaign_minimap_owned_inputs().unwrap().iter().find(|row| row.source_slot == trigger.source_entity_index));
+            }
             Ok((portal, trigger))
         })
         .unwrap();
+        let mut projected_entity = McCampaignEntitySnapshotV2::default();
+        let mut written = 0;
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_entities_copy(
+            handle, u32::from(trigger.source_entity_index), &raw mut projected_entity, 1,
+            std::mem::size_of::<McCampaignEntitySnapshotV2>() as u32, &raw mut written), MC_STATUS_OK);
+        assert_eq!(written, 1);
+        assert_eq!((projected_entity.entity_index, projected_entity.source_id, projected_entity.active,
+            projected_entity.class_id, projected_entity.model, projected_entity.action,
+            projected_entity.x, projected_entity.y, projected_entity.z),
+            (trigger.source_entity_index, trigger.entity_id, 1, 11, 31, 31,
+             trigger.position.x, trigger.position.y, trigger.position.z));
         assert!(!observe(handle).2.active);
         eprintln!(
             "retainednative136: player={:?} portal={portal:?} controller={trigger:?}",
             observe(handle).1
         );
+        // The production journal is bounded. Retain only the exact exit
+        // witnesses as their turns are observed so later travel cannot evict
+        // the start before the completion assertions inspect it.
+        let mut exit_records = std::collections::BTreeMap::new();
+        let mut capture_exit_records = || {
+            with_neutral_session(handle, |record| {
+                let NeutralSession::Mc2Campaign(session) = record else { unreachable!() };
+                let sim = session.backend().campaign_presentation_source().simulation();
+                for row in sim.effect_journal.records() {
+                    let relevant = match &row.effect {
+                        CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
+                            trigger_entity_index, portal_entity_index, ..
+                        }) => *trigger_entity_index == trigger.source_entity_index
+                            && *portal_entity_index == portal.source_entity_index,
+                        CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
+                            player_entity_index, result_code, ..
+                        }) => *player_entity_index == state.entity_index && *result_code == 0x1a,
+                        CampaignEffect::Flight(sim_core::FlightEvent::PrepareSound {
+                            entity_index, player_index: -1, sound_id: 41, ..
+                        }) => *entity_index == state.entity_index,
+                        _ => false,
+                    };
+                    if relevant { exit_records.entry(row.sequence).or_insert_with(|| row.clone()); }
+                }
+                Ok(())
+            }).unwrap();
+        };
         advance(
             handle,
             &GameCommand {
@@ -1383,6 +1465,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        capture_exit_records();
         // Second fixed turn828→736:49 pulses−10 then24 neutral visits.
         for _ in 0..49 {
             advance(
@@ -1392,9 +1475,11 @@ mod tests {
                     ..Default::default()
                 },
             );
+            capture_exit_records();
         }
         for _ in 0..24 {
             advance(handle, &neutral);
+            capture_exit_records();
         }
         assert_eq!(
             (observe(handle).1.yaw, observe(handle).1.roll_accumulator),
@@ -1414,6 +1499,7 @@ mod tests {
                     ..Default::default()
                 },
             );
+            capture_exit_records();
             let exit = observe(handle).2;
             if exit.active || exit.complete {
                 first_active_phase.get_or_insert(exit.phase);
@@ -1437,7 +1523,9 @@ mod tests {
                 break;
             }
             advance(handle, &neutral);
+            capture_exit_records();
         }
+        drop(capture_exit_records);
         let (completed, state, exit) = observe(handle);
         assert_eq!(
             (
@@ -1476,10 +1564,7 @@ mod tests {
                 .backend()
                 .campaign_presentation_source()
                 .simulation();
-            let completed = sim
-                .effect_journal
-                .records()
-                .iter()
+            let completed = exit_records.values()
                 .filter(|row| {
                     matches!(&row.effect,
                 CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
@@ -1488,10 +1573,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(completed.len(), 1);
-            let starts = sim
-                .effect_journal
-                .records()
-                .iter()
+            let starts = exit_records.values()
                 .filter(|row| {
                     matches!(&row.effect,
                 CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
@@ -1501,10 +1583,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(starts.len(), 1);
-            let phase_zero = sim
-                .effect_journal
-                .records()
-                .iter()
+            let phase_zero = exit_records.values()
                 // ExitOverlap41 precedes the real start. The phase0 body
                 // emits the one player/-1/41 after start and before completion.
                 // audio_site is a sim-core-only cfg(test) field, not part of
@@ -1530,6 +1609,12 @@ mod tests {
                     .iter()
                     .all(|row| row.authored_index != 76)
             );
+            let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+            let corner = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+            let full = crate::presentation_bridge::campaign_world_map_plan(sim, selection, sim.world_map_camera()).unwrap();
+            assert!([&corner, &full].iter().all(|plan| plan.entities.iter().all(|row|
+                row.subject_entity_index != trigger.source_entity_index || row.help_selector != 83)),
+                "the reclaimed controller must not leave an exit hint");
             Ok(completed[0].sequence)
         })
         .unwrap();

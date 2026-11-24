@@ -1,5 +1,36 @@
 # Shared-engine delivery plan
 
+### Live exit controllers on the Original maps — November 24
+
+The map now reads the current exit controller when an authored switch creates
+it. The existing entity snapshot publishes that same slot and position. In
+T’Klom’s retained authored workspace, real flight into switch 136 activated
+group 4. At tick 301, exit controller 298 (class 11, model 31) was active
+before mission completion. It projected to (67,4) inside the full map and
+outside the corner map. Previously both map readers omitted it. The
+corrected native supplies sprite 84 and help selector 83. The public-input
+check continued through the secret exit and verified reclamation. The
+workspace changes the activation group of the portal and its controller.
+
+The installed Original now uses native `0fc9d27e2b46`. All 478 Rust inputs
+match the rig and install receipt. A separate first-visit campaign save
+cold-loaded through the public native API and reproduced the same controller,
+position and map coordinates. This save starts from a controlled campaign map
+with the first four missions marked complete. The older replay of an already
+unlocked mission did not produce that controller.
+
+The graphical launch of the first-visit save stopped while validating the
+Level 2 owner cache. Its in-process SHA-256 for `audio/SOUND.DAT` differed
+from the manifest. The on-disk file measured afterward matches the manifest.
+The cause remains open. The installed T’Klom display has not been verified.
+The prior Perilium launch on native `54a21c6f11d6` passed. The English
+exit-hint text, pointer and lifetime are pending a qualified Unity build.
+Unity Editor returned 198 before compilation because its license entitlement
+was unavailable. The candidate runtime and EditMode assemblies compiled with
+Roslyn. The live menu cache and installed managed player are still the
+previous versions. Evidence is in
+`research/private/generated/original-exit-hint-20261124/`.
+
 ### Mission-triggered Tremor, Night map colours and Skeleton combat — November 24
 
 Baraghan's repeating switch 628 now supplies the authored tier-two Tremor

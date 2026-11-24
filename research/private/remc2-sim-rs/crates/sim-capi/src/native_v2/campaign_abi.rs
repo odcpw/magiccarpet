@@ -3324,6 +3324,47 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                         }
                         rows[slot] = campaign_live_class14_entity_snapshot(source);
                     }
+                    // Exit-marker help selects the nearest source subject
+                    // using this existing entity view. Publish the same live
+                    // controller and pose as the minimap, including a hidden
+                    // retained owner until its source slot is reclaimed.
+                    let exit_switch_slots = reset.economy().live_arena_slots().into_iter()
+                        .filter_map(|(slot, kind)| (kind == sim_core::native_world::Level2DynamicArenaKind::AuthoredSwitchProducer).then_some(slot))
+                        .collect::<BTreeSet<_>>();
+                    for source in reset.economy().authored_switch_producers().iter()
+                        .filter(|row| row.active && matches!(row.model, 12 | 31)
+                            && exit_switch_slots.contains(&row.source_entity_index))
+                    {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!("campaign exit switch source slot {} is invalid or duplicated", source.source_entity_index),
+                            ));
+                        }
+                        rows[slot] = McCampaignEntitySnapshotV2 {
+                            abi_version: MC_NATIVE_ABI_VERSION,
+                            struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+                            entity_index: source.source_entity_index,
+                            source_id: source.entity_id,
+                            next_relation: u16::MAX,
+                            parameter_relation: u16::MAX,
+                            authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+                            active: u8::from(source.active && source.drawing_enabled),
+                            class_id: source.source_class,
+                            model: source.model,
+                            action: source.action,
+                            phase: source.phase,
+                            x: source.position.x,
+                            y: source.position.y,
+                            z: source.position.z,
+                            yaw: 0,
+                            pitch: 0,
+                            fov: 0,
+                            actual_speed: 0,
+                            reserved: [0; 4],
+                        };
+                    }
                     for source in reset.economy().castle_defenders() {
                         let slot = usize::from(source.source_entity_index);
                         if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
