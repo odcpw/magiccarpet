@@ -1,5 +1,27 @@
 # Shared-engine delivery plan
 
+### Payahandra vault Meteor, Wind switches and marked spells — November 24
+
+Payahandra vault group 27 produces a third-tier Meteor. Once the player's
+spawn protection expired through 100 ordinary updates, its scheduled pulse
+took 1,600 health. The check controlled the approach and earlier vault damage.
+Both Wind switches (109 and 121) displaced the player. A real House placed in
+the wind lost 100 health on its next update. The Wind lasted 40 updates, and
+its head and eleven segments expired and were reclaimed. Old saves retain
+the earlier behavior for already-recorded operations. The previous native's
+Payahandra save replayed, advanced, saved and reopened on the installed native
+`52c453bf5cbd`. Original also loaded that save. Runtime source is published
+at `ca40bb5e` on `codex/original-ending`.
+
+The private Three.js client now marks and cycles spells independently for each
+hand. In Chrome on the earned Payahandra save, holding Shift and the left mouse
+button advanced from Fireball to Possession once. Alt and a left click restored
+Fireball. The right hand retained its selection. The check opened the spell menu
+through the native control endpoint and performed the marking and cycling in
+Chrome. Browser source is published at `b7d5591a` on `codex/browser-exit-hint`.
+The running service serves that bundle with the same native as Original.
+Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
 ### Campaign, credits and live map guidance in the private browser — November 24
 
 The normal Three.js launch now resolves the same 25 ordinary and five secret
