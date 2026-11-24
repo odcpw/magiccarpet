@@ -1,5 +1,24 @@
 # Shared-engine delivery plan
 
+### Installed browser brightness and outdoor reflections; next Castle check — November 24
+
+Private Three.js Original `37739e43` is installed on runtime `2d753b7e`.
+In Payahandra, F7 cycled Day brightness from 4 to 0 and changed both HUD
+and world pixels. After a cold launch the next press advanced the saved
+Day value from 1 to 2. Actual Day and Night actors now reflect in water.
+The GPU outlines still differ from the native reference. The combined
+build opened the map and returned to flight on the RTX 3090. On the installed
+service NightSpire opened with 10,000 life, 1,000 mana, Fireball and Possession.
+
+The next gameplay check is the Castle collector. The installed engine leaves
+a balloon flying after the last Castle disappears. The two-file working
+patch runs remc2's final collector update on the Castle that was just hidden.
+The final patch is unverified and unshipped. Resume with the paid NightSpire
+demolition and the Level 5 rival's paid rebuild. Use the forward source rule
+for every play session. Evidence is under `research/private/generated/` in
+`geometry-reflection-20261124`, `f7-brightness-20261124` and
+`earned-campaign-20261124/castle-defender`.
+
 ### Payahandra experience scroll sound in the private Original — November 24
 
 The browser now looks up missing gameplay sounds in the selected mission's
