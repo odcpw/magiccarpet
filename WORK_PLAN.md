@@ -1,5 +1,34 @@
 # Shared-engine delivery plan
 
+### NightSpire Goat animation in the private Original browser — November 24
+
+Rust now advances an animated sprite's shared texture after the browser draws
+that selector. In NightSpire, Chrome acknowledged 90 of 90 draws with a camera
+positioned to see the authored Goats. Selector 152 produced four different
+native images. On the installed cadence revision, two real WebGL uploads to
+the Goats' 22 × 22 atlas rectangle matched the native pixel bytes. Its pixels
+stayed fixed for six updates after the Goats left
+view and during pause. The first candidate missed all 115 draws because the
+server advanced before Chrome could acknowledge them. A cold Rust replay
+reconstructed the current image. The existing indexed-renderer check passed
+for NightSpire Goats and a Day Villager.
+
+The bridge lets the simulation take elapsed turns between browser frames.
+A queued map open and close each took one turn, flight resumed, and one
+Fireball spent 100 mana. On the RTX 3090, eight seconds of ordinary NightSpire
+flight measured 30.10 native ticks and 18.86 new scene publications per
+second. Before the animation change the same check measured 29.98 and 29.23.
+On SwiftShader the new bridge measured 25.80 native ticks per second, up
+from 1.62 when every turn waited for a draw. These are publication and
+simulation measurements. The Goat camera check leaves exact terrain
+occlusion and human play open.
+
+Browser `cfa9a417` and runtime `73a36309` are pushed; the private Original
+service loaded NightSpire on native `637bfe6b41d9`, with Fireball, Possession,
+10,000 life and 1,000 mana. Unity still runs `2f477f43c882`. Evidence is in
+`research/private/generated/earned-campaign-20261124/goat-tmap/`,
+`tmap-goat-browser/` alongside it, and `research/private/generated/tmap-bridge-20261124/`.
+
 ### Castle revival, secret entry and spell marks on abandonment — November 24
 
 The private Original now serves browser `b3e6a320` on native `fb6315dc5d4f`.
