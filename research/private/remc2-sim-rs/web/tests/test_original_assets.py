@@ -45,7 +45,9 @@ class OwnerAssetTests(unittest.TestCase):
         self.assertEqual(manifest['participant_notices'], {
             'participant.died': text(374), 'participant.banished': text(283),
             'participant.help_mode_on': text(400), 'participant.help_mode_off': text(401),
-            'participant.flight_assistance_on': text(398), 'participant.flight_assistance_off': text(399)})
+            'participant.flight_assistance_on': text(398), 'participant.flight_assistance_off': text(399),
+            'participant.game_speed_normal': text(381), 'participant.game_speed_fast': text(382),
+            'participant.game_speed_super_fast': text(383)})
         colors = (assets.ROOT / 'environment-complete/cache-level1/palette/colors.u8').read_bytes()
         self.assertEqual(notification['color'], colors[3840])
         self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 56)) + [284, 285])

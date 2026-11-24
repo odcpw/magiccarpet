@@ -423,7 +423,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance' ||
-    action === 'toggle_sound' || action === 'toggle_music';
+    action === 'toggle_sound' || action === 'toggle_music' || action === 'source_speed';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -835,6 +835,11 @@ window.addEventListener('keydown', event => {
   if (!modernRequested && event.code === 'F2' && !event.shiftKey && !event.altKey) {
     event.preventDefault();
     if (!event.repeat) void control('toggle_flight_assistance');
+    return;
+  }
+  if (!modernRequested && event.code === 'F3' && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    if (!event.repeat && playing && !busy) void control('source_speed');
     return;
   }
   if (!modernRequested && (event.code === 'F5' || event.code === 'F6')) {

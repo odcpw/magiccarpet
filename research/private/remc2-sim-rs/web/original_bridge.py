@@ -195,6 +195,7 @@ class Native:
             "mc_game_runtime_render_observation_copy_v1": [u64, u64, u64, u64, ptr, u32, ptr],
             "mc_game_runtime_tmap_pixels_copy_v1": [u64, u64, u64, u64, ptr, u32, ptr],
             "mc_game_runtime_tmap_draw_v1": [u64, u64, u64, u64, c.c_int16, ptr, u32],
+            "mc_game_runtime_source_speed_v1": [u64, u64, u64, u64, c.c_uint8],
             "mc_game_runtime_presentation_frame_v1": [u64, u64, u64, u64, c.c_uint8],
             "mc_native_last_error_length": [ptr], "mc_native_last_error_copy": [ptr, u32, ptr],
         }.items():
@@ -328,6 +329,14 @@ class Native:
         outer, generation, tick = self.counters()
         self.check(self.lib.mc_game_runtime_presentation_frame_v1(
             self.handle, outer, generation, tick, 1), "presentation frame")
+
+    def source_speed(self):
+        outer, generation, tick = self.counters()
+        status = self.lib.mc_game_runtime_source_speed_v1(self.handle, outer, generation, tick, 0)
+        if status == 16: return False  # Source action blocked; retain the live session.
+        self.check(status, 'source game speed')
+        self.identity_value = self.identity()
+        return True
 
     def tmap_pixels(self, outer, generation, tick, manifest):
         written = c.c_uint32()
@@ -792,11 +801,13 @@ class Bridge:
                 packet = None if world else native.frame(sequence)
                 observation = native.observe()
                 outer, gen, tick = native.counters()
+                new_draw_boundary = False
                 if world and not self.modern:
                     boundary = (outer, gen, tick)
                     if boundary != draw_boundary:
                         draw_boundary, draw_ready = boundary, False
-                        draw_wait_started = time.monotonic()
+                        draw_wait_started = None
+                        new_draw_boundary = True
                 else:
                     draw_boundary, draw_ready, draw_wait_started = None, True, None
                 pose = pose_from_observation(observation)
@@ -835,6 +846,7 @@ class Bridge:
                 state['sound_volume'] = preferences.get('sound_volume', 0)
                 state['music_enabled'] = preferences.get('music_enabled') is True
                 state['music_volume'] = preferences.get('music_volume', 0)
+                state['source_speed_index'] = native.identity_value.get('source_speed_index', 0)
                 state['campaign_music'] = CampaignMusicClock.publication(music_clock.state()) if self.music_asset else None
                 state['gameplay_audio'] = gameplay_audio.poll(observation, self.gameplay_samples,
                                                                self.running and not self.paused)
@@ -872,6 +884,7 @@ class Bridge:
                     self.speech_segments = {key: row['wave'] for key, row in speech.events.items()}
                     self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                               world.terrain_gzip if world else None, modern_packet))
+                    if new_draw_boundary: draw_wait_started = time.monotonic()
             update_phase()
             if native.identity_value.get("session") is not None:
                 bind_package()
@@ -891,6 +904,7 @@ class Bridge:
                         if seq != self.next_sequence: raise ValueError(f"expected sequence {self.next_sequence}")
                         kind = value.get("kind")
                         tmap_applied = None
+                        speed_applied = None
                         if kind == "input":
                             next_command = validate_command(value.get("command"))
                             if native.identity_value.get("session") is not None:
@@ -903,12 +917,15 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "tmap_draw", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "tmap_draw", "source_speed", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'tmap_draw':
                                 tmap_applied = submit_tmap_draw(native, value, bool(world) and not self.modern)
                                 if tmap_applied and tuple(int(value[key]) for key in ('runtime_generation', 'session_generation', 'tick')) == draw_boundary:
                                     draw_ready, draw_wait_started = True, None
+                            elif action == 'source_speed':
+                                speed_applied = bool(self.running and not self.paused and native.source_speed())
+                                if speed_applied: publish()
                             elif action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
                                 if (not isinstance(generation, str) or not generation.isascii() or not generation.isdecimal() or len(generation) > 20 or
@@ -1099,6 +1116,7 @@ class Bridge:
                                   "speech_available": speech.cache is not None,
                                   "media": self.media_view}
                         if tmap_applied is not None: result['tmap_applied'] = tmap_applied
+                        if speed_applied is not None: result['speed_applied'] = speed_applied
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
@@ -1114,6 +1132,7 @@ class Bridge:
                     geometry = bool(world) and not self.modern
                     limit = 45 if geometry else 1
                     turns, finished = 0, False
+                    batch_started = time.monotonic()
                     while self.running and turns < limit and time.monotonic() >= deadline:
                         action = None
                         if pending_steps:
@@ -1140,7 +1159,7 @@ class Bridge:
                             speech.consume(effects.poll(observation))
                         finished = finish_if_ready(observation)
                         # Every explicit control gets its own observable frame.
-                        if finished or action is not None: break
+                        if finished or action is not None or time.monotonic() - batch_started >= .1: break
                     if not finished: publish()
                     if not geometry or (turns == limit and deadline < time.monotonic()):
                         deadline = max(deadline, time.monotonic())

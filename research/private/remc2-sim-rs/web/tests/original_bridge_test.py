@@ -27,6 +27,25 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_source_speed_uses_live_guards_and_leaves_blocked_action_untouched(self):
+        native = bridge_module.Native.__new__(bridge_module.Native)
+        native.handle = c.c_uint64(7)
+        native.lib = mock.Mock()
+        native.identity_value = {'generation': 3, 'session': {'generation': 4, 'tick': 5}, 'source_speed_index': 0}
+        native.identity = mock.Mock(return_value={'source_speed_index': 1})
+        native.check = mock.Mock()
+        fn = native.lib.mc_game_runtime_source_speed_v1
+        fn.return_value = 16
+        self.assertFalse(native.source_speed())
+        native.identity.assert_not_called()
+        native.check.assert_not_called()
+        self.assertEqual(native.identity_value['source_speed_index'], 0)
+        fn.return_value = 0
+        self.assertTrue(native.source_speed())
+        self.assertEqual(fn.call_args.args[1:], (3, 4, 5, 0))
+        native.check.assert_called_once_with(0, 'source game speed')
+        self.assertEqual(native.identity_value['source_speed_index'], 1)
+
     def test_tmap_snapshot_filters_siblings_and_checks_included_extent(self):
         m = bridge_module
         manifest = {'tmaps': [{'selector': 2, 'width': 2, 'height': 2}]}
