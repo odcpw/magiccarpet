@@ -136,6 +136,47 @@ print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()
   assert.equal(dayHud.exitInspectionText({...visible, exit_inspection_allowed: false}, 298), null);
   assert.equal(dayHud.exitInspectionText({...visible, world_map: {entities: [], marks: []}}, 298), null);
   assert.equal(dayHud.exitMarkerAt({...visible, world_map: {entities: [{...marker, y: -1}], marks: []}}, 134, 0), null);
+
+  assert.equal(qualified.manifest.help['19'].text, 'Destroy this for its mana');
+  assert.equal(qualified.manifest.help['20'].text, 'Collect this spell by flying into it');
+  const creature = {...marker, subject_entity_index: 10, help_selector: 19, x: 10, y: 12};
+  const closer = {...creature, subject_entity_index: 11, x: 40, y: 30};
+  const pickup = {...creature, subject_entity_index: 12, help_selector: 20, x: 80, y: 50};
+  const helpState = {...visible, world_map: {entities: [creature, closer, pickup], marks: []}};
+  const context = {generation: 5, sequence: 0, enabled: true, paused: false, suppressed: false,
+    player: {x: 0, y: 0}, entities: [{entity: 10, x: 300, y: 0}, {entity: 11, x: 100, y: 0}, {entity: 12, x: 50, y: 0}]};
+  const advance = (sequence: number, next = helpState) => dayHud.advanceMapHints(next, {...context, sequence});
+  advance(1); advance(2);
+  assert.equal(dayHud.visibleMapHint(), null, 'selection is drawn on the following source frame');
+  advance(3);
+  assert.deepEqual(dayHud.visibleMapHint(), {row: 19, subject: 11, x: 80, y: 60}, 'raw world distance and source row order select the creature');
+  const shown = dayHud.compose(scene, palette, helpState);
+  assert.notDeepEqual(shown, baseline, 'automatic source hint draws its frame and pointer');
+  const movedHelp = {...helpState, world_map: {entities: [creature, {...closer, x: 44}, pickup], marks: []}};
+  advance(4, movedHelp);
+  assert.equal(dayHud.visibleMapHint()?.x, 88, 'the leader follows its original subject');
+  advance(5, {...helpState, world_map: {entities: [creature, pickup], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'disappearance closes the live pointer');
+  for (let sequence = 6; sequence <= 25; sequence++) advance(sequence, {...helpState, world_map: {entities: [pickup], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'closing waits 20 polls and selects without drawing');
+  advance(26, {...helpState, world_map: {entities: [pickup], marks: []}});
+  assert.equal(dayHud.visibleMapHint()?.row, 20, 'pickup hint appears after the source delay');
+  advance(27, {...helpState, world_map: {entities: [], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'pickup collection clears its pointer');
+  const onlyPickup = {...helpState, world_map: {entities: [pickup], marks: []}};
+  const nextEpoch = {...context, generation: 6};
+  for (let sequence = 1; sequence <= 2; sequence++) dayHud.advanceMapHints(onlyPickup, {...nextEpoch, sequence});
+  let visibleFrames = 0;
+  for (let sequence = 3; sequence <= 52; sequence++) {
+    dayHud.advanceMapHints(onlyPickup, {...nextEpoch, sequence});
+    if (dayHud.visibleMapHint()?.row === 20) visibleFrames++;
+  }
+  assert.equal(visibleFrames, 50, 'selected row owns its full 50 source presentation frames');
+  dayHud.compose(scene, palette, onlyPickup);
+  dayHud.compose(scene, palette, onlyPickup);
+  assert.equal(dayHud.visibleMapHint()?.row, 20, 'repaint does not advance the hint clock');
+  dayHud.advanceMapHints(onlyPickup, {...nextEpoch, sequence: 53});
+  assert.equal(dayHud.visibleMapHint(), null);
 });
 
 test('source Castle and balloon rows control status bars', () => {

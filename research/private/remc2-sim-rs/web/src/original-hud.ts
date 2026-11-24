@@ -6,7 +6,7 @@ type SpriteRow = { selector: number; width: number; height: number; runtime_widt
 type ObjectiveRow = { selector: number; reference_x: number; reference_y: number; render_width: number; render_height: number; blend_x: number; blend_y: number; blend_width: number; blend_height: number; indices: Span; mask: Span };
 type TierRow = { tier: number; width: number; height: number; color: number; rgba: Span };
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
-type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
+type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
 type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; help?: Record<string, HelpRow> | null };
 
@@ -52,6 +52,10 @@ type MapLabel = { source_order: number; subject_entity_index: number; x: number;
 type MapCommands = { entities: MinimapEntity[]; marks: MinimapMark[]; labels?: MapLabel[] };
 type MinimapEntity = { generation: number | string; tick: number | string; source_order?: number; x: number; y: number; selector: number; palette_index: number; kind: number; size: number; anchor: number; visible: number; subject_entity_index?: number; help_selector?: number };
 type MinimapMark = { generation: number | string; tick: number | string; source_order: number; x: number; y: number; palette_index: number; kind: number; visible: number };
+export interface MapHintContext {
+  sequence: number | string; generation: number | string; enabled: boolean; paused: boolean; suppressed: boolean;
+  player: { x: number; y: number }; entities: readonly { entity: number; x: number; y: number }[];
+}
 
 export class OriginalHud {
   readonly width = 640;
@@ -65,6 +69,15 @@ export class OriginalHud {
   private readonly objectiveEnd: number;
   private readonly tiers = new Map<number, TierRow>();
   private readonly exitHelp?: HelpRow;
+  private readonly mapHelp = new Map<number, HelpRow>();
+  private hintRows = new Map<number, { age: number; priority: number }>();
+  private hintGeneration = '';
+  private hintSequence = '';
+  private hintEnabled = false;
+  private hintDelay = 0;
+  private hintRemaining = 0;
+  private hintCurrent: { row: number; subject: number; x: number; y: number } | null = null;
+  private hintDraw: { row: number; subject: number; x: number; y: number } | null = null;
   private readonly objectiveBackground: number;
   private readonly mapCrossColor: number;
   private readonly aperture: Uint8Array;
@@ -92,6 +105,19 @@ export class OriginalHud {
             span(row.indices).length !== row.width * row.height || span(row.mask).length !== row.width * row.height))
         throw new Error('Invalid Original exit help asset');
       this.exitHelp = exitHelp;
+    }
+    for (const [id, record, flags] of [[19, 307, 0x400], [20, 308, 0]] as const) {
+      const help = manifest.help?.[String(id)];
+      if (!help) continue;
+      if (help.text_record !== record || help.flags !== flags || help.duration !== 50 || help.age_threshold !== 160 ||
+          help.priority !== 5 || !help.text || !Number.isInteger(help.box_width) || help.box_width! < help.width ||
+          help.box_width! > 220 || help.width <= 0 || help.height <= 0 || help.height > 64 ||
+          span(help.mask).length !== help.width * help.height || help.frame.length !== 3 ||
+          help.frame.some((row, index) => row.selector !== 171 + index || row.width <= 0 || row.height <= 0 ||
+            span(row.indices).length !== row.width * row.height || span(row.mask).length !== row.width * row.height))
+        throw new Error('Invalid Original creature or pickup help asset');
+      this.mapHelp.set(id, help);
+      this.hintRows.set(id, { age: help.age_threshold, priority: help.priority });
     }
     if (!Number.isInteger(manifest.objective_background) || manifest.objective_background < 0 || manifest.objective_background > 255) throw new Error('Invalid Original objective color');
     this.objectiveBackground = manifest.objective_background;
@@ -165,6 +191,77 @@ export class OriginalHud {
 
   exitInspectionText(state: OriginalHudState, subject: number): string | null {
     return this.exitMarker(state, subject) ? this.exitHelp!.text : null;
+  }
+
+  /** Advance once per accepted native publication, never from repaint/compose. */
+  advanceMapHints(state: OriginalHudState, context: MapHintContext): void {
+    const generation = String(context.generation), sequence = String(context.sequence);
+    if (generation !== this.hintGeneration || (context.enabled && !this.hintEnabled)) {
+      this.hintRows = new Map([...this.mapHelp].map(([row, help]) => [row, { age: help.age_threshold, priority: help.priority }]));
+      this.hintCurrent = null; this.hintDelay = 0; this.hintRemaining = 0; this.hintSequence = '';
+      this.hintGeneration = generation;
+    }
+    this.hintEnabled = context.enabled;
+    if (sequence === this.hintSequence) return;
+    this.hintSequence = sequence; this.hintDraw = null;
+    if (!context.enabled || context.paused) return;
+    const close = () => {
+      if (this.hintCurrent) {
+        const row = this.hintRows.get(this.hintCurrent.row)!;
+        row.age = 0; row.priority = this.mapHelp.get(this.hintCurrent.row)!.priority;
+      }
+      this.hintCurrent = null; this.hintRemaining = 0; this.hintDelay = 20;
+    };
+    if (context.suppressed) { if (this.hintCurrent) close(); this.hintDelay = 20; return; }
+    const map = state.world_map ?? state.minimap, full = !!state.world_map, hud = state.hud;
+    const marker = (row: MinimapEntity) => {
+      if (!hud || row.visible !== 1 || !row.subject_entity_index || !this.mapHelp.has(row.help_selector ?? 0) ||
+          String(row.generation) !== String(hud.generation) || String(row.tick) !== String(hud.tick)) return null;
+      const scale = full ? 1 : 2, x = Math.trunc(row.x / scale), y = Math.trunc(row.y / scale);
+      if (row.x < 0 || row.y < 0 || x >= (full ? 191 : 64) || y >= (full ? 200 : 64)) return null;
+      if (!full) {
+        const phase = y * 2 < 64 ? 63 - y * 2 : y * 2 - 64;
+        const half = (64 * this.aperture[phase * 4]!) >> 8;
+        if (x * 2 < 64 - half || x * 2 >= 64 + half) return null;
+      }
+      return { row: row.help_selector!, subject: row.subject_entity_index, x: x * 2, y: y * 2 };
+    };
+    const marks = (map?.entities ?? []).map(marker).filter((row): row is NonNullable<typeof row> => row !== null);
+    if (this.hintCurrent && this.hintRemaining) {
+      const found = marks.find(row => row.row === this.hintCurrent!.row && row.subject === this.hintCurrent!.subject);
+      if (!found) close();
+      else { this.hintCurrent = found; this.hintDraw = found; if (--this.hintRemaining === 0) close(); }
+    } else if (--this.hintDelay <= 0) {
+      let best: { row: number; subject: number; x: number; y: number; overdue: number; priority: number } | null = null;
+      for (const id of [19, 20]) {
+        const info = this.hintRows.get(id), help = this.mapHelp.get(id);
+        if (!info || !help || info.age <= help.age_threshold) continue;
+        const candidates = marks.filter(row => row.row === id);
+        // A missing pose must never change which subject is called nearest.
+        if (candidates.some(row => !context.entities.some(entity => entity.entity === row.subject))) continue;
+        let nearest: typeof candidates[number] | null = null, distance = Infinity;
+        for (const candidate of candidates) {
+          const entity = context.entities.find(row => row.entity === candidate.subject)!;
+          const dx = ((entity.x - context.player.x + 32768) & 65535) - 32768;
+          const dy = ((entity.y - context.player.y + 32768) & 65535) - 32768;
+          const d = Math.floor(Math.sqrt(dx * dx + dy * dy));
+          if (d < distance) { nearest = candidate; distance = d; }
+        }
+        const overdue = info.age - help.age_threshold;
+        if (nearest && (!best || info.priority > best.priority || (info.priority === best.priority && overdue > best.overdue)))
+          best = { ...nearest, overdue, priority: info.priority };
+      }
+      if (best) { this.hintCurrent = best; this.hintRemaining = this.mapHelp.get(best.row)!.duration; }
+    }
+    for (const [id, row] of this.hintRows) {
+      const threshold = this.mapHelp.get(id)!.age_threshold;
+      row.age++;
+      if (row.age > threshold * 3) { row.age = threshold; row.priority = Math.max(0, Math.min(5, row.priority + 1)); }
+    }
+  }
+
+  visibleMapHint(): Readonly<{ row: number; subject: number; x: number; y: number }> | null {
+    return this.hintDraw;
   }
 
   /** Source logical coordinates. Returned spell is a UI intent, not an admitted action. */
@@ -486,14 +583,16 @@ export class OriginalHud {
       }
     }
     const inspected = state.exit_inspection_subject ? this.exitMarker(state, state.exit_inspection_subject) : undefined;
-    if (inspected && this.exitHelp) {
-      const help = this.exitHelp;
+    const automatic = this.hintDraw;
+    const help = inspected ? this.exitHelp : automatic ? this.mapHelp.get(automatic.row) : undefined;
+    if (help && (inspected || automatic)) {
       const [corner, side, horizontal] = help.frame;
       if (!corner || !side || !horizontal) throw new Error('Missing Original exit help frame');
       // Explicit map inspection uses the source Type-8 leader and owner font;
       // the live WebGL scene receives an opaque source-colour box.
-      const anchorX = inspected.x * 2, anchorY = Math.ceil(inspected.y * 480 / 200);
-      const boxWidth = help.text.length * 8, boxHeight = 14;
+      const anchorX = inspected ? inspected.x * 2 : automatic!.x;
+      const anchorY = inspected ? Math.ceil(inspected.y * 480 / 200) : automatic!.y;
+      const boxWidth = help.box_width ?? help.text.length * 8, boxHeight = help.height;
       if (boxWidth <= 0 || boxWidth > 220 || help.width > boxWidth || help.height > boxHeight)
         throw new Error('Invalid Original exit help text dimensions');
       const centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
@@ -532,8 +631,8 @@ export class OriginalHud {
       const top = frameY - horizontal.height, bottom = frameY + frameHeight;
       for (const x of [frameX - side.width, frameX + frameWidth]) {
         frameSprite(corner, x, top);
-        frameSprite(side, x, top + corner.height);
-        frameSprite(corner, x, top + corner.height + side.height);
+        for (let y = 0; y < boxHeight / 14; y++) frameSprite(side, x, top + corner.height + y * side.height);
+        frameSprite(corner, x, top + corner.height + boxHeight / 14 * side.height);
       }
       for (let x = frameX; x < frameX + frameWidth; x += horizontal.width) {
         frameSprite(horizontal, x, top); frameSprite(horizontal, x, bottom);

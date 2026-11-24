@@ -306,13 +306,16 @@ class OriginalAssets:
         if (table.get('schema') != 'mc2-gameplay-help/v1' or table.get('source_sha256') !=
                 'a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386'):
             raise ValueError('unexpected source help table identity')
-        rows = [row for row in table['rows'] if row['row'] == 83]
+        expected = {
+            19: dict(row=19, kind=2, flags=0x400, text_record=307, duration=50, x=0, y=0, age_threshold=160, priority=5),
+            20: dict(row=20, kind=2, flags=0, text_record=308, duration=50, x=0, y=0, age_threshold=160, priority=5),
+            83: dict(row=83, kind=8, flags=0x280, text_record=345, duration=50, x=0, y=0, age_threshold=100, priority=5),
+        }
+        rows = [row for row in table['rows'] if row['row'] in expected]
         if not rows:
             return None
-        expected = dict(row=83, kind=8, flags=0x280, text_record=345, duration=50,
-                        x=0, y=0, age_threshold=100, priority=5)
-        if rows != [expected]:
-            raise ValueError('source exit help row differs')
+        if len({row['row'] for row in rows}) != len(rows) or any(row != expected[row['row']] for row in rows):
+            raise ValueError('source map help row differs')
         language_path = manifest['language_cache']['path']
         language_root = (menu.root / language_path).resolve(strict=True)
         if not language_root.is_relative_to(menu.root):
@@ -326,40 +329,13 @@ class OriginalAssets:
         locale = next(row for row in lm['locales'] if row['id'] == lm['default_locale_id'])
         if 'LANGUAGE/L1.TXT' not in locale['aliases'] or locale['pack_sha256'] != manifest['source_language_sha256']:
             raise ValueError('source help locale is not the selected English language')
-        record = locale['records'][345]
         records = language.read(locale['records_path'])
-        offset, length = record['offset'], record['bytes']
-        text = records[offset:offset + length]
-        if (record['selector'] != 345 or length > 4096 or len(text) != length or
-                hashlib.sha256(text).hexdigest() != record['sha256'] or
-                text != b'Fly here to exit the level'):
-            raise ValueError('source exit help text differs')
         font_id = manifest['objective']['font_id']
         if font_id != 'hfont3' or font_id not in locale['font_ids']:
             raise ValueError('source help font differs')
         font = next(row for row in lm['fonts'] if row['id'] == font_id)
         masks = language.read(font['masks_path'])
         glyphs = font['glyphs']
-        selected = [glyphs[33 if value in (9, 32) else value + 1] for value in text]
-        advances = []
-        for glyph in selected:
-            start, count = glyph['offset'], glyph['length']
-            data = masks[start:start + count]
-            if (start < 0 or count != glyph['width'] * glyph['height'] or len(data) != count or
-                    hashlib.sha256(data).hexdigest() != glyph['sha256'] or any(v not in (0, 1) for v in data)):
-                raise ValueError('invalid source help glyph')
-            advances.append(glyph['width'])
-        width, height = sum(advances), max(glyph['height'] for glyph in selected)
-        if not (0 < width <= 640 and 0 < height <= 64):
-            raise ValueError('source help raster exceeds bounds')
-        raster = bytearray(width * height)
-        x = 0
-        for value, glyph in zip(text, selected, strict=True):
-            if value not in (9, 32):
-                for y in range(glyph['height']):
-                    start = glyph['offset'] + y * glyph['width']
-                    raster[y * width + x:y * width + x + glyph['width']] = masks[start:start + glyph['width']]
-            x += glyph['width']
         name = profile['map_type']['name'].lower()
         source_profile = next(row for row in manifest['objective']['profiles'] if row['id'] == name)
         frame = []
@@ -372,10 +348,86 @@ class OriginalAssets:
                               indices=add(indices), mask=add(mask)))
         if [row['selector'] for row in frame] != [171, 172, 173]:
             raise ValueError('source help frame selectors differ')
-        return {'83': dict(text=text.decode('ascii'), text_record=345, flags=0x280,
-                           duration=50, age_threshold=100, priority=5, width=width,
-                           height=height, mask=add(raster), advances=advances, frame=frame,
-                           color=colors[4095], background=colors[0], line_color=colors[4095])}
+        texts = {19: b'Destroy this for its mana', 20: b'Collect this spell by flying into it',
+                 83: b'Fly here to exit the level'}
+        result = {}
+        for row in rows:
+            selector = row['row']
+            record = locale['records'][row['text_record']]
+            offset, length = record['offset'], record['bytes']
+            text = records[offset:offset + length]
+            if (record['selector'] != row['text_record'] or offset < 0 or length > 4096 or len(text) != length or
+                    hashlib.sha256(text).hexdigest() != record['sha256'] or text != texts[selector]):
+                raise ValueError('source map help text differs')
+            selected = [glyphs[33 if value in (9, 32) else value + 1] for value in text]
+            advances = []
+            for glyph in selected:
+                start, count = glyph['offset'], glyph['length']
+                data = masks[start:start + count]
+                if (start < 0 or count != glyph['width'] * glyph['height'] or len(data) != count or
+                        hashlib.sha256(data).hexdigest() != glyph['sha256'] or any(v not in (0, 1) for v in data)):
+                    raise ValueError('invalid source help glyph')
+                advances.append(glyph['width'])
+            box_width = min(220, 8 * len(text))
+            if 8 * len(text) > box_width:
+                while box_width > 0 and (8 * len(text)) % box_width < box_width // 2:
+                    box_width -= 8
+            words = text.split(b' ')
+            lines, line = [], b''
+            for word in words:
+                if not line: line = word
+                elif len(line) + len(word) + 1 <= box_width // 8: line += b' ' + word
+                else: lines.append(line); line = word
+            if line: lines.append(line)
+            width = max(sum(glyphs[33 if value == 32 else value + 1]['width'] for value in line) for line in lines)
+            height = 14 * len(lines)
+            if not (0 < width <= box_width <= 220 and 0 < height <= 64):
+                raise ValueError('source help raster exceeds bounds')
+            raster = bytearray(width * height)
+            for line_number, line in enumerate(lines):
+                x = 0
+                for value in line:
+                    glyph = glyphs[33 if value == 32 else value + 1]
+                    if value != 32:
+                        for y in range(glyph['height']):
+                            start = glyph['offset'] + y * glyph['width']
+                            at = (line_number * 14 + y) * width + x
+                            raster[at:at + glyph['width']] = masks[start:start + glyph['width']]
+                    x += glyph['width']
+            result[str(selector)] = dict(text=text.decode('ascii'), text_record=row['text_record'], flags=row['flags'],
+                duration=row['duration'], age_threshold=row['age_threshold'], priority=row['priority'], width=width,
+                height=height, box_width=box_width, mask=add(raster), advances=advances, frame=frame,
+                color=colors[4095], background=colors[0], line_color=colors[4095])
+        return result
+
+def read_missing_hint_entities(native, subjects):
+    """Read missing map subjects on the owner thread; geometry carries the usual poses."""
+    if not subjects:
+        return []
+    from original_world import CampaignEntity
+    if c.sizeof(CampaignEntity) != 52 or any(type(slot) is not int or not 0 < slot < 65536 for slot in subjects):
+        raise ValueError('invalid source help subject')
+    lib = native.lib
+    lib.mc_native_campaign_entity_count.argtypes = [c.c_uint64, c.c_void_p]
+    lib.mc_native_campaign_entities_copy.argtypes = [c.c_uint64, c.c_uint32, c.c_void_p, c.c_uint32, c.c_uint32, c.c_void_p]
+    lib.mc_native_campaign_entity_count.restype = lib.mc_native_campaign_entities_copy.restype = c.c_int32
+    count = c.c_uint32()
+    native.check(lib.mc_native_campaign_entity_count(native.handle, c.byref(count)), 'help entity count')
+    first, last = min(subjects), max(subjects)
+    if last >= count.value: raise ValueError('source help subject is outside entity table')
+    rows = (CampaignEntity * (last - first + 1))()
+    written = c.c_uint32()
+    native.check(lib.mc_native_campaign_entities_copy(native.handle, first, rows, len(rows),
+                 c.sizeof(CampaignEntity), c.byref(written)), 'help entity poses')
+    if written.value != len(rows): raise ValueError('short source help entity table')
+    result = []
+    for slot in sorted(subjects):
+        row = rows[slot - first]
+        if (row.abi, row.size, row.entity_index, row.active) != (2, 52, slot, 1):
+            raise ValueError('invalid source help entity pose')
+        result.append({'entity': slot, 'x': row.x, 'y': row.y})
+    return result
+
 
 class MinimapState(c.Structure):
     _fields_ = [('abi_version', c.c_uint32), ('struct_size', c.c_uint32), ('generation', c.c_uint64), ('tick', c.c_uint64),

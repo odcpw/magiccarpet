@@ -150,6 +150,8 @@ interface BridgeState extends OriginalHudState {
   session_generation: number | string;
   tick: number | string;
   paused: boolean;
+  show_help?: boolean;
+  hint_entities?: { entity: number; x: number; y: number }[];
   source_menu_admission?: { map_open: boolean; spells_open: boolean } | null;
   source_menu_state?: number;
   objective?: { is_level_end: number; text_selector: number } | null;
@@ -436,6 +438,12 @@ async function pollFrame(): Promise<void> {
     }
     hudState.exit_inspection_subject = inspectedExit;
     lastHudState = hudState;
+    const advanceHints = (entities: readonly { entity: number; x: number; y: number }[]) =>
+      hud.advanceMapHints(hudState, { generation: sourceGeneration, sequence: frame.sequence.toString(),
+        enabled: state.show_help === true, paused: state.paused,
+        suppressed: abandonOpen || nativeMenus.spells_open || source.player_vitals.life < 0 ||
+          source.objective_textbox_ticks > 0 || source.exit_sequence_active || state.objective?.is_level_end !== 0,
+        player: state.player_pose, entities: [...entities, ...(state.hint_entities ?? [])] });
     // Flight history is independent of map presentation and remains at the
     // correct native revision while the source split map is displayed.
     if (isGeometryDisplay(display)) {
@@ -451,6 +459,7 @@ async function pollFrame(): Promise<void> {
       }
       if (state.minimap) hudState.minimap = { ...state.minimap, terrain: display.minimap(source.source_camera_pose) };
       if (nativeMenus.map_open) { hudState.minimap = undefined; hudState.top_bar_visible = false; }
+      advanceHints(worldFrame.sprites);
       // Source art stays indexed. Opaque panels avoid flattening a translucent
       // HUD against an invented background; the 3D world is never read to CPU.
       hudState.panels_opaque = true;
@@ -477,6 +486,7 @@ async function pollFrame(): Promise<void> {
         throw new Error('Original map identity differs from the native scene');
     }
     if (version !== controlVersion) return;
+    advanceHints([]);
     display.present(hud.compose(nativeMenus.map_open ? visible.indices : scene, visible.palette, hudState), visible.palette);
     }
     Object.assign(window, { originalState: state, originalObservation: observation });

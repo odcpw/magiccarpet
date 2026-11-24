@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFrameInfo,
-                             read_hud, read_minimap, read_objective, read_world_map)
+                             read_hud, read_minimap, read_objective, read_world_map, read_missing_hint_entities)
 from original_world import ModernWorld, OriginalWorld
 from original_media import OriginalMedia
 
@@ -621,6 +621,8 @@ class Bridge:
                          "hud": read_hud(native.lib, native.handle.value, gen, tick),
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
                          "paused": self.paused}
+                preferences = (native.identity_value.get('player_preferences') or {}).get('preferences') or {}
+                state['show_help'] = preferences.get('show_help') is True
                 if world:
                     state["terrain_revision"] = revision
                     state["palette_source"] = "static-owner-source-rgb8"
@@ -632,6 +634,13 @@ class Bridge:
                         world_map = HEADER.pack(b"MCM1", 1, HEADER.size, 320, 200, 0,
                                                 outer, gen, tick, sequence, sequence) + indices + map_palette
                     state["world_map"] = map_rows
+                hint_map = state.get('world_map') or minimap
+                if state['show_help'] and self.assets.manifest.get('help'):
+                    subjects = {row['subject_entity_index'] for row in hint_map['entities']
+                                if row['visible'] == 1 and row['help_selector'] in (19, 20) and row['subject_entity_index']}
+                    geometry_subjects = {struct.unpack_from('<H', rows, offset + 24)[0]
+                                         for offset in range(0, len(rows), 64)} if world else set()
+                    state['hint_entities'] = read_missing_hint_entities(native, subjects - geometry_subjects)
                 with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                                           world.terrain_gzip if world else None, modern_packet))
             update_phase()

@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
@@ -64,6 +65,29 @@ class OwnerAssetTests(unittest.TestCase):
         self.assertEqual(secret.manifest['objective_end_record'], 101)
         self.assertEqual({row['selector'] for row in secret.manifest['objectives']}, {51, 101, 284, 285})
 
+    def test_real_minimap_subject_pose_matches_native_geometry(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import original_bridge as bridge
+        native = bridge.Native(bridge.LIBRARY, json.loads(bridge.PACKAGES.read_text())['packages'])
+        try:
+            native.presentation_frame()
+            _, generation, tick = native.counters()
+            minimap = assets.read_minimap(native.lib, native.handle.value, generation, tick)
+            subjects = {row['subject_entity_index'] for row in minimap['entities']
+                        if row['visible'] == 1 and row['help_selector'] in (19, 20) and row['subject_entity_index']}
+            self.assertTrue(subjects, 'real owner map publishes creature or spell-pickup subjects')
+            poses = assets.read_missing_hint_entities(native, subjects)
+            self.assertEqual({row['entity'] for row in poses}, subjects)
+            world = bridge.OriginalWorld(native)
+            _, _, _, count = world.read(generation, tick, 0, 0)
+            rendered = {row.entity_index: (row.x, row.y) for row in world.rows[:count]}
+            shared = [row for row in poses if row['entity'] in rendered]
+            self.assertTrue(shared, 'an actual marked subject is in the same native geometry publication')
+            for row in shared:
+                self.assertEqual((row['x'], row['y']), rendered[row['entity']])
+        finally:
+            native.close()
+
     def test_real_tklom_and_night_use_selected_map_assets_and_english_exit_help(self):
         help_cache = self.generated / 'exit-help-row83-20261124-candidate'
         resources = [
@@ -101,6 +125,14 @@ class OwnerAssetTests(unittest.TestCase):
                 self.assertEqual(self.span(bundle, m['exit']), expected_exit)
                 self.assertEqual((m['map_profile'], m['hud_profile']), (profile, 'night'))
                 hint = m['help']['83']
+                for selector, text, record, flags in ((19, 'Destroy this for its mana', 307, 0x400),
+                                                       (20, 'Collect this spell by flying into it', 308, 0)):
+                    row = m['help'][str(selector)]
+                    self.assertEqual((row['text'], row['text_record'], row['flags'], row['duration'],
+                                      row['age_threshold'], row['priority']), (text, record, flags, 50, 160, 5))
+                    self.assertEqual(len(self.span(bundle, row['mask'])), row['width'] * row['height'])
+                    self.assertTrue(any(self.span(bundle, row['mask'])))
+                self.assertEqual((m['help']['20']['box_width'], m['help']['20']['height']), (188, 28))
                 self.assertEqual((hint['text'], hint['text_record'], hint['flags'], hint['duration'],
                                   hint['age_threshold'], hint['priority']),
                                  ('Fly here to exit the level', 345, 0x280, 50, 100, 5))
@@ -131,7 +163,7 @@ class OwnerAssetTests(unittest.TestCase):
     def test_optional_help_and_confined_receipt_bound_paths(self):
         self.assertIsNone(assets.OriginalAssets().manifest['help'])
         old = self.generated / 'castle-status-help-20261122-candidate'
-        self.assertIsNone(assets.OriginalAssets(help_cache=old).manifest['help'])
+        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20'})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'cache'
             root.mkdir()
