@@ -669,7 +669,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == "media_frame":
                                 elapsed, media_input, escape = value.get('elapsed_us'), value.get('input'), value.get('escape')
@@ -738,7 +738,7 @@ class Bridge:
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
                                 publish()
-                            elif action in ("map", "menu", "select_spell", "assign_spell"):
+                            elif action in ("map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell"):
                                 if not self.running or self.paused: raise ValueError("game must be playing")
                                 if action == "map": extra = {"abandon_action": "toggle_gameplay_map"}
                                 elif action == "menu":
@@ -746,11 +746,26 @@ class Bridge:
                                     if menu_action not in ("open_spell_menu", "close_spell_menu", "toggle_gameplay_map", "close_gameplay_menus", "open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
                                         raise ValueError("invalid menu action")
                                     extra = {"abandon_action": menu_action}
+                                elif action == "cycle_marked_spell":
+                                    hand, direction = value.get('hand'), value.get('direction')
+                                    if hand not in ('left', 'right') or direction not in ('next', 'previous'):
+                                        raise ValueError('invalid marked spell cycle')
+                                    if native.player_menu_state() not in (0, 4, 6, 7):
+                                        raise ValueError('marked spell cycle requires flight or map')
+                                    extra = {'cycle_marked_spell': {'hand': hand, 'direction': direction}}
                                 else:
                                     spell = value.get("spell_id")
                                     if not isinstance(spell, str) or not 1 <= len(spell) <= 160:
                                         raise ValueError("invalid spell id")
                                     if action == "select_spell": extra = {"select_spell": spell}
+                                    elif action == 'mark_spell':
+                                        hand, holder = value.get('hand'), value.get('holder_actor')
+                                        if (hand not in ('none', 'left', 'right') or not isinstance(holder, str) or
+                                                not holder.isascii() or not holder.isdecimal() or len(holder) > 20 or int(holder) > 2**64 - 1):
+                                            raise ValueError('invalid spell mark')
+                                        if native.player_menu_state() not in (5, 8):
+                                            raise ValueError('spell marking requires the spell menu')
+                                        extra = {'mark_spell': {'spell_id': spell, 'hand': hand, 'holder_actor': holder}}
                                     else:
                                         tier, hand = value.get("tier"), value.get("hand")
                                         if type(tier) is not int or not 0 <= tier <= 2 or hand not in ("left", "right"):
@@ -1047,6 +1062,8 @@ class Handler(BaseHTTPRequestHandler):
             control_fields = {"menu": {"menu_action"}, "select_spell": {"spell_id"},
                               "select_mission": {"level_id"},
                               "media_frame": {"elapsed_us", "input", "escape"},
+                              "mark_spell": {"spell_id", "hand", "holder_actor"},
+                              "cycle_marked_spell": {"hand", "direction"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))

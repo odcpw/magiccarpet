@@ -84,6 +84,20 @@ export interface OriginalInput {
   show_objective: boolean;
 }
 
+/** Source modifier plus a physical casting-button edge; Alt takes precedence. */
+export function markedSpellCycle(button: number, shift: boolean, alt: boolean):
+  { hand: 'left' | 'right'; direction: 'next' | 'previous' } | null {
+  if ((button !== 0 && button !== 2) || (!shift && !alt)) return null;
+  return { hand: button === 0 ? 'left' : 'right', direction: alt ? 'previous' : 'next' };
+}
+
+/** Shift-click in the source spell menu toggles the selected hand's mark. */
+export function markedSpellHand(button: number, marked: string): 'none' | 'left' | 'right' | null {
+  if (button !== 0 && button !== 2) return null;
+  const hand = button === 0 ? 'left' : 'right';
+  return marked === hand ? 'none' : hand;
+}
+
 export function originalInput(keys: ReadonlySet<string>, mouseX = 0, mouseY = 0,
   casts: { selected?: boolean; left?: boolean; right?: boolean } = {}): OriginalInput {
   const axis = (value: number) => Math.max(-64, Math.min(64, Math.round(Number.isFinite(value) ? value : 0)));

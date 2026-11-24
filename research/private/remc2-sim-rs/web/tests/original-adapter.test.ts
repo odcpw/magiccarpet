@@ -1,6 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput } from '../src/original-adapter.ts';
+import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand } from '../src/original-adapter.ts';
+
+test('source marked-spell gestures choose the clicked hand and reverse modifier', () => {
+  assert.deepEqual(markedSpellCycle(0, true, false), {hand: 'left', direction: 'next'});
+  assert.deepEqual(markedSpellCycle(2, true, true), {hand: 'right', direction: 'previous'});
+  assert.deepEqual(markedSpellCycle(0, false, true), {hand: 'left', direction: 'previous'});
+  assert.equal(markedSpellCycle(0, false, false), null);
+  assert.equal(markedSpellCycle(1, true, false), null);
+  assert.equal(markedSpellHand(0, 'none'), 'left');
+  assert.equal(markedSpellHand(0, 'left'), 'none');
+  assert.equal(markedSpellHand(2, 'left'), 'right');
+  assert.equal(markedSpellHand(2, 'right'), 'none');
+});
 
 function packet(revision = 1n, flags = 1, generation = 5n): Uint8Array {
   const bytes = new Uint8Array(ORIGINAL_PACKET_BYTES); const v = new DataView(bytes.buffer);
