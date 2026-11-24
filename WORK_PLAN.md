@@ -1,5 +1,24 @@
 # Shared-engine delivery plan
 
+### Campaign, credits and live map guidance in the private browser — November 24
+
+The normal Three.js launch now resolves the same 25 ordinary and five secret
+packages as Original. A fresh launch opens NightSpire and keeps later missions
+locked until earned. In Chrome, cancelling Abandon returned to flight. Confirming
+from Payahandra returned to Title and reopening the map retained NightSpire
+completion and all three carried spells. In a separate retained secret save,
+abandoning Pav Durivium returned to its Jaleen parent with 12 completions.
+
+With final victory staged, the browser consumed all 259 CUT6 frames and displayed
+all 21 credits pages. In a separate post-credits Uluth Results save, Continue
+reopened the completed campaign map. An earned final victory remains open.
+Chrome also drew the original creature guidance on the corner and full Day 3
+maps and the spell-pickup guidance on the full Payahandra map. The subject and
+its position came from the live native simulation. A focused check covers
+clearing a removed marker. Collection and hint removal together in Chrome, and
+priority against other help rows, remain unverified. The private service runs
+the published browser code at `95a6ae6d` on `codex/browser-exit-hint`.
+
 ### Payahandra spell pickups, Fireball accuracy and campaign intermissions — November 24
 
 Payahandra’s authored Speed pickup now remains a held spell after the same
@@ -7,7 +26,7 @@ simulation pass. Both player records and the world slot retain its owner.
 The Results spell count uses the authored rows remaining after initial spawns
 and refreshes on revival, as in remc2. In the actual Payahandra package,
 controlled pickup approaches gave 0% after Speed, 50% after the dormant
-Heal reward and 0% after revival. A separate acquired-Speed check exercised
+Shield reward (authored row 155, spell family 6) and 0% after revival. A separate acquired-Speed check exercised
 the public cast. A paid Fireball that splashes into water leaves hit accuracy
 unchanged. Its ordinary solid impact on Day 3 still counts.
 
