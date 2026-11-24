@@ -38,6 +38,8 @@ class OwnerMediaTests(unittest.TestCase):
             def playing():
                 return {'mode': 'playing', 'generation': '1', 'session': {'generation': '1', 'tick': '0'},
                         'active_runtime_flow': {'bound_level_id': 'parent'}}
+            def player_menu_state(self):
+                return 0  # This return starts in ordinary flight.
             @staticmethod
             def result(blocking):
                 return {'mode': 'campaign', 'generation': '2', 'session': None,
@@ -72,7 +74,7 @@ class OwnerMediaTests(unittest.TestCase):
                 for _ in range(200):
                     if owner.status()['ready']: break
                     time.sleep(.01)
-                self.assertTrue(owner.status()['ready'])
+                self.assertTrue(owner.status()['ready'], owner.status()['error'])
                 owner.request({'kind': 'control', 'sequence': 0, 'action': 'start'})
                 for _ in range(200):
                     if owner.status()['phase'] == 'media': break
