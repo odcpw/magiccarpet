@@ -111,10 +111,11 @@ class OriginalBridgeTest(unittest.TestCase):
             def publication():
                 packet = get('/original-api/world-frame')
                 magic, version, size, outer, generation, tick, sequence, revision, count, row_size, flags, reserved = m.WORLD_HEADER.unpack_from(packet)
-                self.assertEqual((magic, version, size, row_size, flags, reserved), (b'MCW1', 1, 64, 64, 1, 0))
+                self.assertEqual((magic, version, size, row_size, flags, reserved), (b'MCW1', 1, 64, 64, 0, 0))
                 self.assertGreater(count, 0)
                 self.assertEqual(len(packet), 64 + 768 + 64 * count)
                 state = json.loads(get(f'/original-api/state?sequence={sequence}'))
+                self.assertEqual(state['palette_source'], 'native-campaign-rgb8')
                 observation = get(f'/original-api/observation?sequence={sequence}')
                 self.assertEqual((outer, generation, tick), (state['runtime_generation'], state['session_generation'], state['tick']))
                 modern = get(f'/original-api/modern-frame?sequence={sequence}')

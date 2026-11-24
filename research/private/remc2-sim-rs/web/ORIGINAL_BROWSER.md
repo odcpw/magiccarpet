@@ -25,6 +25,12 @@ entry, then serves it and the native API from one origin. Owner packages, native
 library and decoded source assets must already exist locally. Missing inputs
 produce an explicit loading error. There is no synthetic game fallback.
 
+The launcher reads `research/private/generated/original-browser-native/libsim_capi.so`
+when a browser native release is installed. Otherwise it uses the installed
+Original Unity plugin. Pass `--library PATH` to select a specific qualified
+build. Geometry rendering requires the campaign palette export shipped at
+`5d1a5546` on `codex/original-ending`.
+
 ### Open an Original mission replay
 
 Use the native-backed geometry renderer with the same installed package set,
@@ -168,9 +174,10 @@ Rahn and Belix. All 142 sampled glyph pixels matched the owner masks and
 palette, and the names disappeared when the spell expired at tick 184.
 
 Still incomplete: audio, original options/pause submenus,
-hand flashes, source shadow/reflection passes and dynamic
-palette effects. The source palette matches the normal Night reference, but
-field-dependent palette changes have no narrow native export yet. Terrain
+hand flashes and source shadow/reflection passes. The geometry renderer reads
+the current native campaign palette for both world and HUD. On a saved
+Payahandra entry, its objective flash and fade matched the indexed renderer
+through recovery in Chrome. Terrain
 waves/fog use local floating-point projection; native fixed-point raster parity
 is not claimed. SS2 delta images are decoded from source; their selector-global
 animation clock is unavailable, so texture cycling uses a stated presentation

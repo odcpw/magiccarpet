@@ -44,6 +44,7 @@ class OriginalWorld:
         self.revision = 0
         lib = native.lib
         for name, args in {
+            'mc_native_campaign_palette_copy': [c.c_uint64, c.c_uint64, c.c_uint64, c.c_void_p, c.c_uint32, c.POINTER(c.c_uint32)],
             'mc_native_campaign_terrain_state': [c.c_uint64, c.c_uint64, c.c_void_p, c.c_uint32],
             'mc_native_campaign_terrain_plane_length': [c.c_uint64, c.c_uint64, c.c_uint32, c.c_void_p],
             'mc_native_campaign_terrain_plane_copy_u8': [c.c_uint64, c.c_uint64, c.c_uint32, c.c_void_p, c.c_uint32, c.c_void_p],
@@ -52,6 +53,16 @@ class OriginalWorld:
             fn = getattr(lib, name); fn.argtypes = args; fn.restype = c.c_int32
         self.rows = (EntityPresentation * 65536)()
         self.plane_buffers = [(c.c_uint8 * 65536)() for _ in self.PLANE_NAMES]
+
+    def read_palette(self, generation, tick):
+        palette = (c.c_uint8 * 768)()
+        written = c.c_uint32()
+        self.native.check(self.native.lib.mc_native_campaign_palette_copy(
+            self.native.handle, generation, tick, palette, len(palette), c.byref(written)),
+            'campaign palette')
+        if written.value != len(palette):
+            raise RuntimeError('incomplete native campaign palette')
+        return bytes(palette)
 
     def read(self, generation, tick, yaw, epoch):
         native = self.native

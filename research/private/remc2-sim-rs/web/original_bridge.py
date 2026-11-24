@@ -30,7 +30,9 @@ from original_media import OriginalMedia
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
-LIBRARY = PRIVATE / "remc2-unity-native/Builds/Original/Builds/Linux/MagicCarpetNative_Data/Plugins/x86_64/libsim_capi.so"
+LIBRARY = PRIVATE / "generated/original-browser-native/libsim_capi.so"
+if not LIBRARY.is_file():
+    LIBRARY = PRIVATE / "remc2-unity-native/Builds/Original/Builds/Linux/MagicCarpetNative_Data/Plugins/x86_64/libsim_capi.so"
 PACKAGES = PRIVATE / "generated/mc-voxel-combat-20261107/native-mana-scenario-01.json"
 PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
@@ -501,7 +503,6 @@ class Bridge:
             package = None
             world = None
             modern = None
-            palette = None
             command, saved, sequence = dict(NEUTRAL), None, 0
             epoch = 0
             menu_state = None
@@ -532,7 +533,7 @@ class Bridge:
                         self.publications.clear()
 
             def bind_package():
-                nonlocal package, world, modern, palette, menu_state, epoch
+                nonlocal package, world, modern, menu_state, epoch
                 # Resolve from the native save definition, never a client path.
                 current = replay_package(self.packages, native.control("save", None))
                 assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
@@ -549,7 +550,6 @@ class Bridge:
                     try: new_modern = ModernWorld(native)
                     except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
                 package, world, modern = current, new_world, new_modern
-                palette = new_world_assets.palette if new_world_assets else None
                 epoch += 1; menu_state = None
                 with self.lock:
                     self.publications.clear()
@@ -603,8 +603,9 @@ class Bridge:
                 if world:
                     camera = camera_from_observation(observation)
                     revision, terrain, rows, row_count = world.read(gen, tick, camera["yaw"], epoch)
+                    palette = world.read_palette(gen, tick)
                     packet = WORLD_HEADER.pack(b"MCW1", 1, WORLD_HEADER.size, outer, gen, tick,
-                                               sequence, revision, row_count, 64, 1, 0) + palette + rows
+                                               sequence, revision, row_count, 64, 0, 0) + palette + rows
                     if modern:
                         try: modern_packet = modern.read(outer, gen, tick, sequence, epoch)
                         except (AttributeError, RuntimeError) as exc:
@@ -625,7 +626,7 @@ class Bridge:
                 state['show_help'] = preferences.get('show_help') is True
                 if world:
                     state["terrain_revision"] = revision
-                    state["palette_source"] = "static-owner-source-rgb8"
+                    state["palette_source"] = "native-campaign-rgb8"
                     state["source_camera"] = camera
                 world_map = None
                 if menu_state and menu_state["map_open"] and not modern:
