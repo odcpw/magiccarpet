@@ -1,5 +1,26 @@
 # Shared-engine delivery plan
 
+### Death without a Castle and same-mission restart — November 24
+
+On a saved approach in The Revealed Way, ordinary damage killed the player
+at tick 2111. The death camera took over on the next tick. One Space press
+restarted the same mission and restored 10,000 HP. The Rust runtime admits
+recovery in the death camera, rebuilds the current mission, and preserves
+learned spells, banked experience and hand marks. A Payahandra package check
+followed a marked Fireball across retry, cold load and the next hand cycle.
+The older input rules still apply to steps recorded in older saves.
+
+Runtime `a19bd7d9` and browser `2476effd` are pushed. The private Three.js
+Original serves the matching native `4c5ef577fdc7`. After one Space press,
+the restarted Day 3 played Day music, effects and the opening objective
+speech in the same Chrome audio context. Entering Payahandra from the earned
+campaign map also started Day music, effects and speech. Night and Cave
+music, the slow Spider Cave load and saved movement controls passed in Chrome.
+The team is tracing XP when the objectives finish before the player dies.
+The Unity runtime assembly compiled from current
+sources. Its installed player still uses `2f477f43c882`. `mc-paj.6` stays
+open. Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
 ### NightSpire player information and spoken objectives — November 24
 
 NightSpire now draws its one actual player on the full map. On the same start
