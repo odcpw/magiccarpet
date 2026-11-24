@@ -1,5 +1,22 @@
 # Shared-engine delivery plan
 
+### Flight sound and map controls in the private browser — November 24
+
+On an earned Payahandra save, casting Fireball spent 100 mana. The native
+voice journal produced the launch on tick 1 and the quieter impact on tick 22.
+Both Day-bank waveforms were present in a recording of Chrome's stereo output.
+Physical speaker output remains unverified.
+
+The map uses the saved key (Return by default) and the original two-button
+mouse gesture. Chrome opened and closed the NightSpire map with both buttons
+after taking pointer lock. The native input trace recorded no further cast
+after the map opened. A separate profile bound the map to B and Enter ceased
+to toggle it. Browser source `ab074243` is pushed and installed with native
+`678f88daff11`. The live service served the matching bundle and Night sound
+bank. Evidence is in `research/private/generated/earned-campaign-20261124/`.
+NightSpire's player-information view exposed a separate scoreboard roster
+error; the source game draws only the current mission's player slots.
+
 ### Player information and the objective flash in the private browser — November 24
 
 On Payahandra's full map, holding Alt displays the player and Nyphur, their live
