@@ -1001,6 +1001,9 @@ struct Mc2CampaignReplaySave {
     /// First operation using source-correct Results producers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_results_start_operation: Option<usize>,
+    /// First operation with the unpaused source objective-result writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    objective_result_start_operation: Option<usize>,
     /// First operation using the authored spell tier for grouped Meteor and Wind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authored_effect_tiers_start_operation: Option<usize>,
@@ -1080,6 +1083,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_results_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    objective_result_start_operation: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     authored_effect_tiers_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_admission_start_operation: Option<usize>,
@@ -1147,6 +1152,7 @@ impl Mc2CampaignReplaySave {
             goat_audio_start_operation: Some(0),
             wind_audio_start_operation: Some(0),
             source_results_start_operation: Some(0),
+            objective_result_start_operation: Some(0),
             authored_effect_tiers_start_operation: Some(0),
             recovery_admission_start_operation: Some(0),
             global_context_changes: Vec::new(),
@@ -1193,6 +1199,7 @@ impl Mc2CampaignReplaySave {
             goat_audio_start_operation: self.goat_audio_start_operation,
             wind_audio_start_operation: self.wind_audio_start_operation,
             source_results_start_operation: self.source_results_start_operation,
+            objective_result_start_operation: self.objective_result_start_operation,
             authored_effect_tiers_start_operation: self.authored_effect_tiers_start_operation,
             recovery_admission_start_operation: self.recovery_admission_start_operation,
             global_context_changes: &self.global_context_changes,
@@ -1229,6 +1236,7 @@ impl Mc2CampaignReplaySave {
             && self.goat_audio_start_operation.is_none()
             && self.wind_audio_start_operation.is_none()
             && self.source_results_start_operation.is_none()
+            && self.objective_result_start_operation.is_none()
             && self.authored_effect_tiers_start_operation.is_none()
             && self.recovery_admission_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
@@ -2594,6 +2602,7 @@ impl Mc2RuntimePackageResolver {
         save.goat_audio_start_operation = Some(session.backend().goat_audio_start_operation);
         save.wind_audio_start_operation = Some(session.backend().wind_audio_start_operation);
         save.source_results_start_operation = Some(session.backend().source_results_start_operation);
+        save.objective_result_start_operation = Some(session.backend().objective_result_start_operation);
         save.authored_effect_tiers_start_operation = Some(session.backend().authored_effect_tiers_start_operation);
         save.recovery_admission_start_operation = Some(session.backend().recovery_admission_start_operation);
         save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
@@ -2899,6 +2908,11 @@ impl Mc2RuntimePackageResolver {
                 message: "source Results have an invalid replay boundary".to_owned(),
             });
         }
+        if save.objective_result_start_operation.is_some_and(|start| start > save.operations.len()) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source objective result has an invalid replay boundary".to_owned(),
+            });
+        }
         if save.authored_effect_tiers_start_operation.is_some_and(|start| start > save.operations.len()) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave {
                 message: "authored spell tiers have an invalid replay boundary".to_owned(),
@@ -3102,6 +3116,7 @@ impl Mc2RuntimePackageResolver {
         let goat_audio_start = save.goat_audio_start_operation.unwrap_or(save.operations.len());
         let wind_audio_start = save.wind_audio_start_operation.unwrap_or(save.operations.len());
         let source_results_start = save.source_results_start_operation.unwrap_or(save.operations.len());
+        let objective_result_start = save.objective_result_start_operation.unwrap_or(save.operations.len());
         let authored_effect_tiers_start = save.authored_effect_tiers_start_operation.unwrap_or(save.operations.len());
         let recovery_admission_start = save.recovery_admission_start_operation.unwrap_or(save.operations.len());
         let initial_secret_announcement = save.initial_secret_announcement;
@@ -3189,6 +3204,8 @@ impl Mc2RuntimePackageResolver {
                     backend.campaign.simulation_mut().set_replay_legacy_wind_audio(wind_audio_start != 0);
                     backend.source_results_start_operation = source_results_start;
                     backend.campaign.simulation_mut().set_replay_legacy_source_results(source_results_start != 0);
+                    backend.objective_result_start_operation = objective_result_start;
+                    backend.campaign.simulation_mut().set_replay_legacy_objective_result(objective_result_start != 0);
                     backend.authored_effect_tiers_start_operation = authored_effect_tiers_start;
                     backend.campaign.simulation_mut().set_replay_legacy_authored_effect_tiers(authored_effect_tiers_start != 0);
                     backend.recovery_admission_start_operation = recovery_admission_start;
@@ -3226,6 +3243,9 @@ impl Mc2RuntimePackageResolver {
                     }
                     if operation_index == source_results_start {
                         candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_source_results(false);
+                    }
+                    if operation_index == objective_result_start {
+                        candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_objective_result(false);
                     }
                     if operation_index == authored_effect_tiers_start {
                         candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_authored_effect_tiers(false);
@@ -3439,6 +3459,7 @@ impl Mc2RuntimePackageResolver {
             save.goat_audio_start_operation = None;
             save.wind_audio_start_operation = None;
             save.source_results_start_operation = None;
+            save.objective_result_start_operation = None;
             save.authored_effect_tiers_start_operation = None;
             save.recovery_admission_start_operation = None;
         }
@@ -3915,6 +3936,7 @@ pub struct Mc2CampaignBackend {
     goat_audio_start_operation: usize,
     wind_audio_start_operation: usize,
     source_results_start_operation: usize,
+    objective_result_start_operation: usize,
     authored_effect_tiers_start_operation: usize,
     recovery_admission_start_operation: usize,
     replay_legacy_recovery_admission: bool,
@@ -4602,6 +4624,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             goat_audio_start_operation: 0,
             wind_audio_start_operation: 0,
             source_results_start_operation: 0,
+            objective_result_start_operation: 0,
             authored_effect_tiers_start_operation: 0,
             recovery_admission_start_operation: 0,
             replay_legacy_recovery_admission: false,
@@ -5315,7 +5338,20 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let dynamic_lighting_enabled = self.dynamic_lighting_enabled();
         let help_enabled = self.help_enabled();
         let secret_announcement = self.campaign.simulation().secret_announcement().after_level_init();
-        let retry_spell_book = self.mission_retry_requested().then(|| RetrySpellBook::from_campaign(&self.campaign));
+        let retry_spell_book = self.mission_retry_requested().then(|| {
+            let mut book = RetrySpellBook::from_campaign(&self.campaign);
+            let simulation = self.campaign.simulation();
+            if simulation.source_exit_result_byte() & 2 != 0 && simulation.mission_rewards().allows_experience() {
+                // The outer source loop visits sub_6DB50(1, 0) before it
+                // resolves retry bit 4, even when both result bits are set.
+                for row in simulation.retry_completion_spell_progression() {
+                    let family = usize::from(row.family);
+                    book.persistent_experience[family] = row.persistent_experience;
+                    book.unlocked_levels[family] = row.unlocked_tier;
+                }
+            }
+            book
+        });
         let mut campaign = self.package_campaign.clone();
         if let Some(book) = &retry_spell_book {
             book.install(&mut campaign).map_err(|error| CampaignBackendError::StepRejected { message: error.to_string() })?;
@@ -5386,6 +5422,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.goat_audio_start_operation = 0;
         self.wind_audio_start_operation = 0;
         self.source_results_start_operation = 0;
+        self.objective_result_start_operation = 0;
         self.authored_effect_tiers_start_operation = 0;
         self.recovery_admission_start_operation = 0;
         self.replay_legacy_recovery_admission = false;
@@ -6290,6 +6327,7 @@ pub(crate) mod tests {
         let produced = resolver.save_replay(&historical).unwrap();
         let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&produced).unwrap();
         old.source_results_start_operation = None;
+        old.objective_result_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
         old.recovery_admission_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
@@ -7515,6 +7553,7 @@ pub(crate) mod tests {
         old.goat_audio_start_operation = None;
         old.wind_audio_start_operation = None;
         old.source_results_start_operation = None;
+        old.objective_result_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
         old.recovery_admission_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
@@ -21461,6 +21500,94 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn payahandra_objective_then_no_castle_retry_banks_earned_scroll_experience() {
+        use crate::game_runtime::GameRuntime;
+        use crate::game_session::{SpellAssignment, SpellAssignmentHand};
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let level_two = std::env::var_os("MC_DAY_EXIT_PACKAGE").map_or_else(
+            || generated.join("mc-level2-vault-successor-closure-20261025"), PathBuf::from);
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(generated.join("mc-bhq8-level1-collision-v5-night")),
+            Mc2CampaignInputs::new(level_two),
+            Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
+        ]).unwrap();
+        let level = resolver.flow().entries()[1].level_id().clone();
+        let package = resolver.package(&level).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, Arc::clone(&package.definition), 8871, package.inputs.clone(),
+        ).unwrap();
+        session.backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[0], Some(0)).unwrap();
+
+        // Five actual switch visits publish the authored scroll; only player
+        // position is controlled. The source pickup awards the runtime XP.
+        activate_original_level_two_scroll_group(&mut session);
+        let (player, scroll, before) = {
+            let sim = session.backend().campaign.simulation();
+            let scroll = *sim.economy().authored_class14().iter()
+                .find(|row| row.authored_index == 248 && row.active).unwrap();
+            assert_eq!(scroll.experience_award, Some(4));
+            (sim.state.entity_index, scroll, *sim.shared_spells().spell_experience())
+        };
+        session.backend_mut().campaign.simulation_mut()
+            .set_level2_entity_position(player, scroll.position).unwrap();
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        let sim = session.backend().campaign.simulation();
+        assert!(sim.shared_spells().pickup_events().iter().any(|event| matches!(event,
+            Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, player_entity_index }
+                if *source_slot == scroll.source_entity_index && *player_entity_index == player)));
+        assert_eq!(sim.shared_spells().spell_experience()[0], before[0] + 4);
+        // The approach can collect another real spell near switch11. Select
+        // Fireball for the left hand using the ordinary assignment command;
+        // the UI selection alone does not change either physical hand.
+        session.step(guard(&session), GameCommand {
+            assign_spell: Some(SpellAssignment {
+                spell_id: SemanticId::parse("spell.fireball").unwrap(), tier: 0,
+                hand: SpellAssignmentHand::Left, holder_actor: None,
+            }), ..GameCommand::default()
+        }).unwrap();
+        assert_eq!(session.backend().campaign.simulation().shared_spells().local_player().left_spell_slot_raw, 0);
+
+        // Prior objectives, mana and pose are controlled in the existing
+        // helper. Paid Fireballs destroy the authored vaults, and the
+        // scheduled absence objective opens the exit.
+        complete_controlled_payahandra_vault_boundary_for_test(&mut session);
+        let sim = session.backend().campaign.simulation();
+        assert_eq!(sim.source_exit_result_byte() & 0x02, 0x02);
+        assert_eq!(sim.economy().player_castle_entity_index(), 0);
+        let source_player = sim.shared_spells().local_player();
+        let earned = source_player.runtime_spell_experience[0];
+        let expected_bank = sim.bank_carried_spell_experience(0, source_player.persistent_spell_experience[0], earned);
+        assert!(earned > 0 && expected_bank > source_player.persistent_spell_experience[0]);
+        let attacker = sim.entities().iter().find(|row| row.active && row.class == 5 && row.model == 9)
+            .expect("authored Skeleton supplies the controlled lethal contact").index;
+        session.backend_mut().campaign.simulation_mut().stage_lethal_player_contact_for_test(attacker);
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        assert_eq!(session.backend().campaign.simulation().entities()[usize::from(player)].action, 2);
+        for _ in 0..512 {
+            if session.backend().campaign.simulation().entities()[usize::from(player)].action == 3 { break; }
+            session.step(guard(&session), GameCommand::default()).unwrap();
+        }
+        assert_eq!(session.backend().campaign.simulation().entities()[usize::from(player)].action, 3);
+        session.step(guard(&session), GameCommand { recover_player: true, ..GameCommand::default() }).unwrap();
+        assert_eq!(session.backend().campaign.simulation().source_exit_result_byte() & 0x0e, 0x0e);
+
+        let runtime = GameRuntime::check_retry_after_lethal_encounter(session);
+        let restarted = runtime.session().unwrap().backend().campaign.simulation().shared_spells().local_player();
+        assert_eq!(restarted.persistent_spell_experience[0], expected_bank);
+        assert_eq!(restarted.runtime_spell_experience[0], 0);
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8872).unwrap();
+        let cold_guard = cold.identity().guard();
+        resolver.load_replay(&mut cold, cold_guard, 8873, &saved).unwrap();
+        let cold_sim = cold.session().unwrap().backend().campaign.simulation();
+        assert_eq!(cold_sim.source_exit_result_byte(), 4);
+        assert_eq!(cold_sim.shared_spells().local_player().persistent_spell_experience[0], expected_bank);
+        assert_eq!(cold_sim.shared_spells().local_player().runtime_spell_experience[0], 0);
+    }
+
+    #[test]
     fn payahandra_admitted_exit_drives_day_indexed_history_and_reset() {
         use crate::day_indexed_frame::{DayIndexedFrameAssets, DayIndexedFrameState};
 
@@ -21725,6 +21852,8 @@ pub(crate) mod tests {
                     continue;
                 }
                 let cost = packet.max_mana;
+                let holder_active = packet.active_value;
+                let holder_level = packet.level_gate;
                 let yaw = 1024_i16;
                 let mut launch = house.position;
                 crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 2304);
@@ -21765,9 +21894,19 @@ pub(crate) mod tests {
                 area_damage::start_fireball_launch_trace();
                 area_damage::start_effect_damage_trace(house.entity_index);
                 trace_started = true;
+                let cast_context = {
+                    let sim = session.backend().campaign.simulation();
+                    let actor = &sim.entities()[usize::from(player)];
+                    let owner = sim.shared_spells().local_player();
+                    format!("group={group} target={selector} player action={} life={} mana={} flags={:#x} left={} right={} selected={} sub={} holder={} holder_active={} level={} tick={}",
+                        actor.action, actor.life, actor.mana, actor.control_flags,
+                        owner.left_spell_slot_raw, owner.right_spell_slot_raw,
+                        owner.selected_spell_ui_index, owner.selected_subspell_index, holder,
+                        holder_active, holder_level, session.identity().tick)
+                };
                 session.advance(guard(&session), GameCommand { cast_left: true, ..Default::default() }).unwrap();
                 let current_launches = area_damage::take_fireball_launch_trace();
-                assert!(current_launches.iter().any(|(_, _, owner)| *owner == player), "public Fireball launch: {current_launches:?}");
+                assert!(current_launches.iter().any(|(_, _, owner)| *owner == player), "public Fireball launch: {current_launches:?}; {cast_context}");
                 launches.extend(current_launches);
                 let paid = session.backend().campaign.simulation().cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
                     ScheduleReceipt::EpilogueCompleted { slot, original, current: CurrentOccupant::Known { selector, .. }, .. } if slot == holder => {

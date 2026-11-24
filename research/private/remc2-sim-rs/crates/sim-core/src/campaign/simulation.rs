@@ -5859,6 +5859,31 @@ impl Mc2Simulation {
             .min(LEVEL2_SPELL_TIER_THRESHOLDS[usize::from(family)][2])
     }
 
+    /// sub_6DB50(1, 0) runs before an objective-complete retry. It visits
+    /// every family, banks only source-enabled/known families, and recomputes
+    /// levels even for families whose XP is not banked.
+    pub(crate) fn retry_completion_spell_progression(&self) -> Vec<CarriedSpellProgress> {
+        let player = self.shared_spells().local_player();
+        (0..PLAYER_SPELL_COUNT).map(|family| {
+            let thresholds = LEVEL2_SPELL_TIER_THRESHOLDS[family];
+            let base = player.persistent_spell_experience[family];
+            let runtime = if family == 2 { player.runtime_spell_experience[family].min(7) }
+                else { player.runtime_spell_experience[family] };
+            let total = base.wrapping_add(runtime);
+            let eligible = (player.spell_enabled_flags[family] != 0 || player.enabled_spell_holders[family] != 0)
+                && (family != 25 || self.canonical_terrain().map_type() == MapType::Cave);
+            CarriedSpellProgress {
+                family: family as u8,
+                persistent_experience: if eligible {
+                    self.bank_carried_spell_experience(family as u8, base, runtime)
+                } else { base },
+                runtime_experience: 0,
+                unlocked_tier: thresholds.iter().rposition(|threshold| total >= *threshold).unwrap_or(0) as i8,
+                selected_tier: 0,
+            }
+        }).collect()
+    }
+
     /// `sub_6E0D0` writes learned history and threshold+1, then the same
     /// `sub_6DB50(1, 0)` visit recomputes tiers and banks eligible families.
     /// The next `InitialiseSpells` clears the runtime buffer and selection.
@@ -30126,6 +30151,10 @@ impl Mc2Simulation {
         self.session.replay_legacy_source_results = historical;
     }
 
+    pub(crate) fn set_replay_legacy_objective_result(&mut self, historical: bool) {
+        self.session.replay_legacy_objective_result = historical;
+    }
+
     pub(crate) fn set_replay_legacy_authored_effect_tiers(&mut self, historical: bool) {
         self.session.replay_legacy_authored_effect_tiers = historical;
     }
@@ -30221,6 +30250,20 @@ impl Mc2Simulation {
                 .set_player_hit_frame_time(hit_frame_time - 1);
         }
         self.sync_level2_day_hud_player_projection();
+    }
+
+    /// Control the player's health and deliver a source contact for a
+    /// connected death/retry check; ordinary scheduling consumes the hit.
+    #[cfg(test)]
+    pub(crate) fn stage_lethal_player_contact_for_test(&mut self, attacker: u16) {
+        let live = &mut self.session.state.live;
+        let player = live.core.state.entity_index;
+        live.player_protection_ticks = 0;
+        live.player_life = 10;
+        live.economy.entities[usize::from(player)].set_life(10);
+        live.shared_spells.set_player_entity_life(10);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        self.queue_level2_player_contact_damage(200, attacker);
     }
 
     /// Queue the source `sub_11900` contact payload for the local player.
@@ -31856,6 +31899,16 @@ impl Mc2Simulation {
                 message,
             });
             return Vec::new();
+        }
+        // sub_57570 runs after objectives on an unpaused outer frame. The
+        // source bit is independent of the later exit cinematic and may
+        // coexist with a no-Castle recovery request in this same frame.
+        if !self.session.replay_legacy_objective_result {
+            let live = &mut self.session.state.live;
+            let player = usize::from(live.source_player_result.source_player_slot());
+            if live.core.runtime.objectives.get(player).is_some_and(|objective| objective.is_level_end != 0) {
+                live.source_player_result.record_completed_objectives();
+            }
         }
         self.flush_shared_effects();
         if !self.session.state.scratch.source_hud_tail_deferred && !self.session.state.scratch.source_hud_tail_legacy {

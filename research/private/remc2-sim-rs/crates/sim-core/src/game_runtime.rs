@@ -2074,7 +2074,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
     #[cfg(test)]
     pub(crate) fn check_retry_after_lethal_encounter(
         session: GameSession<crate::campaign::backend::Mc2CampaignBackend>,
-    ) {
+    ) -> Self {
         let before_session = session.identity();
         assert!(session.backend().mission_retry_requested());
         let mut runtime = Self::title(before_session.session_id).unwrap();
@@ -2100,6 +2100,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         let next_guard = rebuilt.identity().guard();
         assert!(!runtime.retry_mission_if_ready(after.guard(), next_guard).unwrap());
         assert_eq!(runtime.identity(), after);
+        runtime
     }
 
     /// Accept a pending source retry at the outer loop boundary. The nested
