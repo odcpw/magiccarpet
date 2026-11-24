@@ -2,9 +2,12 @@
 type MediaAction = { op: string; value: number; audio_index: number | null; volume_units?: number | null };
 type MediaView = { epoch: number; active: boolean; frame_index: number; width: number; height: number;
   fade_in_level: number; fade_out_level: number; subtitle: string | null; subtitle_viewport_offset: number;
-  actions: MediaAction[]; error: string | null; campaign_return?: { phase: string; blocking: boolean } | null };
+  actions: MediaAction[]; error: string | null; campaign_return?: { phase: string; blocking: boolean;
+    credits?: { cursor: number; lines: string[] } | null } | null };
 export type MediaReply = { phase: string; media: MediaView | null };
 type Glyph = { index: number; width: number; height: number; mask: string };
+type CreditsArt = { width: number; height: number; font_width: number; advance_x: number; advance_y: number;
+  glyphs: Array<{ index: number; width: number; height: number }>; mask: string };
 
 export class OriginalMediaPlayer {
   private readonly canvas = document.createElement('canvas');
@@ -15,6 +18,9 @@ export class OriginalMediaPlayer {
   private readonly samples = new Map<number, HTMLAudioElement>();
   private readonly units = new Map<number, number>();
   private readonly glyphs = new Map<number, { width: number; height: number; mask: Uint8Array }>();
+  private creditsArt: (Omit<CreditsArt, 'mask'> & { mask: Uint8Array }) | null = null;
+  private creditsBackground: Uint8Array | null = null;
+  private creditsKey = '';
   private closed = false;
 
   constructor(private readonly stage: HTMLElement, private readonly api: string,
@@ -35,7 +41,7 @@ export class OriginalMediaPlayer {
   private async metadata(): Promise<void> {
     const response = await fetch(`${this.api}/media/metadata`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Campaign intermission font is unavailable');
-    const data = await response.json() as { glyphs: Glyph[] };
+    const data = await response.json() as { glyphs: Glyph[]; credits?: CreditsArt };
     if (!Array.isArray(data.glyphs)) throw new Error('Invalid intermission font');
     for (const glyph of data.glyphs) {
       const mask = Uint8Array.from(atob(glyph.mask), char => char.charCodeAt(0));
@@ -44,6 +50,15 @@ export class OriginalMediaPlayer {
       this.glyphs.set(glyph.index, { width: glyph.width, height: glyph.height, mask });
     }
     if (!this.glyphs.get(65)?.width) throw new Error('Intermission font lacks source glyphs');
+    if (data.credits) {
+      const art = data.credits, mask = Uint8Array.from(atob(art.mask), char => char.charCodeAt(0));
+      if (art.width !== 640 || art.height !== 480 || art.font_width !== 160 || art.advance_x !== 8 ||
+          art.advance_y !== 14 || mask.length !== 160 * 252 || art.glyphs.length !== 273 ||
+          art.glyphs.some((glyph, index) => glyph.index !== index || glyph.width < 0 || glyph.width > 10 ||
+            glyph.height < 0 || glyph.height > 14 || (glyph.width === 0) !== (glyph.height === 0)))
+        throw new Error('Invalid credits font');
+      this.creditsArt = { ...art, mask };
+    }
   }
 
   private async audio(action: MediaAction): Promise<void> {
@@ -102,6 +117,7 @@ export class OriginalMediaPlayer {
   private async draw(view: MediaView): Promise<void> {
     if (!view.active || view.frame_index < 0) return;
     if (view.width !== 320 || view.height !== 200) throw new Error('Invalid intermission frame extent');
+    if (this.canvas.width !== 320 || this.canvas.height !== 200) { this.canvas.width = 320; this.canvas.height = 200; }
     const response = await fetch(`${this.api}/media/frame?epoch=${view.epoch}&frame=${view.frame_index}`,
       { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (!response.ok) throw new Error('Campaign intermission frame is unavailable');
@@ -130,6 +146,57 @@ export class OriginalMediaPlayer {
     this.context.putImageData(frame, 0, 0);
   }
 
+  private async drawCredits(view: MediaView): Promise<void> {
+    const art = this.creditsArt, page = view.campaign_return?.credits;
+    if (!art || !page || !Number.isInteger(page.cursor) || page.cursor < 0 || page.cursor > 117 ||
+        !Array.isArray(page.lines) || page.lines.length > 8 ||
+        page.lines.some(line => typeof line !== 'string' || line.length > 33 || [...line].some(ch => ch.charCodeAt(0) > 255)))
+      throw new Error('Invalid source credits page');
+    const key = `${page.cursor}:${view.fade_in_level}:${view.fade_out_level}`;
+    if (key === this.creditsKey) return;
+    if (!this.creditsBackground) {
+      const response = await fetch(`${this.api}/media/credits`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error('Source credits background is unavailable');
+      const raw = new Uint8Array(await response.arrayBuffer());
+      if (raw.length !== 640 * 480 + 768) throw new Error('Invalid source credits background');
+      this.creditsBackground = raw;
+    }
+    const pixels = this.creditsBackground.slice(0, 640 * 480), palette = this.creditsBackground.subarray(640 * 480);
+    let white = 0, distance = Infinity;
+    for (let i = 0; i < 256; i++) {
+      const d = [0, 1, 2].reduce((sum, c) => sum + (63 - palette[i * 3 + c]!) ** 2, 0);
+      if (d < distance) { white = i; distance = d; }
+    }
+    for (let line = 0; line < page.lines.length; line++) {
+      const text = page.lines[line]!;
+      if (text.length === 1) continue;
+      let x = 315 - Math.trunc(art.advance_x * text.length / 2);
+      const y = 200 + line * (art.advance_y + 2);
+      for (const ch of text) {
+        const glyph = art.glyphs[ch.charCodeAt(0) + 1]!;
+        if (ch !== ' ' && ch !== '\t') {
+          const gx = glyph.index % 16 * 10, gy = Math.floor(glyph.index / 16) * 14;
+          for (let dy = 0; dy < glyph.height; dy++) for (let dx = 0; dx < glyph.width; dx++)
+            if (art.mask[(gy + dy) * art.font_width + gx + dx] && x + dx >= 0 && x + dx < 640 && y + dy < 480)
+              pixels[(y + dy) * 640 + x + dx] = white;
+        }
+        x += art.advance_x;
+      }
+    }
+    if (this.canvas.width !== 640 || this.canvas.height !== 480) { this.canvas.width = 640; this.canvas.height = 480; }
+    const frame = this.context.createImageData(640, 480);
+    for (let i = 0; i < pixels.length; i++) {
+      const color = pixels[i]! * 3;
+      for (let c = 0; c < 3; c++) {
+        const value = Math.trunc(palette[color + c]! * view.fade_in_level / 32);
+        frame.data[i * 4 + c] = (value + Math.trunc(-value * view.fade_out_level / 16)) * 4;
+      }
+      frame.data[i * 4 + 3] = 255;
+    }
+    this.context.putImageData(frame, 0, 0);
+    this.creditsKey = key;
+  }
+
   async run(): Promise<void> {
     this.stage.append(this.canvas);
     window.addEventListener('keydown', this.keyDown, true); window.addEventListener('keyup', this.keyUp, true);
@@ -145,10 +212,9 @@ export class OriginalMediaPlayer {
         const view = result.media;
         if (!view) throw new Error('Native campaign intermission is unavailable');
         if (view.error) throw new Error(view.error);
-        if (view.campaign_return?.phase === 'credits')
-          throw new Error('Source credits presentation is not yet available in this browser');
         for (const action of view.actions) await this.audio(action);
-        await this.draw(view);
+        if (view.campaign_return?.phase === 'credits') await this.drawCredits(view);
+        else await this.draw(view);
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       }
     } finally { this.dispose(); }

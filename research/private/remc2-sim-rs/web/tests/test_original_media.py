@@ -15,6 +15,19 @@ from original_media import OriginalMedia
 
 
 class OwnerMediaTests(unittest.TestCase):
+    def test_credits_use_receipt_bound_source_background_and_font(self):
+        media = OriginalMedia(MEDIA_CACHE)
+        art = media.catalog['credits_art']
+        payload = media.credits_frame()
+        self.assertEqual(len(payload), 640 * 480 + 768)
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), media.outputs[art['frames_path']]['sha256'])
+        self.assertEqual(media.metadata['credits']['glyphs'], art['glyphs'])
+        self.assertEqual(len(media.metadata['credits']['glyphs']), 273)
+        import base64
+        mask = base64.b64decode(media.metadata['credits']['mask'], validate=True)
+        self.assertEqual(len(mask), 160 * 252)
+        self.assertEqual(hashlib.sha256(mask).hexdigest(), media.outputs[art['font_path']]['sha256'])
+
     def test_bridge_keeps_results_blocked_until_native_media_releases(self):
         class Native:
             def __init__(self, *_):

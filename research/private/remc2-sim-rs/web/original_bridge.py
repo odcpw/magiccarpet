@@ -882,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                 nonce = secrets.token_urlsafe(24)
                 token = nonce + "." + hmac.new(self.server.secret, nonce.encode(), hashlib.sha256).hexdigest()
             return self.send_json(200, bridge.status(), cookie=token)
-        if target.path in ('/original-api/media/metadata', '/original-api/media/frame', '/original-api/media/audio'):
+        if target.path in ('/original-api/media/metadata', '/original-api/media/frame', '/original-api/media/audio', '/original-api/media/credits'):
             media = bridge.media
             if not media: return self.send_json(503, {'error': 'media is not bound'})
             try:
@@ -891,6 +891,11 @@ class Handler(BaseHTTPRequestHandler):
                 if target.path.endswith('/audio'):
                     index = int(params['index'][0])
                     return self.send_data(200, media.audio_bytes(index), 'audio/wav')
+                if target.path.endswith('/credits'):
+                    with bridge.lock: view = bridge.media_view
+                    if not view or (view.get('campaign_return') or {}).get('phase') != 'credits':
+                        return self.send_json(410, {'error': 'credits are not active'})
+                    return self.send_data(200, media.credits_frame(), 'application/octet-stream')
                 epoch, frame = int(params['epoch'][0]), int(params['frame'][0])
                 with bridge.lock: view = bridge.media_view
                 if not view or (view['epoch'], view['frame_index']) != (epoch, frame):

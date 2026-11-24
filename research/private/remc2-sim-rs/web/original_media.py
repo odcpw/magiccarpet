@@ -39,6 +39,26 @@ class OriginalMedia:
         if len({glyph['index'] for glyph in glyphs}) != len(glyphs):
             raise ValueError('duplicate owner media glyph')
         self.metadata = {'glyphs': glyphs}
+        art = self.catalog.get('credits_art')
+        if art is not None:
+            if (art['width'], art['height'], art['font_width'], art['font_height'],
+                    art['advance_x'], art['advance_y']) != (640, 480, 160, 252, 8, 14):
+                raise ValueError('invalid owner credits art')
+            credits_glyphs = art['glyphs']
+            if len(credits_glyphs) != 273:
+                raise ValueError('invalid owner credits glyph count')
+            for index, glyph in enumerate(credits_glyphs):
+                width, height = glyph['width'], glyph['height']
+                if (glyph['index'] != index or type(width) is not int or type(height) is not int or
+                        not 0 <= width <= 10 or not 0 <= height <= 14 or (width == 0) != (height == 0)):
+                    raise ValueError('invalid owner credits glyph')
+            mask = self.read(art['font_path'])
+            if len(mask) != 160 * 252 or any(value not in (0, 1) for value in mask):
+                raise ValueError('invalid owner credits font')
+            self._path(art['frames_path'])
+            self.metadata['credits'] = {'width': 640, 'height': 480, 'font_width': 160,
+                                        'advance_x': 8, 'advance_y': 14, 'glyphs': credits_glyphs,
+                                        'mask': base64.b64encode(mask).decode('ascii')}
 
     def _path(self, relative):
         if not isinstance(relative, str) or not relative or '\\' in relative:
@@ -102,3 +122,10 @@ class OriginalMedia:
         if type(index) is not int or not 0 <= index < len(self.audio):
             raise ValueError('invalid owner media sound')
         return self.read(self.audio[index]['path'])
+
+    def credits_frame(self):
+        art = self.catalog.get('credits_art')
+        if not art or 'credits' not in self.metadata: raise ValueError('owner credits art is unavailable')
+        data = self.read(art['frames_path'])
+        if len(data) != 640 * 480 + 768: raise ValueError('invalid owner credits background')
+        return data
