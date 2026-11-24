@@ -681,6 +681,127 @@ fn baraghan_root_switch_produces_tier_one_gravity_field_and_terrain_consequence(
 }
 
 #[test]
+fn baraghan_downstream_switches_publish_their_real_gravity_wells() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let cache = std::env::var_os("MC_LEVEL19_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/campaign-original-environments/level19"));
+    let campaign = CampaignSession::open_with_owner_cache(package.join("level19"), cache, CampaignSelection::ordinary(19).unwrap())
+        .expect("real Baraghan package");
+    for (switch_index, field_index, group, model, repeats) in
+        [(653, 654, 27, 2, true), (655, 656, 28, 0, false)]
+    {
+        let mut session = campaign.simulation().clone();
+        let features = session.mission().authored_features();
+        let root = *features.iter().find(|f| f.index == 633).unwrap();
+        let switch = *features.iter().find(|f| f.index == switch_index).unwrap();
+        let field = *features.iter().find(|f| f.index == field_index).unwrap();
+        assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, model, 17, group));
+        assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, group, 1));
+        let player = session.state.entity_index;
+        let mut root_published = false;
+        for _ in 0..16 {
+            session.set_level2_entity_position(player, root.world_position(0)).unwrap();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })));
+            if session.dispatch_events().iter().any(|e| matches!(e,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 17, authored_indices, .. }
+                if authored_indices.as_ref() == [634, 653, 655])) {
+                root_published = true;
+                break;
+            }
+        }
+        assert!(root_published, "root switch must construct the downstream controllers");
+        let mut publications = 0;
+        for phase in 0..3 {
+            for _ in 0..24 {
+                let position = if phase == 1 { root.world_position(0) } else { switch.world_position(0) };
+                session.set_level2_entity_position(player, position).unwrap();
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+                if session.dispatch_events().iter().any(|e| matches!(e,
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: actual, authored_indices, .. }
+                    if *actual == group as u16 && authored_indices.as_ref() == [field_index])) {
+                    publications += 1;
+                    let well = session.entities().iter().find(|e| e.active && e.class == 10 && e.model == 67
+                        && e.position.x == field.world_position(0).x && e.position.y == field.world_position(0).y)
+                        .expect("the published authored row constructs its real Gravity Well");
+                    assert_eq!(well.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[1].power);
+                }
+            }
+            assert_eq!(publications, if phase == 2 && repeats { 2 } else { 1 },
+                "switch {switch_index}, phase {phase}");
+        }
+    }
+}
+
+#[test]
+fn baraghan_repeating_switch_publishes_tier_two_tremor_into_terrain_and_damage() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::level_definition::{TREMOR_PROPERTIES, TerrainDisasterKind};
+    use crate::native_world::area_damage;
+
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let cache = std::env::var_os("MC_LEVEL19_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/campaign-original-environments/level19"));
+    let campaign = CampaignSession::open_with_owner_cache(package.join("level19"), cache, CampaignSelection::ordinary(19).unwrap())
+        .expect("real Baraghan package");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = *features.iter().find(|f| f.index == 628).unwrap();
+    let tremor = *features.iter().find(|f| f.index == 629).unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 2, 0, 15));
+    assert_eq!((tremor.kind, tremor.subtype, tremor.activation_group, tremor.parameter_1), (10, 71, 15, 2));
+    let initial = sim_definition::adapter::mc2_authored_terrain_disaster_definition(TerrainDisasterKind::Tremor, 2).unwrap();
+    assert_eq!((initial.lifetime(), initial.damage()), (120, 20_000), "startup retains constructor defaults");
+    let rule = TREMOR_PROPERTIES.tiers[2];
+    let player = session.state.entity_index;
+    let terrain_before = session.canonical_terrain().clone();
+    area_damage::start_effect_damage_trace(player);
+    let mut source_slot = None;
+    let mut terrain_changed = false;
+    for _ in 0..48 {
+        session.set_level2_entity_position(player, switch.world_position(0)).unwrap();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        if source_slot.is_none() && session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 15, authored_indices, .. }
+            if authored_indices.as_ref() == [629])) {
+            let source = session.entities().iter().find(|e| e.active && (e.class, e.model, e.action) == (10, 71, 78)
+                && e.position.x == tremor.world_position(0).x && e.position.y == tremor.world_position(0).y)
+                .expect("switch 628 constructs authored Tremor 629");
+            assert_eq!(source.max_life, 120);
+            assert!(source.life <= i32::from(rule.impact_parameter));
+            assert_eq!(source.subspell_index, if source.record[74] == 0 { rule.damage } else { 4 * (rule.damage / 120) });
+            source_slot = Some(source.index);
+        }
+        if source_slot.is_some() {
+            for y in -4..=4_i16 {
+                for x in -4..=4_i16 {
+                    let center = tremor.world_position(0);
+                    let p = Position { x: center.x.wrapping_add_signed(x * 256), y: center.y.wrapping_add_signed(y * 256), z: 0 };
+                    terrain_changed |= terrain_before.ground_height(p) != session.canonical_terrain().ground_height(p);
+                }
+            }
+        }
+    }
+    let receipts = area_damage::take_effect_damage_trace();
+    source_slot.expect("real repeating switch must publish group 15");
+    assert!(terrain_changed, "the authored Tremor must deform actual terrain");
+    assert!(receipts.iter().any(|receipt| receipt.pulse.position.x == tremor.world_position(0).x
+        && receipt.pulse.position.y == tremor.world_position(0).y
+        && receipt.pulse.payload == 4 * (rule.damage / 120)),
+        "the real damage boundary must receive tier-two payload: {receipts:?}");
+}
+
+#[test]
 fn galiphur_repeating_switch_constructs_tier_two_gravity_well() {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL13").map_or_else(

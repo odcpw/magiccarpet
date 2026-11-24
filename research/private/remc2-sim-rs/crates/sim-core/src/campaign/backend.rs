@@ -21734,7 +21734,10 @@ pub(crate) mod tests {
                     .wrapping_add(dy.wrapping_mul(dy))
                     .cast_unsigned(),
             );
-            if distance <= 3_500 {
+            // Fireball collision is sampled after each 384-unit move. Closing
+            // further prevents this particular moving target from falling
+            // between successive samples; source collision itself is discrete.
+            if distance <= 3_300 {
                 return Some(source);
             }
             // Decode steering through the ordinary source roll accumulator
@@ -21937,6 +21940,10 @@ pub(crate) mod tests {
         launch_position.z = launch_position.z.wrapping_add(cast_state.entity_fov);
         let (aim_yaw, aim_pitch) =
             crate::level1_mission::projectile_guidance_angles(launch_position, predicted_target);
+        crate::native_world::area_damage::start_fireball_launch_trace();
+        crate::native_world::area_damage::start_effect_damage_trace_for_targets(
+            &before.iter().map(|(slot, _)| *slot).collect::<Vec<_>>(),
+        );
         step_real_level_three_skeleton_route_for_test(
             session,
             GameCommand {
@@ -21949,8 +21956,12 @@ pub(crate) mod tests {
             observed_actions,
         );
 
-        let mut saw_projectile = false;
-        let mut saw_impact = false;
+        let mut launches = crate::native_world::area_damage::take_fireball_launch_trace();
+        let mut births = crate::native_world::area_damage::take_fireball_impact_birth_trace();
+        let mut saw_projectile = launches.iter().any(|row| row.2 == attacker);
+        let mut saw_impact = births.iter().any(|&(_, _, parent, generation, owner)| {
+            owner == attacker && launches.contains(&(parent, generation, attacker))
+        });
         let mut projectile_slot = None;
         let mut impact_slot = None;
         for _ in 0..=24 {
@@ -22017,6 +22028,17 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>();
             if !receipts.is_empty() {
+                let damage = crate::native_world::area_damage::take_effect_damage_trace();
+                assert!(receipts.iter().all(|receipt| damage.iter().any(|hit| {
+                    hit.target_slot == receipt.source_slot
+                        && hit.pulse.owner == attacker
+                        && hit.pulse.payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        && hit.mailbox_after == Some((crate::level1_mission::FIREBALL_PAYLOAD, attacker))
+                        && hit.source_handle.is_some_and(|impact| births.iter().any(|&(slot, generation, parent, parent_generation, owner)| {
+                            impact.source_slot == slot && impact.generation == generation && owner == attacker
+                                && launches.contains(&(parent, parent_generation, attacker))
+                        }))
+                })), "damage must come from this paid Fireball's actual impact: {damage:?} births={births:?} launches={launches:?}");
                 for (slot, life_before) in &before {
                     let current = observed_level_three_skeleton(session, *slot, observed_actions)
                         .expect("public Fireball keeps every nonterminal Skeleton addressable");
@@ -22037,12 +22059,20 @@ pub(crate) mod tests {
                 );
                 return receipts;
             }
+            crate::native_world::area_damage::start_fireball_launch_trace();
             step_real_level_three_skeleton_route_for_test(
                 session,
                 GameCommand::default(),
                 observed_actions,
             );
+            launches.extend(crate::native_world::area_damage::take_fireball_launch_trace());
+            births.extend(crate::native_world::area_damage::take_fireball_impact_birth_trace());
+            saw_projectile |= launches.iter().any(|row| row.2 == attacker);
+            saw_impact |= births.iter().any(|&(_, _, parent, generation, owner)| {
+                owner == attacker && launches.contains(&(parent, generation, attacker))
+            });
         }
+        crate::native_world::area_damage::take_effect_damage_trace();
         Vec::new()
     }
 
@@ -22328,6 +22358,21 @@ pub(crate) mod tests {
             assert!(BTreeSet::from([72, 74, 76, 77, 79]).is_subset(&observation.actions));
         }
 
+        // The last Skeleton can be reclaimed before its class-10/1 child
+        // has had the three source callbacks needed to hide. Allow the child
+        // its own lifetime and the following reclaim pass.
+        for _ in 0..4 {
+            let events = session.backend().campaign.simulation().economy().events();
+            if observed_actions.values().all(|observation| observation.death_output.is_some_and(|output| {
+                events[output.burst_event + 1..].iter().any(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                        if *source_entity_index == output.burst_slot
+                ))
+            })) {
+                break;
+            }
+            step_real_level_three_skeleton_route_for_test(session, GameCommand::default(), &mut observed_actions);
+        }
         let economy = session.backend().campaign.simulation().economy();
         let death_outputs = observed_actions
             .values()
@@ -22384,7 +22429,7 @@ pub(crate) mod tests {
             assert!(economy.events()[output.burst_event + 1..].iter().any(|event| matches!(event,
                 crate::native_world::Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
                     if *source_entity_index == output.burst_slot
-            )), "ordinary following-pass cleanup reclaims every original Skeleton burst occurrence");
+            )), "each original Skeleton burst reaches its source hide callback");
         }
 
         let compatibility = session.backend().campaign.simulation();

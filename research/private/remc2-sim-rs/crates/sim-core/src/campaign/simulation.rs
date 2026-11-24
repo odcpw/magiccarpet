@@ -14069,6 +14069,20 @@ impl Mc2Simulation {
                                 feature.index
                             )
                         })?;
+                    // sub_4A310 applies the physical Tremor tier after its
+                    // constructor. Keep the stored constructor definition
+                    // stable, and preserve any non-default typed definition.
+                    let properties = if model == 71
+                        && properties == sim_definition::adapter::mc2_authored_terrain_disaster_definition(
+                            properties.kind(), feature.parameter_1,
+                        )?
+                    {
+                        sim_definition::adapter::mc2_grouped_terrain_disaster_definition(
+                            properties.kind(), feature.parameter_1,
+                        )?
+                    } else {
+                        properties
+                    };
                     let live = &mut self.session.state.live;
                     let position = feature
                         .world_position(live.terrain.ground_height(feature.world_position(0)));

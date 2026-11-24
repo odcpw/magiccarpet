@@ -2556,6 +2556,7 @@ mod tests {
                 session.source_arena().entities[usize::from(slot)].action,
                 72
             );
+            let skeleton_handle = session.source_arena().handle(slot).unwrap();
             for _ in 0..17 {
                 step_opening_source_turn(&mut session);
             }
@@ -2579,7 +2580,7 @@ mod tests {
             assert_eq!(u16::from_le_bytes([row.record[102], row.record[103]]), 0);
             assert_eq!(row.particle_parameter_index, Some(202));
             let spheres = session.source_arena().economy.spheres().len();
-            let bursts = session.source_arena().economy.death_bursts().len();
+            let event_start = session.source_arena().economy.events().len();
             session
                 .stage_imported_skeleton_fireball_damage_for_test(slot, player, 1000)
                 .unwrap();
@@ -2604,26 +2605,59 @@ mod tests {
             );
             let economy = &session.source_arena().economy;
             assert!(economy.spheres().len() > spheres);
-            assert!(
-                economy.death_bursts()[bursts..]
-                    .iter()
-                    .any(|burst| burst.parent_entity_index == slot)
-            );
+            let burst = economy.events()[event_start..].iter().find_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index, parent_entity_index, ..
+                } if *parent_entity_index == slot => Some(*source_entity_index),
+                _ => None,
+            }).expect("the actual Skeleton death produces a burst");
+            let burst_generation = economy.slot_generation(burst);
+            let burst_row = &session.source_arena().entities[usize::from(burst)];
+            assert_eq!((burst_row.active, burst_row.class, burst_row.model, burst_row.action), (true, 10, 1, 1));
+            assert!((0..=1).contains(&burst_row.life));
             step_opening_source_turn(&mut session);
             let row = &session.source_arena().entities[usize::from(slot)];
+            let current_handle = session.source_arena().handle(slot);
+            eprintln!("Level {level} Skeleton reclaimed: original={skeleton_handle:?} current={current_handle:?} raw=(active={}, class={}, model={}, action={}, life={})", row.active, row.class, row.model, row.action, row.life);
             assert!(
-                !row.active && row.class == 0,
-                "next pass reclaims the raw authored carrier"
+                session.source_arena().resolve(skeleton_handle).is_none(),
+                "next pass must reclaim the original Skeleton generation: original={skeleton_handle:?}, current={current_handle:?}, row={row:?}"
             );
-            assert!(session.creature_identity_for_source_slot(slot).is_none());
-            assert!(
-                !session
-                    .source_arena()
-                    .economy
-                    .map_chains()
-                    .linked_entity_indices()
-                    .contains(&slot)
-            );
+            let mut hidden = false;
+            for _ in 0..4 {
+                let row = &session.source_arena().entities[usize::from(burst)];
+                assert_eq!(session.source_arena().economy.slot_generation(burst), burst_generation);
+                if row.drawing_disabled() {
+                    assert_eq!(row.life, -2, "source post-decrement hides on the negative-life visit");
+                    hidden = true;
+                    break;
+                }
+                let life_before = row.life;
+                step_opening_source_turn(&mut session);
+                let row = &session.source_arena().entities[usize::from(burst)];
+                assert_eq!(row.life, life_before - 1);
+                assert_eq!(row.drawing_disabled(), life_before < 0);
+            }
+            assert!(hidden, "burst reaches the source hide callback");
+            assert!(session.source_arena().economy.events()[event_start..].iter().any(|event| matches!(event,
+                crate::native_world::Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. } if *source_entity_index == burst
+            )));
+            step_opening_source_turn(&mut session);
+            let row = &session.source_arena().entities[usize::from(burst)];
+            assert!(session.source_arena().economy.slot_generation(burst) != burst_generation || !row.active || row.class == 0,
+                "the next source pass reclaims the hidden burst");
+            assert!(session.creature_identity_for_source_slot(slot)
+                .is_none_or(|identity| identity.handle != skeleton_handle));
+            if session.source_arena().handle(slot).is_none() {
+                assert!(
+                    !session
+                        .source_arena()
+                        .economy
+                        .map_chains()
+                        .linked_entity_indices()
+                        .contains(&slot)
+                );
+            }
         }
     }
 

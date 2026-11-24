@@ -1,5 +1,39 @@
 # Shared-engine delivery plan
 
+### Mission-triggered Tremor, Night map colours and Skeleton combat — November 24
+
+Baraghan's repeating switch 628 now supplies the authored tier-two Tremor
+payload of 800 to row 629. The first damage pulse is 24 and the lifetime
+remains 120. The port previously used the constructor default of 20,000,
+producing a pulse of 664. The shared group publisher applies the tier when
+it creates the effect. Stored level definitions retain their existing hashes.
+On the real Baraghan package, a controlled approach triggered the Tremor,
+deformed terrain and reached the damage dispatcher. Separate switch visits
+verified the repeating and one-shot Gravity Wells downstream of switch 633.
+
+On Perilium's Night map, a rival-owned effect takes its wizard's colour on
+both map sizes. The local and unowned sphere colours are preserved. The
+Magic Mine uses the source blink phase in all three environments.
+
+A Day 3 combat check closed to firing distance and followed two paid
+Fireballs through their own impacts, each dealing 250 damage to a Skeleton.
+Separate controlled fatal hits in Levels 2 and 4 verified the death burst,
+its natural hide and following-pass reclamation. Level 2 reused the original
+Skeleton's slot in the same turn. Live handles distinguished that new occupant.
+The full Day 3 horde route and continuous campaign play remain open.
+
+The initial candidate broke two retained saves by changing their stored
+definition. The installed correction leaves the definition validator intact.
+The Baraghan entry save opened and advanced a turn. Perilium's paid Beyond
+Sight save reached tick 180, where both native maps changed the rival
+effect from palette 164 to 88 while the two sphere controls stayed 170
+and 232. The canonical Original launcher loaded that save and displayed the
+full map with native `54a21c6f11d6`. All 478 Rust inputs in the install
+receipt matched the rig build. The launcher check confirms load and display;
+the native map reader verified the individual colours. Evidence is in
+`research/private/generated/original-routes-20261124/` and
+`research/private/generated/original-night-owned-20261124/`.
+
 ### Perilium: paid Beyond Sight and the rival balloon — November 23
 
 The player entered Perilium from a controlled campaign carry with Possession

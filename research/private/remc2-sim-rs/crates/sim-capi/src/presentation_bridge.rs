@@ -369,7 +369,9 @@ fn level2_day_palette_for_entity(
         5 => player_colour(true)?,
         9 => player_colour(false)?,
         10 if input.model == 78 => {
-            level2_day_player_colour(session, session.state.entity_index, !phase_3, palette)?
+            // Both GameUI entity passes index the local color pair directly
+            // by colorIndex[3], unlike the reversed selection for 39/57.
+            level2_day_player_colour(session, session.state.entity_index, phase_3, palette)?
         }
         10 => player_colour(false)?,
         _ => return None,
@@ -484,6 +486,34 @@ fn level2_day_minimap_command(
             command.help_selector =
                 level2_day_model45_help_selector(session, input, parameter_record_index)?;
         }
+    }
+    Some((command, visible))
+}
+
+fn level2_night_minimap_command(
+    session: &Mc2Simulation,
+    input: Level1MinimapEntityInput,
+    full_map: bool,
+) -> Option<(Level1MinimapEntityCommand, bool)> {
+    let (mut command, visible) =
+        level1_minimap_entity_command_with_visibility(&session.state, input, full_map)?;
+    // The opening Night classifier already owns admission, fixed colors and
+    // blink visibility. Its player colors, however, are the local wizard's
+    // constants; GameUI uses the actual source or linked wizard's color.
+    let uses_player_color = match input.class {
+        5 => input.source_id != input.source_slot && input.source_id_is_player,
+        9 => input.source_id_is_player,
+        10 => match input.model {
+            39 | 57 => input.player_link_is_player,
+            45 => input.player_link_is_player || input.source_id_is_player,
+            78 => true,
+            _ => input.source_id_is_player,
+        },
+        _ => false,
+    };
+    if uses_player_color {
+        command.palette_index =
+            level2_day_palette_for_entity(session, input, &NIGHT_MINIMAP_PALETTE)?;
     }
     Some((command, visible))
 }
@@ -674,9 +704,7 @@ fn campaign_map_plan(
     for (input, parameter_record_index) in inputs {
         let full_map = geometry == MapGeometry::FULL_MAP;
         let command = if selection.map_type_id == 1 && input.class != 3 {
-            // Preserve the qualified Night classifier. Mines use the shared
-            // source owner/active-Beyond gate and actual player-colour selector.
-            level1_minimap_entity_command_with_visibility(&session.state, input, full_map)
+            level2_night_minimap_command(session, input, full_map)
         } else {
             level2_day_minimap_command(
                 session,
@@ -1076,6 +1104,68 @@ fn perilium_night_castle_uses_its_owner_colour_on_both_maps() {
             (castle.selector, castle.help_selector, castle.visible),
             (61, 25, 1)
         );
+    }
+}
+
+#[test]
+fn perilium_night_owned_actors_use_their_wizards_colours() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-current/level7");
+    let selection = CampaignSelection::ordinary(7).unwrap();
+    let mut campaign = sim_core::campaign::CampaignSession::open(package, selection)
+        .expect("real Perilium package opens");
+    let session = campaign.simulation();
+    assert_eq!(session.players().iter().find(|player|
+        player.entity_index == session.state.entity_index).unwrap().player_color_index(), 0);
+    assert_eq!(session.players().iter().find(|player| player.entity_index == 357)
+        .expect("Perilium rival").player_color_index(), 3);
+    // Slot, model and owner are from the real paid-Sight Perilium tick-180
+    // marker; this isolates the same classifier using the installed package.
+    let input = Level1MinimapEntityInput {
+        source_slot: 55,
+        class: 10,
+        model: 0,
+        source_id: 357,
+        source_id_is_player: true,
+        active: true,
+        ..Level1MinimapEntityInput::default()
+    };
+    let local = Level1MinimapEntityInput { source_id: session.state.entity_index, ..input };
+    let unowned = Level1MinimapEntityInput { source_id: 55, source_id_is_player: false, ..input };
+    let creature = Level1MinimapEntityInput { class: 5, model: 20, ..input };
+    let sphere = Level1MinimapEntityInput {
+        model: 39,
+        source_id: 55,
+        source_id_is_player: false,
+        player_link: 357,
+        player_link_is_player: true,
+        ..input
+    };
+    let local_beacon = Level1MinimapEntityInput {
+        model: 78, word_32: session.state.entity_index, ..unowned
+    };
+    for phase in 0..2 {
+        let session = campaign.simulation();
+        for full_map in [false, true] {
+            for (subject, expected) in [
+                (input, 0x58), (local, 0xa4), (unowned, 215), (creature, 0x5d),
+                (sphere, [0x5d, 0x58][phase]), (local_beacon, [0xa4, 0xaa][phase]),
+            ] {
+                let (command, visible) = level2_night_minimap_command(session, subject, full_map).unwrap();
+                assert!(visible);
+                assert_eq!(command.palette_index, expected);
+            }
+            for palette in [&DAY_MINIMAP_PALETTE, &CAVE_MINIMAP_PALETTE] {
+                let expected = campaign_hud_palette_indices(0, palette.map_type).unwrap()[phase];
+                let (command, _) = level2_day_minimap_command(session, local_beacon, false, 0, palette, full_map).unwrap();
+                assert_eq!(command.palette_index, expected);
+            }
+        }
+        if phase == 0 {
+            for _ in 0..3 {
+                campaign.step(sim_core::PlayerCommand::default(), 0);
+            }
+        }
     }
 }
 
