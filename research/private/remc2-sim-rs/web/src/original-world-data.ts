@@ -9,6 +9,56 @@ export interface WorldFrame {
   runtimeGeneration: bigint; sessionGeneration: bigint; tick: bigint; sequence: bigint;
   terrainRevision: bigint; palette: Uint8Array; sprites: WorldSprite[]; staticPalette: boolean;
 }
+export interface TmapPixels { selector: number; pixels: string }
+export interface TmapDraw { runtimeGeneration: bigint; sessionGeneration: bigint; tick: bigint; yaw: number; selectors: number[] }
+
+/** Current native selector pixels, retaining the owner base for reset/unresident rows. */
+export class TmapPixelState {
+  private readonly base = new Map<number, Uint8Array>();
+  private current = new Map<number, Uint8Array>();
+  constructor(rows: readonly { selector: number; pixels: Uint8Array }[]) {
+    for (const row of rows) {
+      if (!Number.isSafeInteger(row.selector) || row.selector < 0 || this.base.has(row.selector)) throw new Error('Invalid source TMAP selector');
+      this.base.set(row.selector, row.pixels.slice());
+    }
+  }
+  apply(rows: readonly TmapPixels[] | undefined, upload: (selector: number, pixels: Uint8Array) => void): void {
+    const next = new Map<number, Uint8Array>();
+    for (const row of rows ?? []) {
+      const base = this.base.get(row.selector);
+      if (!base || next.has(row.selector) || typeof row.pixels !== 'string' || row.pixels.length !== 4 * Math.ceil(base.length / 3))
+        throw new Error('Invalid native TMAP pixels');
+      let decoded: string;
+      try { decoded = atob(row.pixels); } catch { throw new Error('Invalid native TMAP pixels'); }
+      if (decoded.length !== base.length || btoa(decoded) !== row.pixels) throw new Error('Invalid native TMAP pixels');
+      next.set(row.selector, Uint8Array.from(decoded, c => c.charCodeAt(0)));
+    }
+    const touched = new Set([...this.current.keys(), ...next.keys()]);
+    for (const selector of touched) {
+      const base = this.base.get(selector)!;
+      const previous = this.current.get(selector) ?? base, current = next.get(selector) ?? base;
+      if (current.some((byte, i) => byte !== previous[i])) upload(selector, current);
+    }
+    this.current = next;
+  }
+}
+
+/** Acknowledge each frame, then report newly submitted selectors on redraws. */
+export class TmapDrawGate {
+  private last = '';
+  private readonly seen = new Set<number>();
+  publish(frame: Pick<WorldFrame, 'runtimeGeneration' | 'sessionGeneration' | 'tick'>, yaw: number,
+    selectors: ReadonlySet<number>, emit: (draw: TmapDraw) => void): void {
+    const identity = `${frame.runtimeGeneration}:${frame.sessionGeneration}:${frame.tick}`;
+    const first = identity !== this.last;
+    if (first) { this.last = identity; this.seen.clear(); }
+    const fresh = [...selectors].filter(selector => !this.seen.has(selector)).sort((a, b) => a - b);
+    if (!first && !fresh.length) return;
+    for (const selector of fresh) this.seen.add(selector);
+    emit({ runtimeGeneration: frame.runtimeGeneration, sessionGeneration: frame.sessionGeneration,
+      tick: frame.tick, yaw, selectors: fresh });
+  }
+}
 export interface TerrainPlanes {
   types: Uint8Array; heights: Uint8Array; shades: Uint8Array; angles: Uint8Array; secondary: Uint8Array;
 }

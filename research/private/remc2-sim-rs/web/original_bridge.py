@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes as c
 import hashlib
 import hmac
@@ -45,6 +46,55 @@ WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
 MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
 MEDIA_CACHE = PRIVATE / "generated/mc2-campaign-media-cache-decoded"
 CAMPAIGN_LAUNCHER = PRIVATE / "remc2-unity-native/run-campaign.sh"
+
+
+def decode_tmap_pixels(packet, manifest):
+    """Decode a full guarded source snapshot for the current browser atlas."""
+    extents = {row['selector']: row['width'] * row['height'] for row in manifest['tmaps']}
+    if len(packet) < 2:
+        raise ValueError('truncated native TMAP snapshot')
+    count, = struct.unpack_from('<H', packet)
+    if count > 504:
+        raise ValueError('too many native TMAP images')
+    offset, previous, result = 2, -1, []
+    for _ in range(count):
+        if offset + 6 > len(packet): raise ValueError('truncated native TMAP image header')
+        selector, length = struct.unpack_from('<HI', packet, offset)
+        offset += 6
+        if selector >= 504 or selector <= previous or length == 0 or offset + length > len(packet):
+            raise ValueError('invalid native TMAP image')
+        previous = selector
+        if selector in extents:
+            if length != extents[selector]: raise ValueError('native TMAP image extent mismatch')
+            result.append({'selector': selector, 'pixels': base64.b64encode(packet[offset:offset + length]).decode('ascii')})
+        offset += length
+    if offset != len(packet): raise ValueError('trailing native TMAP bytes')
+    return result
+
+
+def submit_tmap_draw(native, value, enabled):
+    """Acknowledge an actual drawn frame only while its original guards match."""
+    guards = []
+    for key in ('runtime_generation', 'session_generation', 'tick'):
+        token = value.get(key)
+        if (not isinstance(token, str) or not token.isascii() or not token.isdecimal()
+                or len(token) > 20 or int(token) > 2**64 - 1):
+            raise ValueError('invalid TMAP draw identity')
+        guards.append(int(token))
+    yaw, selectors = value.get('yaw'), value.get('selectors')
+    if (type(yaw) is not int or not -32768 <= yaw <= 32767 or not isinstance(selectors, list)
+            or len(selectors) > 504 or any(type(row) is not int or not 0 <= row < 504 for row in selectors)
+            or any(a >= b for a, b in zip(selectors, selectors[1:]))):
+        raise ValueError('invalid TMAP draw selectors or yaw')
+    identity = native.identity_value
+    session = identity.get('session')
+    if (not enabled or identity.get('mode') not in ('playing', 'paused') or session is None
+            or guards != [int(identity['generation']), int(session['generation']), int(session['tick'])]):
+        return False
+    values = (c.c_uint16 * len(selectors))(*selectors)
+    native.check(native.lib.mc_game_runtime_tmap_draw_v1(native.handle, *guards, yaw, values, len(selectors)),
+                 'TMAP draw')
+    return True
 
 
 class ObjectiveStage(c.Structure):
@@ -143,6 +193,8 @@ class Native:
             "mc_game_runtime_save_replay_json_v1": [u64, u64, u64, u64, ptr, u32, ptr],
             "mc_game_runtime_load_replay_from_runtime_json_v1": [u64, u64, u64, u64, ptr, u32, ptr, u32],
             "mc_game_runtime_render_observation_copy_v1": [u64, u64, u64, u64, ptr, u32, ptr],
+            "mc_game_runtime_tmap_pixels_copy_v1": [u64, u64, u64, u64, ptr, u32, ptr],
+            "mc_game_runtime_tmap_draw_v1": [u64, u64, u64, u64, c.c_int16, ptr, u32],
             "mc_game_runtime_presentation_frame_v1": [u64, u64, u64, u64, c.c_uint8],
             "mc_native_last_error_length": [ptr], "mc_native_last_error_copy": [ptr, u32, ptr],
         }.items():
@@ -276,6 +328,21 @@ class Native:
         outer, generation, tick = self.counters()
         self.check(self.lib.mc_game_runtime_presentation_frame_v1(
             self.handle, outer, generation, tick, 1), "presentation frame")
+
+    def tmap_pixels(self, outer, generation, tick, manifest):
+        written = c.c_uint32()
+        fn = self.lib.mc_game_runtime_tmap_pixels_copy_v1
+        status = fn(self.handle, outer, generation, tick, None, 0, c.byref(written))
+        if status != 10:
+            self.check(status, 'size TMAP snapshot')
+            raise RuntimeError('native TMAP size query did not return buffer-too-small')
+        if not 2 <= written.value <= 16_000_000:
+            raise RuntimeError('invalid native TMAP snapshot length')
+        size = written.value
+        packet = (c.c_uint8 * size)()
+        self.check(fn(self.handle, outer, generation, tick, packet, size, c.byref(written)), 'copy TMAP snapshot')
+        if written.value != size: raise RuntimeError('native TMAP snapshot length changed')
+        return decode_tmap_pixels(bytes(packet), manifest)
 
     def control(self, action, saved):
         outer = int(self.identity_value["generation"])
@@ -586,6 +653,11 @@ class Bridge:
             world = None
             modern = None
             command, saved, sequence = dict(NEUTRAL), None, 0
+            # A geometry frame must actually be drawn before its source turn
+            # can be serviced. Controls that consume a turn wait in order at
+            # this boundary; their HTTP replies do not block the draw receipt.
+            pending_steps = deque()
+            draw_boundary, draw_ready, draw_wait_started = None, False, None
             epoch = 0
             menu_state = None
             frame_remainder = 0
@@ -619,7 +691,7 @@ class Bridge:
                         self.publications.clear()
 
             def bind_package():
-                nonlocal package, world, modern, menu_state, epoch
+                nonlocal package, world, modern, menu_state, epoch, draw_boundary, draw_ready, draw_wait_started
                 # Resolve from the native save definition, never a client path.
                 current = replay_package(self.packages, native.control("save", None))
                 assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
@@ -649,6 +721,7 @@ class Bridge:
                     except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
                 package, world, modern = current, new_world, new_modern
                 epoch += 1; menu_state = None
+                draw_boundary, draw_ready, draw_wait_started = None, False, None
                 gameplay_audio.reset()
                 effects.reset(); speech.reset()
                 with self.lock:
@@ -668,6 +741,7 @@ class Bridge:
                 # input other than the visible abandon confirmation.
                 if return_to_title_from_observation(native.observe()):
                     native.return_to_title()
+                    pending_steps.clear()
                     command = dict(NEUTRAL)
                     frame_remainder = 0
                     self.running = False; self.paused = False
@@ -676,6 +750,7 @@ class Bridge:
                     update_phase()
                     return True
                 if not native.finish_if_ready(): return False
+                pending_steps.clear()
                 command = dict(NEUTRAL)
                 frame_remainder = 0
                 if native.identity_value.get("session") is None:
@@ -709,12 +784,19 @@ class Bridge:
                 return True
 
             def publish():
-                nonlocal sequence, menu_state, modern
+                nonlocal sequence, menu_state, modern, draw_boundary, draw_ready, draw_wait_started
                 native.presentation_frame()
                 sequence += 1
                 packet = None if world else native.frame(sequence)
                 observation = native.observe()
                 outer, gen, tick = native.counters()
+                if world and not self.modern:
+                    boundary = (outer, gen, tick)
+                    if boundary != draw_boundary:
+                        draw_boundary, draw_ready = boundary, False
+                        draw_wait_started = time.monotonic()
+                else:
+                    draw_boundary, draw_ready, draw_wait_started = None, True, None
                 pose = pose_from_observation(observation)
                 terrain = None
                 modern_packet = None
@@ -762,6 +844,8 @@ class Bridge:
                     state["terrain_revision"] = revision
                     state["palette_source"] = "native-campaign-rgb8"
                     state["source_camera"] = camera
+                    if not self.modern:
+                        state['tmap_pixels'] = native.tmap_pixels(outer, gen, tick, self.world_assets.manifest)
                 world_map = None
                 if menu_state and menu_state["map_open"] and not modern:
                     indices, map_palette, map_rows = read_world_map(native.lib, native.handle.value, gen, tick)
@@ -793,7 +877,8 @@ class Bridge:
             with self.lock: self.ready = True
             deadline = time.monotonic()
             while not self.stop.is_set():
-                try: item = self.items.get(timeout=max(0, min(.05, deadline-time.monotonic())) if self.running else .1)
+                wait = max(0, min(.05, deadline-time.monotonic())) if self.running and draw_ready else .05
+                try: item = self.items.get(timeout=wait if self.running else .1)
                 except queue.Empty: item = None
                 if item:
                     value, done = item
@@ -804,6 +889,7 @@ class Bridge:
                             done.put((True, self.last_reply)); continue
                         if seq != self.next_sequence: raise ValueError(f"expected sequence {self.next_sequence}")
                         kind = value.get("kind")
+                        tmap_applied = None
                         if kind == "input":
                             next_command = validate_command(value.get("command"))
                             if native.identity_value.get("session") is not None:
@@ -816,9 +902,13 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "tmap_draw", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
-                            if action == 'audio_complete':
+                            if action == 'tmap_draw':
+                                tmap_applied = submit_tmap_draw(native, value, bool(world) and not self.modern)
+                                if tmap_applied and tuple(int(value[key]) for key in ('runtime_generation', 'session_generation', 'tick')) == draw_boundary:
+                                    draw_ready, draw_wait_started = True, None
+                            elif action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
                                 if (not isinstance(generation, str) or not generation.isascii() or not generation.isdecimal() or len(generation) > 20 or
                                         not isinstance(event, str) or not event.isascii() or not event.isdecimal() or len(event) > 20 or
@@ -893,6 +983,7 @@ class Bridge:
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
                                 publish()
+                                if not draw_ready: draw_wait_started = time.monotonic()
                             elif action == "pause":
                                 if not self.paused: native.control("pause", saved); self.paused = True
                                 self.running = False; command = dict(NEUTRAL); publish()
@@ -901,6 +992,7 @@ class Bridge:
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
                                 publish()
+                                if not draw_ready: draw_wait_started = time.monotonic()
                             elif action == "toggle_speech":
                                 toggle_speech(native, speech.cache is not None)
                                 publish()
@@ -948,12 +1040,16 @@ class Bridge:
                                         extra = {"assign_spell": {"spell_id": spell, "tier": tier, "hand": hand}}
                                 if action == "menu" and menu_action in ("open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
                                     command = dict(NEUTRAL)
-                                map_states = (6, 7, 8, 11, 12, 14)
-                                map_before = native.player_menu_state() in map_states if action == "map" else None
-                                step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
-                                if action == "map" and (native.player_menu_state() in map_states) != map_before:
-                                    command.update(cast_selected=False, cast_left=False, cast_right=False)
-                                if not finish_if_ready(): publish()
+                                if world and not self.modern:
+                                    if len(pending_steps) >= 128: raise ValueError('too many pending game controls')
+                                    pending_steps.append((action, extra))
+                                else:
+                                    map_states = (6, 7, 8, 11, 12, 14)
+                                    map_before = native.player_menu_state() in map_states if action == "map" else None
+                                    step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                                    if action == "map" and (native.player_menu_state() in map_states) != map_before:
+                                        command.update(cast_selected=False, cast_left=False, cast_right=False)
+                                    if not finish_if_ready(): publish()
                             else:
                                 if action == "load" and saved is None and self.save_path and self.save_path.is_file():
                                     saved = self.save_path.read_bytes()
@@ -971,6 +1067,7 @@ class Bridge:
                                     os.replace(temporary, self.save_path)
                                 if action == "save": self.has_save = True
                                 if action in ("reset", "load"):
+                                    pending_steps.clear()
                                     epoch += 1
                                     self.paused = native.identity_value["mode"] == "paused"
                                     self.running = self.running and not self.paused and native.identity_value.get("session") is not None
@@ -1000,23 +1097,32 @@ class Bridge:
                                   "speech_enabled": self.speech_enabled,
                                   "speech_available": speech.cache is not None,
                                   "media": self.media_view}
+                        if tmap_applied is not None: result['tmap_applied'] = tmap_applied
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
                 now = time.monotonic()
-                if self.running and now - self.last_contact > 1.5:
+                if self.running and (now - self.last_contact > 1.5 or
+                                     (not draw_ready and draw_wait_started is not None and now - draw_wait_started > 1.5)):
                     native.control("pause", saved); self.paused = True; self.running = False
                     command = dict(NEUTRAL); publish()
-                if self.running and now >= deadline:
-                    step(selected_cast_or_recovery(native,
-                        {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
-                    # Each submitted cast request survives until one native step.
-                    command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
-                    command.pop("remove_castle_stage", None)
-                    command.pop("recover_player", None)
+                if self.running and now >= deadline and draw_ready:
+                    if pending_steps:
+                        action, extra = pending_steps.popleft()
+                        map_states = (6, 7, 8, 11, 12, 14)
+                        map_before = native.player_menu_state() in map_states if action == 'map' else None
+                        step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                        if action == 'map' and (native.player_menu_state() in map_states) != map_before:
+                            command.update(cast_selected=False, cast_left=False, cast_right=False)
+                    else:
+                        step(selected_cast_or_recovery(native,
+                            {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
+                        # Each submitted cast request survives until its own native step.
+                        command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
+                        command.pop("remove_castle_stage", None)
+                        command.pop("recover_player", None)
                     if not finish_if_ready(): publish()
-                    deadline += 1/30
-                    if deadline < time.monotonic() - .25: deadline = time.monotonic()
+                    deadline = max(deadline + 1/30, time.monotonic())
         except Exception as exc:
             with self.lock: self.error = f"{type(exc).__name__}: {exc}"; self.ready = False; self.running = False
         finally:
@@ -1304,6 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
                               "cycle_marked_spell": {"hand", "direction"},
                               "audio_complete": {"generation", "voice", "event_sequence"},
                               "speech_complete": {"generation", "event_sequence"},
+                              "tmap_draw": {"runtime_generation", "session_generation", "tick", "yaw", "selectors"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))

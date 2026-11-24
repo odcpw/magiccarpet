@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { admitsSprite, assetBytes, signedSourceAngle, wrappedDelta, type TerrainPlanes, type WorldAssetManifest, type WorldFrame, type WorldSprite } from './original-world-data';
+import { admitsSprite, assetBytes, signedSourceAngle, wrappedDelta, TmapPixelState, TmapDrawGate, type TmapPixels, type TmapDraw, type TerrainPlanes, type WorldAssetManifest, type WorldFrame, type WorldSprite } from './original-world-data';
 import type { HudGeometryPlan } from './original-hud';
 
 export interface SourceCamera { x: number; y: number; z: number; yaw: number; pitch: number; roll: number }
@@ -78,6 +78,7 @@ const spriteFragment = `precision highp float;
 export class OriginalWorldRenderer {
   readonly gpu: string;
   onError: (error: unknown) => void = error => console.error(error);
+  onTmapDraw: (draw: TmapDraw) => void = () => {};
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly blendScene = new THREE.Scene();
@@ -95,6 +96,9 @@ export class OriginalWorldRenderer {
     depthBuffer: true, stencilBuffer: false, colorSpace: THREE.NoColorSpace });
   private snapshot = new THREE.FramebufferTexture(1, 1);
   private readonly images = new Map<number, ImageRow>();
+  private readonly atlas: THREE.DataTexture;
+  private readonly tmapPixels: TmapPixelState;
+  private readonly tmapDrawGate = new TmapDrawGate();
   private readonly frustum = new THREE.Frustum();
   private readonly viewProjection = new THREE.Matrix4();
   private readonly spriteBounds = new THREE.Sphere(new THREE.Vector3(), 1);
@@ -153,6 +157,8 @@ export class OriginalWorldRenderer {
     this.terrainMaterial = shader(terrainVertex, terrainFragment, { tiles: { value: tiles }, shadeLut: { value: shade },
       turn: { value: 0 }, eyeMap: { value: new THREE.Vector2() } });
     const atlas = this.makeAtlas(manifest, blob);
+    this.atlas = atlas;
+    this.tmapPixels = new TmapPixelState(manifest.tmaps.map(row => ({ selector: row.selector, pixels: assetBytes(blob, row.frames[0]!, row.width * row.height) })));
     const spriteUniforms = { atlas: { value: atlas }, shadeLut: { value: shade }, blendLut: { value: blend },
       destination: { value: this.snapshot }, resolution: { value: new THREE.Vector2(1, 1) } };
     this.spriteMaterial = shader(spriteVertex, spriteFragment, spriteUniforms);
@@ -253,8 +259,13 @@ export class OriginalWorldRenderer {
     }
     this.planes = planes; this.dirty = true;
   }
-  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean, plan?: HudGeometryPlan): void {
+  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean, plan?: HudGeometryPlan, tmapPixels?: readonly TmapPixels[]): void {
     if (!this.planes) throw new Error('Native terrain must be installed before its world frame');
+    this.tmapPixels.apply(tmapPixels, (selector, pixels) => {
+      const frame = this.images.get(selector)!.frames[0]!;
+      const source = new THREE.DataTexture(pixels, frame.width, frame.height, THREE.RedFormat, THREE.UnsignedByteType);
+      this.renderer.copyTextureToTexture(source, this.atlas, null, new THREE.Vector2(frame.x, frame.y));
+    });
     const sameEpoch = this.frame?.runtimeGeneration === frame.runtimeGeneration && this.frame.sessionGeneration === frame.sessionGeneration;
     this.previousCamera = sameEpoch ? this.sourceCamera : camera; this.sourceCamera = camera; this.frame = frame; this.fov = fov;
     this.arrival = performance.now(); this.mapOpen = mapOpen; this.playing = playing;
@@ -329,10 +340,8 @@ export class OriginalWorldRenderer {
     const image = this.images.get(row.selector);
     if (!image) { if (this.unavailable.has(row.selector)) return false; throw new Error(`Unbound native TMAP ${row.selector}`); }
     if (row.pixelMode > 8) throw new Error(`Unsupported native sprite pixel mode ${row.pixelMode}`);
-    // Native selectors own creature animation. SS2 texture delta phase is a
-    // presentation approximation until its source-global clock has an ABI.
-    const phase = image.animated && image.frames.length > 1 ? Math.floor(Number(this.frame!.tick % 100000n) / 4) % (image.frames.length - 1) : 0;
-    const rect = image.frames[phase]!, h = row.height / UNIT;
+    // Native publishes the current selector-global pixels into this rectangle.
+    const rect = image.frames[0]!, h = row.height / UNIT;
     const x = eye.x + wrappedDelta(row.x / UNIT, eye.x), z = eye.z + wrappedDelta(row.y / UNIT, eye.z);
     this.spriteBounds.center.set(x, row.z / UNIT + h / 2, z);
     this.spriteBounds.radius = Math.hypot(h * rect.width / rect.height, h) / 2;
@@ -398,10 +407,12 @@ export class OriginalWorldRenderer {
     }
     this.terrainMaterial.uniforms.eyeMap!.value.set(this.camera.position.x, this.camera.position.z);
     this.terrainMaterial.uniforms.turn!.value = Number(this.frame.tick % 2048n);
-    let opaqueCount = 0; const transparent: WorldSprite[] = [];
+    let opaqueCount = 0; const transparent: WorldSprite[] = [], drawnTmaps = new Set<number>();
     for (const row of this.frame.sprites) {
       if ([2, 3, 6, 7, 8].includes(row.pixelMode)) { transparent.push(row); continue; }
-      if (this.writeSprite(this.sprites.geometry, opaqueCount, row, this.camera.position)) opaqueCount++;
+      if (this.writeSprite(this.sprites.geometry, opaqueCount, row, this.camera.position)) {
+        opaqueCount++; if (this.images.get(row.selector)?.animated) drawnTmaps.add(row.selector);
+      }
     }
     this.sprites.geometry.instanceCount = opaqueCount; this.upload(this.sprites.geometry);
     this.renderer.info.reset(); this.renderer.setRenderTarget(this.target); this.renderer.setClearColor(0x000000, 1); this.renderer.clear();
@@ -432,7 +443,9 @@ export class OriginalWorldRenderer {
     for (const layer of layers) {
       let count = 0; this.copyBox.makeEmpty();
       for (const { row, rect } of layer) {
-        if (this.writeSprite(this.blendSprite.geometry, count, row, this.camera.position)) count++;
+        if (this.writeSprite(this.blendSprite.geometry, count, row, this.camera.position)) {
+          count++; if (this.images.get(row.selector)?.animated) drawnTmaps.add(row.selector);
+        }
         this.copyBox.min.x = Math.min(this.copyBox.min.x, rect.left); this.copyBox.min.y = Math.min(this.copyBox.min.y, rect.bottom);
         this.copyBox.max.x = Math.max(this.copyBox.max.x, rect.right); this.copyBox.max.y = Math.max(this.copyBox.max.y, rect.top);
       }
@@ -443,6 +456,7 @@ export class OriginalWorldRenderer {
     this.spriteCount = opaqueCount + visible.length;
     this.finalMaterial.uniforms.mapOpen!.value = this.mapOpen;
     this.renderer.setRenderTarget(null); this.renderer.setViewport(0, 0, this.width, this.height); this.renderer.render(this.finalScene, this.screenCamera);
+    this.tmapDrawGate.publish(this.frame, this.sourceCamera.yaw, drawnTmaps, this.onTmapDraw);
     this.draws = this.renderer.info.render.calls; this.triangles = this.renderer.info.render.triangles; this.framesDrawn++;
     if (this.playing && this.lastDraw) { this.frameTimes.push(now - this.lastDraw); if (this.frameTimes.length > 1800) this.frameTimes.shift(); }
     this.lastDraw = this.playing ? now : 0;

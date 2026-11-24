@@ -229,6 +229,7 @@ interface BridgeState extends OriginalHudState {
   speech_available?: boolean;
   campaign_effects?: {generation: string; sequence: string; kind: number; code: number; value0: number; value1: number}[];
   hint_entities?: { entity: number; x: number; y: number }[];
+  tmap_pixels?: { selector: number; pixels: string }[];
   source_menu_admission?: { map_open: boolean; spells_open: boolean; player_information_open: boolean } | null;
   source_menu_state?: number;
   objective?: { is_level_end: number; text_selector: number } | null;
@@ -561,7 +562,6 @@ async function pollFrame(): Promise<void> {
         BigInt(state.runtime_generation) !== frame.runtimeGeneration || BigInt(state.session_generation) !== frame.sessionGeneration || BigInt(state.tick) !== frame.tick)
       throw new Error('The original scene and HUD do not describe the same native frame');
     if (version !== controlVersion) return;
-    lastFrame = frame;
     gameplayAudio.update(state.gameplay_audio ?? [], frame.sessionGeneration.toString(),
       state.asset_revision ?? 0, state.sound_enabled === true, playing && !state.paused, state.sound_volume ?? 0);
     if (!modernRequested) campaignMusic.update(state.campaign_music ?? null, state.asset_revision ?? 0,
@@ -646,7 +646,7 @@ async function pollFrame(): Promise<void> {
         if (version !== controlVersion) return;
         display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, modern);
         Object.assign(window, { modernState: modern });
-      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, hud.geometryPlan());
+      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, hud.geometryPlan(), state.tmap_pixels);
     } else {
     const sceneFrame = frame as OriginalFrame;
     const scene = history.compose(sceneFrame, tables);
@@ -663,6 +663,7 @@ async function pollFrame(): Promise<void> {
     advanceHints([]);
     display.present(hud.compose(nativeMenus.map_open ? visible.indices : scene, visible.palette, hudState), visible.palette);
     }
+    lastFrame = frame;
     Object.assign(window, { originalState: state, originalObservation: observation });
     syncPlayerInformation();
     if (started && !busy && source.source_menu_admission?.spells_open && document.pointerLockElement === canvas) {
@@ -932,7 +933,15 @@ async function boot(): Promise<void> {
       if (modernRequested) {
         message.textContent = `Loading the ${currentLevelName} models and environment…`;
         display = await ModernWorldRenderer.load(canvas, API);
-      } else display = await OriginalWorldRenderer.load(canvas, API);
+      } else {
+        display = await OriginalWorldRenderer.load(canvas, API);
+        display.onTmapDraw = draw => {
+          if (!connected || leavingPage) return;
+          void post('/control', {action: 'tmap_draw', runtime_generation: draw.runtimeGeneration.toString(),
+            session_generation: draw.sessionGeneration.toString(), tick: draw.tick.toString(),
+            yaw: draw.yaw, selectors: draw.selectors}).catch(fail);
+        };
+      }
       display.onError = fail;
     } else display = new IndexedDisplay();
     hud = await OriginalHud.load(API); tables = hud.tables;

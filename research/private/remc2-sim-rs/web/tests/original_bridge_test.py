@@ -27,6 +27,41 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_tmap_snapshot_filters_siblings_and_checks_included_extent(self):
+        m = bridge_module
+        manifest = {'tmaps': [{'selector': 2, 'width': 2, 'height': 2}]}
+        row = lambda selector, data: struct.pack('<HI', selector, len(data)) + data
+        packet = struct.pack('<H', 2) + row(2, b'abcd') + row(3, b'sibling')
+        self.assertEqual(m.decode_tmap_pixels(packet, manifest), [{'selector': 2, 'pixels': 'YWJjZA=='}])
+        self.assertEqual(m.decode_tmap_pixels(b'\0\0', manifest), [])
+        for invalid in (struct.pack('<H', 1) + row(2, b'bad'), packet[:-1],
+                        struct.pack('<H', 2) + row(3, b'x') + row(2, b'abcd'), packet + b'x'):
+            with self.assertRaises(ValueError): m.decode_tmap_pixels(invalid, manifest)
+
+    def test_tmap_draw_applies_only_current_playing_or_paused_frame(self):
+        m = bridge_module
+        native = mock.Mock()
+        native.handle = c.c_uint64(7)
+        native.identity_value = {'mode': 'playing', 'generation': 3, 'session': {'generation': 4, 'tick': 5}}
+        native.lib.mc_game_runtime_tmap_draw_v1.return_value = 0
+        value = {'runtime_generation': '3', 'session_generation': '4', 'tick': '5', 'yaw': 22, 'selectors': [2, 3]}
+        self.assertTrue(m.submit_tmap_draw(native, value, True))
+        args = native.lib.mc_game_runtime_tmap_draw_v1.call_args.args
+        self.assertEqual(args[1:5], (3, 4, 5, 22))
+        self.assertEqual(list(args[5]), [2, 3])
+        self.assertEqual(args[6], 2)
+        native.identity_value['mode'] = 'paused'
+        self.assertTrue(m.submit_tmap_draw(native, value, True))
+        calls = native.lib.mc_game_runtime_tmap_draw_v1.call_count
+        for key in ('runtime_generation', 'session_generation', 'tick'):
+            self.assertFalse(m.submit_tmap_draw(native, dict(value, **{key: '0'}), True))
+        self.assertFalse(m.submit_tmap_draw(native, value, False))
+        native.identity_value['session'] = None
+        self.assertFalse(m.submit_tmap_draw(native, value, True))
+        self.assertEqual(native.lib.mc_game_runtime_tmap_draw_v1.call_count, calls)
+        for change in ({'selectors': [3, 2]}, {'selectors': [2, 2]}, {'yaw': 32768}, {'tick': '-1'}):
+            with self.assertRaises(ValueError): m.submit_tmap_draw(native, dict(value, **change), True)
+
     def test_recovery_edge_is_noop_alive_and_reaches_native_when_dead(self):
         m = bridge_module
         native = mock.Mock()

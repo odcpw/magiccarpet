@@ -1,6 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, terrainHeight, wrappedDelta, type WorldSprite } from '../src/original-world-data.ts';
+import { admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, terrainHeight, wrappedDelta, TmapDrawGate, TmapPixelState, type TmapDraw, type WorldSprite } from '../src/original-world-data.ts';
+
+test('native TMAP images replace shared selector pixels and restore the owner base', () => {
+  const pixels = new TmapPixelState([{selector: 14, pixels: Uint8Array.of(1, 2, 3, 4)},
+    {selector: 19, pixels: Uint8Array.of(5, 6)}]);
+  const writes: {selector: number; pixels: number[]}[] = [];
+  const upload = (selector: number, bytes: Uint8Array) => writes.push({selector, pixels: [...bytes]});
+  pixels.apply([{selector: 14, pixels: 'CQgHBg=='}], upload);
+  assert.deepEqual(writes, [{selector: 14, pixels: [9, 8, 7, 6]}]);
+  pixels.apply([{selector: 14, pixels: 'CQgHBg=='}], upload);
+  assert.equal(writes.length, 1, 'repeated reads do not reupload unchanged selector pixels');
+  assert.throws(() => pixels.apply([{selector: 19, pixels: 'CQg='}, {selector: 99, pixels: 'AQ=='}], upload), /Invalid native TMAP/);
+  assert.throws(() => pixels.apply([{selector: 14, pixels: 'AQ=='}], upload), /Invalid native TMAP/);
+  assert.throws(() => pixels.apply([{selector: 14, pixels: 'CQgHBg=='}, {selector: 14, pixels: 'CQgHBg=='}], upload), /Invalid native TMAP/);
+  assert.equal(writes.length, 1, 'malformed batches cannot partially mutate the atlas');
+  pixels.apply([], upload);
+  assert.deepEqual(writes[1], {selector: 14, pixels: [1, 2, 3, 4]});
+  pixels.apply([{selector: 19, pixels: 'CQg='}], upload);
+  pixels.apply(undefined, upload);
+  assert.deepEqual(writes.slice(2), [{selector: 19, pixels: [9, 8]}, {selector: 19, pixels: [5, 6]}]);
+});
+
+test('draw feedback is sorted, deduplicated and bound to the submitted native tick', () => {
+  const gate = new TmapDrawGate(), draws: TmapDraw[] = [];
+  const frame = {runtimeGeneration: 3n, sessionGeneration: 4n, tick: 5n};
+  const emit = (draw: TmapDraw) => draws.push(draw);
+  gate.publish(frame, 321, new Set(), emit);
+  gate.publish(frame, 321, new Set(), emit);
+  gate.publish(frame, 321, new Set([19, 14, 19]), emit);
+  gate.publish(frame, 999, new Set([14]), emit);
+  gate.publish(frame, 321, new Set([14, 20]), emit);
+  gate.publish(frame, 321, new Set([20]), emit);
+  gate.publish({...frame, tick: 6n}, 322, new Set([14]), emit);
+  gate.publish({...frame, sessionGeneration: 5n}, 323, new Set([19]), emit);
+  assert.deepEqual(draws, [{...frame, yaw: 321, selectors: []},
+    {...frame, yaw: 321, selectors: [14, 19]},
+    {...frame, yaw: 321, selectors: [20]},
+    {...frame, tick: 6n, yaw: 322, selectors: [14]},
+    {...frame, sessionGeneration: 5n, yaw: 323, selectors: [19]}]);
+});
 
 function packet(): Uint8Array {
   const bytes = new Uint8Array(832 + 64), v = new DataView(bytes.buffer);
