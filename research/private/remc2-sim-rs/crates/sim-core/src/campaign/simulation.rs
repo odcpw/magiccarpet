@@ -30151,6 +30151,10 @@ impl Mc2Simulation {
         self.session.replay_legacy_source_results = historical;
     }
 
+    pub(crate) fn set_replay_legacy_castle_revival_music(&mut self, historical: bool) {
+        self.session.replay_legacy_castle_revival_music = historical;
+    }
+
     pub(crate) fn set_replay_legacy_objective_result(&mut self, historical: bool) {
         self.session.replay_legacy_objective_result = historical;
     }
@@ -30395,6 +30399,11 @@ impl Mc2Simulation {
                 }
             });
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_level2_player_contact_damage_for_test(&mut self, damage: i32, attacker: u16) {
+        self.queue_level2_player_contact_damage(damage, attacker);
     }
 
     /// Consume the local-player mailbox on the player's source-cursor visit.
@@ -30686,6 +30695,7 @@ impl Mc2Simulation {
     /// PlayerEvents action 15 reuses the current human actor. With no Castle,
     /// source uses the current player-row spawn and the live terrain height.
     fn revive_level2_player_at_castle(&mut self) -> Result<bool> {
+        let legacy_music = self.session.replay_legacy_castle_revival_music;
         let live = &mut self.session.state.live;
         let actor_index = live.core.state.entity_index;
         let actor = &live.economy.entities[usize::from(actor_index)];
@@ -30789,6 +30799,19 @@ impl Mc2Simulation {
         live.core.state.strafe_speed = 0;
         live.core.state.recoil_speed = 0;
         live.core.state.recoil_yaw = 0;
+        if !legacy_music {
+            // sub_5C950 clears the local A4 music countdown before the next
+            // ordinary player callback publishes its UpdateMusic request.
+            live.core.state.music_countdown = 0;
+            if live.shared_spells.local_player.source_music_countdown.is_some() {
+                live.shared_spells.local_player.source_music_countdown = Some(0);
+            }
+            for player in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut()) {
+                if player.entity_index == actor_index && player.source_music_countdown.is_some() {
+                    player.source_music_countdown = Some(0);
+                }
+            }
+        }
         live.core.state.ambient_loop_5_distance = 2048;
         live.core.state.ambient_loop_31_distance = 2048;
         live.economy.finish_source_group();
@@ -40318,8 +40341,21 @@ mod tests {
                 session
                     .set_level2_entity_position(actor_slot, away)
                     .unwrap();
+                if dead {
+                    // A real nonlethal source contact sets the music latch
+                    // before the separately controlled lethal contact.
+                    session.queue_level2_player_contact_damage(250, attacker);
+                    assert_eq!(session.consume_level2_player_damage(), Some((250, attacker, false)));
+                    assert_eq!(session.session.state.live.core.state.music_countdown, 100);
+                    let actor = &session.entities()[usize::from(actor_slot)];
+                    assert_eq!((actor.source_upkeep_payload(), actor.source_upkeep_word_62()), (250, 0),
+                        "the nonlethal source epilogue retains payload but clears its owner");
+                }
                 let damage = if dead { session.player_life + 1 } else { 750 };
-                session.queue_level2_player_contact_damage(damage, attacker);
+                // The next source contact adds to the retained ownerless payload.
+                // Supply only the remainder so the total remains exactly lethal.
+                let contact = if dead { damage - 250 } else { damage };
+                session.queue_level2_player_contact_damage(contact, attacker);
                 assert_eq!(
                     session.consume_level2_player_damage(),
                     Some((damage, attacker, dead))
@@ -40352,6 +40388,8 @@ mod tests {
             }
             let before = campaign.clone();
             let before_live = &before.simulation().session.state.live;
+            assert!(before_live.core.state.music_countdown > 0);
+            let music_start = before.simulation().effect_journal().cursor(0);
             let before_actor = &before_live.economy.entities[usize::from(actor_slot)];
             let before_player = before_live.shared_spells.local_player().clone();
             let castle_slot = before_live.economy.player_castle_entity_index();
@@ -40390,6 +40428,15 @@ mod tests {
             );
             assert_no_dispatch_error(&campaign);
             let live = &campaign.simulation().session.state.live;
+            assert_eq!(live.core.state.music_countdown, 0,
+                "sub_5C950 clears combat music on both Castle and no-Castle recovery");
+            let first_music = campaign.simulation().effect_journal().page(0, music_start, usize::MAX)
+                .unwrap().records.iter().find_map(|record| match record.effect {
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        crate::FlightEvent::UpdateMusic { mode, .. }) => Some(mode),
+                    _ => None,
+                });
+            assert_eq!(first_music, Some(1));
             let reference = &neutral.simulation().session.state.live;
             let actor = &live.economy.entities[usize::from(actor_slot)];
             let player = live.shared_spells.local_player();

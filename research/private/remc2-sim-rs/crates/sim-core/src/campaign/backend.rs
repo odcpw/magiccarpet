@@ -1010,6 +1010,9 @@ struct Mc2CampaignReplaySave {
     /// First operation applying the source action/life gate to recovery input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery_admission_start_operation: Option<usize>,
+    /// First operation with the source Castle-revival music reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    castle_revival_music_start_operation: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     global_context_changes: Vec<Mc2GlobalContextChange>,
     #[serde(
@@ -1088,6 +1091,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     authored_effect_tiers_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_admission_start_operation: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    castle_revival_music_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "<[Mc2GlobalContextChange]>::is_empty")]
     global_context_changes: &'a [Mc2GlobalContextChange],
     #[serde(skip_serializing_if = "dynamic_lighting_is_default")]
@@ -1155,6 +1160,7 @@ impl Mc2CampaignReplaySave {
             objective_result_start_operation: Some(0),
             authored_effect_tiers_start_operation: Some(0),
             recovery_admission_start_operation: Some(0),
+            castle_revival_music_start_operation: Some(0),
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
@@ -1202,6 +1208,7 @@ impl Mc2CampaignReplaySave {
             objective_result_start_operation: self.objective_result_start_operation,
             authored_effect_tiers_start_operation: self.authored_effect_tiers_start_operation,
             recovery_admission_start_operation: self.recovery_admission_start_operation,
+            castle_revival_music_start_operation: self.castle_revival_music_start_operation,
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
@@ -1239,6 +1246,7 @@ impl Mc2CampaignReplaySave {
             && self.objective_result_start_operation.is_none()
             && self.authored_effect_tiers_start_operation.is_none()
             && self.recovery_admission_start_operation.is_none()
+            && self.castle_revival_music_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
             && self.palette_changes.is_empty()
             && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none()
@@ -2107,7 +2115,7 @@ impl Mc2RuntimePackageResolver {
         Ok(identity)
     }
 
-    /// Abandon returns to the retained campaign with entry spells/experience.
+    /// Abandon keeps entry spells/experience and the player's live hand marks.
     /// Only the successful-completion path promotes new jars and runtime XP.
     pub fn close_to_title(
         &self,
@@ -2132,7 +2140,7 @@ impl Mc2RuntimePackageResolver {
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::SessionGuard)?;
         self.exact_package_for_definition(session.definition())?;
-        let carry = session.backend().initial_semantic_spell_carry()?;
+        let carry = session.backend().abandoned_spell_carry()?;
         let source_context = self.source_process_context(runtime)?;
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let destination_level = session
@@ -2613,6 +2621,7 @@ impl Mc2RuntimePackageResolver {
         save.objective_result_start_operation = Some(session.backend().objective_result_start_operation);
         save.authored_effect_tiers_start_operation = Some(session.backend().authored_effect_tiers_start_operation);
         save.recovery_admission_start_operation = Some(session.backend().recovery_admission_start_operation);
+        save.castle_revival_music_start_operation = Some(session.backend().castle_revival_music_start_operation);
         save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
         save.initial_mission_retry = session.backend().package_campaign.simulation().source_exit_result_byte() == 4;
         if save.initial_mission_retry {
@@ -2931,6 +2940,11 @@ impl Mc2RuntimePackageResolver {
                 message: "recovery admission has an invalid replay boundary".to_owned(),
             });
         }
+        if save.castle_revival_music_start_operation.is_some_and(|start| start > save.operations.len()) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "Castle revival music has an invalid replay boundary".to_owned(),
+            });
+        }
         if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 || save.initial_final_reward == Some(false) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid campaign return state".to_owned() });
         }
@@ -3127,6 +3141,7 @@ impl Mc2RuntimePackageResolver {
         let objective_result_start = save.objective_result_start_operation.unwrap_or(save.operations.len());
         let authored_effect_tiers_start = save.authored_effect_tiers_start_operation.unwrap_or(save.operations.len());
         let recovery_admission_start = save.recovery_admission_start_operation.unwrap_or(save.operations.len());
+        let castle_revival_music_start = save.castle_revival_music_start_operation.unwrap_or(save.operations.len());
         let initial_secret_announcement = save.initial_secret_announcement;
         let initial_mission_retry = save.initial_mission_retry;
         let initial_retry_spell_book = save.initial_retry_spell_book;
@@ -3218,6 +3233,8 @@ impl Mc2RuntimePackageResolver {
                     backend.campaign.simulation_mut().set_replay_legacy_authored_effect_tiers(authored_effect_tiers_start != 0);
                     backend.recovery_admission_start_operation = recovery_admission_start;
                     backend.replay_legacy_recovery_admission = recovery_admission_start != 0;
+                    backend.castle_revival_music_start_operation = castle_revival_music_start;
+                    backend.campaign.simulation_mut().set_replay_legacy_castle_revival_music(castle_revival_music_start != 0);
                     candidate.backend_mut().hud_admission = None;
                     candidate.backend_mut().pending_hud_top_bar = None;
                     candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
@@ -3260,6 +3277,9 @@ impl Mc2RuntimePackageResolver {
                     }
                     if operation_index == recovery_admission_start {
                         candidate.backend_mut().replay_legacy_recovery_admission = false;
+                    }
+                    if operation_index == castle_revival_music_start {
+                        candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_castle_revival_music(false);
                     }
                     if voxel_mode_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
                         let change = voxel_mode_changes.next().expect("matched voxel replay boundary");
@@ -3470,6 +3490,7 @@ impl Mc2RuntimePackageResolver {
             save.objective_result_start_operation = None;
             save.authored_effect_tiers_start_operation = None;
             save.recovery_admission_start_operation = None;
+            save.castle_revival_music_start_operation = None;
         }
         save.receipt_sha256 = save.compute_receipt_sha256();
         serde_json::to_vec(&save).unwrap()
@@ -3598,7 +3619,7 @@ impl Mc2RuntimePackageResolver {
                         )?;
                     }
                     candidate.backend_mut().initialize_fresh_help_preference(show_help);
-                    Ok((secret_id, candidate))
+                    Ok((secret_id, candidate, destination.selection.map_type_id == 2))
                 })?;
             return Ok(Some(receipt));
         }
@@ -3664,7 +3685,8 @@ impl Mc2RuntimePackageResolver {
     }
 
     /// Return an abandoned MC2 secret mission to its retained campaign.
-    /// Abandonment keeps the entry spell carry and never promotes mission XP.
+    /// Abandonment retains entry inventory and XP, but source player-reset
+    /// copies the live hand marks even when no statistics are collected.
     pub fn abandon_secret_if_active(
         &self,
         runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
@@ -3695,7 +3717,7 @@ impl Mc2RuntimePackageResolver {
             return Ok(None);
         }
 
-        let carry = session.backend().initial_semantic_spell_carry()?;
+        let carry = session.backend().abandoned_spell_carry()?;
         let context = session.backend().process_context(runtime.identity().source_player_names_visible);
         let source_secret_announcement_count = session.backend().campaign.simulation().secret_announcement().collected_count;
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
@@ -3963,6 +3985,7 @@ pub struct Mc2CampaignBackend {
     authored_effect_tiers_start_operation: usize,
     recovery_admission_start_operation: usize,
     replay_legacy_recovery_admission: bool,
+    castle_revival_music_start_operation: usize,
     hud_admission_changes: Vec<Mc2HudAdmissionChange>,
     palette_changes: Vec<Mc2PaletteChange>,
     pending_palette_brightness: Option<[u8; 3]>,
@@ -4651,6 +4674,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             authored_effect_tiers_start_operation: 0,
             recovery_admission_start_operation: 0,
             replay_legacy_recovery_admission: false,
+            castle_revival_music_start_operation: 0,
             hud_admission_changes: Vec::new(),
             hud_admission: Some(true),
             pending_hud_top_bar: None,
@@ -5458,6 +5482,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.authored_effect_tiers_start_operation = 0;
         self.recovery_admission_start_operation = 0;
         self.replay_legacy_recovery_admission = false;
+        self.castle_revival_music_start_operation = 0;
         self.primary_visibility_changes.clear();
         self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
@@ -5531,6 +5556,17 @@ impl Mc2CampaignBackend {
         // Selection and acquisitions made by those commands belong only to the
         // live campaign. Saving them here changes the replay's reset baseline.
         Self::semantic_spell_carry_from_campaign(&self.package_campaign)
+    }
+
+    /// sub_53160 preserves live hand marks through the next player reset even
+    /// when the abandoned level does not bank its acquisitions or experience.
+    fn abandoned_spell_carry(
+        &self,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        let mut carry = self.initial_semantic_spell_carry()?;
+        carry.hand_marks = self.campaign.simulation()
+            .shared_spells().local_player().spell_hand_eligibility;
+        Ok(carry)
     }
 
     fn semantic_spell_carry_from_campaign(
@@ -6269,6 +6305,7 @@ pub(crate) mod tests {
         // production save producer and the old input policy above.
         let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&resolver.save_replay(&historical).unwrap()).unwrap();
         old.recovery_admission_start_operation = None;
+        old.castle_revival_music_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         let old_bytes = serde_json::to_vec(&old).unwrap();
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8106).unwrap();
@@ -6277,6 +6314,7 @@ pub(crate) mod tests {
         assert_eq!(restored.session().unwrap().backend().snapshot(), expected);
         let migrated: Mc2CampaignReplaySave = serde_json::from_slice(&resolver.save_replay(&restored).unwrap()).unwrap();
         assert_eq!(migrated.recovery_admission_start_operation, Some(old.operations.len()));
+        assert_eq!(migrated.castle_revival_music_start_operation, Some(old.operations.len()));
         let session = restored.session_mut().unwrap();
         assert!(session.backend().campaign.simulation().entities()[usize::from(
             session.backend().campaign.simulation().state.entity_index)].life >= 0);
@@ -6295,6 +6333,118 @@ pub(crate) mod tests {
         assert!(resolver.load_replay(&mut rejected, title.guard(), 8108,
             &serde_json::to_vec(&invalid).unwrap()).is_err());
         assert_eq!(rejected.identity(), title);
+        let mut invalid_music: Mc2CampaignReplaySave = serde_json::from_slice(&continued).unwrap();
+        invalid_music.castle_revival_music_start_operation = Some(invalid_music.operations.len() + 1);
+        invalid_music.receipt_sha256 = invalid_music.compute_receipt_sha256();
+        assert!(resolver.load_replay(&mut rejected, title.guard(), 8108,
+            &serde_json::to_vec(&invalid_music).unwrap()).is_err());
+        assert_eq!(rejected.identity(), title);
+    }
+
+    #[test]
+    fn paid_castle_revival_resets_hit_music_and_accepts_later_combat() {
+        use crate::campaign::journal::CampaignEffect;
+        use crate::game_runtime::GameRuntime;
+        use crate::FlightEvent;
+
+        let first_music = |simulation: &crate::native_world::Mc2Simulation, cursor| {
+            simulation.effect_journal().page(0, cursor, usize::MAX).unwrap().records.iter()
+                .find_map(|record| match record.effect {
+                    CampaignEffect::Flight(FlightEvent::UpdateMusic { mode, .. }) => Some(mode),
+                    _ => None,
+                })
+        };
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_CASTLE_REVIVAL_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<BTreeMap<String, String>> = serde_json::from_slice(
+            &std::fs::read(resources).expect("qualified 30-package campaign resources"),
+        ).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]),
+        )).unwrap();
+        let save = std::env::var_os("MC_PAID_CASTLE_SAVE").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("original-castle-status-20261123/night-paid-castle-t1740.mcs"));
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(8120).unwrap();
+        let title = runtime.identity();
+        resolver.load_replay(&mut runtime, title.guard(), 8120,
+            &std::fs::read(save).expect("retained paid NightSpire Castle save")).unwrap();
+        let game = runtime.session_mut().unwrap();
+        let sim = game.backend().campaign.simulation();
+        let player = sim.state.entity_index;
+        let player_handle = sim.source_arena().handle(player).expect("retained local actor");
+        let castle = *sim.economy().castle_for_owner(player).expect("real paid Castle in retained save");
+        let castle_handle = sim.source_arena().handle(castle.source_entity_index).unwrap();
+        assert_eq!(castle.level, 1);
+        let attacker = sim.entities().iter().find(|row| row.active && row.class == 5 && row.life >= 0)
+            .expect("a real current NightSpire creature owns the controlled contacts").source_id;
+
+        // Preserve the paid construction and saved inventory. Control only
+        // the player's approach and two contact payloads; the actual source
+        // mailbox, health, death action, Castle and music consumer run normally.
+        let mut approach = castle.position;
+        approach.x = approach.x.wrapping_add(0x4000);
+        approach.z = sim.canonical_terrain().ground_height(approach).wrapping_add(256);
+        game.backend_mut().campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        for _ in 0..128 {
+            if game.backend().campaign.simulation().session.state.live.player_protection_ticks == 0 { break; }
+            game.step(guard(game), GameCommand::default()).unwrap();
+        }
+        assert_eq!(game.backend().campaign.simulation().session.state.live.player_protection_ticks, 0);
+        let life = game.backend().campaign.simulation().entities()[usize::from(player)].life;
+        let journal_start = game.backend().campaign.simulation().effect_journal().cursor(0);
+        game.backend_mut().campaign.simulation_mut().queue_level2_player_contact_damage_for_test(500, attacker);
+        game.step(guard(game), GameCommand::default()).unwrap();
+        let sim = game.backend().campaign.simulation();
+        assert!(sim.entities()[usize::from(player)].life < life && sim.entities()[usize::from(player)].life >= 0);
+        assert!(sim.state.music_countdown > 0);
+        assert_eq!(first_music(sim, journal_start), Some(2));
+
+        let life = sim.entities()[usize::from(player)].life;
+        game.backend_mut().campaign.simulation_mut().queue_level2_player_contact_damage_for_test(life + 1, attacker);
+        for _ in 0..256 {
+            game.step(guard(game), GameCommand::default()).unwrap();
+            let actor = &game.backend().campaign.simulation().entities()[usize::from(player)];
+            if actor.life < 0 && actor.action == 3 { break; }
+        }
+        let sim = game.backend().campaign.simulation();
+        assert!(sim.entities()[usize::from(player)].life < 0 && sim.entities()[usize::from(player)].action == 3);
+        assert!(sim.state.music_countdown > 0, "real prior hit survives the death animation");
+        assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+        assert_eq!(sim.source_arena().handle(castle.source_entity_index), Some(castle_handle));
+
+        // A pre-fix recorded operation keeps its old music history. This is a
+        // controlled branch from the same real death, not a historical save.
+        let mut historical = game.backend().campaign.clone();
+        historical.simulation_mut().set_replay_legacy_castle_revival_music(true);
+        let historic_journal = historical.simulation().effect_journal().cursor(0);
+        historical.step(crate::PlayerCommand { opcode: 15, ..Default::default() }, 0);
+        assert!(historical.simulation().state.music_countdown > 0);
+        assert_eq!(first_music(historical.simulation(), historic_journal), Some(2));
+
+        let journal_start = sim.effect_journal().cursor(0);
+        game.step(guard(game), GameCommand { recover_player: true, ..Default::default() }).unwrap();
+        let sim = game.backend().campaign.simulation();
+        assert!(sim.entities()[usize::from(player)].life > 0);
+        assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+        assert_eq!(sim.source_arena().handle(castle.source_entity_index), Some(castle_handle));
+        assert_eq!(sim.state.music_countdown, 0);
+        assert_eq!(first_music(sim, journal_start), Some(1));
+
+        // A later ordinary hit must still select the combat music mode.
+        game.backend_mut().campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        for _ in 0..128 {
+            if game.backend().campaign.simulation().session.state.live.player_protection_ticks == 0 { break; }
+            game.step(guard(game), GameCommand::default()).unwrap();
+        }
+        assert_eq!(game.backend().campaign.simulation().session.state.live.player_protection_ticks, 0);
+        let journal_start = game.backend().campaign.simulation().effect_journal().cursor(0);
+        game.backend_mut().campaign.simulation_mut().queue_level2_player_contact_damage_for_test(500, attacker);
+        game.step(guard(game), GameCommand::default()).unwrap();
+        let sim = game.backend().campaign.simulation();
+        assert!(sim.state.music_countdown > 0);
+        assert_eq!(first_music(sim, journal_start), Some(2));
     }
 
     #[test]
@@ -6367,6 +6517,7 @@ pub(crate) mod tests {
         old.objective_result_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
         old.recovery_admission_start_operation = None;
+        old.castle_revival_music_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         let old_bytes = serde_json::to_vec(&old).unwrap();
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8102).unwrap();
@@ -7608,6 +7759,7 @@ pub(crate) mod tests {
         old.objective_result_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
         old.recovery_admission_start_operation = None;
+        old.castle_revival_music_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         assert!(old.verify());
         let old_bytes = serde_json::to_vec(&old).unwrap();
@@ -9613,7 +9765,7 @@ pub(crate) mod tests {
                 secret.backend_mut().install_initial_exit_route(
                     OrdinaryExitRoute::SecretReturnFromParentContinuation,
                 )?;
-                Ok((secret_level.clone(), secret))
+                Ok((secret_level.clone(), secret, destination.selection.map_type_id == 2))
             },
         ).unwrap();
         assert!(entered.verify());
@@ -9726,7 +9878,7 @@ pub(crate) mod tests {
             CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode,
             RuntimeTransitionError, SecretTransitionKind,
         };
-        use crate::game_session::GameCompletionStatistics;
+        use crate::game_session::{GameCompletionStatistics, SpellMark, SpellMarkHand};
         use crate::world::portals::OrdinaryExitRoute;
 
         // This boundary fixture supplies a retained Level-5 frontier and enters
@@ -9940,7 +10092,7 @@ pub(crate) mod tests {
                 candidate
                     .backend_mut()
                     .install_initial_exit_route(exit_route)?;
-                Ok((secret_level.clone(), candidate))
+                Ok((secret_level.clone(), candidate, destination.selection.map_type_id == 2))
             };
         let parent_session_guard = runtime.session().unwrap().identity().guard();
         let secret_receipt = runtime
@@ -9950,6 +10102,10 @@ pub(crate) mod tests {
             .unwrap();
         assert!(secret_receipt.verify());
         assert_eq!(secret_receipt.kind, SecretTransitionKind::Entry);
+        assert!(!secret_receipt.before.display_settings.panels_opaque);
+        assert_eq!(secret_receipt.after.display_settings, crate::game_runtime::DisplaySettings {
+            panels_opaque: true, ..secret_receipt.before.display_settings
+        });
 
         let entry_carry = runtime
             .session()
@@ -9986,6 +10142,18 @@ pub(crate) mod tests {
             .simulation_mut()
             .shared_spells_mut()
             .award_spell_experience(secret_player, fireball_family, 777);
+        assert_ne!(entry_carry.hand_marks[usize::from(fireball_family)], 2);
+        let session = runtime.session_mut().unwrap();
+        let marked = session.step(session.identity().guard(), GameCommand {
+            mark_spell: Some(SpellMark {
+                spell_id: SemanticId::parse("spell.fireball").unwrap(),
+                hand: SpellMarkHand::Right,
+                holder_actor: None,
+            }),
+            ..GameCommand::default()
+        }).unwrap();
+        assert_eq!(marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.fireball")
+            .unwrap().marked_hand, SpellMarkHand::Right);
         let mission_carry = runtime
             .session()
             .unwrap()
@@ -10059,7 +10227,10 @@ pub(crate) mod tests {
             pending.session_generation,
             runtime.campaign_session_generation().unwrap()
         );
-        assert_eq!(pending.carry, entry_carry);
+        let mut expected_carry = entry_carry.clone();
+        expected_carry.hand_marks[usize::from(fireball_family)] = 2;
+        assert_eq!(pending.carry, expected_carry,
+            "abandon retains the live mark and entry inventory, selection and XP");
         assert_eq!(
             resolver
                 .detached_source_contexts
@@ -10131,6 +10302,8 @@ pub(crate) mod tests {
             CampaignMenuCommand::StartMission).unwrap();
         let playing = resolver.open_pending(&mut cold_map, loading.guard(), 7437).unwrap();
         assert_eq!(playing.session.as_ref().unwrap().tick, 0);
+        assert_eq!(cold_map.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), expected_carry,
+            "the retained mark and entry progression survive map save and cold re-entry");
         let cold_return = complete_source_thirty_castle_and_exit(&resolver, &mut cold_map);
         assert_eq!(cold_return.kind, SecretTransitionKind::CompletedReturn);
         assert_eq!(cold_return.origin_level_id, origin);
@@ -10755,6 +10928,7 @@ pub(crate) mod tests {
         use crate::game_runtime::{
             CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode,
         };
+        use crate::game_session::{SpellMark, SpellMarkHand};
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
             Mc2CampaignInputs::new(descriptor_fixture_path()),
@@ -10982,13 +11156,26 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains_key(&7113)
         );
-        let playing = restored.identity();
         let baseline = restored
             .session()
             .unwrap()
             .backend()
             .initial_semantic_spell_carry()
             .unwrap();
+        let family = usize::from(mc2_spell_family(SpellKind::Fireball).unwrap());
+        assert_ne!(baseline.hand_marks[family], 2);
+        let session = restored.session_mut().unwrap();
+        let marked = session.step(session.identity().guard(), GameCommand {
+            mark_spell: Some(SpellMark {
+                spell_id: SemanticId::parse("spell.fireball").unwrap(),
+                hand: SpellMarkHand::Right,
+                holder_actor: None,
+            }),
+            ..GameCommand::default()
+        }).unwrap();
+        assert_eq!(marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.fireball")
+            .unwrap().marked_hand, SpellMarkHand::Right);
+        let playing = restored.identity();
         let title = resolver
             .close_to_title(
                 &mut restored,
@@ -11001,6 +11188,8 @@ pub(crate) mod tests {
             .show_new_game_map(&mut restored, loading.guard())
             .unwrap();
         assert_eq!(restored.campaign_menu_snapshot().unwrap(), retained_map);
+        let mut expected_abandon = baseline.clone();
+        expected_abandon.hand_marks[family] = 2;
         assert_eq!(
             resolver
                 .pending_spell_carries
@@ -11009,8 +11198,8 @@ pub(crate) mod tests {
                 .get(&7113)
                 .unwrap()
                 .carry,
-            baseline,
-            "abandon retains entry progression rather than promoting in-level pickups or runtime XP"
+            expected_abandon,
+            "abandon retains live marks and entry progression without promoting in-level pickups or runtime XP"
         );
         let reset = resolver
             .campaign_menu_command(
@@ -44265,6 +44454,17 @@ pub(crate) mod tests {
             .expect("the actual source entry result must open Karakir through the resolver");
         assert!(entered.verify());
         assert_eq!(entered.kind, SecretTransitionKind::Entry);
+        assert!(!entered.before.display_settings.panels_opaque, "T'Klom is a Day map");
+        assert_eq!(entered.after.display_settings, crate::game_runtime::DisplaySettings {
+            panels_opaque: true, ..entered.before.display_settings
+        }, "the Cave LevelInit changes only panel opacity in the published receipt");
+        assert_eq!(runtime.identity(), entered.after);
+        let entry_save = resolver.save_replay(&runtime).unwrap();
+        let mut entry_cold = GameRuntime::<Mc2CampaignBackend>::title(8459).unwrap();
+        let title = entry_cold.identity();
+        let reloaded = resolver.load_replay(&mut entry_cold, title.guard(), 8459, &entry_save).unwrap();
+        assert_eq!(reloaded.display_settings, entered.after.display_settings,
+            "a real Day-to-Cave portal entry cold-loads with its LevelInit setting");
         assert_eq!(runtime.session().unwrap().definition().runtime_flow().unwrap().bound_level_id(), &secret_id);
         assert_eq!(runtime.session().unwrap().backend().initial_semantic_spell_carry().unwrap(), inherited);
         assert_eq!(runtime.session().unwrap().backend().campaign.simulation().level_exit_sequence().ordinary_exit_route,

@@ -790,7 +790,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     where
         F: FnOnce(
             &GameSession<B>,
-        ) -> Result<(SemanticLevelId, GameSession<B>), RuntimeTransitionError>,
+        ) -> Result<(SemanticLevelId, GameSession<B>, bool), RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -822,7 +822,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         })?;
         let next_generation = self.next_generation()?;
         let source_identity = session.identity();
-        let (secret_id, candidate) = prepare(session)?;
+        let (secret_id, candidate, panels_opaque) = prepare(session)?;
         let candidate_identity = candidate.identity();
         if candidate_identity.session_id != source_identity.session_id
             || source_identity.generation.checked_add(1) != Some(candidate_identity.generation)
@@ -863,6 +863,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         );
         let previous_secret_flow = std::mem::replace(&mut self.secret_flow, secret_flow);
         let previous_generation = self.generation;
+        let previous_display = self.display_settings;
+        self.display_settings.panels_opaque = panels_opaque;
         self.generation = next_generation;
         match SecretTransitionReceipt::new(
             SecretTransitionKind::Entry,
@@ -877,6 +879,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.state = previous_state;
                 self.secret_flow = previous_secret_flow;
                 self.generation = previous_generation;
+                self.display_settings = previous_display;
                 Err(RuntimeTransitionError::InvalidRuntimeFlow {
                     message: error.to_string(),
                 })

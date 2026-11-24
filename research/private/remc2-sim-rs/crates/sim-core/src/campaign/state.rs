@@ -317,6 +317,8 @@ pub struct CampaignSession {
     /// Recorded operations predating sub_57570 must retain their old hashes.
     pub(crate) replay_legacy_objective_result: bool,
     pub(crate) replay_legacy_authored_effect_tiers: bool,
+    /// Historical operations retain the old Castle-revival music countdown.
+    pub(crate) replay_legacy_castle_revival_music: bool,
 }
 
 impl CampaignSession {
@@ -339,6 +341,7 @@ impl CampaignSession {
             replay_legacy_source_results: false,
             replay_legacy_objective_result: false,
             replay_legacy_authored_effect_tiers: false,
+            replay_legacy_castle_revival_music: false,
         }
     }
 
