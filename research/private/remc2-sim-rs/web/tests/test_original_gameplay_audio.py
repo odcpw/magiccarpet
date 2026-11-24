@@ -26,6 +26,30 @@ class GameplayAudioTests(unittest.TestCase):
         self.assertGreater(len(day.sample(2)), 0)
         self.assertIsNone(day.sample(70))
 
+    def test_payahandra_scroll_uses_missing_receipted_owner_sample(self):
+        resources = json.loads((Path(__file__).resolve().parents[3] /
+            'generated/continuity-20261115/installed-full-resources.json').read_text())
+        resources = resources['packages'] if isinstance(resources, dict) else resources
+        resource = resources[1]
+        samples = GameplaySamples(resource)
+        presentation = Path(resource['presentation_cache_path']) / 'components/audio/audio/descriptor.json'
+        owner = Path(resource['owner_cache_path']) / 'audio/descriptor.json'
+        presentation_rows = json.loads(presentation.read_text())['sound']['records']
+        owner_rows = json.loads(owner.read_text())['sound']['records']
+        self.assertNotIn(63, {row['sound_id'] for row in presentation_rows})
+        self.assertEqual(next(row for row in owner_rows if row['sound_id'] == 63)['filename'], 'SPELLUP.WAV')
+        self.assertEqual(hashlib.sha256(samples.sample(63)).hexdigest(),
+                         '3517142ac9fddc3673f5bfbeb6e32af687284078746407d57da39c82281e0e35')
+        # The original presentation descriptor remains authoritative when
+        # both receipts contain the same sample ID.
+        row = next(row for row in presentation_rows if row['sound_id'] == 61)
+        self.assertEqual(hashlib.sha256(samples.sample(61)).hexdigest(), row['asset_sha256'])
+        self.assertEqual(samples.sources[61][0].root, Path(resource['presentation_cache_path']).resolve())
+        self.assertEqual(samples.sources[63][0].root, Path(resource['owner_cache_path']).resolve())
+        wrong_bank = dict(resource, owner_cache_path=resources[0]['owner_cache_path'])
+        self.assertFalse(GameplaySamples(wrong_bank).available(63),
+                         'a Night owner sample must not fill a Day descriptor')
+
 
 if __name__ == '__main__':
     unittest.main()

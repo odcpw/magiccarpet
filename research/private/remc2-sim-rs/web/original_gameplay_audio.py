@@ -36,8 +36,7 @@ class GameplaySamples:
         level = json.loads((Path(resource['package_dir']) / 'manifest.json').read_bytes())['level']
         self.samples = {}
         self.records = {}
-        self.cache = None
-        self.prefix = ''
+        self.sources = {}
         for cache_path in (resource.get('presentation_cache_path'), resource.get('owner_cache_path')):
             if not cache_path:
                 continue
@@ -54,14 +53,16 @@ class GameplaySamples:
                 if descriptor['sound']['bank'] != level['map_type']['id']:
                     raise ValueError('source sound bank does not match selected environment')
                 records = descriptor['sound']['records']
+                seen = set()
                 for row in records:
                     sound_id = row['sound_id']
-                    if (type(sound_id) is not int or not 1 <= sound_id <= 69 or sound_id in self.records or
+                    if (type(sound_id) is not int or not 1 <= sound_id <= 69 or sound_id in seen or
                             row['bank'] != descriptor['sound']['bank']):
                         raise ValueError('invalid source sound descriptor')
-                    self.records[sound_id] = row
-                self.cache, self.prefix = cache, prefix
-                return
+                    seen.add(sound_id)
+                    if sound_id not in self.records:
+                        self.records[sound_id] = row
+                        self.sources[sound_id] = (cache, prefix)
 
     def available(self, sound_id: int) -> bool:
         row = self.records.get(sound_id)
@@ -75,7 +76,8 @@ class GameplaySamples:
         if not self.available(sound_id): return None
         if sound_id not in self.samples:
             row = self.records[sound_id]
-            data = self.cache.read(self.prefix + row['asset_path'])
+            cache, prefix = self.sources[sound_id]
+            data = cache.read(prefix + row['asset_path'])
             if hashlib.sha256(data).hexdigest() != row['asset_sha256']:
                 raise ValueError('source gameplay sound hash differs')
             with wave.open(io.BytesIO(data), 'rb') as source:
