@@ -986,6 +986,7 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
         });
     let mut session = level_two_campaign_session_with_owner_cache(&owner_cache);
     let baseline_hash = session.campaign_state_hash();
+    let player = session.state.entity_index;
     let meteor_position = session
         .mission()
         .authored_features()
@@ -993,6 +994,20 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
         .find(|row| row.index == 157)
         .expect("authored group27 Meteor row")
         .world_position(0);
+
+    // The source grants the newly constructed player 100 protected visits.
+    // Hold an explicit safe flight pose over its ordinary spawn until those
+    // real player visits expire; do not change life or the protection state.
+    let safe = Position { z: 12_000, ..session.state.position };
+    for _ in 0..100 {
+        if session.session.state.live.player_protection_ticks == 0 { break; }
+        session.set_level2_entity_position(player, safe).unwrap();
+        step(&mut session);
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0,
+        "ordinary player visits must expire the source spawn protection");
+    assert!(session.canonical_player_life_for_test() >= 0);
+    assert_eq!(session.entities()[usize::from(player)].action, 0);
 
     // Declare the preceding objective and two lethal House damage contacts.
     // The real group-8 switch, both BUILD lifecycles and final demolition
@@ -1013,7 +1028,6 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
         (original.life, original.parameter.destruction_successor),
         (6000, 54)
     );
-    let player = session.state.entity_index;
     assert!(
         session
             .session
@@ -1171,7 +1185,25 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
         )));
     }
 
+    // The real group27 Meteor lands at the vault. Hold the real player in
+    // its first damage aperture and compare the historical replay policy
+    // against the source tier, with no forged effect or damage packet.
+    let mut contact = meteor_position;
+    contact.z = session.canonical_terrain().ground_height(meteor_position);
+    session.set_level2_entity_position(player, contact).unwrap();
+    let mut historical = session.clone();
+    historical.set_replay_legacy_authored_effect_tiers(true);
+    crate::native_world::area_damage::start_effect_damage_trace(player);
+    demolish(&mut historical, vault_slot);
+    let old_meteor = companion(&historical).expect("historical group27 Meteor");
+    assert_eq!((old_meteor.subspell_index, old_meteor.max_life), (3000, 10));
+    if old_meteor.life == 10 { step(&mut historical); }
+    let old_receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert!(old_receipts.iter().any(|receipt| receipt.source_slot == Some(old_meteor.source_entity_index)
+        && receipt.pulse.payload == 300), "historical contact retains its original pulse");
+
     session.start_creature17_trace();
+    crate::native_world::area_damage::start_effect_damage_trace(player);
     demolish(&mut session, vault_slot);
     assert!(pickup_slot(&session).is_some());
     let birth = companion(&session).expect("normal allocation produces the group27 companion");
@@ -1190,7 +1222,7 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
             birth.subspell_index,
             birth.max_life
         ),
-        (10, 17, 17, 3000, 10)
+        (10, 17, 17, 16000, 10)
     );
     assert_eq!(
         (birth.position.x, birth.position.y),
@@ -1209,6 +1241,10 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
     }
     let meteor = companion(&session).expect("the first scheduled Meteor visit retains the parent");
     assert_eq!(meteor.life, 9);
+    let receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert!(receipts.iter().any(|receipt| receipt.source_slot == Some(meteor.source_entity_index)
+        && receipt.pulse.payload == 1600),
+        "first actual Meteor callback must use tier-two damage: {receipts:?}");
     let arena = &session.session.state.live.economy;
     assert_eq!(arena.handle(meteor.source_entity_index), Some(parent));
     // The shared world effect callback produces ordinary Impact rows. Its
@@ -1246,6 +1282,40 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
             ..
         } if *source_slot == meteor.source_entity_index
     )));
+
+    // At its first zero-width visit the source rounds the search center to
+    // the neighboring tile. The next visit expands to 384, so it can hit the
+    // player at the actual center of the source row.
+    session.set_level2_entity_position(player, contact).unwrap();
+    let player_handle = session.source_arena().handle(player).unwrap();
+    crate::native_world::area_damage::start_player_damage_trace(player_handle);
+    crate::native_world::area_damage::start_effect_damage_trace(player);
+    step(&mut session);
+    let receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert_eq!(companion(&session).unwrap().life, 8);
+    let hit = receipts.iter().find(|receipt| receipt.source_slot == Some(meteor.source_entity_index)
+        && receipt.pulse.payload == 1600 && receipt.hit_count.is_some_and(|hits| hits > 0)
+        && receipt.mailbox_before != receipt.mailbox_after)
+        .unwrap_or_else(|| panic!("second actual Meteor visit must damage the nearby player: {receipts:?}"));
+    assert_eq!(hit.mailbox_after, Some((1600, meteor.entity_id)));
+    let writer_sequence = hit.writer_sequence.expect("Meteor is the actual player mailbox writer");
+    let mut consumptions = crate::native_world::area_damage::take_player_damage_consumptions();
+    if !consumptions.iter().any(|visit| visit.writer.is_some_and(|writer| writer.sequence == writer_sequence)) {
+        // If the player slot precedes the Meteor, the next player visit owns
+        // the still-pending hit; otherwise it was consumed in this same pass.
+        step(&mut session);
+        consumptions.extend(crate::native_world::area_damage::take_player_damage_consumptions());
+    }
+    let consumed = consumptions.iter().find(|visit| visit.target == player_handle
+        && visit.mailbox == (1600, meteor.entity_id)
+        && visit.writer.is_some_and(|writer| writer.sequence == writer_sequence
+            && writer.source == crate::native_world::area_damage::PlayerMailboxSource::Effect(parent)))
+        .unwrap_or_else(|| panic!("ordinary player visit must consume this Meteor's mailbox: visits={consumptions:?} player={:?} life={} protection={}",
+            session.entities()[usize::from(player)], session.canonical_player_life_for_test(),
+            session.session.state.live.player_protection_ticks));
+    assert_eq!(consumed.life_after, consumed.life_before - 1600,
+        "the actual unshielded source visit subtracts the Meteor pulse");
+    assert_eq!(session.canonical_player_life_for_test(), consumed.life_after);
 
     session.reset();
     let arena = &session.session.state.live.economy;
@@ -1794,6 +1864,22 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .set_level2_entity_position(session.state.entity_index, root.position)
         .expect("fixture player position updates the authoritative row and map link");
 
+    let mut historical = session.clone();
+    historical.set_replay_legacy_authored_effect_tiers(true);
+    for _ in 0..16 {
+        historical.step_outer_turn(PlayerCommand::default(), 0);
+        if historical.economy().authored_model22().iter().any(|source| source.authored_index == 110) {
+            break;
+        }
+    }
+    let old = *historical.economy().authored_model22().iter()
+        .find(|source| source.authored_index == 110).expect("historical row-110 Wind");
+    assert_eq!((old.max_life, old.subspell_index), (500, 1000));
+    historical.set_replay_legacy_authored_effect_tiers(false);
+    assert_eq!(historical.economy().authored_model22().iter()
+        .find(|source| source.authored_index == 110), Some(&old),
+        "crossing the replay boundary does not rewrite an existing Wind");
+
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         if session
@@ -1813,6 +1899,7 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .find(|source| source.authored_index == 110)
         .copied()
         .expect("rooted group-9 switch materializes row 110 wind");
+    assert_eq!((wind.max_life, wind.subspell_index), (40, 100));
     assert_eq!(session.economy().model22_spawned_children().len(), 11);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,

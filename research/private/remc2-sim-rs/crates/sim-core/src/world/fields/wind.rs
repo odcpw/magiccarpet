@@ -213,6 +213,16 @@ pub(crate) struct Definition {
     pub(crate) half_depth: [i16; 12],
 }
 
+/// The grouped source override occurs after the eleven child copies.
+pub(crate) fn apply_authored_tier(parent: &mut Wind, tier: crate::level_definition::FieldSpellTier) {
+    parent.subspell_index = tier.power;
+    parent.max_life = 8 * i16::from(tier.effect_parameter);
+    parent.life = parent.max_life;
+    // NewEvent clears this field; model 22 does not take the distinct
+    // model 0x22 (decimal 34) branch that assigns an authored axis.
+    parent.axis_position = Position::default();
+}
+
 impl Default for Definition {
     fn default() -> Self {
         Self {

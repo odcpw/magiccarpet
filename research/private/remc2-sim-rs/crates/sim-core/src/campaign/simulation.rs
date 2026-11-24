@@ -11199,10 +11199,32 @@ impl Mc2Simulation {
         )
     }
 
+    /// sub_4A310 applies the authored Meteor tier after AddMeteor returns.
+    /// Projectile and direct constructor paths retain AddMeteor's defaults.
+    fn allocate_grouped_meteor(&mut self, feature: crate::level1_mission::AuthoredFeature)
+        -> Option<Level2AuthoredModel17Source>
+    {
+        let tier = if self.session.replay_legacy_authored_effect_tiers {
+            None
+        } else {
+            Some(*crate::level_definition::METEOR_PROPERTIES.tiers.get(usize::from(feature.parameter_1))?)
+        };
+        let mut meteor = self.allocate_level2_authored_model17(feature.index)?;
+        if let Some(tier) = tier {
+            meteor.subspell_index = tier.damage;
+            meteor.max_life = i16::from(tier.impact_duration);
+            meteor.life = meteor.max_life;
+            let source = self.session.state.live.economy.economy.authored_model17.iter_mut()
+                .find(|row| row.source_entity_index == meteor.source_entity_index)
+                .expect("newly allocated authored Meteor carrier");
+            *source = meteor;
+        }
+        Some(meteor)
+    }
+
     /// Materialize one authored class-10/model-22 Wind row through the
-    /// pinned `AddWind_4F040` constructor. The generic authored path derives
-    /// the chain axis from parameter-2/parameter-1 before entering the
-    /// model-specific constructor.
+    /// pinned `AddWind_4F040` constructor. This direct constructor preserves
+    /// its existing defaults; the grouped source path applies its tier later.
     pub fn allocate_level2_authored_model22(
         &mut self,
         authored_index: u16,
@@ -11257,6 +11279,28 @@ impl Mc2Simulation {
             root.source_entity_index,
         );
         Some(root)
+    }
+
+    /// `sub_4A310` modifies only the returned parent after AddWind has
+    /// copied its eleven child rows. Historical replay keeps the previous
+    /// grouped parent so stored receipts remain verifiable.
+    fn allocate_grouped_wind(&mut self, feature: crate::level1_mission::AuthoredFeature)
+        -> Option<Level2AuthoredModel22Source>
+    {
+        let tier = if self.session.replay_legacy_authored_effect_tiers {
+            None
+        } else {
+            Some(*crate::level_definition::WHIRLWIND_TIERS.get(usize::from(feature.parameter_1))?)
+        };
+        let mut wind = self.allocate_level2_authored_model22(feature.index)?;
+        if let Some(tier) = tier {
+            crate::world::fields::wind::apply_authored_tier(&mut wind, tier);
+            let source = self.session.state.live.economy.economy.fields.authored_model22.iter_mut()
+                .find(|row| row.source_entity_index == wind.source_entity_index)
+                .expect("newly allocated authored Wind carrier");
+            *source = wind;
+        }
+        Some(wind)
     }
 
     /// Materialize one authored class-10/model-76 Fire Spheres row through
@@ -13400,6 +13444,20 @@ impl Mc2Simulation {
                 ));
             }
         }
+        for feature in rows.iter().filter(|feature| feature.kind == 10 && feature.subtype == 17) {
+            if !self.session.replay_legacy_authored_effect_tiers
+                && crate::level_definition::METEOR_PROPERTIES.tiers.get(usize::from(feature.parameter_1)).is_none()
+            {
+                return Err(format!("authored Meteor row {} has invalid tier {}", feature.index, feature.parameter_1));
+            }
+        }
+        for feature in rows.iter().filter(|feature| feature.kind == 10 && feature.subtype == 22) {
+            if !self.session.replay_legacy_authored_effect_tiers
+                && crate::level_definition::WHIRLWIND_TIERS.get(usize::from(feature.parameter_1)).is_none()
+            {
+                return Err(format!("authored Wind row {} has invalid tier {}", feature.index, feature.parameter_1));
+            }
+        }
         for feature in rows.iter().filter(|feature| {
             feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 14 | 19)
         }) {
@@ -14138,7 +14196,7 @@ impl Mc2Simulation {
                 }
                 (10, 17) => {
                     if self
-                        .allocate_level2_authored_model17(feature.index)
+                        .allocate_grouped_meteor(feature)
                         .is_some()
                     {
                         self.session
@@ -14150,7 +14208,7 @@ impl Mc2Simulation {
                 }
                 (10, 22) => {
                     if self
-                        .allocate_level2_authored_model22(feature.index)
+                        .allocate_grouped_wind(feature)
                         .is_some()
                     {
                         self.session
@@ -15327,7 +15385,7 @@ impl Mc2Simulation {
                 {
                     continue;
                 }
-                let Some(source) = self.allocate_level2_authored_model22(feature.index) else {
+                let Some(source) = self.allocate_grouped_wind(feature) else {
                     self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
@@ -16180,7 +16238,7 @@ impl Mc2Simulation {
         };
         if let Some(companion) = companion {
             if self
-                .allocate_level2_authored_model17(companion.index)
+                .allocate_grouped_meteor(companion)
                 .is_none()
             {
                 self.session.state.live.economy = economy_before;
@@ -30034,6 +30092,10 @@ impl Mc2Simulation {
         self.session.replay_legacy_source_results = historical;
     }
 
+    pub(crate) fn set_replay_legacy_authored_effect_tiers(&mut self, historical: bool) {
+        self.session.replay_legacy_authored_effect_tiers = historical;
+    }
+
     pub(crate) fn apply_warm_hand_selection_flash(&mut self, ticks: [u8; 2]) {
         assert!(ticks.iter().all(|value| *value <= 8), "validated source flash range");
         self.session.state.live.core.context.hand_selection_flash_ticks = ticks;
@@ -31900,13 +31962,13 @@ mod tests {
             "group-zero Speed is collectible but was consumed before the source availability census");
 
         // This is an explicit group prerequisite, not a claimed earned route.
-        // The ordinary constructor and pickup callback produce the real Heal.
+        // The ordinary constructor and pickup callback produce the real Shield.
         campaign.simulation_mut().activate_authored_group_prerequisite_for_test(22).unwrap();
-        let heal_slot = *campaign.simulation().shared_spells().authored_pickup_slots().get(&155)
-            .expect("group 22 materializes the real authored Heal jar");
-        collect(&mut campaign, heal_slot, 6, false);
+        let shield_slot = *campaign.simulation().shared_spells().authored_pickup_slots().get(&155)
+            .expect("group 22 materializes the real authored Shield jar");
+        collect(&mut campaign, shield_slot, 6, false);
         assert_eq!(campaign.simulation().completion_statistics().spells_found_percent, 50,
-            "the entry census retains Heal and Invisibility until a revival refresh");
+            "the entry census retains Shield and Invisibility until a revival refresh");
         assert!(!campaign.simulation().session.state.live.authored_features_consumed.contains(&156));
 
         let mut historical = campaign.clone();

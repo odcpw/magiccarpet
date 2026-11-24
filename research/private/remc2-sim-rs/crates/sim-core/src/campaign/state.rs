@@ -314,6 +314,7 @@ pub struct CampaignSession {
     pub(crate) replay_legacy_wind_audio: bool,
     /// Preserve historical Results writers only during the recorded prefix.
     pub(crate) replay_legacy_source_results: bool,
+    pub(crate) replay_legacy_authored_effect_tiers: bool,
 }
 
 impl CampaignSession {
@@ -334,6 +335,7 @@ impl CampaignSession {
             replay_legacy_goat_audio: false,
             replay_legacy_wind_audio: false,
             replay_legacy_source_results: false,
+            replay_legacy_authored_effect_tiers: false,
         }
     }
 

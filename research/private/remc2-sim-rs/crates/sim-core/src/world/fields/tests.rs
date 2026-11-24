@@ -1193,6 +1193,12 @@ fn scheduled_authored_wind_publishes_old_and_new_map_heads() {
 
 #[test]
 fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
+    for (switch_index, group_number, wind_index) in [(109, 9, 110), (121, 15, 122)] {
+        check_ordinary_level_two_wind(switch_index, group_number, wind_index);
+    }
+}
+
+fn check_ordinary_level_two_wind(switch_index: u16, group_number: u16, wind_index: u16) {
     use crate::{FlightEvent, MissionAudioSite, campaign::journal::CampaignEffect};
     use crate::native_world::{Level2DynamicArenaKind, Mc2DispatchEvent};
 
@@ -1200,9 +1206,9 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
     let switch = session
         .level2_imported_switch_roots
         .iter()
-        .find(|root| root.authored_index == 121 && root.target_group == 15)
+        .find(|root| root.authored_index == switch_index && root.target_group == group_number)
         .copied()
-        .expect("real group15 Wind producer");
+        .expect("real Wind producer");
     let player = session.state.entity_index;
     // Declared player-only approach to the actual imported proximity switch.
     session
@@ -1218,23 +1224,26 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
                 .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         if session.dispatch_events().iter().any(|event| matches!(event,
-            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 15, authored_indices, .. }
-                if *source_slot == switch.source_slot && authored_indices.as_ref() == [122])) {
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group, authored_indices, .. }
+                if *source_slot == switch.source_slot && *group == group_number && authored_indices.as_ref() == [wind_index])) {
             activated = true;
             break;
         }
     }
     assert!(
         activated,
-        "ordinary switch121 must publish authored group15"
+        "the real proximity switch must publish its authored Wind"
     );
     let wind = *session
         .economy()
         .authored_model22()
         .iter()
-        .find(|wind| wind.authored_index == 122)
-        .expect("actual group15 Wind122");
+        .find(|wind| wind.authored_index == wind_index)
+        .expect("actual authored Wind");
     assert_eq!((wind.model, wind.action), (22, 22));
+    assert_eq!((wind.max_life, wind.subspell_index), (40, 100),
+        "source tier-zero parameters override the returned parent only");
+    assert!(wind.life <= 40 && wind.life > 2);
     let root = session
         .source_arena()
         .handle(wind.source_entity_index)
@@ -1245,6 +1254,8 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
         .iter()
         .filter(|child| child.active && child.parent_entity_index == root.source_slot)
         .map(|child| {
+            assert_eq!((child.max_life, child.life), (500, 500),
+                "children were copied before the authored parent override");
             session
                 .source_arena()
                 .handle(child.source_entity_index)
@@ -1341,6 +1352,35 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
     let mut away = live.core.state.position;
     away.x = away.x.wrapping_add(0x8000);
     session.set_level2_entity_position(player, away).unwrap();
+    // Position an existing real House once, at the current Wind position on
+    // the ordinary pulse cadence. Its normal callback owns damage and life;
+    // the source Wind remains on its natural schedule and lifetime.
+    let mut saw_house_hit = false;
+    for _ in 0..8 {
+        let current = *session.economy().authored_model22().iter()
+            .find(|row| row.source_entity_index == root.source_slot).unwrap();
+        if current.phase & 7 == 0 {
+            let house = session.ordinary.house_mut(1).expect("actual authored House");
+            assert!(house.active && house.life >= 0 && house.pending_attacker == 0);
+            let house_life_before = house.life;
+            house.position = current.position;
+            session.economy.entities[1].set_position(current.position);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let house = session.ordinary.houses().iter()
+                .find(|house| house.entity_index == 1).unwrap();
+            assert_eq!((house.pending_damage, house.pending_attacker),
+                (100, root.source_slot as i16), "scheduled authored Wind writes the source-tier damage");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let house = session.ordinary.houses().iter()
+                .find(|house| house.entity_index == 1).expect("House on its damage-consumption pass");
+            assert_eq!(house.life, house_life_before - 100,
+                "the ordinary House visit consumes the Wind mailbox");
+            saw_house_hit = true;
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(saw_house_hit, "the real Wind reaches its scheduled damage pulse");
     let budget = usize::try_from(wind.life).unwrap() + 16;
     let mut returned = false;
     let mut hidden = false;
