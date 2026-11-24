@@ -42,6 +42,8 @@ class OwnerAssetTests(unittest.TestCase):
         notification = manifest['ability_notification']
         self.assertEqual(notification['format'], text(159))
         self.assertEqual(notification['families'], [text(i) for i in range(160, 186)])
+        self.assertEqual(manifest['participant_notices'], {
+            'participant.died': text(374), 'participant.banished': text(283)})
         colors = (assets.ROOT / 'environment-complete/cache-level1/palette/colors.u8').read_bytes()
         self.assertEqual(notification['color'], colors[3840])
         self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 56)) + [284, 285])

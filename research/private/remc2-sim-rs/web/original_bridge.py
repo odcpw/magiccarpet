@@ -25,9 +25,10 @@ from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFrameInfo,
                              read_hud, read_minimap, read_objective, read_world_map, read_missing_hint_entities)
-from original_world import ModernWorld, OriginalWorld
+from original_world import CampaignEntity, ModernWorld, OriginalWorld
 from original_media import OriginalMedia
 from original_gameplay_audio import GameplayJournal, GameplaySamples
+from original_music import CampaignMusicAsset, CampaignMusicClock, byte_range
 from original_campaign_effects import CampaignEffects
 from original_speech import SpeechCache, SpeechJournal
 from original_preferences import install_profile, toggle_speech
@@ -345,6 +346,18 @@ def validate_command(value):
     return dict(value)
 
 
+def selected_cast_or_recovery(native, command):
+    """Resolve a Space edge against the current source player before its step."""
+    if not command['cast_selected']:
+        return command
+    _, generation, tick = native.counters()
+    hud = read_hud(native.lib, native.handle.value, generation, tick)
+    if hud['local_player_life'] >= 0:
+        return command
+    # Native applies the source action-3 admission at the command boundary.
+    return dict(command, cast_selected=False, recover_player=True)
+
+
 def pose_from_observation(packet):
     # MCPO v5: skip the three length-prefixed identity strings to reach the
     # fixed source player pose. Reject unknown versions instead of guessing.
@@ -462,9 +475,12 @@ class Bridge:
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
         self.gameplay_samples = None
+        self.music_asset = None
+        self.music_error = None
         self.speech_segments = {}
         self.speech_error = None
         self.speech_enabled = None
+        self.preference_keys = []
         self.media = None; self.media_view = None
         self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
         self.can_refresh_assets = False
@@ -480,7 +496,8 @@ class Bridge:
                     "phase": self.phase, "campaign_menu": self.campaign_menu, "asset_revision": self.asset_revision,
                     "can_refresh_assets": self.can_refresh_assets, "media": self.media_view,
                     "speech_available": self.speech_error is None, "speech_error": self.speech_error,
-                    "speech_enabled": self.speech_enabled}
+                    "speech_enabled": self.speech_enabled, "preference_keys": self.preference_keys,
+                    "music_error": self.music_error}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -491,7 +508,7 @@ class Bridge:
         done = queue.Queue(maxsize=1)
         self.last_contact = time.monotonic()
         self.items.put((value, done), timeout=1)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + (180 if value.get('kind') == 'control' and value.get('action') == 'load' else 30)
         while True:
             try:
                 ok, result = done.get(timeout=.1); break
@@ -505,6 +522,7 @@ class Bridge:
         native = None
         try:
             native = Native(self.library, self.packages, self.profile_path)
+            music_clock = CampaignMusicClock(native)
             gameplay_audio = GameplayJournal(native)
             effects = CampaignEffects(native)
             try:
@@ -538,6 +556,10 @@ class Bridge:
                 # exit cinematics whose gameplay tick deliberately freezes.
                 elapsed, frame_remainder = divmod(frame_remainder + 100, 30)
                 return elapsed
+            def step(command):
+                native.step(command)
+                if self.music_asset is not None and native.identity_value.get('session') is not None:
+                    music_clock.after_step()
             def update_phase():
                 identity = native.identity_value
                 menu = identity.get("campaign_menu")
@@ -563,6 +585,17 @@ class Bridge:
                 current = replay_package(self.packages, native.control("save", None))
                 assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
                 samples = GameplaySamples(current)
+                music_clock.reset()
+                music_asset, music_error = None, None
+                if not self.modern:
+                    try:
+                        candidate = CampaignMusicAsset(current)
+                        music_state = music_clock.state()
+                        if music_state is None or music_state.track != candidate.track:
+                            raise ValueError('native campaign music is not bound to this source track')
+                        music_asset = candidate
+                    except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                        music_error = str(exc)
                 new_world = OriginalWorld(native) if self.renderer == "geometry" else None
                 if new_world and world:
                     new_world.revision = world.revision
@@ -583,6 +616,8 @@ class Bridge:
                     self.publications.clear()
                     self.assets = assets
                     self.gameplay_samples = samples
+                    self.music_asset = music_asset
+                    self.music_error = music_error
                     self.speech_segments = {}
                     self.world_assets = new_world_assets
                     self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
@@ -590,6 +625,17 @@ class Bridge:
 
             def finish_if_ready():
                 nonlocal command, frame_remainder
+                # The source can request the ordinary Title boundary after an
+                # input other than the visible abandon confirmation.
+                if return_to_title_from_observation(native.observe()):
+                    native.return_to_title()
+                    command = dict(NEUTRAL)
+                    frame_remainder = 0
+                    self.running = False; self.paused = False
+                    gameplay_audio.reset(); effects.reset(); speech.reset()
+                    with self.lock: self.speech_segments = {}
+                    update_phase()
+                    return True
                 if not native.finish_if_ready(): return False
                 command = dict(NEUTRAL)
                 frame_remainder = 0
@@ -657,10 +703,14 @@ class Bridge:
                          "paused": self.paused}
                 preferences = (native.identity_value.get('player_preferences') or {}).get('preferences') or {}
                 preference_keys = preferences.get('keys') or []
+                state['preference_keys'] = preference_keys
                 state['map_key'] = preference_keys[4] if len(preference_keys) > 4 else None
                 state['show_help'] = preferences.get('show_help') is True
                 state['sound_enabled'] = preferences.get('sound_enabled') is True
                 state['sound_volume'] = preferences.get('sound_volume', 0)
+                state['music_enabled'] = preferences.get('music_enabled') is True
+                state['music_volume'] = preferences.get('music_volume', 0)
+                state['campaign_music'] = CampaignMusicClock.publication(music_clock.state()) if self.music_asset else None
                 state['gameplay_audio'] = gameplay_audio.poll(observation, self.gameplay_samples,
                                                                self.running and not self.paused)
                 state['speech_enabled'] = preferences.get('speech_enabled') is True
@@ -688,6 +738,7 @@ class Bridge:
                 with self.lock:
                     self.speech_error = speech.error
                     self.speech_enabled = state['speech_enabled']
+                    self.preference_keys = preference_keys
                     self.speech_segments = {key: row['wave'] for key, row in speech.events.items()}
                     self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                               world.terrain_gzip if world else None, modern_packet))
@@ -842,14 +893,10 @@ class Bridge:
                                     command = dict(NEUTRAL)
                                 map_states = (6, 7, 8, 11, 12, 14)
                                 map_before = native.player_menu_state() in map_states if action == "map" else None
-                                native.step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                                step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
                                 if action == "map" and (native.player_menu_state() in map_states) != map_before:
                                     command.update(cast_selected=False, cast_left=False, cast_right=False)
-                                if action == "menu" and menu_action == "confirm_abandon" and return_to_title_from_observation(native.observe()):
-                                    native.return_to_title()
-                                    self.running = False; self.paused = False; frame_remainder = 0
-                                    update_phase()
-                                elif not finish_if_ready(): publish()
+                                if not finish_if_ready(): publish()
                             else:
                                 if action == "load" and saved is None and self.save_path and self.save_path.is_file():
                                     saved = self.save_path.read_bytes()
@@ -904,7 +951,8 @@ class Bridge:
                     native.control("pause", saved); self.paused = True; self.running = False
                     command = dict(NEUTRAL); publish()
                 if self.running and now >= deadline:
-                    native.step({**command, "elapsed_centiseconds": elapsed_centiseconds()})
+                    step(selected_cast_or_recovery(native,
+                        {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
                     # Each submitted cast request survives until one native step.
                     command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
                     if not finish_if_ready(): publish()
@@ -1068,6 +1116,43 @@ class Handler(BaseHTTPRequestHandler):
             assets = bridge.assets
             if not assets: return self.send_json(503, {"error": "loading"})
             return self.send_data(200, assets.blob, "application/octet-stream")
+        if target.path == '/original-api/assets/gameplay-music':
+            try:
+                revision = int(parse_qs(target.query)['revision'][0])
+                with bridge.lock:
+                    asset, current = bridge.music_asset, bridge.asset_revision
+                if revision != current: return self.send_json(410, {'error': 'music revision is stale'})
+                if asset is None: return self.send_json(404, {'error': 'campaign music is unavailable'})
+                source, size = asset.open()
+                with source:
+                    try: selected = byte_range(self.headers.get('Range'), size)
+                    except ValueError:
+                        self.send_response(416)
+                        self.send_header('Content-Range', f'bytes */{size}')
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        return
+                    start, end = selected if selected else (0, size - 1)
+                    self.send_response(206 if selected else 200)
+                    self.send_header('Content-Type', 'audio/wav')
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.send_header('Content-Length', str(end - start + 1))
+                    if selected: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    source.seek(start)
+                    remaining = end - start + 1
+                    try:
+                        while remaining:
+                            chunk = source.read(min(1024 * 1024, remaining))
+                            if not chunk: break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                    except (BrokenPipeError, ConnectionResetError): pass
+            except (KeyError, ValueError, OSError) as exc:
+                return self.send_json(503, {'error': str(exc)})
+            return
         if target.path == '/original-api/assets/gameplay-sound':
             try:
                 params = parse_qs(target.query)

@@ -90,6 +90,23 @@ test('browser input is bounded native intent and clearing keys releases movement
   assert.equal(clear.lateral, 'neutral'); assert.equal(clear.cast_selected, false);
 });
 
+test('native keyboard slots drive flight independently of mouse steering and touch', () => {
+  const bound = ['UpArrow', 'DownArrow', 'LeftArrow', 'RightArrow', 'Return'].map(preferenceKeyCode);
+  const input = (held: string[], keys = bound) => originalInput(new Set(held), 0, 0, {}, keys);
+  const arrows = input(['ArrowUp', 'ArrowRight']);
+  assert.equal(arrows.longitudinal, 'accelerate'); assert.equal(arrows.lateral, 'positive');
+  assert.equal(arrows.pitch_axis, 0); assert.equal(arrows.roll_axis, 0);
+  assert.equal(input(['ArrowLeft', 'ArrowRight']).lateral, 'positive');
+  assert.equal(input(['KeyW']).longitudinal, 'accelerate');
+  const rebound = ['J', 'DownArrow', 'LeftArrow', 'W', 'Return'].map(preferenceKeyCode);
+  assert.equal(input(['ArrowUp'], rebound).longitudinal, 'coast');
+  assert.equal(input(['KeyJ'], rebound).longitudinal, 'accelerate');
+  assert.equal(input(['KeyW'], rebound).longitudinal, 'coast');
+  assert.equal(input(['KeyW'], rebound).lateral, 'positive');
+  assert.equal(input(['TouchForward'], rebound).longitudinal, 'accelerate');
+  assert.equal(input(['TouchTurnLeft'], rebound).roll_axis, -28);
+});
+
 test('split map is a distinct uncomposited producer and cannot masquerade as a sprite-complete flight scene', () => {
   const map = packet(1n, 0); new DataView(map.buffer).setUint32(0, 0x314d434d, true);
   assert.throws(() => decodeOriginalFrame(map));

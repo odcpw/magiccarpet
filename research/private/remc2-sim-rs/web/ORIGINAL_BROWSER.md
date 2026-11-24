@@ -101,7 +101,10 @@ backgrounding the page pauses the game. The backend additionally pauses after
 1.5 seconds without input. This is a local/private experimental game service,
 not a public multiplayer server. Separate processes own separate sessions.
 
-W/S controls speed, A/D strafes, and the mouse or arrow keys steer. Space casts
+Original uses the four movement keys saved in the native profile. By default
+Up/Down controls speed, Left/Right strafes and the mouse steers. W/S and A/D
+also work for their default actions when those letters have no other binding.
+The touch pad controls speed and turns independently of keyboard preferences. Space casts
 the selected spell. The mouse buttons cast from their assigned hands. Hold Ctrl
 to open the spell grid and click to assign a tier to a hand. Shift-click marks
 a spell for that hand. In flight, Shift-click advances through its marks and
@@ -185,8 +188,16 @@ palette, and the names disappeared when the spell expired at tick 184.
 
 The flight audio player reads source voice commands and samples from the
 selected mission bank. One paid Fireball in Payahandra produced the launch
-and impact waveforms in Chrome's Web Audio output. Physical speaker output,
-gameplay music, the remaining original options and pause submenus, hand flashes
+and impact waveforms in Chrome's Web Audio output. Flight music streams the
+owner recording for the active Night, Day or Cave bank. The Rust music clock
+drives its volume envelope. In NightSpire, Chrome played the idle-to-combat
+rise and return to idle. Pausing stopped playback; resuming restarted it.
+Chrome also played the Cave track. The Day track passed native and asset
+checks. Physical speaker output remains unverified.
+
+The full map briefly shows the chosen hand after an accepted marked-spell
+cycle. In Payahandra the left Fireball panel appeared and cleared with its
+eight native countdown steps. The remaining original options, pause submenus
 and source shadow/reflection passes are still open in this client.
 The geometry renderer reads
 the current native campaign palette for both world and HUD. On a saved

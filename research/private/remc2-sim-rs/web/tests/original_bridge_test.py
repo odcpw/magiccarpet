@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real local Rust runtime -> HTTP scene -> controls/save/load regression."""
 import argparse
+import ctypes as c
 import gzip
 import hashlib
 import http.cookiejar
@@ -26,6 +27,23 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_space_edge_uses_recovery_command_when_player_is_dead(self):
+        m = bridge_module
+        native = mock.Mock()
+        native.counters.return_value = (3, 4, 5)
+        native.handle = c.c_uint64(7)
+        native.lib = mock.Mock()
+        native.check.side_effect = lambda status, _: self.assertEqual(status, 0)
+        command = dict(m.NEUTRAL, cast_selected=True)
+        hud = {'local_player_entity_index': 12, 'local_player_life': 10}
+        with mock.patch.object(m, 'read_hud', return_value=hud):
+            self.assertEqual(m.selected_cast_or_recovery(native, command), command)
+            native.lib.mc_native_campaign_entities_copy.assert_not_called()
+            hud['local_player_life'] = -1
+            self.assertEqual(m.selected_cast_or_recovery(native, command),
+                             dict(command, cast_selected=False, recover_player=True))
+            native.lib.mc_native_campaign_entities_copy.assert_not_called()
+
     def test_native_terrain_revision_tracks_plane_bytes_and_reset(self):
         m = bridge_module
         native = m.Native(m.LIBRARY, json.loads(m.PACKAGES.read_text())['packages'])

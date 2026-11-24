@@ -9,7 +9,7 @@ type SymbolRow = { selector: number; width: number; height: number; indices: Spa
 type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
 type AbilityNotificationAssets = { format: string; families: string[]; color: number };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null; ability_notification: AbilityNotificationAssets };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null; ability_notification: AbilityNotificationAssets; participant_notices: Record<string, string> };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -30,8 +30,11 @@ export interface OriginalHudState {
   objective_selector?: number | null;
   objective_visible?: boolean;
   level_end?: boolean;
+  death_view?: boolean;
+  participant_notifications?: readonly { is_local: boolean; display_name: string; kind: string; remaining_frames: number }[];
   panels_opaque?: boolean;
   top_bar_visible?: boolean;
+  hand_selection_flash_ticks?: readonly number[];
   minimap?: (MapCommands & { terrain: number[]; coverage: number[] }) | null;
   world_map?: MapCommands | null;
   exit_inspection_allowed?: boolean;
@@ -74,6 +77,7 @@ export class OriginalHud {
   private readonly mapFont = new Map<number, FontGlyph>();
   private readonly gameplayFont = new Map<number, FontGlyph>();
   private readonly abilityAssets: AbilityNotificationAssets;
+  private readonly participantNotices: Record<string, string>;
   private abilityRevision: number | null = null;
   private abilityFrame = '';
   private readonly abilityLastEffect = new Map<string, bigint>();
@@ -113,6 +117,10 @@ export class OriginalHud {
         !Number.isInteger(ability.color) || ability.color < 0 || ability.color > 255)
       throw new Error('Invalid Original ability notification assets');
     this.abilityAssets = ability;
+    if (!manifest.participant_notices || !manifest.participant_notices['participant.died'] ||
+        !manifest.participant_notices['participant.banished'])
+      throw new Error('Invalid Original participant notification assets');
+    this.participantNotices = manifest.participant_notices;
     const exitHelp = manifest.help?.['83'];
     if (exitHelp) {
       if (exitHelp.text_record !== 345 || exitHelp.flags !== 0x280 || exitHelp.duration !== 50 ||
@@ -475,26 +483,26 @@ export class OriginalHud {
       for (let dy = 0; dy < height; dy++) for (let dx = 0; dx < width; dx++) pixel(x + dx, y + dy, color);
     };
     const width = (value: number, denominator: number) => denominator <= 0 ? 0 : Math.max(0, Math.min(64, Math.trunc(value * 64 / denominator)));
+    const hand = (slot: OriginalHudSlot, x: number, hud: OriginalHudSnapshot) => {
+      if (!slot.holder_entity_index || !slot.draw_admitted) return;
+      sprite(slot.frame_selector, x, 2, !state.panels_opaque);
+      sprite(slot.icon_selector, x, 2);
+      const row = this.sprites.get(slot.frame_selector)!;
+      const tier = this.tiers.get(slot.level_text_selector);
+      if (tier) {
+        const tierX = x + row.runtime_width - tier.width - 2;
+        for (let dy = 0; dy < tier.height; dy++) for (let dx = 0; dx < tier.width; dx++) {
+          if (this.blob[tier.rgba.offset + (dy * tier.width + dx) * 4 + 3]) pixel(tierX + dx, 2 + dy, tier.color);
+        }
+      }
+      if (slot.max_mana > 0) {
+        fill(x + 4, 38, Math.trunc(56 * (slot.caster_mana % slot.max_mana) / slot.max_mana), 4, hud.mana_max_palette_index);
+        let charges = Math.trunc(slot.caster_mana / slot.max_mana);
+        for (let col = 0; col < 27 && charges > 0; col++) for (let row = 0; row < 2 && charges > 0; row++, charges--) fill(x + 2 * (col + 2), 38 + 2 * row, 2, 2, hud.mana_palette_index);
+      }
+    };
     if (hud && !fullMap && state.top_bar_visible !== false) {
-      const hand = (slot: OriginalHudSlot, x: number) => {
-        if (!slot.holder_entity_index || !slot.draw_admitted) return;
-        sprite(slot.frame_selector, x, 2, !state.panels_opaque);
-        sprite(slot.icon_selector, x, 2);
-        const row = this.sprites.get(slot.frame_selector)!;
-        const tier = this.tiers.get(slot.level_text_selector);
-        if (tier) {
-          const tierX = x + row.runtime_width - tier.width - 2;
-          for (let dy = 0; dy < tier.height; dy++) for (let dx = 0; dx < tier.width; dx++) {
-            if (this.blob[tier.rgba.offset + (dy * tier.width + dx) * 4 + 3]) pixel(tierX + dx, 2 + dy, tier.color);
-          }
-        }
-        if (slot.max_mana > 0) {
-          fill(x + 4, 38, Math.trunc(56 * (slot.caster_mana % slot.max_mana) / slot.max_mana), 4, hud.mana_max_palette_index);
-          let charges = Math.trunc(slot.caster_mana / slot.max_mana);
-          for (let col = 0; col < 27 && charges > 0; col++) for (let row = 0; row < 2 && charges > 0; row++, charges--) fill(x + 2 * (col + 2), 38 + 2 * row, 2, 2, hud.mana_palette_index);
-        }
-      };
-      hand(hud.left, 510); hand(hud.right, 574);
+      hand(hud.left, 510, hud); hand(hud.right, 574, hud);
       const minimapWidth = this.sprites.get(hud.minimap_panel_selector)?.runtime_width;
       const panelWidth = this.sprites.get(hud.castle_panel_selector)?.runtime_width;
       if (minimapWidth === undefined || panelWidth === undefined) throw new Error('Missing Original top status panel');
@@ -671,19 +679,37 @@ export class OriginalHud {
         }
       }
     }
-    const notification = this.abilityNotificationText();
-    if (notification) {
-      let x = fullMap ? 6 : 132;
-      let y = fullMap ? 6 : 50;
-      if (state.level_end) y += this.gameplayFont.get(65)?.height ?? 0;
-      if (state.pause_menu?.open) x += 8 * ('Paused!'.length + 2);
-      for (const character of notification) {
+    const noticeRows = (state.participant_notifications ?? []).filter(row => this.participantNotices[row.kind]);
+    if (noticeRows.length > 8) throw new Error('Invalid Original participant notification count');
+    const drawNotice = (text: string, startX: number, y: number) => {
+      let x = startX;
+      for (const character of text) {
         const code = character.charCodeAt(0), glyph = this.gameplayFont.get(code + 1);
-        if (!glyph) throw new Error('Missing Original ability notification glyph');
+        if (!glyph) throw new Error('Missing Original notification glyph');
         if (code !== 32 && code !== 9) for (let gy = 0; gy < glyph.height; gy++) for (let gx = 0; gx < glyph.width; gx++)
           if (this.blob[glyph.mask.offset + gy * glyph.width + gx]) pixel(x + gx, y + gy, this.abilityAssets.color);
         x += code === 32 || code === 9 ? this.gameplayFont.get(33)!.width : glyph.width;
       }
+    };
+    const startX = fullMap || state.death_view ? 6 : 132;
+    let noticeX = startX, noticeY = fullMap || state.death_view ? 6 : 50;
+    if (state.level_end) noticeY += 14;
+    if (state.pause_menu?.open) noticeX += 8 * ('Paused!'.length + 2);
+    const notification = this.abilityNotificationText();
+    if (notification && !noticeRows.some(row => row.is_local)) {
+      drawNotice(notification, noticeX, noticeY); noticeX = startX; noticeY += 14;
+    }
+    for (const row of noticeRows) {
+      if (!row.display_name) throw new Error('Invalid Original participant notification name');
+      drawNotice(`${row.display_name} ${this.participantNotices[row.kind]}`, noticeX, noticeY);
+      noticeX = startX; noticeY += 14;
+    }
+    if (hud && fullMap && state.hand_selection_flash_ticks) {
+      const flashes = state.hand_selection_flash_ticks;
+      if (flashes.length !== 2 || flashes.some(ticks => !Number.isInteger(ticks) || ticks < 0 || ticks > 8))
+        throw new Error('Invalid Original hand selection flash counters');
+      if (flashes[0]) hand(hud.left, 510, hud);
+      if (flashes[1]) hand(hud.right, 574, hud);
     }
     if (state.objective_visible && state.objective_selector != null) {
       const row = this.objectives.get(state.objective_selector);

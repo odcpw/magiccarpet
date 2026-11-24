@@ -11,6 +11,7 @@ import { decodeModernFrame } from './modern-runtime';
 import { OriginalMediaPlayer, type MediaReply } from './original-media';
 import { OriginalGameplayAudio, type GameplayVoice } from './original-audio';
 import { OriginalSpeech, type ObjectiveSpeechCue } from './original-speech';
+import { OriginalCampaignMusic, type CampaignMusicState } from './original-music';
 
 const API = '/original-api';
 const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
@@ -32,6 +33,7 @@ const consumedCycleButtons = new Set<number>();
 const spellMenuButtons = new Set<number>();
 let spellControlHeld = false;
 let configuredMapCode: string | null = null;
+let configuredKeys: readonly (string | null)[] = [];
 let spellCloseOnRelease = false;
 let mouseX = 0, mouseY = 0, queuedCasts = 0;
 let started = false, playing = false, busy = false, inputBusy = false;
@@ -65,7 +67,10 @@ const gameplayAudio = new OriginalGameplayAudio(API, row => {
   void post('/control', { action: 'audio_complete', generation: row.generation,
     voice: row.voice, event_sequence: row.sequence }).catch(error => console.error('Gameplay voice completion:', error));
 });
-const objectiveSpeech = new OriginalSpeech(API, () => gameplayAudio.audioContext(), action => gameplayAudio.speechMix(action), cue => {
+const campaignMusic = new OriginalCampaignMusic(API, () => gameplayAudio.audioContext());
+const objectiveSpeech = new OriginalSpeech(API, () => gameplayAudio.audioContext(), action => {
+  gameplayAudio.speechMix(action); if (!modernRequested) campaignMusic.speechMix(action);
+}, cue => {
   void post('/control', { action: 'speech_complete', generation: cue.generation,
     event_sequence: cue.sequence }).catch(error => console.error('Objective speech completion:', error));
 });
@@ -141,6 +146,7 @@ function isGeometryDisplay(value: IndexedDisplay | GeometryDisplay): value is Ge
   return value instanceof OriginalWorldRenderer || value instanceof ModernWorldRenderer;
 }
 interface BridgeStatus {
+  preference_keys?: string[];
   ready: boolean;
   level_id?: string | null;
   renderer?: 'indexed' | 'geometry';
@@ -175,7 +181,11 @@ interface BridgeState extends OriginalHudState {
   show_help?: boolean;
   sound_enabled?: boolean;
   sound_volume?: number;
+  music_enabled?: boolean;
+  music_volume?: number;
+  campaign_music?: CampaignMusicState | null;
   map_key?: string | null;
+  preference_keys?: string[];
   gameplay_audio?: GameplayVoice[];
   objective_speech?: ObjectiveSpeechCue[];
   speech_enabled?: boolean;
@@ -202,6 +212,7 @@ function showCampaign(status: BridgeStatus): boolean {
   const phase = status.can_refresh_assets ? 'refresh_assets' : status.phase;
   if (!phase || phase === 'playing' || phase === 'paused') return false;
   campaignPhase = phase;
+  campaignMusic.stop();
   gameplayAudio.stop();
   objectiveSpeech.stop();
   abandonOpen = false; element('abandon-dialog').hidden = true;
@@ -319,7 +330,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
     for (let attempt = 0; attempt < 2; attempt++) {
       let response: Response;
       try { response = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
-        signal: AbortSignal.timeout(fields.action === 'start_mission' || fields.action === 'refresh_assets' ? 180000 : 8000) }); }
+        signal: AbortSignal.timeout(fields.action === 'start_mission' || fields.action === 'refresh_assets' || fields.action === 'load' ? 180000 : 8000) }); }
       catch (error) { networkError = error; continue; }
       const value = await responseJson<Record<string, unknown>>(response);
       inputSequence++; return value;
@@ -349,6 +360,7 @@ function hideMenu(): void {
   element('look-hint').hidden = false;
 }
 function fail(error: unknown): void {
+  campaignMusic.stop();
   gameplayAudio.stop();
   objectiveSpeech.stop();
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
@@ -365,7 +377,10 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
-  if (action === 'pause' || action === 'load' || action === 'reset') gameplayAudio.stop();
+  if (action === 'pause' || action === 'load' || action === 'reset') {
+    gameplayAudio.stop();
+    if (action === 'pause') campaignMusic.pause(); else campaignMusic.stop();
+  }
   if (action === 'load' || action === 'reset') objectiveSpeech.stop();
   controlsPending++; busy = true; controlVersion++;
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
@@ -445,6 +460,7 @@ async function pollFrame(): Promise<void> {
     if (version !== controlVersion) return;
     showSpeechPreference(state.speech_enabled, state.speech_available);
     configuredMapCode = preferenceKeyCode(state.map_key);
+    configuredKeys = (state.preference_keys ?? []).map(preferenceKeyCode);
     if (state.asset_revision !== undefined && loadedAssetRevision !== undefined && state.asset_revision !== loadedAssetRevision) {
       // A native secret entry or a loaded slot can change the mission without a menu.
       const status = await readStatus();
@@ -463,6 +479,8 @@ async function pollFrame(): Promise<void> {
     lastFrame = frame;
     gameplayAudio.update(state.gameplay_audio ?? [], frame.sessionGeneration.toString(),
       state.asset_revision ?? 0, state.sound_enabled === true, playing && !state.paused, state.sound_volume ?? 0);
+    if (!modernRequested) campaignMusic.update(state.campaign_music ?? null, state.asset_revision ?? 0,
+      state.music_enabled === true, state.music_volume ?? 0, playing && !state.paused);
     objectiveSpeech.update(state.objective_speech ?? [], state.asset_revision ?? 0,
       state.sound_enabled === true, state.sound_volume ?? 0);
     spellMutationPending = false;
@@ -494,8 +512,10 @@ async function pollFrame(): Promise<void> {
     const objectiveSelector = source.objective_secret_announcement_record ??
       (state.objective ? hud.objectiveRecord(state.objective.text_selector, state.objective.is_level_end !== 0) : null);
     const hudState: OriginalHudState = { ...state, source_top_status: source.source_top_status,
+      hand_selection_flash_ticks: source.player_hand_selection_flash_ticks,
       panels_opaque: source.spell_menu_panels_opaque, objective_selector: objectiveSelector,
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu,
+      participant_notifications: source.participant_notifications, death_view: source.player_vitals.life < 0,
       player_information: nativeMenus.player_information_open ? source.source_scoreboard : null };
     hud.advanceAbilityNotification({generation: frame.sessionGeneration.toString(), sequence: frame.sequence.toString(),
       assetRevision: state.asset_revision ?? 0, effects: state.campaign_effects ?? [], suppressed: abandonOpen});
@@ -590,7 +610,8 @@ async function sendInput(): Promise<void> {
   const cast = queuedCasts > 0;
   const command = originalInput(abandonOpen || nativeMenus.spells_open || nativeMenus.map_open ? new Set<string>() : keys,
     abandonOpen ? 0 : mouseX, abandonOpen ? 0 : mouseY,
-    { selected: !abandonOpen && !cycleModifier && (cast || keys.has('Space')), left: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(0) && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(2) && mouseButtons.has(2) });
+    { selected: !abandonOpen && !cycleModifier && cast, left: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(0) && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(2) && mouseButtons.has(2) },
+    modernRequested ? undefined : configuredKeys);
   mouseX *= .65; mouseY *= .65;
   try { await post('/input', { command }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
   catch (error) { fail(error); }
@@ -747,7 +768,7 @@ window.addEventListener('keyup', event => {
   }
 });
 window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); });
-window.addEventListener('beforeunload', () => { objectiveSpeech.stop(); gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
+window.addEventListener('beforeunload', () => { objectiveSpeech.stop(); campaignMusic.stop(); gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); } });
 element('touch-map').addEventListener('click', () => void control('map'));
 element('touch-hand').addEventListener('click', () => { touchHand = touchHand === 'left' ? 'right' : 'left'; element('touch-hand').textContent = touchHand === 'left' ? 'Left hand' : 'Right hand'; });
@@ -775,6 +796,9 @@ async function boot(): Promise<void> {
     connected = true;
     if (showCampaign(status)) return;
     showSpeechPreference(status.speech_enabled, status.speech_available);
+    configuredKeys = (status.preference_keys ?? []).map(preferenceKeyCode);
+    if (!modernRequested && status.preference_keys?.length)
+      element('flight-keys').textContent = `${status.preference_keys.slice(0, 4).join(' / ')} move · Mouse steers`;
     speechButton.hidden = false;
     loadedAssetRevision = status.asset_revision;
     currentLevelName = levelName(status.level_id);

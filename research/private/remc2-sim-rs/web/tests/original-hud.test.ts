@@ -51,6 +51,19 @@ test('spell improvement uses the owner text and lasts 200 admitted draws', () =>
   assert.equal(hud.abilityNotificationText(), null, 'a new bound mission clears the notification');
 });
 
+test('native death notice draws in the death view through its final source frame', () => {
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const base = { ...state, death_view: true };
+  const plain = hud.compose(scene, palette, base);
+  const notice = { is_local: true, display_name: 'PLAYER', kind: 'participant.died', remaining_frames: 0 };
+  const visible = hud.compose(scene, palette, { ...base, participant_notifications: [notice] });
+  assert.notDeepEqual(visible, plain);
+  const ownerColor = assets.manifest.ability_notification.color;
+  assert.ok(visible.subarray(6 * 640 + 6, 20 * 640).includes(ownerColor), 'death text uses source font/color in the source death-view region');
+  assert.deepEqual(hud.compose(scene, palette, { ...base, participant_notifications: [] }), plain);
+  assert.equal(assets.manifest.participant_notices['participant.died'], 'has died.');
+});
+
 test('owner indexed HUD preserves scene and reflects native life and objective admission', () => {
   const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
   const image = hud.compose(scene, palette, state);
@@ -95,6 +108,28 @@ test('split world map retains native map scale and rejects stale rows', () => {
   const image = hud.compose(scene, palette, {...state, world_map: {entities: [], marks: [mark]}});
   assert.equal(image[70 * 640 + 24 * 2], 44);
   assert.throws(() => hud.compose(scene, palette, {...state, world_map: {entities: [], marks: [{...mark, tick: 4}]}}), /Stale/);
+});
+
+test('native hand-selection counters draw only their selected map hand and clear at zero', () => {
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const map: OriginalHudState = {...state, top_bar_visible: false, world_map: {entities: [], marks: []}};
+  const idle = hud.compose(scene, palette, {...map, hand_selection_flash_ticks: [0, 0]});
+  const left = hud.compose(scene, palette, {...map, hand_selection_flash_ticks: [8, 0]});
+  const right = hud.compose(scene, palette, {...map, hand_selection_flash_ticks: [0, 1]});
+  const countChanges = (image: Uint8Array, start: number, end: number) => {
+    let count = 0;
+    for (let y = 0; y < 48; y++) for (let x = start; x < end; x++)
+      if (image[y * 640 + x] !== idle[y * 640 + x]) count++;
+    return count;
+  };
+  assert.ok(countChanges(left, 510, 574) > 0);
+  assert.equal(countChanges(left, 574, 640), 0);
+  assert.equal(countChanges(right, 510, 574), 0);
+  assert.ok(countChanges(right, 574, 640) > 0);
+  assert.deepEqual(hud.compose(scene, palette, {...map, hand_selection_flash_ticks: [0, 0]}), idle);
+  const absent = {...map, hud: {...map.hud!, left: {...slot, holder_entity_index: 0}}};
+  assert.deepEqual(hud.compose(scene, palette, {...absent, hand_selection_flash_ticks: [8, 0]}), idle);
+  assert.throws(() => hud.compose(scene, palette, {...map, hand_selection_flash_ticks: [9, 0]}), /counters/);
 });
 
 test('player information draws live owner rows on the map and clears on release', () => {

@@ -59,7 +59,7 @@
           <button id="fullscreen">Fullscreen</button>
           <button id="retry" hidden>Retry connection</button>
         </div>
-        <p id="controls">W / S speed · A / D strafe<br>Mouse or arrows to steer · Space to cast<br>Hold Ctrl for spells · Click to assign a hand · Shift-click to mark<br>In flight, Shift-click next marked spell · Alt-click previous<br>Map key (default Enter), Tab or both mouse buttons for map · Hold Alt on map for player info<br>O objective · Esc abandon · P pause · F5 save · F9 load</p>
+        <p id="controls"><span id="flight-keys">W / S speed · A / D strafe · Mouse or arrows steer</span><br>Space to cast<br>Hold Ctrl for spells · Click to assign a hand · Shift-click to mark<br>In flight, Shift-click next marked spell · Alt-click previous<br>Map key (default Enter), Tab or both mouse buttons for map · Hold Alt on map for player info<br>O objective · Esc abandon · P pause · F5 save · F9 load</p>
       </div>
     </section>
     <section id="abandon-dialog" role="dialog" aria-modal="true" aria-labelledby="abandon-title" hidden>
@@ -73,8 +73,8 @@
   <p id="hint" hidden>Click the view for mouse steering · Esc opens abandon confirmation · P pauses</p>
   <nav id="touch" aria-label="Touch flight controls" hidden>
     <div class="pad">
-      <span></span><button data-key="KeyW" aria-label="Accelerate">▲</button><span></span>
-      <button data-key="ArrowLeft" aria-label="Turn left">◀</button><button data-key="KeyS" aria-label="Slow down">▼</button><button data-key="ArrowRight" aria-label="Turn right">▶</button>
+      <span></span><button data-key="TouchForward" aria-label="Accelerate">▲</button><span></span>
+      <button data-key="TouchTurnLeft" aria-label="Turn left">◀</button><button data-key="TouchBackward" aria-label="Slow down">▼</button><button data-key="TouchTurnRight" aria-label="Turn right">▶</button>
     </div>
     <div class="tools"><button id="touch-map" aria-label="Toggle map">Map</button><button id="touch-hand" hidden>Left hand</button><button id="touch-spells" aria-label="Toggle spells">Spells</button><button class="cast" data-cast="selected">Cast</button></div>
   </nav>

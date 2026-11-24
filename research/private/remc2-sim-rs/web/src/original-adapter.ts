@@ -146,13 +146,27 @@ export function markedSpellHand(button: number, marked: string): 'none' | 'left'
 }
 
 export function originalInput(keys: ReadonlySet<string>, mouseX = 0, mouseY = 0,
-  casts: { selected?: boolean; left?: boolean; right?: boolean } = {}): OriginalInput {
+  casts: { selected?: boolean; left?: boolean; right?: boolean } = {},
+  flightKeys?: readonly (string | null)[]): OriginalInput {
   const axis = (value: number) => Math.max(-64, Math.min(64, Math.round(Number.isFinite(value) ? value : 0)));
+  const held = (slot: number, shortcut: string, sourceDefault: string) => {
+    if (!flightKeys) return keys.has(shortcut);
+    const code = flightKeys[slot];
+    return Boolean(code && keys.has(code)) ||
+      (code === sourceDefault && !flightKeys.includes(shortcut) && keys.has(shortcut));
+  };
+  const forward = held(0, 'KeyW', 'ArrowUp') || keys.has('TouchForward');
+  const backward = held(1, 'KeyS', 'ArrowDown') || keys.has('TouchBackward');
+  const left = held(2, 'KeyA', 'ArrowLeft'), right = held(3, 'KeyD', 'ArrowRight');
+  const steer = (action: string, arrow: string) => keys.has(action) || (!flightKeys && keys.has(arrow));
   return {
-    longitudinal: keys.has('KeyW') ? 'accelerate' : keys.has('KeyS') ? 'decelerate' : 'coast',
-    lateral: keys.has('KeyA') ? 'negative' : keys.has('KeyD') ? 'positive' : 'neutral',
-    roll_axis: axis(mouseX + (keys.has('ArrowRight') ? 28 : 0) - (keys.has('ArrowLeft') ? 28 : 0)),
-    pitch_axis: axis(mouseY + (keys.has('ArrowDown') ? 22 : 0) - (keys.has('ArrowUp') ? 22 : 0)),
+    longitudinal: forward ? 'accelerate' : backward ? 'decelerate' : 'coast',
+    lateral: flightKeys ? (right ? 'positive' : left ? 'negative' : 'neutral')
+      : (left ? 'negative' : right ? 'positive' : 'neutral'),
+    roll_axis: axis(mouseX + (steer('TouchTurnRight', 'ArrowRight') ? 28 : 0)
+      - (steer('TouchTurnLeft', 'ArrowLeft') ? 28 : 0)),
+    pitch_axis: axis(mouseY + (!flightKeys && keys.has('ArrowDown') ? 22 : 0)
+      - (!flightKeys && keys.has('ArrowUp') ? 22 : 0)),
     cast_selected: casts.selected === true,
     cast_left: casts.left === true,
     cast_right: casts.right === true,
