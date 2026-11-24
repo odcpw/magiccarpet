@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { decodeOriginalFrame, ORIGINAL_HEIGHT, ORIGINAL_WIDTH, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand,
-  preferenceKeyCode, mapGestureAdmitted, MapMouseChord,
+  preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, mapGestureAdmitted, MapMouseChord,
   type OriginalFrame, type IndexedBlendTables } from './original-adapter';
 import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-hud';
 import { decodeRenderPublication } from './render-publication';
@@ -27,6 +27,9 @@ const playButton = element<HTMLButtonElement>('play'), pauseButton = element<HTM
 const speechButton = element<HTMLButtonElement>('speech');
 const menuButton = element<HTMLButtonElement>('menu');
 const keys = new Set<string>();
+// Menu modifiers survive a menu command's flight-input clear, but are cleared
+// at the focus/pause boundary and must then be physically pressed again.
+const heldMenuKeys = new Set<string>();
 const mouseButtons = new Set<number>();
 const mapMouseChord = new MapMouseChord();
 const consumedCycleButtons = new Set<number>();
@@ -34,6 +37,7 @@ const spellMenuButtons = new Set<number>();
 let spellControlHeld = false;
 let configuredMapCode: string | null = null;
 let configuredKeys: readonly (string | null)[] = [];
+let configuredNames: readonly string[] = [];
 let spellCloseOnRelease = false;
 let mouseX = 0, mouseY = 0, queuedCasts = 0;
 let started = false, playing = false, busy = false, inputBusy = false;
@@ -77,9 +81,40 @@ const objectiveSpeech = new OriginalSpeech(API, () => gameplayAudio.audioContext
 });
 
 function updateMapInspectionLabel(text: string | null): void {
-  const label = text ? `Map inspection: ${text}` : 'Map inspection: click or tap an exit marker. Hold Alt for player information.';
+  const label = text ? `Map inspection: ${text}` : `Map inspection: click or tap an exit marker. Hold ${informationLabel()} for player information.`;
   canvas.setAttribute('aria-label', label);
   element('hint').textContent = label;
+}
+
+const keyChoices = sourceKeyChoices;
+function informationLabel(): string { return modernRequested ? 'Alt' : keyChoices('LeftAlt', configuredNames[6] ?? 'LeftAlt', configuredNames[9] ?? 'LeftAlt'); }
+function controlsHint(spells = false): string {
+  if (modernRequested) return spells ? 'Shift+left/right click marks or unmarks a spell for that hand' :
+    'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
+  return spells ? `${keyChoices('LeftShift', configuredNames[7] ?? 'RightShift')} + click: mark a hand` :
+    `${keyChoices('LeftShift', configuredNames[8] ?? 'RightShift')} + click: next · ${keyChoices('LeftAlt', configuredNames[9] ?? 'LeftAlt')} + click: previous · Hold ${informationLabel()} on map: player information · ${configuredNames[5] ?? 'LeftControl'}: spells`;
+}
+function updateControlsHelp(): void {
+  if (modernRequested) return;
+  const lines = [...element('controls').childNodes].filter(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+  if (lines.length !== 5) return;
+  const values = [
+    `Hold ${configuredNames[5] ?? 'LeftControl'} for spells · Click to assign a hand · ${keyChoices('LeftShift', configuredNames[7] ?? 'RightShift')} + click to mark`,
+    `In flight, ${keyChoices('LeftShift', configuredNames[8] ?? 'RightShift')} + click: next · ${keyChoices('LeftAlt', configuredNames[9] ?? 'LeftAlt')} + click: previous`,
+    `${configuredNames[4] ?? 'Return'} or both mouse buttons: map${configuredMapCode === 'Enter' ? ' · Tab: map' : ''} · Hold ${informationLabel()} on map: player info`,
+  ];
+  values.forEach((value, index) => { if (lines[index + 1]!.textContent !== value) lines[index + 1]!.textContent = value; });
+}
+function menuKeys() {
+  if (!modernRequested) return sourceMenuKeys(heldMenuKeys, configuredKeys);
+  const shift = heldMenuKeys.has('ShiftLeft') || heldMenuKeys.has('ShiftRight');
+  const alt = heldMenuKeys.has('AltLeft') || heldMenuKeys.has('AltRight');
+  return { spells: heldMenuKeys.has('ControlLeft') || heldMenuKeys.has('ControlRight'),
+    information: alt, mark: shift, next: shift, previous: alt };
+}
+function clearMenuKeys(): void {
+  heldMenuKeys.clear(); spellControlHeld = false; informationHeld = false; spellCloseOnRelease = false;
+  spellMenuButtons.clear(); mapMouseChord.clear();
 }
 
 function levelName(levelId: string | null | undefined): string {
@@ -219,7 +254,7 @@ function showCampaign(status: BridgeStatus): boolean {
   abandonOpen = false; element('abandon-dialog').hidden = true;
   playing = false;
   polling = false;
-  clearInput();
+  clearMenuKeys(); clearInput();
   if (isGeometryDisplay(display)) display.setPlaying(false);
   if (document.pointerLockElement === canvas) document.exitPointerLock();
   for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'speech', 'abandon', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
@@ -357,7 +392,7 @@ function showMenu(text: string): void {
 }
 function hideMenu(): void {
   curtain.hidden = true; menuButton.hidden = false; element('hint').hidden = false; element('touch').hidden = false;
-  element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
+  element('hint').textContent = controlsHint();
   element('look-hint').hidden = false;
 }
 function fail(error: unknown): void {
@@ -366,7 +401,7 @@ function fail(error: unknown): void {
   objectiveSpeech.stop();
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
   if (leavingPage) return;
-  playing = false; connected = false; clearInput();
+  playing = false; connected = false; clearMenuKeys(); clearInput();
   if (isGeometryDisplay(display)) display.setPlaying(false);
   showMenu(error instanceof Error ? error.message : String(error));
   element('retry').hidden = false;
@@ -379,6 +414,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
+    clearMenuKeys();
     gameplayAudio.stop();
     if (action === 'pause') campaignMusic.pause(); else campaignMusic.stop();
   }
@@ -462,6 +498,8 @@ async function pollFrame(): Promise<void> {
     showSpeechPreference(state.speech_enabled, state.speech_available);
     configuredMapCode = preferenceKeyCode(state.map_key);
     configuredKeys = (state.preference_keys ?? []).map(preferenceKeyCode);
+    configuredNames = state.preference_keys ?? [];
+    updateControlsHelp();
     if (state.asset_revision !== undefined && loadedAssetRevision !== undefined && state.asset_revision !== loadedAssetRevision) {
       // A native secret entry or a loaded slot can change the mission without a menu.
       const status = await readStatus();
@@ -512,15 +550,13 @@ async function pollFrame(): Promise<void> {
     element('abandon-dialog').hidden = !abandonOpen;
     if (abandonOpen && !wasAbandonOpen) { clearInput(); element<HTMLButtonElement>('abandon-cancel').focus(); }
     if (nativeMenus.spells_open !== wasSpellsOpen) {
-      element('hint').textContent = nativeMenus.spells_open
-        ? 'Shift+left/right click marks or unmarks a spell for that hand'
-        : 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
+      element('hint').textContent = controlsHint(nativeMenus.spells_open);
     }
     if (nativeMenus.map_open && !wasMapOpen && !(display instanceof ModernWorldRenderer)) updateMapInspectionLabel(null);
     if (!nativeMenus.map_open && wasMapOpen && !(display instanceof ModernWorldRenderer)) {
       inspectedExit = null;
       canvas.setAttribute('aria-label', `${currentLevelName} game view`);
-      element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
+      element('hint').textContent = controlsHint();
     }
     document.body.dataset.gameMenu = element('touch').dataset.menu = nativeMenus.spells_open ? 'spells' : 'flight';
     element('touch-hand').hidden = !nativeMenus.spells_open;
@@ -607,7 +643,7 @@ async function pollFrame(): Promise<void> {
     if (started && !busy && source.source_menu_admission?.spells_open && document.pointerLockElement === canvas) {
       intentionalUnlock = true; document.exitPointerLock();
     }
-    if (started && !busy && state.paused && playing) { playing = false; clearInput(); showMenu('Paused'); }
+    if (started && !busy && state.paused && playing) { playing = false; clearMenuKeys(); clearInput(); showMenu('Paused'); }
     const now = performance.now(); if (lastArrival) { intervals.push(now - lastArrival); if (intervals.length > 600) intervals.shift(); }
     lastArrival = now; packetCount++; bytesReceived += data.byteLength;
     const sorted = [...intervals].sort((a,b) => a-b);
@@ -625,7 +661,8 @@ async function pollFrame(): Promise<void> {
 
 async function sendInput(): Promise<void> {
   if (!playing || busy || inputBusy) return; inputBusy = true;
-  const cycleModifier = ['ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight'].some(key => keys.has(key));
+  const modifiers = menuKeys();
+  const cycleModifier = modifiers.next || modifiers.previous || (nativeMenus.map_open && modifiers.information);
   if (cycleModifier) queuedCasts = 0;
   const cast = queuedCasts > 0;
   const command = originalInput(abandonOpen || nativeMenus.spells_open || nativeMenus.map_open ? new Set<string>() : keys,
@@ -670,7 +707,7 @@ canvas.addEventListener('pointerdown', event => {
     if (event.button === 0 || event.button === 2) spellMenuButtons.add(event.button);
     const hit = hud.hitTest(...hudPoint(event.clientX, event.clientY), spellMenu);
     if (hit) { hoveredSlot = hit.hoveredSlot; hoveredTier = hit.hoveredTier; }
-    if (event.shiftKey && hit && (event.button === 0 || event.button === 2)) {
+    if (menuKeys().mark && hit && (event.button === 0 || event.button === 2)) {
       const spell = spellMenu.spells.find(row => row.menu_slot === hit.hoveredSlot);
       const hand = spell && markedSpellHand(event.button, spell.marked_hand);
       if (spell?.acquired && spell.holder_actor !== undefined && spell.menu_artwork && hand)
@@ -681,7 +718,9 @@ canvas.addEventListener('pointerdown', event => {
       void control('assign_spell', { spell_id: hit.spellId, tier: hit.tier, hand: event.pointerType === 'touch' ? touchHand : event.button === 0 ? 'left' : 'right' });
     return;
   }
-  const cycle = markedSpellCycle(event.button, event.shiftKey, event.altKey);
+  const modifiers = menuKeys();
+  const cycle = markedSpellCycle(event.button, modifiers.next,
+    modifiers.previous || (nativeMenus.map_open && modifiers.information));
   if (cycle) {
     event.preventDefault(); consumedCycleButtons.add(event.button); mouseButtons.delete(event.button);
     queuedCasts = 0;
@@ -711,8 +750,9 @@ canvas.addEventListener('pointerdown', event => {
 canvas.addEventListener('mousedown', event => {
   if (!playing || abandonOpen || busy || nativeMenus.spells_open || (event.button !== 0 && event.button !== 2)) return;
   if (!nativeMenus.map_open && !new URLSearchParams(location.search).has('automation') && document.pointerLockElement !== canvas) return;
+  const modifiers = menuKeys();
   if (mapMouseChord.press(event.button, { mapOpen: nativeMenus.map_open, spellsOpen: nativeMenus.spells_open,
-    controlHeld: spellControlHeld || event.ctrlKey, cycleHeld: event.shiftKey || event.altKey })) {
+    controlHeld: spellControlHeld, cycleHeld: modifiers.next || modifiers.previous })) {
     event.preventDefault(); mouseButtons.delete(0); mouseButtons.delete(2); queuedCasts = 0;
     void control('map');
   }
@@ -758,11 +798,14 @@ window.addEventListener('keydown', event => {
   if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (abandonOpen) { if (event.code === 'Escape') { event.preventDefault(); void control('menu', { menu_action: 'cancel_abandon_confirmation' }); } return; }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
+  heldMenuKeys.add(event.code);
+  const modifiers = menuKeys();
   gameplayAudio.activate();
-  const mapKey = event.code === 'Tab' || event.code === configuredMapCode;
-  if (mapKey || ['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','AltLeft','AltRight'].includes(event.code)) event.preventDefault();
+  const mapKey = modernRequested ? event.code === 'Tab' || event.code === configuredMapCode : sourceMapKey(event.code, configuredMapCode);
+  if (mapKey || (!modernRequested && configuredKeys.slice(5, 10).includes(event.code)) ||
+      ['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','AltLeft','AltRight'].includes(event.code)) event.preventDefault();
   if (mapKey && mapGestureAdmitted({ mapOpen: nativeMenus.map_open, spellsOpen: nativeMenus.spells_open,
-    controlHeld: spellControlHeld || event.ctrlKey, cycleHeld: event.shiftKey || event.altKey })) {
+    controlHeld: modifiers.spells, cycleHeld: modifiers.next || modifiers.previous })) {
     if (!event.repeat && !busy) void control('map');
     return;
   }
@@ -771,25 +814,27 @@ window.addEventListener('keydown', event => {
   if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
   if (event.code === 'Escape' && playing && !nativeMenus.spells_open) void control('menu', { menu_action: 'open_abandon_confirmation' });
   else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
-  if (event.code === 'ControlLeft' || event.code === 'ControlRight') { spellControlHeld = true; spellCloseOnRelease = false; void control('menu', { menu_action: 'open_spell_menu' }); }
-  if (event.code === 'AltLeft' || event.code === 'AltRight') { informationHeld = true; syncPlayerInformation(); }
+  if (modifiers.spells && !spellControlHeld) { spellControlHeld = true; spellCloseOnRelease = false; void control('menu', { menu_action: 'open_spell_menu' }); }
+  informationHeld = modifiers.information; syncPlayerInformation();
   if (event.code === 'F5') void control('save');
   if (event.code === 'F9') void control('load');
 });
 window.addEventListener('keyup', event => {
   keys.delete(event.code);
-  if (event.code === 'AltLeft' || event.code === 'AltRight') { informationHeld = event.altKey; syncPlayerInformation(); }
-  if (event.code === 'ControlLeft' || event.code === 'ControlRight') {
-    spellControlHeld = event.ctrlKey;
-    if (playing && !spellControlHeld) {
+  heldMenuKeys.delete(event.code);
+  const modifiers = menuKeys();
+  informationHeld = modifiers.information; syncPlayerInformation();
+  if (spellControlHeld && !modifiers.spells) {
+    spellControlHeld = false;
+    if (playing) {
       if (spellMenuButtons.size) spellCloseOnRelease = true;
       else void control('menu', { menu_action: 'close_spell_menu' });
     }
   }
 });
-window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); });
+window.addEventListener('blur', () => { clearMenuKeys(); spellMenuButtons.clear(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); });
 window.addEventListener('beforeunload', () => { objectiveSpeech.stop(); campaignMusic.stop(); gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { clearMenuKeys(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); } });
 element('touch-map').addEventListener('click', () => void control('map'));
 element('touch-hand').addEventListener('click', () => { touchHand = touchHand === 'left' ? 'right' : 'left'; element('touch-hand').textContent = touchHand === 'left' ? 'Left hand' : 'Right hand'; });
 element('touch-spells').addEventListener('click', () => void control('menu', { menu_action: nativeMenus.spells_open ? 'close_spell_menu' : 'open_spell_menu' }));
@@ -817,6 +862,9 @@ async function boot(): Promise<void> {
     if (showCampaign(status)) return;
     showSpeechPreference(status.speech_enabled, status.speech_available);
     configuredKeys = (status.preference_keys ?? []).map(preferenceKeyCode);
+    configuredNames = status.preference_keys ?? [];
+    configuredMapCode = configuredKeys[4] ?? null;
+    updateControlsHelp();
     if (!modernRequested && status.preference_keys?.length)
       element('flight-keys').textContent = `${status.preference_keys.slice(0, 4).join(' / ')} move · Mouse steers`;
     speechButton.hidden = false;

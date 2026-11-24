@@ -98,6 +98,26 @@ export function preferenceKeyCode(key: unknown): string | null {
   return Object.hasOwn(codes, key) ? codes[key]! : null;
 }
 
+/** PlayerInput's physical aliases and the six saved menu/modifier slots. */
+export function sourceMenuKeys(held: ReadonlySet<string>, bindings: readonly (string | null)[]) {
+  const down = (slot: number, fallback: string) => held.has(bindings[slot] ?? fallback);
+  const previous = held.has('AltLeft') || down(9, 'AltLeft');
+  return {
+    spells: down(5, 'ControlLeft'),
+    information: previous || down(6, 'AltLeft'),
+    mark: held.has('ShiftLeft') || down(7, 'ShiftRight'),
+    next: held.has('ShiftLeft') || down(8, 'ShiftRight'),
+    previous,
+  };
+}
+
+/** Tab is a convenience alias only for the original Return map binding. */
+export function sourceMapKey(code: string, binding: string | null): boolean {
+  return code === binding || (code === 'Tab' && binding === 'Enter');
+}
+
+export function sourceKeyChoices(...names: string[]): string { return [...new Set(names)].join(' or '); }
+
 export interface MapGestureContext {
   mapOpen: boolean;
   spellsOpen: boolean;

@@ -105,12 +105,15 @@ Original uses the four movement keys saved in the native profile. By default
 Up/Down controls speed, Left/Right strafes and the mouse steers. W/S and A/D
 also work for their default actions when those letters have no other binding.
 The touch pad controls speed and turns independently of keyboard preferences. Space casts
-the selected spell. The mouse buttons cast from their assigned hands. Hold Ctrl
-to open the spell grid and click to assign a tier to a hand. Shift-click marks
-a spell for that hand. In flight, Shift-click advances through its marks and
-Alt-click goes back. O shows the objective. Press the configured map key
-(Return by default), press both mouse buttons together, or use Tab to toggle
-the map. Hold Alt on the map for player information. Esc opens the abandon
+the selected spell. The mouse buttons cast from their assigned hands. Hold the
+saved spell-menu key (LeftControl by default) to open the spell grid and click
+to assign a tier to a hand. LeftShift or the saved mark key plus a click marks
+a spell for that hand. In flight, LeftShift or the saved next key plus a click
+advances through its marks; LeftAlt or the saved previous key goes back. O shows
+the objective. Press the configured map key (Return by default), or press both
+mouse buttons together, to toggle the map. Tab also works while Return remains
+the configured map key. On the map, hold LeftAlt, the saved information key, or
+the saved previous key for player information. Esc opens the abandon
 confirmation, P pauses, F5 saves and F9 loads. The utility menu also
 provides resume, save, load, restart and fullscreen. Clicking the view captures
 the mouse; Esc releases it. Touch users drag the view to steer and use the

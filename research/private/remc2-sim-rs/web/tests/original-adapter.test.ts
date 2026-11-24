@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand, preferenceKeyCode, mapGestureAdmitted, MapMouseChord } from '../src/original-adapter.ts';
+import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand, preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, mapGestureAdmitted, MapMouseChord } from '../src/original-adapter.ts';
 
 test('map binding translates every native preference key to a physical browser code', () => {
   for (const letter of 'ABCDEFGHIJKLMNOQSTUVWXYZ') assert.equal(preferenceKeyCode(letter), `Key${letter}`);
@@ -13,6 +13,33 @@ test('map binding translates every native preference key to a physical browser c
   for (const invalid of [null, undefined, '', 'Tab', 'P', '__proto__']) assert.equal(preferenceKeyCode(invalid), null);
 });
 
+test('source menu bindings and hardcoded left modifiers follow held and released keys', () => {
+  const bindings = ['UpArrow', 'DownArrow', 'LeftArrow', 'RightArrow', 'B', 'J', 'K', 'L', 'M', 'N'].map(preferenceKeyCode);
+  const read = (...codes: string[]) => sourceMenuKeys(new Set(codes), bindings);
+  assert.deepEqual(read(), { spells: false, information: false, mark: false, next: false, previous: false });
+  assert.equal(read('KeyJ').spells, true);
+  assert.equal(read('ControlLeft').spells, false, 'superseded spell binding is inactive');
+  assert.equal(read('KeyK').information, true);
+  assert.equal(read('KeyL').mark, true); assert.equal(read('KeyL').next, false);
+  assert.equal(read('KeyM').next, true); assert.equal(read('KeyN').previous, true);
+  assert.equal(read('KeyN').information, true, 'previous modifier also reveals map information');
+  assert.equal(read('ShiftLeft').mark, true); assert.equal(read('ShiftLeft').next, true);
+  assert.equal(read('AltLeft').previous, true); assert.equal(read('AltLeft').information, true);
+  assert.equal(read('ShiftRight').mark, false); assert.equal(read('AltRight').previous, false);
+  const held = new Set(['KeyK', 'KeyN']);
+  held.delete('KeyK');
+  assert.equal(sourceMenuKeys(held, bindings).information, true, 'previous remains held after info key release');
+  held.delete('KeyN');
+  assert.equal(sourceMenuKeys(held, bindings).information, false, 'last release hides information');
+  held.add('KeyJ'); held.clear();
+  assert.equal(sourceMenuKeys(held, bindings).spells, false, 'focus clear does not retain a menu modifier');
+  assert.equal(sourceMapKey('Tab', 'Enter'), true);
+  assert.equal(sourceMapKey('Tab', 'KeyB'), false);
+  assert.equal(sourceMapKey('KeyB', 'KeyB'), true);
+  assert.equal(sourceKeyChoices('LeftAlt', 'LeftAlt', 'LeftAlt'), 'LeftAlt');
+  assert.equal(sourceKeyChoices('LeftAlt', 'K', 'N'), 'LeftAlt or K or N');
+});
+
 test('map chord uses a physical edge, consumes both buttons, and respects menu precedence', () => {
   const flight = { mapOpen: false, spellsOpen: false, controlHeld: false, cycleHeld: false };
   const chord = new MapMouseChord();
@@ -23,10 +50,14 @@ test('map chord uses a physical edge, consumes both buttons, and respects menu p
   chord.release(2); assert.equal(chord.isConsumed(2), false); assert.equal(chord.isConsumed(0), true);
   assert.equal(chord.press(2, { ...flight, mapOpen: true }), true, 'a fresh edge closes the map');
   chord.clear();
+  assert.equal(chord.press(2, flight), false);
+  assert.equal(chord.press(0, flight), true, 'right then left also opens the map');
+  chord.clear();
   assert.equal(chord.press(0, { ...flight, controlHeld: true }), false);
   assert.equal(chord.press(2, { ...flight, controlHeld: true }), false, 'Ctrl wins in flight');
   assert.equal(mapGestureAdmitted({ ...flight, cycleHeld: true }), false, 'modified spell cycling wins in flight');
   assert.equal(mapGestureAdmitted({ ...flight, mapOpen: true, controlHeld: true }), true, 'map close precedes Ctrl');
+  assert.equal(mapGestureAdmitted({ ...flight, mapOpen: true, cycleHeld: true }), true, 'map close precedes cycling');
   assert.equal(mapGestureAdmitted({ ...flight, mapOpen: true, spellsOpen: true }), false, 'open spell menu wins');
 });
 
