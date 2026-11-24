@@ -180,6 +180,19 @@ class OriginalAssets:
                 raise ValueError(f"invalid minimap symbol {row['selector']}")
             symbols.append({'selector': row['selector'], 'width': row['width'], 'height': row['height'],
                             'indices': add(indices), 'mask': add(mask)})
+        font_bank = next(bank for bank in environment_descriptor['bitmap_banks'] if bank['bank'] == 'FONT1')
+        font1 = []
+        for row in font_bank['bitmaps']:
+            if row.get('source_empty'):
+                continue
+            mask = env_cache.read(row['mask_path'])
+            if (row['width'] <= 0 or row['height'] <= 0 or
+                    len(mask) != row['width'] * row['height'] or any(value not in (0, 1) for value in mask)):
+                raise ValueError(f"invalid source FONT1 glyph {row['selector']}")
+            font1.append({'selector': row['selector'], 'width': row['width'], 'height': row['height'],
+                          'mask': add(mask)})
+        if len({row['selector'] for row in font1}) != len(font1):
+            raise ValueError('duplicate source FONT1 glyph')
         colors = env_cache.read('palette/colors.u8')
         if len(colors) != 4096:
             raise ValueError('invalid Night color table')
@@ -188,7 +201,7 @@ class OriginalAssets:
         self.manifest = {'schema': 'mc-original-assets/v1', 'bytes': len(blob), 'normal': normal,
                          'objective_background': colors[0], 'map_cross_color': colors[4095],
                          'exit': exit_table, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
-                         'objectives': objectives, 'tiers': tiers, 'help': help_rows,
+                         'objectives': objectives, 'tiers': tiers, 'help': help_rows, 'font1': font1,
                          'map_profile': profile['map_type']['name'].lower(), 'hud_profile': 'night'}
 
     @staticmethod
@@ -295,6 +308,47 @@ class MinimapMark(c.Structure):
                 ('reserved', c.c_uint32 * 3)]
 
 
+def _read_map_labels(lib, handle, generation: int, tick: int, visibility_flags: int,
+                     *, full_map: bool) -> list[dict]:
+    # Both projections produce labels only when the same live Beyond Sight
+    # bit is set. The map state already validates this generation and tick.
+    if visibility_flags & 0x08 == 0:
+        return []
+    fn = (lib.mc_native_campaign_world_map_labels_json if full_map else
+          lib.mc_native_campaign_minimap_labels_json)
+    fn.argtypes = [c.c_uint64, c.c_uint64, c.c_uint64, c.POINTER(c.c_uint8),
+                   c.c_uint32, c.POINTER(c.c_uint32)]
+    fn.restype = c.c_int32
+    required = c.c_uint32()
+    status = fn(handle, generation, tick, None, 0, c.byref(required))
+    if status != 10 or not 0 < required.value <= 8192:
+        raise RuntimeError(f'native map labels sizing rejected: status {status}, bytes {required.value}')
+    data = (c.c_uint8 * required.value)()
+    written = c.c_uint32()
+    status = fn(handle, generation, tick, data, len(data), c.byref(written))
+    if status != 0 or written.value != len(data):
+        raise RuntimeError(f'native map labels copy rejected or incomplete: status {status}')
+    snapshot = json.loads(bytes(data).decode('utf-8'))
+    if (not isinstance(snapshot, dict) or snapshot.get('schema') != 'mc2-campaign-minimap-labels/v1' or
+            snapshot.get('generation') != generation or snapshot.get('tick') != tick or
+            not isinstance(snapshot.get('labels'), list) or len(snapshot['labels']) > 8):
+        raise RuntimeError('native map labels are stale or invalid')
+    previous = -1
+    for row in snapshot['labels']:
+        if not isinstance(row, dict):
+            raise RuntimeError('native map label is invalid')
+        for key, lower, upper in (('source_order', 0, 65535), ('subject_entity_index', 0, 65535),
+                                  ('x', -32768, 32767), ('y', -32768, 32767), ('palette_index', 0, 255)):
+            if type(row.get(key)) is not int or not lower <= row[key] <= upper:
+                raise RuntimeError(f'native map label {key} is invalid')
+        text = row.get('text')
+        if (row['source_order'] <= previous or not isinstance(text, str) or not 0 < len(text) <= 255 or
+                any(not 0 < ord(value) <= 255 for value in text)):
+            raise RuntimeError('native map label ordering or text is invalid')
+        previous = row['source_order']
+    return snapshot['labels']
+
+
 def read_minimap(lib, handle, generation: int, tick: int) -> dict:
     """Fetch native minimap commands and terrain admission on the owner thread."""
     row = MinimapState()
@@ -331,7 +385,8 @@ def read_minimap(lib, handle, generation: int, tick: int) -> dict:
         raise RuntimeError(f'native minimap coverage rejected or incomplete: status {status}')
     return {'entities': rows('mc_native_campaign_minimap_entities_copy', MinimapEntity, row.entity_count),
             'marks': rows('mc_native_campaign_minimap_marks_copy', MinimapMark, row.mark_count),
-            'coverage': bytes(coverage), 'visibility_flags': row.visibility_flags}
+            'coverage': bytes(coverage), 'visibility_flags': row.visibility_flags,
+            'labels': _read_map_labels(lib, handle, generation, tick, row.visibility_flags, full_map=False)}
 
 class FrameQuery(c.Structure):
     _fields_ = [('abi_version', c.c_uint32), ('struct_size', c.c_uint32), ('generation', c.c_uint64),
@@ -424,4 +479,5 @@ def read_world_map(lib, handle, generation: int, tick: int) -> tuple[bytes, byte
     return bytes(indices), bytes(palette), {
         'entities': convert(entities, state.entity_count), 'marks': convert(marks, state.mark_count),
         'visibility_flags': state.visibility_flags,
+        'labels': _read_map_labels(lib, handle, generation, tick, state.visibility_flags, full_map=True),
     }

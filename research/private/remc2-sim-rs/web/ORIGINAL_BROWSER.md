@@ -152,7 +152,13 @@ accesses and divisions whose dimensions/depths are checked. The launcher uses
 `set -e` for its flagged `cd`. These were reviewed; warnings were not suppressed.
 Whole-file totals include the existing HUD and are not a new-defect count.
 
-Still incomplete: audio, original options/pause submenus, Beyond Sight labels,
+Beyond Sight uses the Rust session's wizard visibility, coordinates and colours
+on both maps. The browser draws each name beside its dot using the selected
+environment's FONT1. In the paid Perilium save, the full map displayed Nyphur,
+Rahn and Belix. All 142 sampled glyph pixels matched the owner masks and
+palette, and the names disappeared when the spell expired at tick 184.
+
+Still incomplete: audio, original options/pause submenus,
 hand flashes, source shadow/reflection passes and dynamic
 palette effects. The source palette matches the normal Night reference, but
 field-dependent palette changes have no narrow native export yet. Terrain

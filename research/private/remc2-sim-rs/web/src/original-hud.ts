@@ -7,7 +7,8 @@ type ObjectiveRow = { selector: number; reference_x: number; reference_y: number
 type TierRow = { tier: number; width: number; height: number; color: number; rgba: Span };
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
 type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; tiers: TierRow[]; help?: Record<string, HelpRow> | null };
+type FontGlyph = { selector: number; width: number; height: number; mask: Span };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; tiers: TierRow[]; font1?: FontGlyph[]; help?: Record<string, HelpRow> | null };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -29,8 +30,8 @@ export interface OriginalHudState {
   objective_visible?: boolean;
   panels_opaque?: boolean;
   top_bar_visible?: boolean;
-  minimap?: { terrain: number[]; coverage: number[]; entities: MinimapEntity[]; marks: MinimapMark[] } | null;
-  world_map?: { entities: MinimapEntity[]; marks: MinimapMark[] } | null;
+  minimap?: (MapCommands & { terrain: number[]; coverage: number[] }) | null;
+  world_map?: MapCommands | null;
   exit_inspection_allowed?: boolean;
   exit_inspection_subject?: number | null;
   source_top_status?: SourceTopStatus | null;
@@ -47,7 +48,9 @@ export interface SpellMenuRow {
 export interface SpellMenu { open: boolean; hovered_slot: number; hovered_tier: number; mana: number; wizard_colors: readonly number[]; panels_opaque: boolean; spells: readonly SpellMenuRow[] }
 interface SourceCastleStatus { stage: number; panel_selector: number; icon_selector: number; life: number; max_life: number; mana: number; max_mana: number; owner_mana_aggregate: number }
 interface SourceTopStatus { castle_rows: readonly SourceCastleStatus[]; balloon_panel_selector: number; balloon_icon_selector: number; balloons: readonly { present: boolean; life: number; max_life: number; mana: number; max_mana: number }[]; mana_goal_percent: number; goal_palette_index: number }
-type MinimapEntity = { generation: number | string; tick: number | string; x: number; y: number; selector: number; palette_index: number; kind: number; size: number; anchor: number; visible: number; subject_entity_index?: number; help_selector?: number };
+type MapLabel = { source_order: number; subject_entity_index: number; x: number; y: number; palette_index: number; text: string };
+type MapCommands = { entities: MinimapEntity[]; marks: MinimapMark[]; labels?: MapLabel[] };
+type MinimapEntity = { generation: number | string; tick: number | string; source_order?: number; x: number; y: number; selector: number; palette_index: number; kind: number; size: number; anchor: number; visible: number; subject_entity_index?: number; help_selector?: number };
 type MinimapMark = { generation: number | string; tick: number | string; source_order: number; x: number; y: number; palette_index: number; kind: number; visible: number };
 
 export class OriginalHud {
@@ -56,6 +59,7 @@ export class OriginalHud {
   readonly tables: IndexedBlendTables;
   private readonly sprites = new Map<number, SpriteRow>();
   private readonly symbols = new Map<number, SymbolRow>();
+  private readonly mapFont = new Map<number, FontGlyph>();
   private readonly objectives = new Map<number, ObjectiveRow>();
   private readonly tiers = new Map<number, TierRow>();
   private readonly exitHelp?: HelpRow;
@@ -101,6 +105,11 @@ export class OriginalHud {
     for (const row of manifest.symbols) {
       if (row.width <= 0 || row.height <= 0 || span(row.indices).length !== row.width * row.height || span(row.mask).length !== row.width * row.height || this.symbols.has(row.selector)) throw new Error('Invalid Original minimap symbol');
       this.symbols.set(row.selector, row);
+    }
+    for (const glyph of manifest.font1 ?? []) {
+      if (glyph.width <= 0 || glyph.height <= 0 || span(glyph.mask).length !== glyph.width * glyph.height || this.mapFont.has(glyph.selector))
+        throw new Error('Invalid Original FONT1 glyph');
+      this.mapFont.set(glyph.selector, glyph);
     }
     for (const row of manifest.objectives) {
       if (span(row.indices).length !== row.render_width * row.render_height || span(row.mask).length !== row.render_width * row.render_height) throw new Error('Invalid Original objective');
@@ -182,11 +191,12 @@ export class OriginalHud {
       const minimap = fullMap ? null : state.minimap;
       if (minimap && (minimap.terrain.length !== 4096 || minimap.coverage.length !== 4096)) throw new Error('Invalid Original minimap dimensions');
       const mapWidth = fullMap ? 191 : 64, mapHeight = fullMap ? 200 : 64, scale = fullMap ? 1 : 2;
-      const aperture = (x: number, y: number) => {
-        const sourceY = y * 2, phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+      const sourceAperture = (sourceX: number, sourceY: number) => {
+        const phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
         const half = (64 * this.aperture[phase * 4]!) >> 8;
-        return x * 2 >= 64 - half && x * 2 < 64 + half;
+        return sourceX >= 64 - half && sourceX < 64 + half;
       };
+      const aperture = (x: number, y: number) => sourceAperture(x * 2, y * 2);
       if (minimap) for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
         const i = y * 64 + x, pos = y * 320 + x, terrain = minimap.terrain[i]!;
         if (!Number.isInteger(terrain) || terrain < 0 || terrain > 255 || (minimap.coverage[i] !== 0 && minimap.coverage[i] !== 1)) throw new Error('Invalid Original minimap pixels');
@@ -198,8 +208,33 @@ export class OriginalHud {
       const bound = (row: { generation: number | string; tick: number | string }) => {
         if (String(row.generation) !== String(hud.generation) || String(row.tick) !== String(hud.tick)) throw new Error('Stale Original minimap row');
       };
+      const labels = map.labels ?? [];
+      let nextLabel = 0;
       for (const row of map.entities) {
         bound(row); if (!row.visible) continue;
+        const label = labels[nextLabel];
+        const drawsName = label !== undefined && label.source_order === row.source_order;
+        if (drawsName) {
+          nextLabel++;
+          if (label.subject_entity_index !== row.subject_entity_index || label.x !== row.x || label.y !== row.y ||
+              label.palette_index !== row.palette_index || row.kind !== 1) throw new Error('Beyond Sight name differs from its player dot');
+          if (row.x < 0 || row.x >= mapWidth * scale || row.y < 0 || row.y >= mapHeight * scale ||
+              (!fullMap && !sourceAperture(row.x, row.y))) continue;
+          scenePixel(Math.trunc(row.y / scale) * 320 + Math.trunc(row.x / scale), row.palette_index);
+          // DrawText follows each admitted rival's dot. Its glyphs clip to the screen.
+          let cursor = Math.trunc((row.x + 4) / scale);
+          const top = Math.trunc(row.y / scale);
+          for (const character of label.text) {
+            const glyph = this.mapFont.get(character.charCodeAt(0) + 1);
+            if (!glyph) throw new Error('Beyond Sight name has no Original FONT1 glyph');
+            for (let y = 0; y < glyph.height && top + y < 200; y++)
+              for (let x = 0; x < glyph.width && cursor + x < 320; x++)
+                if (this.blob[glyph.mask.offset + y * glyph.width + x])
+                  scenePixel((top + y) * 320 + cursor + x, row.palette_index);
+            cursor += glyph.width;
+          }
+          continue;
+        }
         if (row.kind !== 1 && row.kind !== 2 && row.kind !== 3) throw new Error('Invalid Original minimap entity');
         const symbol = row.kind === 2 ? this.symbols.get(row.selector) : undefined;
         if (row.kind === 2 && !symbol) continue;
@@ -215,6 +250,7 @@ export class OriginalHud {
           scenePixel(pos, row.kind === 3 ? this.tables.normal[(result[pos]! << 8) | color]! : color);
         }
       }
+      if (nextLabel !== labels.length) throw new Error('Beyond Sight name has no matching player dot');
       if (fullMap) {
         const cross = (x: number, y: number) => { const pos = y * 320 + x; scenePixel(pos, this.tables.normal[(this.mapCrossColor << 8) | result[pos]!]!); };
         cross(94, 100);

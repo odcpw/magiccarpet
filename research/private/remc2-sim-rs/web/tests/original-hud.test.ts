@@ -74,6 +74,27 @@ test('split world map retains native map scale and rejects stale rows', () => {
   assert.throws(() => hud.compose(scene, palette, {...state, world_map: {entities: [], marks: [{...mark, tick: 4}]}}), /Stale/);
 });
 
+test('corner Beyond Sight names follow the source aperture and low-resolution FONT1 placement', () => {
+  const dot = { generation: 5, tick: 3, source_order: 1, subject_entity_index: 344, x: 65, y: 63,
+    selector: 0, palette_index: 119, kind: 1, size: 1, anchor: 0, visible: 1 };
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const draw = (x: number, y: number) => {
+    const player = { ...dot, x, y };
+    return hud.compose(scene, palette, { ...state, top_bar_visible: false, minimap: {
+      entities: [player], marks: [], labels: [{ ...player, text: 'N' }],
+      terrain: Array(4096).fill(7), coverage: Array(4096).fill(0)
+    } });
+  };
+  const frame = draw(dot.x, dot.y);
+  const glyph = assets.manifest.font1.find((g: { selector: number }) => g.selector === 'N'.charCodeAt(0) + 1);
+  const left = Math.floor((dot.x + 4) / 2), top = Math.floor(dot.y / 2);
+  for (let y = 0; y < glyph.height; y++) for (let x = 0; x < glyph.width; x++) {
+    const pixel = 640 * Math.ceil((top + y) * 480 / 200) + 2 * (left + x);
+    assert.equal(frame[pixel], blob[glyph.mask.offset + y * glyph.width + x] ? dot.palette_index : 7);
+  }
+  assert.ok(!draw(0, 0).includes(dot.palette_index), 'a wizard outside the aperture has no visible name');
+});
+
 test('explicit exit-map inspection follows the admitted source marker and uses owner help pixels', async () => {
   const generated = new URL('../../../generated/', import.meta.url).pathname;
   const capture = spawnSync('python3', ['-c', `import base64,json,sys
