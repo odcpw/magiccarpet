@@ -412,6 +412,7 @@ function fail(error: unknown): void {
 async function control(action: string, fields: Record<string, unknown> = {}): Promise<void> {
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
+  const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -424,7 +425,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
     lastArrival = 0; intervals.length = 0;
   }
-  if (!spellMutation && !informationMutation) clearInput();
+  if (!keepFlightInput) clearInput();
   try {
     const result = await post('/control', { action, ...fields });
     if (action === 'start' || action === 'resume') {
@@ -439,7 +440,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       if (playing) hideMenu();
     }
     else if (action === 'menu' && result.phase === 'title') showCampaign(await readStatus());
-    if (action !== 'start' && !spellMutation && !informationMutation && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
+    if (action !== 'start' && !keepFlightInput && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
     if (isGeometryDisplay(display)) display.setPlaying(playing);
   } catch (error) {
     if (spellMutation) spellMutationPending = false;
@@ -800,6 +801,11 @@ window.addEventListener('mousemove', event => {
 window.addEventListener('keydown', event => {
   if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (abandonOpen) { if (event.code === 'Escape') { event.preventDefault(); void control('menu', { menu_action: 'cancel_abandon_confirmation' }); } return; }
+  if (!modernRequested && event.code === 'F1' && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    if (!event.repeat) void control('toggle_help');
+    return;
+  }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
   heldMenuKeys.add(event.code);
   const modifiers = menuKeys();

@@ -13,19 +13,23 @@ def install_profile(native, handle, profile_dir):
 
 
 def toggle_speech(native, available):
-    """Run the native source toggle with the current guarded session identity."""
+    if not available:
+        raise ValueError("speech recordings are unavailable")
+    apply_source_preference(native, {"operation": "source_audio", "action": "speech",
+                                     "speech_available": True})
+
+
+def apply_source_preference(native, command):
+    """Let the current native session apply and persist the source control."""
     identity = native.identity_value
     session = identity.get("session")
     if session is None:
-        raise ValueError("speech settings require an active mission")
-    if not available:
-        raise ValueError("speech recordings are unavailable")
-    payload = json.dumps({"operation": "source_audio", "action": "speech",
-                          "speech_available": True,
+        raise ValueError("source settings require an active mission")
+    payload = json.dumps({**command,
                           "session_guard": {"session_id": session["session_id"],
                                             "generation": session["generation"],
                                             "expected_tick": session["tick"]}},
                          separators=(",", ":")).encode()
     native.check(native.lib.mc_game_runtime_preferences_command_json_v1(
-        native.handle, int(identity["generation"]), payload, len(payload)), "toggle speech")
+        native.handle, int(identity["generation"]), payload, len(payload)), command["operation"])
     native.identity_value = native.identity()

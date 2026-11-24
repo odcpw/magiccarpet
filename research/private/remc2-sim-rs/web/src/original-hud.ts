@@ -700,8 +700,12 @@ export class OriginalHud {
       drawNotice(notification, noticeX, noticeY); noticeX = startX; noticeY += 14;
     }
     for (const row of noticeRows) {
-      if (!row.display_name) throw new Error('Invalid Original participant notification name');
-      drawNotice(`${row.display_name} ${this.participantNotices[row.kind]}`, noticeX, noticeY);
+      let text = this.participantNotices[row.kind]!;
+      if (row.kind === 'participant.died' || row.kind === 'participant.banished') {
+        if (!row.display_name) throw new Error('Invalid Original participant notification name');
+        text = `${row.display_name} ${text}`;
+      }
+      drawNotice(text, noticeX, noticeY);
       noticeX = startX; noticeY += 14;
     }
     if (hud && fullMap && state.hand_selection_flash_ticks) {

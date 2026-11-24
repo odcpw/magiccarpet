@@ -31,7 +31,7 @@ from original_gameplay_audio import GameplayJournal, GameplaySamples
 from original_music import CampaignMusicAsset, CampaignMusicClock, byte_range
 from original_campaign_effects import CampaignEffects
 from original_speech import SpeechCache, SpeechJournal
-from original_preferences import install_profile, toggle_speech
+from original_preferences import apply_source_preference, install_profile, toggle_speech
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -772,7 +772,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_help", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
@@ -859,6 +859,9 @@ class Bridge:
                                 publish()
                             elif action == "toggle_speech":
                                 toggle_speech(native, speech.cache is not None)
+                                publish()
+                            elif action == "toggle_help":
+                                apply_source_preference(native, {"operation": "source_help_mode"})
                                 publish()
                             elif action in ("map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell"):
                                 if not self.running or self.paused: raise ValueError("game must be playing")
