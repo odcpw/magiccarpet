@@ -1,5 +1,22 @@
 # Shared-engine delivery plan
 
+### Player information and the objective flash in the private browser — November 24
+
+On Payahandra's full map, holding Alt displays the player and Nyphur, their live
+mana and the kill matrix. Releasing Alt returns to the map. Chrome showed both
+rows from an earned save. Alt-click and Shift-click still cycle marked spells.
+The scoreboard uses the source font, panels and draw order.
+
+The Three.js world and HUD now use the current native palette. At Payahandra's
+opening objective, all 768 colour bytes matched the indexed renderer in each
+of 53 observed frames through the flash and recovery. Chrome pixels from both
+the world and HUD followed the fade. The private service runs browser
+`2d0ec9ce` with native `678f88daff11` from `5d1a5546`. The installed Unity
+Original retains native `52c453bf5cbd`; its 478 Rust inputs and five header
+hashes match the published source used for that build. It already consumes the
+indexed palette. Unity Editor login remains outstanding for a new Unity build.
+Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
 ### Payahandra vault Meteor, Wind switches and marked spells — November 24
 
 Payahandra vault group 27 produces a third-tier Meteor. Once the player's
