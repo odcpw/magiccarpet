@@ -58,6 +58,7 @@ let lastHudState: OriginalHudState | null = null;
 let inspectedExit: number | null = null;
 let inspectionGeneration = '';
 let currentLevelName = 'Level 1';
+let loadedLevelId: string | null = null;
 let campaignPhase: string | null = null;
 let loadedAssetRevision: number | undefined;
 let campaignMedia: OriginalMediaPlayer | null = null;
@@ -465,6 +466,25 @@ async function pollFrame(): Promise<void> {
       // A native secret entry or a loaded slot can change the mission without a menu.
       const status = await readStatus();
       if (version !== controlVersion || showCampaign(status)) return;
+      if (!modernRequested && status.level_id && status.level_id === loadedLevelId &&
+          status.asset_revision === state.asset_revision) {
+        // A same-mission retry rebinds the native publication and HUD, but
+        // retains the already unlocked page and its source world assets.
+        clearInput(); mapMouseChord.clear(); spellMenuButtons.clear();
+        spellControlHeld = false; spellCloseOnRelease = false; informationHeld = false;
+        informationPending = false; spellMutationPending = false;
+        gameplayAudio.stop(); objectiveSpeech.stop(); campaignMusic.stop();
+        const nextHud = await OriginalHud.load(API);
+        const verified = await readStatus();
+        if (version !== controlVersion || verified.asset_revision !== state.asset_revision ||
+            verified.level_id !== loadedLevelId || showCampaign(verified)) return;
+        hud = nextHud; tables = nextHud.tables;
+        loadedAssetRevision = state.asset_revision;
+        history.reset(); terrainIdentity = ''; lastFrame = null; lastHudState = null;
+        inspectionGeneration = ''; inspectedExit = null;
+        nativeMenus = { map_open: false, spells_open: false, player_information_open: false };
+        return;
+      }
       connected = false; playing = false;
       if (status.running) sessionStorage.setItem(enterMissionKey, JSON.stringify([status.level_id, status.asset_revision]));
       location.reload(); return;
@@ -801,6 +821,7 @@ async function boot(): Promise<void> {
       element('flight-keys').textContent = `${status.preference_keys.slice(0, 4).join(' / ')} move · Mouse steers`;
     speechButton.hidden = false;
     loadedAssetRevision = status.asset_revision;
+    loadedLevelId = status.level_id ?? null;
     currentLevelName = levelName(status.level_id);
     const presentationName = modernRequested ? 'Modern' : 'Original';
     document.title = `Magic Carpet II · ${presentationName} ${currentLevelName}`;
@@ -825,7 +846,10 @@ async function boot(): Promise<void> {
     window.setInterval(() => void sendInput(), 1000 / 30);
     const enter = sessionStorage.getItem(enterMissionKey);
     sessionStorage.removeItem(enterMissionKey);
-    if (enter && enter === JSON.stringify([status.level_id, status.asset_revision])) await control('start');
+    if (enter && enter === JSON.stringify([status.level_id, status.asset_revision])) {
+      if (!modernRequested) gameplayAudio.activate();
+      await control('start');
+    }
   } catch (error) { fail(error); }
 }
 void boot();
