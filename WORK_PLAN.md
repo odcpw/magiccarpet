@@ -2,6 +2,17 @@
 
 ### Castle revival, secret entry and spell marks on abandonment — November 24
 
+The private Original now serves browser `b3e6a320` on native `fb6315dc5d4f`.
+F5 toggles sound and F6 toggles music. In Payahandra, two paid casts spent mana.
+The muted cast started no browser audio source. The next cast, with sound on,
+started two. F6 stopped and restarted the music; the save slot stayed
+byte-identical. The GPU now draws the Day minimap and HUD against the live
+world with the source palette lookup. Chrome showed the translucent panels
+in Payahandra at tick 96 and opaque panels in Spider Cave at tick 6. The CPU
+check compared all 640 × 480 output indices in each mode. The installed build
+opened NightSpire. See `audio-panel-joined` and `mission-retry/f5-audio-b3e6-proof`
+under `research/private/generated/earned-campaign-20261124/`.
+
 Runtime `a1797bb5` retains the player's hand marks when abandoning a mission.
 On the same saves that lost the marks in the previous native, the public API
 returned from Payahandra and reselected Castle on the right. Abandoning Pav
