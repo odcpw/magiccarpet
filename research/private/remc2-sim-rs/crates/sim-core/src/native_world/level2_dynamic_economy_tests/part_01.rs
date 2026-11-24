@@ -1115,11 +1115,46 @@ fn ordinary_level_23_imports_linked_castles_and_construction_children() {
     assert_eq!(economy.live_castles().count(), expected.len());
 }
 
+fn wait_for_real_castle_defender(campaign: &mut crate::campaign::CampaignSession, root: u16) -> (u16, u32) {
+    for _ in 0..16 {
+        let sim = campaign.simulation();
+        let slot = sim.economy().castle_at(root).map_or(0, |castle| castle.defender_slots[0]);
+        if slot != 0 && sim.economy().castle_children().iter().any(|child|
+            child.source_entity_index == slot && child.active && (child.source_class, child.model, child.action) == (3, 3, 9)
+                && child.control_flags & ENTITY_DRAW_DISABLED_BIT == 0)
+        {
+            assert!(sim.campaign_entity_presentations(0).unwrap().iter().any(|row| row.entity_index == slot),
+                "the naturally scheduled Castle collector must reach world presentation");
+            return (slot, sim.economy().slot_generation(slot));
+        }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    panic!("the live authored Castle did not schedule its ordinary collector");
+}
+
+fn castle_owner_package(relative: &str) -> PathBuf {
+    std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        .join("generated").join(relative)
+}
+
+fn assert_final_castle_defender_hidden(campaign: &crate::campaign::CampaignSession, root: u16, defender: (u16, u32)) {
+    let sim = campaign.simulation();
+    assert_eq!(sim.economy().castle_entry(root).expect("same-pass Castle root").defender_slots, [0; 3],
+        "the final source tail clears the owner's collector relations");
+    if sim.economy().slot_generation(defender.0) == defender.1 {
+        assert!(sim.economy().castle_children().iter().any(|child| child.source_entity_index == defender.0
+            && child.control_flags & ENTITY_DRAW_DISABLED_BIT != 0),
+            "the current source collector must be hidden for reclaim");
+        assert!(sim.campaign_entity_presentations(0).unwrap().iter().all(|row| row.entity_index != defender.0),
+            "the removed collector must leave the live world presentation");
+    }
+}
+
 #[test]
 fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        || castle_owner_package("creatures-20261104-integration/current-owner-package/level23"),
         PathBuf::from,
     );
     let mut campaign = crate::campaign::CampaignSession::open(
@@ -1160,6 +1195,7 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     }
     assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4,
         "actual imported Castle must reach action4; source trace: {root_trace:#?}");
+    let defender = wait_for_real_castle_defender(&mut campaign, root_slot);
     assert!(campaign.simulation_mut().economy_mut().submit_damage(root_slot, i32::MAX, 424));
     for _ in 0..16 {
         campaign.step(PlayerCommand::default(), 0);
@@ -1175,11 +1211,15 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     assert_eq!(players.iter().find(|p| p.entity_index == other_owner).unwrap().enabled_spell_holders[2], other_holder);
     assert!(simulation.shared_spells().pickup(holder_slot).is_none_or(|holder| !holder.active || holder.control_flags & ENTITY_DRAW_DISABLED_BIT != 0));
     assert!(simulation.shared_spells().pickup(other_holder).is_some_and(|holder| holder.active && holder.control_flags & ENTITY_DRAW_DISABLED_BIT == 0));
+    assert_final_castle_defender_hidden(&campaign, root_slot, defender);
     campaign.step(PlayerCommand::default(), 0);
     let simulation = campaign.simulation();
     assert!(simulation.economy().free_source_slots().contains(&holder_slot)
         || simulation.economy().slot_generation(holder_slot) != holder_generation,
         "the hidden holder must cross the next source reclaim boundary");
+    assert!(simulation.economy().free_source_slots().contains(&defender.0)
+        || simulation.economy().slot_generation(defender.0) != defender.1,
+        "the hidden collector must cross its next source reclaim boundary");
 
     // Check both the generation-bound relation and the AI's actual A4
     // carrier, whose family-2 entry is consumed by sub_146c0 decisions.
@@ -1227,8 +1267,7 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
 
 #[test]
 fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-paj2-source4-campaign-package");
+    let package = castle_owner_package("dragon-bee-20261105-integration/level5-owner-current/level5");
     let mut campaign = crate::campaign::CampaignSession::open(
         package,
         crate::campaign::spec::CampaignSelection::ordinary(5).unwrap(),
@@ -1247,6 +1286,7 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         campaign.step(PlayerCommand::default(), 0);
     }
     assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4);
+    let defender = wait_for_real_castle_defender(&mut campaign, root_slot);
     let old_root = campaign.simulation().source_arena().handle(root_slot).expect("imported root generation");
     let controllers = campaign.simulation().economy().castle_at(root_slot).unwrap()
         .controller_chain_slots.iter().copied().filter(|slot| *slot != 0)
@@ -1287,11 +1327,15 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     assert!(simulation.economy().castle_for_owner(owner).is_none());
     assert_eq!(simulation.shared_spells().players.iter().find(|p| p.entity_index == owner).unwrap().enabled_spell_holders[2], holder_slot);
     assert!(simulation.shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active && holder.control_flags & ENTITY_DRAW_DISABLED_BIT == 0));
+    assert_final_castle_defender_hidden(&campaign, root_slot, defender);
     // The old generation must cross the normal following-pass reclaim before
     // the rival is allowed the resources to select a replacement site.
     campaign.step(PlayerCommand::default(), 0);
     assert_ne!(campaign.simulation().source_arena().handle(root_slot), Some(old_root),
         "the destroyed root must reach its next source reclaim boundary");
+    assert!(campaign.simulation().economy().free_source_slots().contains(&defender.0)
+        || campaign.simulation().economy().slot_generation(defender.0) != defender.1,
+        "the old collector must be reclaimed before the normal rebuild");
     for (slot, generation) in controllers {
         assert!(campaign.simulation().economy().free_source_slots().contains(&slot)
             || campaign.simulation().economy().slot_generation(slot) != generation,
@@ -1664,7 +1708,11 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
                 live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(), ai.spell_enabled[2]);
             previous_holder_state = Some(holder_state);
         }
-        saw_queued_tier_zero |= holder.active_value > 0 && holder.source_word_2c() == 1;
+        // The holder can finish its active visit on the same turn it
+        // receives the new tier. Observe the request on that transition.
+        saw_queued_tier_zero |= before_holder.active_value > 0
+            && before_holder.source_word_2c() == 0
+            && holder.source_word_2c() == 1;
         if saw_queued_tier_zero && holder.active_value == 0
             && holder.source_word_2c() == 0 && holder.level_gate == 0 {
             let profile = live.source_spell_profile(2, 0, owner)
@@ -1708,7 +1756,20 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
                 paid = true;
             }
             if flyer.is_none() {
-                flyer = sim.source_arena().handle(actual.source_entity_index);
+                // The controlled approach can make the real target-bound
+                // flyer land and hide during its later same-pass visit,
+                // before the frame observer runs. Its reserved slot still
+                // carries this exact generation until
+                // next prepass. Keep the independent model43, root-mailbox,
+                // completed upgrade and following-reclaim assertions below.
+                assert_eq!(actual.target_castle_slot, root.source_entity_index);
+                assert_eq!((actual.source_byte_43, actual.source_byte_44), (10, 43));
+                assert!(!actual.site_rejected);
+                assert!(actual.active || actual.drawing_disabled);
+                flyer = Some(crate::campaign::source_arena::SourceEntityHandle {
+                    source_slot: actual.source_entity_index,
+                    generation: sim.economy().slot_generation(actual.source_entity_index),
+                });
             }
         }
         assert_eq!(sim.source_arena().handle(root.source_entity_index), Some(seed_handle),
@@ -6414,6 +6475,50 @@ fn level_two_castle_four_passes_collect_a_disabled_sphere_once() {
         .find(|sphere| sphere.id == foreign).unwrap().pending_delete);
     assert!(session.economy().spheres().iter()
         .find(|sphere| sphere.id == owned).unwrap().pending_delete);
+}
+
+#[test]
+fn final_castle_loss_retires_collector_after_allocator_reclaims_root() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+        .expect("qualified economy fixture");
+    let mut session = inspection.level2_reset_session().expect("economy session");
+    let root = session.economy_mut().build_castle(Position::default(), 111).expect("Castle");
+    session.economy_mut().castle.as_mut().unwrap().phase = 0;
+    assert!(session.economy_mut().step_castle_action(root));
+    let collector = session.economy().castle_at(root).unwrap().defender_slots[0];
+    assert_ne!(collector, 0, "an ordinary maintenance visit must produce the collector");
+    let collector_generation = session.economy().slot_generation(collector);
+
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_entry_mut(root).unwrap();
+        assert_eq!(castle.controller_chain_count, 0);
+        castle.action = 6;
+        castle.life = -1;
+        castle.mana_capacity = 1_000;
+        castle.mana = 2_900;
+        // One slot admits destruction. The first overflow consumes it,
+        // leaving 900 mana to release after the root has been hidden.
+        economy.free_slots.truncate(1);
+        assert_eq!(economy.free_slots.len(), 1);
+    }
+    session.economy_mut().begin_turn();
+    assert!(session.economy_mut().step_castle_action(root));
+    let release = session.economy().events().iter().filter_map(|event| match event {
+        Level2EconomyEvent::ManaSphereSpawned { source_entity_index, mana, .. }
+            if *source_entity_index == root => Some(*mana),
+        _ => None,
+    }).collect::<Vec<_>>();
+    assert_eq!(release, [2_000, 900]);
+    assert!(session.economy().castle_entry(root).is_none(),
+        "the overflow allocation must actually reclaim the root before maintenance");
+    assert_eq!(session.economy().slot_generation(collector), collector_generation);
+    assert!(session.economy().castle_children().iter().any(|child|
+        child.source_entity_index == collector && child.control_flags & ENTITY_DRAW_DISABLED_BIT != 0),
+        "the old collector must retire using its destroyed root's retained links");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().free_slots.contains(&collector)
+        || session.economy().slot_generation(collector) != collector_generation);
 }
 
 #[test]
