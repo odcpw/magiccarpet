@@ -3837,7 +3837,10 @@ namespace MagicCarpet.Native
                         if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha1 + key - 1))) spellKey = key;
                     if (spellKey != 0) SubmitGameRuntimeSpellKey(spellKey);
                     if (!sourceSuppressCasting && (mapped?.CastSelected ?? Input.GetKeyDown(KeyCode.Space))) RequestGameRuntimeSelectedSpellCast();
-                    if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L))
+                    if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L) &&
+                        (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) &&
+                        !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                        gameRuntimeCampaignSnapshot?.value?.source_top_status?.castle_rows?.Length > 0)
                         gameRuntimeRemoveCastleStageRequested = true;
                     if (session.ObservedCampaignIdentity().mode ==
                             GameRuntimeTransport.PlayingMode &&
