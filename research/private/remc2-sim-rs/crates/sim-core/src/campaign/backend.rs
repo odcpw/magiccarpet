@@ -10965,6 +10965,7 @@ pub(crate) mod tests {
             .backend()
             .semantic_spell_carry()
             .unwrap();
+        let map_panels_default = resolver.package(&entry).unwrap().selection.map_type_id == 2;
         let state = CampaignSaveState {
             definition: resolver
                 .package(&entry)
@@ -10987,7 +10988,7 @@ pub(crate) mod tests {
             source_context: None,
             source_hand_selection_flash_ticks: [0; 2],
             played_cutscenes: None,
-            display_settings: crate::game_runtime::DisplaySettings::default().into(),
+            display_settings: StoredDisplaySettings::for_map(playing.identity().display_settings, map_panels_default),
             receipt_sha256: String::new(),
             source_secret_announcement_count: 0,
         };
