@@ -320,7 +320,20 @@ function showCampaign(status: BridgeStatus): boolean {
     picker.replaceChildren(...menu.available_levels.map(id => new Option(levelName(id), id, false, id === menu.selected_level_id)));
     enter.disabled = !picker.value;
   }
+  if (!modernRequested && (select || phase === 'title')) {
+    element('save').hidden = !select;
+    const load = element<HTMLButtonElement>('load');
+    load.hidden = false;
+    load.disabled = !status.has_save;
+  }
   return true;
+}
+
+async function selectCampaignMission(): Promise<void> {
+  const chosen = element<HTMLSelectElement>('campaign-level').value;
+  const status = await readStatus();
+  if (chosen !== status.campaign_menu?.selected_level_id)
+    await post('/control', { action: 'select_mission', level_id: chosen });
 }
 
 async function advanceCampaign(): Promise<void> {
@@ -336,12 +349,7 @@ async function advanceCampaign(): Promise<void> {
       await post('/control', { action: 'open_campaign' });
       showCampaign(await readStatus());
     } else if (campaignPhase === 'mission_select' || campaignPhase === 'loading' || campaignPhase === 'refresh_assets') {
-      if (campaignPhase === 'mission_select') {
-        const chosen = element<HTMLSelectElement>('campaign-level').value;
-        const status = await readStatus();
-        if (chosen !== status.campaign_menu?.selected_level_id)
-          await post('/control', { action: 'select_mission', level_id: chosen });
-      }
+      if (campaignPhase === 'mission_select') await selectCampaignMission();
       message.textContent = 'Loading mission…';
       await post('/control', { action: campaignPhase === 'refresh_assets' ? 'refresh_assets' : 'start_mission' });
       const status = await readStatus();
@@ -410,6 +418,7 @@ function fail(error: unknown): void {
 }
 
 async function control(action: string, fields: Record<string, unknown> = {}): Promise<void> {
+  if (campaignPhase && busy) return;
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance';
@@ -427,15 +436,28 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   }
   if (!keepFlightInput) clearInput();
   try {
+    if (action === 'save' && campaignPhase === 'mission_select') await selectCampaignMission();
     const result = await post('/control', { action, ...fields });
     if (action === 'start' || action === 'resume') {
       started = true; playing = true; hideMenu(); canvas.focus();
       if (!polling) { polling = true; void pollFrame(); }
     }
     else if (action === 'pause') { playing = false; showMenu('Paused'); }
-    else if (action === 'save') { message.textContent = 'Game saved.'; element('hint').textContent = 'Game saved.'; }
+    else if (action === 'save') {
+      element<HTMLButtonElement>('load').disabled = false;
+      message.textContent = 'Game saved.'; element('hint').textContent = 'Game saved.';
+    }
     else if (action === 'toggle_speech') showSpeechPreference(result.speech_enabled, result.speech_available);
     else if (action === 'load' || action === 'reset') {
+      if (action === 'load' && !modernRequested) {
+        const status = await readStatus();
+        if (showCampaign(status)) return;
+        if (campaignPhase) {
+          // The menu page has no renderer or assets for this saved mission.
+          location.reload();
+          return;
+        }
+      }
       history.reset(); playing = result.running === true; showMenu(action === 'load' ? 'Game loaded.' : 'Level restarted.');
       if (playing) hideMenu();
     }
@@ -447,6 +469,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
     if (informationMutation) informationPending = false;
     // A refused save/selection leaves the existing native owner intact.
     message.textContent = error instanceof Error ? error.message : String(error);
+    if (campaignPhase) return;
     if (!playing) showMenu(message.textContent);
     else { element('hint').textContent = message.textContent; element('hint').hidden = false; }
   }
