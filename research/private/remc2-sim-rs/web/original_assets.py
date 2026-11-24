@@ -340,6 +340,9 @@ class OriginalAssets:
         expected = {
             19: dict(row=19, kind=2, flags=0x400, text_record=307, duration=50, x=0, y=0, age_threshold=160, priority=5),
             20: dict(row=20, kind=2, flags=0, text_record=308, duration=50, x=0, y=0, age_threshold=160, priority=5),
+            22: dict(row=22, kind=2, flags=0, text_record=310, duration=50, x=0, y=0, age_threshold=320, priority=4),
+            25: dict(row=25, kind=2, flags=0, text_record=313, duration=50, x=0, y=0, age_threshold=160, priority=5),
+            26: dict(row=26, kind=2, flags=0, text_record=314, duration=50, x=0, y=0, age_threshold=160, priority=5),
             83: dict(row=83, kind=8, flags=0x280, text_record=345, duration=50, x=0, y=0, age_threshold=100, priority=5),
         }
         rows = [row for row in table['rows'] if row['row'] in expected]
@@ -380,6 +383,8 @@ class OriginalAssets:
         if [row['selector'] for row in frame] != [171, 172, 173]:
             raise ValueError('source help frame selectors differ')
         texts = {19: b'Destroy this for its mana', 20: b'Collect this spell by flying into it',
+                 22: b'This stone restores your life', 25: b'This is an enemy castle',
+                 26: b'This is an enemy balloon',
                  83: b'Fly here to exit the level'}
         result = {}
         for row in rows:

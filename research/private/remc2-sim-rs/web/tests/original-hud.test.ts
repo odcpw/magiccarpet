@@ -253,6 +253,47 @@ print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()
   assert.equal(dayHud.visibleMapHint()?.row, 20, 'repaint does not advance the hint clock');
   dayHud.advanceMapHints(onlyPickup, {...nextEpoch, sequence: 53});
   assert.equal(dayHud.visibleMapHint(), null);
+
+  assert.equal(qualified.manifest.help['22'].text, 'This stone restores your life');
+  assert.equal(qualified.manifest.help['25'].text, 'This is an enemy castle');
+  assert.equal(qualified.manifest.help['26'].text, 'This is an enemy balloon');
+  const stone = {...creature, subject_entity_index: 21, help_selector: 22, x: 14, y: 18};
+  const castle = {...creature, subject_entity_index: 22, help_selector: 25, x: 28, y: 32};
+  const balloon = {...creature, subject_entity_index: 23, help_selector: 26, x: 36, y: 40};
+  const subjects = {...context, generation: 8, entities: [
+    {entity: 21, x: 40, y: 0}, {entity: 22, x: 100, y: 0}, {entity: 23, x: 20, y: 0},
+  ]};
+  const all = {...visible, world_map: {entities: [stone, castle, balloon], marks: []}};
+  const mapAdvance = (sequence: number, next = all) => dayHud.advanceMapHints(next, {...subjects, sequence});
+  mapAdvance(1); mapAdvance(2); mapAdvance(3);
+  assert.deepEqual(dayHud.visibleMapHint(), {row: 25, subject: 22, x: 56, y: 64},
+    'source priority and row order select the rival Castle before the nearer balloon or Dolmen');
+  const castleMap = dayHud.compose(scene, palette, all);
+  assert.notDeepEqual(castleMap, baseline, 'rival Castle help draws owner text');
+  assert.equal(castleMap[Math.ceil(castle.y * 480 / 200) * 640 + castle.x * 2],
+    qualified.manifest.help['25'].line_color, 'full-map leader reaches the expanded source marker');
+  mapAdvance(4, {...all, world_map: {entities: [stone, {...castle, x: 30}, balloon], marks: []}});
+  assert.equal(dayHud.visibleMapHint()?.x, 60, 'the leader tracks the live Castle marker');
+  mapAdvance(5, {...all, world_map: {entities: [stone, balloon], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'Castle disappearance retires the pointer');
+  for (let sequence = 6; sequence <= 26; sequence++) mapAdvance(sequence, {...all, world_map: {entities: [stone, balloon], marks: []}});
+  assert.equal(dayHud.visibleMapHint()?.row, 26, 'remaining visible rival balloon wins the next poll');
+  mapAdvance(27, {...all, world_map: {entities: [stone], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'a no-longer-visible balloon clears its pointer');
+  for (let sequence = 28; sequence <= 48; sequence++) mapAdvance(sequence, {...all, world_map: {entities: [stone], marks: []}});
+  assert.equal(dayHud.visibleMapHint()?.row, 22, 'healing Dolmen wins once higher-priority rows have gone');
+  mapAdvance(49, {...all, world_map: {entities: [{...stone, visible: 0}], marks: []}});
+  assert.equal(dayHud.visibleMapHint(), null, 'hidden Dolmen no longer presents guidance');
+
+  const cornerCastle = {...castle, x: 64, y: 64};
+  const corner = {...state, minimap: {terrain: Array(4096).fill(7), coverage: Array(4096).fill(1),
+    entities: [cornerCastle], marks: []}};
+  for (let sequence = 1; sequence <= 3; sequence++)
+    dayHud.advanceMapHints(corner, {...subjects, generation: 9, sequence});
+  assert.deepEqual(dayHud.visibleMapHint(), {row: 25, subject: 22, x: 64, y: 64});
+  const cornerMap = dayHud.compose(scene, palette, corner);
+  assert.equal(cornerMap[Math.ceil((cornerCastle.y / 2) * 480 / 200) * 640 + cornerCastle.x],
+    qualified.manifest.help['25'].line_color, 'corner leader reaches the expanded source marker');
 });
 
 test('source Castle and balloon rows control status bars', () => {

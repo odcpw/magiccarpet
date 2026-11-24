@@ -137,16 +137,19 @@ export class OriginalHud {
         throw new Error('Invalid Original exit help asset');
       this.exitHelp = exitHelp;
     }
-    for (const [id, record, flags] of [[19, 307, 0x400], [20, 308, 0]] as const) {
+    for (const [id, record, flags, age, priority] of [
+      [19, 307, 0x400, 160, 5], [20, 308, 0, 160, 5], [22, 310, 0, 320, 4],
+      [25, 313, 0, 160, 5], [26, 314, 0, 160, 5],
+    ] as const) {
       const help = manifest.help?.[String(id)];
       if (!help) continue;
-      if (help.text_record !== record || help.flags !== flags || help.duration !== 50 || help.age_threshold !== 160 ||
-          help.priority !== 5 || !help.text || !Number.isInteger(help.box_width) || help.box_width! < help.width ||
+      if (help.text_record !== record || help.flags !== flags || help.duration !== 50 || help.age_threshold !== age ||
+          help.priority !== priority || !help.text || !Number.isInteger(help.box_width) || help.box_width! < help.width ||
           help.box_width! > 220 || help.width <= 0 || help.height <= 0 || help.height > 64 ||
           span(help.mask).length !== help.width * help.height || help.frame.length !== 3 ||
           help.frame.some((row, index) => row.selector !== 171 + index || row.width <= 0 || row.height <= 0 ||
             span(row.indices).length !== row.width * row.height || span(row.mask).length !== row.width * row.height))
-        throw new Error('Invalid Original creature or pickup help asset');
+        throw new Error('Invalid Original map help asset');
       this.mapHelp.set(id, help);
       this.hintRows.set(id, { age: help.age_threshold, priority: help.priority });
     }
@@ -295,7 +298,7 @@ export class OriginalHud {
       else { this.hintCurrent = found; this.hintDraw = found; if (--this.hintRemaining === 0) close(); }
     } else if (--this.hintDelay <= 0) {
       let best: { row: number; subject: number; x: number; y: number; overdue: number; priority: number } | null = null;
-      for (const id of [19, 20]) {
+      for (const id of [19, 20, 22, 25, 26]) {
         const info = this.hintRows.get(id), help = this.mapHelp.get(id);
         if (!info || !help || info.age <= help.age_threshold) continue;
         const candidates = marks.filter(row => row.row === id);
@@ -738,7 +741,9 @@ export class OriginalHud {
       // Explicit map inspection uses the source Type-8 leader and owner font;
       // the live WebGL scene receives an opaque source-colour box.
       const anchorX = inspected ? inspected.x * 2 : automatic!.x;
-      const anchorY = inspected ? Math.ceil(inspected.y * 480 / 200) : automatic!.y;
+      // Automatic subjects retain the source's doubled 320x200 coordinate;
+      // the composed map expands vertically to 480 pixels, not 400.
+      const anchorY = inspected ? Math.ceil(inspected.y * 480 / 200) : Math.ceil(automatic!.y * 480 / 400);
       const boxWidth = help.box_width ?? help.text.length * 8, boxHeight = help.height;
       if (boxWidth <= 0 || boxWidth > 220 || help.width > boxWidth || help.height > boxHeight)
         throw new Error('Invalid Original exit help text dimensions');

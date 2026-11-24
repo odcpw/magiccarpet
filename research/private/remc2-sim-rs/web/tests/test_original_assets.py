@@ -43,7 +43,9 @@ class OwnerAssetTests(unittest.TestCase):
         self.assertEqual(notification['format'], text(159))
         self.assertEqual(notification['families'], [text(i) for i in range(160, 186)])
         self.assertEqual(manifest['participant_notices'], {
-            'participant.died': text(374), 'participant.banished': text(283)})
+            'participant.died': text(374), 'participant.banished': text(283),
+            'participant.help_mode_on': text(400), 'participant.help_mode_off': text(401),
+            'participant.flight_assistance_on': text(398), 'participant.flight_assistance_off': text(399)})
         colors = (assets.ROOT / 'environment-complete/cache-level1/palette/colors.u8').read_bytes()
         self.assertEqual(notification['color'], colors[3840])
         self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 56)) + [284, 285])
@@ -142,11 +144,15 @@ class OwnerAssetTests(unittest.TestCase):
                 self.assertEqual(self.span(bundle, m['exit']), expected_exit)
                 self.assertEqual((m['map_profile'], m['hud_profile']), (profile, 'night'))
                 hint = m['help']['83']
-                for selector, text, record, flags in ((19, 'Destroy this for its mana', 307, 0x400),
-                                                       (20, 'Collect this spell by flying into it', 308, 0)):
+                for selector, text, record, flags, age, priority in (
+                    (19, 'Destroy this for its mana', 307, 0x400, 160, 5),
+                    (20, 'Collect this spell by flying into it', 308, 0, 160, 5),
+                    (22, 'This stone restores your life', 310, 0, 320, 4),
+                    (25, 'This is an enemy castle', 313, 0, 160, 5),
+                    (26, 'This is an enemy balloon', 314, 0, 160, 5)):
                     row = m['help'][str(selector)]
                     self.assertEqual((row['text'], row['text_record'], row['flags'], row['duration'],
-                                      row['age_threshold'], row['priority']), (text, record, flags, 50, 160, 5))
+                                      row['age_threshold'], row['priority']), (text, record, flags, 50, age, priority))
                     self.assertEqual(len(self.span(bundle, row['mask'])), row['width'] * row['height'])
                     self.assertTrue(any(self.span(bundle, row['mask'])))
                 self.assertEqual((m['help']['20']['box_width'], m['help']['20']['height']), (188, 28))
@@ -180,7 +186,7 @@ class OwnerAssetTests(unittest.TestCase):
     def test_optional_help_and_confined_receipt_bound_paths(self):
         self.assertIsNone(assets.OriginalAssets().manifest['help'])
         old = self.generated / 'castle-status-help-20261122-candidate'
-        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20'})
+        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20', '22', '25', '26'})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'cache'
             root.mkdir()
