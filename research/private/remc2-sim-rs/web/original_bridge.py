@@ -904,6 +904,7 @@ class Bridge:
                 except queue.Empty: item = None
                 if item:
                     value, done = item
+                    load_started = time.monotonic() if value.get('kind') == 'control' and value.get('action') == 'load' else None
                     try:
                         seq = value.get("sequence")
                         if type(seq) is not int or seq < 0: raise ValueError("invalid sequence")
@@ -1127,6 +1128,12 @@ class Bridge:
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
+                    finally:
+                        if load_started is not None:
+                            # The client is waiting for this synchronous restore,
+                            # not absent while the owner resolves its package.
+                            now = time.monotonic()
+                            self.last_contact = min(now, self.last_contact + (now - load_started))
                 now = time.monotonic()
                 if self.running and (now - self.last_contact > 1.5 or
                                      (not draw_ready and draw_wait_started is not None and now - draw_wait_started > 1.5)):
