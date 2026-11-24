@@ -7517,6 +7517,22 @@ impl Mc2Simulation {
         Ok(())
     }
 
+    /// Current source-owned SS2 pixels. An absent selector uses its immutable
+    /// owner base image; no read changes residency, demand, or playback.
+    pub fn source_tmap_images(&self) -> Vec<(u16, Vec<u8>)> {
+        let clocks = &self.session.state.live.source_animation_clocks;
+        (0..crate::source_animation::SOURCE_TMAP_COUNT)
+            .filter_map(|selector| clocks.pixels(selector as u16)
+                .map(|pixels| (selector as u16, pixels.to_vec())))
+            .collect()
+    }
+
+    pub(crate) fn source_tmap_is_animated(&self, selector: u16) -> bool {
+        self.session.state.live.source_animations.catalog()
+            .and_then(|catalog| catalog.record(selector))
+            .is_some_and(|row| row.encoded_frame_count.is_some() || matches!(row.group, 311 | 480 | 488 | 496))
+    }
+
     /// Both receipt consumers validate before either authoritative owner is
     /// mutated. A failed demand or stale handle leaves the whole frame unapplied.
     pub(crate) fn apply_source_render_feedback(

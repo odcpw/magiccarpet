@@ -3999,6 +3999,34 @@ pub struct Mc2CampaignBackend {
 }
 
 impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
+    /// A geometry presentation reports only selectors it actually submitted.
+    /// Do not accept actor visibility flags from that approximate renderer.
+    /// Acknowledgements enter the same guarded, replay-recorded source demand
+    /// carrier used by the indexed primary frame.
+    pub fn acknowledge_tmap_draw(
+        &mut self, generation: u64, tick: u64, yaw: i16, selectors: &[u16],
+    ) -> std::result::Result<(), String> {
+        let session = self.presentation_session_mut()
+            .ok_or_else(|| "TMAP draw requires a playing or paused authority".to_owned())?;
+        let identity = session.identity();
+        if identity.generation != generation || identity.tick != tick {
+            return Err("TMAP draw generation or tick is stale".to_owned());
+        }
+        if selectors.len() > crate::source_animation::SOURCE_TMAP_COUNT
+            || selectors.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err("TMAP draw selectors must be sorted and unique".to_owned());
+        }
+        let available = session.backend().campaign.simulation()
+            .campaign_entity_presentations(yaw).map_err(|error| error.to_string())?;
+        if selectors.iter().any(|selector| !session.backend().campaign.simulation().source_tmap_is_animated(*selector)
+            || !available.iter().any(|row| row.selected_tmap == *selector && row.draw_order != u32::MAX))
+        {
+            return Err("TMAP draw selector is absent from current presentation".to_owned());
+        }
+        session.backend_mut().apply_primary_visibility_change(tick, &[], selectors)
+    }
+
     /// Accept only the real native frame carrier; client code cannot submit
     /// arbitrary actor IDs or set gameplay visibility flags through this API.
     pub fn acknowledge_primary_sprite_frame(

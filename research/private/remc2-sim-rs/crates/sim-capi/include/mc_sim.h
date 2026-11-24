@@ -1353,6 +1353,21 @@ int32_t mc_game_runtime_render_observation_copy_v1(
     uint64_t handle, uint64_t expected_runtime_generation,
     uint64_t expected_session_generation, uint64_t expected_tick,
     uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+/* Current source-owned animated TMAP images, read-only. Little-endian payload:
+ * u16 count, then count records of u16 selector, u32 length, length bytes.
+ * Missing selectors use their owner base image. A short buffer returns BOUNDS
+ * and the required size without writing the payload. */
+int32_t mc_game_runtime_tmap_pixels_copy_v1(
+    uint64_t handle, uint64_t expected_runtime_generation,
+    uint64_t expected_session_generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+/* Acknowledge actually submitted geometry selectors at this exact source turn.
+ * Selectors must be sorted, unique, animated and present in the live view.
+ * The source owner deduplicates demands and records them for replay. */
+int32_t mc_game_runtime_tmap_draw_v1(
+    uint64_t handle, uint64_t expected_runtime_generation,
+    uint64_t expected_session_generation, uint64_t expected_tick,
+    int16_t source_yaw, const uint16_t *selectors, uint32_t count);
 /* Read-only, generation/tick-guarded live source BUILD owners. */
 typedef struct McRuntimeBuildingV1 {
     uint32_t abi_version, struct_size;

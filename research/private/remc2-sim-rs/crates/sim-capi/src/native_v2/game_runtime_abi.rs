@@ -2155,6 +2155,77 @@ pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32
     boundary(|| with_runtime_mut(handle, |runtime| runtime.resume(handle, generation)))
 }
 
+fn validate_tmap_guard(record: &RuntimeRecord, runtime_generation: u64, session_generation: u64, tick: u64) -> AbiResult<()> {
+    record.ensure_open()?;
+    if record.runtime.identity().generation != runtime_generation {
+        return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale TMAP runtime generation"));
+    }
+    let identity = record.session()?.identity();
+    if identity.generation != session_generation {
+        return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale TMAP session generation"));
+    }
+    if identity.tick != tick {
+        return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "stale TMAP tick"));
+    }
+    Ok(())
+}
+
+/// Pure snapshot of the current source-owned selector images. The binary
+/// format is u16 count followed by sorted (u16 selector, u32 length, bytes).
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_tmap_pixels_copy_v1(
+    handle: u64, runtime_generation: u64, session_generation: u64, tick: u64,
+    buffer: *mut u8, capacity: u32, out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_length, "TMAP pixel length")?;
+        with_runtime(handle, |record| {
+            validate_tmap_guard(record, runtime_generation, session_generation, tick)?;
+            let images = record.session()?.backend().campaign_presentation_source().simulation().source_tmap_images();
+            let count = u16::try_from(images.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "too many TMAP images"))?;
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&count.to_le_bytes());
+            for (selector, pixels) in images {
+                let length = u32::try_from(pixels.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "TMAP image too large"))?;
+                bytes.extend_from_slice(&selector.to_le_bytes());
+                bytes.extend_from_slice(&length.to_le_bytes());
+                bytes.extend_from_slice(&pixels);
+            }
+            let length = u32::try_from(bytes.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "TMAP snapshot too large"))?;
+            write_output(out_length, length);
+            if capacity < length { return Err(AbiError::new(MC_STATUS_BOUNDS, "TMAP pixel buffer too small")); }
+            if buffer.is_null() { return Err(AbiError::new(MC_STATUS_NULL_POINTER, "TMAP pixel buffer is null")); }
+            // SAFETY: the caller provided a non-null buffer of the validated capacity.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
+            Ok(())
+        })
+    })
+}
+
+/// Acknowledge only geometry-submitted source selectors at their exact turn.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_tmap_draw_v1(
+    handle: u64, runtime_generation: u64, session_generation: u64, tick: u64, yaw: i16,
+    selectors: *const u16, count: u32,
+) -> i32 {
+    boundary(|| {
+        if count > 504 { return Err(AbiError::new(MC_STATUS_BOUNDS, "too many TMAP selectors")); }
+        if count > 0 && selectors.is_null() { return Err(AbiError::new(MC_STATUS_NULL_POINTER, "TMAP selectors are null")); }
+        if count > 0 && !selectors.is_aligned() { return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "TMAP selectors are unaligned")); }
+        let selectors = if count == 0 { &[][..] } else {
+            // SAFETY: non-null selector array with caller-declared bounded extent.
+            unsafe { std::slice::from_raw_parts(selectors, count as usize) }
+        };
+        with_runtime_mut(handle, |record| {
+            validate_tmap_guard(record, runtime_generation, session_generation, tick)?;
+            record.runtime.acknowledge_tmap_draw(session_generation, tick, yaw, selectors)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            record.campaign_presentation_dirty = true;
+            Ok(())
+        })
+    })
+}
+
 /// Advance one visible/hidden presentation frame without a gameplay callback.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_presentation_frame_v1(
@@ -6277,6 +6348,76 @@ mod tests {
             ),
             MC_STATUS_GENERATION_MISMATCH
         );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn tmap_draw_receipt_advances_real_goat_pixels_and_survives_cold_replay() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir": generated.join("mc-bhq8-level1-collision-v5-night"), "owner_cache_path": generated.join("mc-oi62-environment-level1-v2")},
+                {"package_dir": generated.join("mc-level2-vault-successor-closure-20261025"), "owner_cache_path": generated.join("mc-oi68-level2-fullbank-v2-20261029")},
+                {"package_dir": generated.join("level3-day-block32-campaign-recipe-v2"), "owner_cache_path": generated.join("mc-oi68-level3-fullbank-v2-20261029")}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let goats = with_runtime(handle, |record| {
+            let rows = record.session()?.backend().campaign_presentation_source().simulation()
+                .campaign_entity_presentations(0).unwrap();
+            Ok(rows.iter().filter(|row| row.selected_tmap == 152 && row.draw_order != u32::MAX).count())
+        }).unwrap();
+        assert!(goats >= 2, "the real NightSpire package presents two shared-selector actors");
+        let pixels = |owner, runtime, session, tick| {
+            read_bytes(|buffer, capacity, length| mc_game_runtime_tmap_pixels_copy_v1(
+                owner, runtime, session, tick, buffer, capacity, length))
+        };
+        let image = |bytes: &[u8], wanted: u16| {
+            let count = u16::from_le_bytes(bytes[0..2].try_into().unwrap());
+            let mut offset = 2;
+            for _ in 0..count {
+                let selector = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+                let length = u32::from_le_bytes(bytes[offset + 2..offset + 6].try_into().unwrap()) as usize;
+                offset += 6;
+                if selector == wanted { return Some(bytes[offset..offset + length].to_vec()); }
+                offset += length;
+            }
+            None
+        };
+        let selector = [152_u16];
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        let initial = image(&pixels(handle, 3, 1, 0), 152).unwrap();
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        assert_eq!(image(&pixels(handle, 3, 1, 0), 152).unwrap(), initial, "repeated same-turn receipt does not advance");
+        assert_eq!(mc_game_session_step_json_v1(handle, 1, 0, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        let advanced = image(&pixels(handle, 3, 1, 1), 152).unwrap();
+        assert_ne!(advanced, initial, "a demanded source image advances on the next turn");
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_session_step_json_v1(handle, 1, 1, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert_eq!(image(&pixels(handle, 3, 1, 2), 152).unwrap(), advanced, "no draw means no clock advance");
+        let save = with_runtime(handle, |record| record.save_replay(handle, 3, 1, 2)).unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32, save.as_ptr(), save.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        assert_eq!(image(&pixels(cold, 2, 1, 2), 152).unwrap(), advanced, "cold replay reconstructs source pixels");
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused = identity(handle);
+        let generation = paused["session"]["generation"].as_str().unwrap().parse().unwrap();
+        let frozen = pixels(handle, 4, generation, 2);
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 4, generation, 2, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        assert_eq!(pixels(handle, 4, generation, 2), frozen, "paused reads do not advance");
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let resumed = identity(handle);
+        let session_generation = resumed["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_step_json_v1(handle, session_generation, 2, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert_ne!(image(&pixels(handle, 5, session_generation, 3), 152).unwrap(), advanced,
+            "a paused draw advances only after resume and a gameplay turn");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
