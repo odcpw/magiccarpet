@@ -786,6 +786,11 @@ int32_t mc_native_campaign_day_music_end(
 int32_t mc_native_campaign_day_indexed_frame_render(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignDayIndexedFrameInfoV2 *out_info, uint32_t out_info_size);
+/* Current qualified owner palette after native source effects. Does not render
+ * or advance presentation; requires 768 bytes. out_written is zero on error. */
+int32_t mc_native_campaign_palette_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *rgb8_buffer, uint32_t rgb8_capacity, uint32_t *out_written);
 int32_t mc_native_campaign_day_indexed_frame_copy(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint8_t *index_buffer, uint32_t index_capacity,

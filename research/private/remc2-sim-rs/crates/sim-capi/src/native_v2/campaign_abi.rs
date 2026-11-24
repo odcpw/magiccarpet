@@ -2709,6 +2709,50 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
     })
 }
 
+/// Copy the current owner palette with the live source palette modification.
+/// This does not render or advance a presentation frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_palette_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    rgb8_buffer: *mut u8,
+    rgb8_capacity: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "campaign palette byte count")?;
+        write_output(out_written, 0);
+        with_campaign_session(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH,
+                    format!("campaign palette generation {generation} does not match {}", session.generation)));
+            }
+            let CampaignSessionKind::Campaign { reset, day_frame_assets, .. } = &session.kind else {
+                return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "campaign palette requires a campaign session"));
+            };
+            if expected_tick != reset.state.tick {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH,
+                    format!("campaign palette tick {expected_tick} does not match {}", reset.state.tick)));
+            }
+            if rgb8_capacity < 768 {
+                return Err(AbiError::new(MC_STATUS_BUFFER_TOO_SMALL,
+                    format!("campaign palette requires 768 bytes, got {rgb8_capacity}")));
+            }
+            require_output(rgb8_buffer, "campaign palette buffer")?;
+            let assets = day_frame_assets.as_ref().ok_or_else(|| AbiError::new(
+                MC_STATUS_VALIDATION_FAILED, "campaign palette requires a qualified owner cache"))?;
+            let mut palette = [0_u8; 768];
+            palette.copy_from_slice(assets.palette_rgb8());
+            reset.field_palette().apply_rgb8(&mut palette);
+            // SAFETY: the caller's non-null buffer has at least 768 bytes.
+            unsafe { rgb8_buffer.copy_from_nonoverlapping(palette.as_ptr(), palette.len()); }
+            write_output(out_written, 768);
+            Ok(())
+        })
+    })
+}
+
 /// Copy the complete committed Day indexed frame.  Rendering and copying are
 /// separate so a pre-render or stale-generation request cannot expose an old
 /// frame as current.

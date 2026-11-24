@@ -2224,6 +2224,63 @@ fn campaign_level2_gameplay_cache_tamper_is_rejected() {
 }
 
 #[test]
+fn campaign_palette_copy_tracks_opening_objective_flash_and_recovery() {
+    const PALETTE_BYTES: usize = 768;
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let handle = open_level2_campaign_handle_with_package_and_asset_cache(
+        &generated.join("mc-level2-vault-successor-closure-20261025"),
+        &generated.join("mc-b9s2-cursor-level2-vault-20261029"),
+    );
+    let mut palette = [0_u8; PALETTE_BYTES];
+    let mut written = 99;
+    // The palette-only API must work before any indexed frame has rendered.
+    assert_eq!(mc_native_campaign_palette_copy(handle, 0, 0, palette.as_mut_ptr(),
+        PALETTE_BYTES as u32, &raw mut written), MC_STATUS_OK);
+    assert_eq!(written, PALETTE_BYTES as u32);
+    let original = palette;
+    let mut sentinel = [0xa5_u8; PALETTE_BYTES];
+    for (generation, tick, capacity, expected) in [
+        (1, 0, 768, MC_STATUS_GENERATION_MISMATCH),
+        (0, 1, 768, MC_STATUS_GENERATION_MISMATCH),
+        (0, 0, 767, MC_STATUS_BUFFER_TOO_SMALL),
+    ] {
+        written = 99;
+        assert_eq!(mc_native_campaign_palette_copy(handle, generation, tick,
+            sentinel.as_mut_ptr(), capacity, &raw mut written), expected);
+        assert_eq!(written, 0);
+        assert_eq!(sentinel, [0xa5; PALETTE_BYTES]);
+    }
+    assert_eq!(mc_native_campaign_palette_copy(handle, 0, 0, std::ptr::null_mut(),
+        PALETTE_BYTES as u32, &raw mut written), MC_STATUS_NULL_POINTER);
+    assert_eq!(written, 0);
+
+    let mut index = vec![0_u8; 320 * 200];
+    let mut rendered_palette = [0_u8; PALETTE_BYTES];
+    let mut flashed = false;
+    let mut recovered = false;
+    for tick in 0..96_u64 {
+        if tick != 0 { step_level2_campaign_once(handle, 0); }
+        written = 0;
+        assert_eq!(mc_native_campaign_palette_copy(handle, 0, tick, palette.as_mut_ptr(),
+            PALETTE_BYTES as u32, &raw mut written), MC_STATUS_OK);
+        assert_eq!(written, PALETTE_BYTES as u32);
+        let mut info = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(mc_native_campaign_day_indexed_frame_render(handle, 0, tick,
+            &raw mut info, struct_size::<McCampaignDayIndexedFrameInfoV2>()), MC_STATUS_OK);
+        let (mut index_written, mut palette_written) = (0, 0);
+        assert_eq!(mc_native_campaign_day_indexed_frame_copy(handle, 0, tick,
+            index.as_mut_ptr(), index.len() as u32, rendered_palette.as_mut_ptr(),
+            PALETTE_BYTES as u32, &raw mut index_written, &raw mut palette_written), MC_STATUS_OK);
+        assert_eq!((index_written, palette_written), (index.len() as u32, PALETTE_BYTES as u32));
+        assert_eq!(palette, rendered_palette, "palette-only and indexed owner must agree at tick {tick}");
+        flashed |= palette != original;
+        if flashed && palette == original { recovered = true; break; }
+    }
+    assert!(flashed && recovered, "ordinary opening objective flash must change and restore the actual owner palette");
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn campaign_day_indexed_frame_is_generation_bound_complete_and_fail_closed() {
     const INDEX_BYTES: usize = 320 * 200;
     const PALETTE_BYTES: usize = 256 * 3;
