@@ -6,7 +6,7 @@ type SpriteRow = { selector: number; width: number; height: number; runtime_widt
 type ObjectiveRow = { selector: number; reference_x: number; reference_y: number; render_width: number; render_height: number; blend_x: number; blend_y: number; blend_width: number; blend_height: number; indices: Span; mask: Span };
 type TierRow = { tier: number; width: number; height: number; color: number; rgba: Span };
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
-type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
+type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; x: number; y: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
 type AbilityNotificationAssets = { format: string; families: string[]; color: number };
 type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null; ability_notification: AbilityNotificationAssets; participant_notices: Record<string, string> };
@@ -40,6 +40,7 @@ export interface OriginalHudState {
   exit_inspection_allowed?: boolean;
   exit_inspection_subject?: number | null;
   source_top_status?: SourceTopStatus | null;
+  castle_goal_hint_eligible?: boolean | null;
   spell_menu?: SpellMenu | null;
   player_information?: { players: readonly { source_slot: number; display_name: string; outline_palette_index: number; text_palette_index: number; max_mana: number; kills8: readonly number[] }[]; projection_error: string | null } | null;
   pause_menu?: { open: boolean; can_load: boolean; sound_enabled: boolean; music_enabled: boolean } | null;
@@ -140,11 +141,14 @@ export class OriginalHud {
     for (const [id, record, flags, age, priority] of [
       [19, 307, 0x400, 160, 5], [20, 308, 0, 160, 5], [22, 310, 0, 320, 4],
       [25, 313, 0, 160, 5], [26, 314, 0, 160, 5], [27, 315, 0, 320, 3],
+      [29, 317, 544, 800, 2], [30, 318, 544, 800, 2], [31, 319, 544, 800, 2],
+      [32, 320, 544, 800, 2], [33, 321, 544, 800, 2], [34, 322, 544, 800, 2], [35, 323, 1568, 800, 2],
     ] as const) {
       const help = manifest.help?.[String(id)];
       if (!help) continue;
       if (help.text_record !== record || help.flags !== flags || help.duration !== 50 || help.age_threshold !== age ||
-          help.priority !== priority || !help.text || !Number.isInteger(help.box_width) || help.box_width! < help.width ||
+          help.priority !== priority || !help.text || !Number.isInteger(help.x) || !Number.isInteger(help.y) ||
+          !Number.isInteger(help.box_width) || help.box_width! < help.width ||
           help.box_width! > 220 || help.width <= 0 || help.height <= 0 || help.height > 64 ||
           span(help.mask).length !== help.width * help.height || help.frame.length !== 3 ||
           help.frame.some((row, index) => row.selector !== 171 + index || row.width <= 0 || row.height <= 0 ||
@@ -294,14 +298,32 @@ export class OriginalHud {
     };
     const marks = (map?.entities ?? []).map(marker).filter((row): row is NonNullable<typeof row> => row !== null);
     if (this.hintCurrent && this.hintRemaining) {
-      const found = marks.find(row => row.row === this.hintCurrent!.row && row.subject === this.hintCurrent!.subject);
+      // Fixed status anchors are sampled on the poll and retain their source
+      // lifetime; entity anchors must still identify a live map subject.
+      const statusHint = this.hintCurrent.row >= 29 && this.hintCurrent.row <= 35;
+      const found = statusHint ? (full ? null : this.hintCurrent) :
+        marks.find(row => row.row === this.hintCurrent!.row && row.subject === this.hintCurrent!.subject);
       if (!found) close();
       else { this.hintCurrent = found; this.hintDraw = found; if (--this.hintRemaining === 0) close(); }
     } else if (--this.hintDelay <= 0) {
       let best: { row: number; subject: number; x: number; y: number; overdue: number; priority: number } | null = null;
-      for (const id of [19, 20, 22, 25, 26, 27]) {
+      for (const id of [19, 20, 22, 25, 26, 27, 29, 30, 31, 32, 33, 34, 35]) {
         const info = this.hintRows.get(id), help = this.mapHelp.get(id);
         if (!info || !help || info.age <= help.age_threshold) continue;
+        if (id >= 29 && id <= 35) {
+          const status = state.source_top_status;
+          if (full || status?.castle_rows.length !== 1 || (id === 35 && state.castle_goal_hint_eligible !== true)) continue;
+          let x = help.x, y = help.y;
+          if (id === 35) {
+            const glyph = this.mapFont.get(40);
+            if (!glyph) throw new Error('Missing Original FONT1 Castle goal glyph');
+            x = 60 + glyph.width + Math.trunc(status.mana_goal_percent * 64 / 100); y = 38;
+          }
+          const overdue = info.age - help.age_threshold;
+          if (!best || info.priority > best.priority || (info.priority === best.priority && overdue > best.overdue))
+            best = {row: id, subject: 0, x, y, overdue, priority: info.priority};
+          continue;
+        }
         const candidates = marks.filter(row => row.row === id);
         // A missing pose must never change which subject is called nearest.
         if (candidates.some(row => !context.entities.some(entity => entity.entity === row.subject))) continue;
@@ -744,7 +766,8 @@ export class OriginalHud {
       const anchorX = inspected ? inspected.x * 2 : automatic!.x;
       // Automatic subjects retain the source's doubled 320x200 coordinate;
       // the composed map expands vertically to 480 pixels, not 400.
-      const anchorY = inspected ? Math.ceil(inspected.y * 480 / 200) : Math.ceil(automatic!.y * 480 / 400);
+      const anchorY = inspected ? Math.ceil(inspected.y * 480 / 200) :
+        automatic!.row >= 29 && automatic!.row <= 35 ? automatic!.y : Math.ceil(automatic!.y * 480 / 400);
       const boxWidth = help.box_width ?? help.text.length * 8, boxHeight = help.height;
       if (boxWidth <= 0 || boxWidth > 220 || help.width > boxWidth || help.height > boxHeight)
         throw new Error('Invalid Original exit help text dimensions');

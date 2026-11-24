@@ -350,6 +350,44 @@ print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()
   for (let sequence = 1; sequence <= 3; sequence++)
     dayHud.advanceMapHints(wrongFrame, {...markerContext, generation: 12, sequence});
   assert.equal(dayHud.visibleMapHint(), null, 'the blink exception does not admit another hidden entity kind');
+
+  // Exercise the common poll/lifetime carrier with the actual owner strings;
+  // the Castle status is held fixed to inspect every lower-priority row.
+  const status = {castle_rows: [{stage: 1, panel_selector: 41, icon_selector: 43,
+    life: 40, max_life: 100, mana: 5, max_mana: 50, owner_mana_aggregate: 0}],
+    balloon_panel_selector: 41, balloon_icon_selector: 43,
+    balloons: Array.from({length: 3}, () => ({present: true, life: 20, max_life: 100, mana: 0, max_mana: 50})),
+    mana_goal_percent: 40, goal_palette_index: 0};
+  const statusFrame = {...state, source_top_status: status, castle_goal_hint_eligible: true,
+    minimap: {...corner.minimap, entities: []}};
+  const statusContext = {...context, generation: 13, entities: []};
+  const expected = [[29,214,32],[30,214,16],[31,130,16],[32,320,32],[33,260,16],[34,320,16],[35,89,38]];
+  const drawn = new Map<number, number>();
+  for (let sequence = 1; sequence <= 520; sequence++) {
+    dayHud.advanceMapHints(statusFrame, {...statusContext, sequence});
+    const hint = dayHud.visibleMapHint();
+    if (!hint) continue;
+    const row = expected.find(value => value[0] === hint.row);
+    assert.ok(row);
+    assert.deepEqual([hint.x, hint.y], row.slice(1));
+    drawn.set(hint.row, (drawn.get(hint.row) ?? 0) + 1);
+    const pixels = dayHud.compose(scene, palette, statusFrame);
+    assert.equal(pixels[hint.y * 640 + hint.x], qualified.manifest.help[String(hint.row)].line_color);
+  }
+  assert.deepEqual([...drawn], expected.map(row => [row[0], 50]), 'each eligible source row draws for exactly 50 frames');
+  const ineligible = {...statusFrame, castle_goal_hint_eligible: false};
+  let ordinaryRows = 0;
+  for (let sequence = 1; sequence <= 700; sequence++) {
+    dayHud.advanceMapHints(ineligible, {...statusContext, generation: 14, sequence});
+    const hint = dayHud.visibleMapHint();
+    if (hint) { assert.notEqual(hint.row, 35, 'a percentage alone does not qualify row 35'); ordinaryRows++; }
+  }
+  assert.ok(ordinaryRows > 0, 'the other Castle and balloon rows remain available');
+  const openMap = {...ineligible, world_map: {entities: [], marks: []}};
+  for (let sequence = 1; sequence <= 100; sequence++) {
+    dayHud.advanceMapHints(openMap, {...statusContext, generation: 15, sequence});
+    assert.equal(dayHud.visibleMapHint(), null, 'status help is not selected over the full map');
+  }
 });
 
 test('source Castle and balloon rows control status bars', () => {

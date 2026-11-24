@@ -150,12 +150,23 @@ class OwnerAssetTests(unittest.TestCase):
                     (22, 'This stone restores your life', 310, 0, 320, 4),
                     (25, 'This is an enemy castle', 313, 0, 160, 5),
                     (26, 'This is an enemy balloon', 314, 0, 160, 5),
-                    (27, 'Marker stone', 315, 0, 320, 3)):
+                    (27, 'Marker stone', 315, 0, 320, 3),
+                    (29, 'Castled mana, current and capacity', 317, 544, 800, 2),
+                    (30, 'Castle life', 318, 544, 800, 2),
+                    (31, 'Current size of castle', 319, 544, 800, 2),
+                    (32, 'Mana held by balloons', 320, 544, 800, 2),
+                    (33, 'Number of balloons', 321, 544, 800, 2),
+                    (34, 'Balloons life', 322, 544, 800, 2),
+                    (35, 'Castle mana required', 323, 1568, 800, 2)):
                     row = m['help'][str(selector)]
                     self.assertEqual((row['text'], row['text_record'], row['flags'], row['duration'],
                                       row['age_threshold'], row['priority']), (text, record, flags, 50, age, priority))
                     self.assertEqual(len(self.span(bundle, row['mask'])), row['width'] * row['height'])
                     self.assertTrue(any(self.span(bundle, row['mask'])))
+                for selector, xy in ((29, (214, 32)), (30, (214, 16)), (31, (130, 16)),
+                                     (32, (320, 32)), (33, (260, 16)), (34, (320, 16)), (35, (0, 0))):
+                    row = m['help'][str(selector)]
+                    self.assertEqual((row['x'], row['y']), xy)
                 self.assertEqual((m['help']['20']['box_width'], m['help']['20']['height']), (188, 28))
                 self.assertEqual((hint['text'], hint['text_record'], hint['flags'], hint['duration'],
                                   hint['age_threshold'], hint['priority']),
@@ -187,7 +198,7 @@ class OwnerAssetTests(unittest.TestCase):
     def test_optional_help_and_confined_receipt_bound_paths(self):
         self.assertIsNone(assets.OriginalAssets().manifest['help'])
         old = self.generated / 'castle-status-help-20261122-candidate'
-        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20', '22', '25', '26', '27'})
+        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20', '22', '25', '26', '27', '29', '30', '31', '32', '33', '34', '35'})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'cache'
             root.mkdir()

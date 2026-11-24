@@ -344,6 +344,13 @@ class OriginalAssets:
             25: dict(row=25, kind=2, flags=0, text_record=313, duration=50, x=0, y=0, age_threshold=160, priority=5),
             26: dict(row=26, kind=2, flags=0, text_record=314, duration=50, x=0, y=0, age_threshold=160, priority=5),
             27: dict(row=27, kind=2, flags=0, text_record=315, duration=50, x=0, y=0, age_threshold=320, priority=3),
+            29: dict(row=29, kind=3, flags=544, text_record=317, duration=50, x=214, y=32, age_threshold=800, priority=2),
+            30: dict(row=30, kind=3, flags=544, text_record=318, duration=50, x=214, y=16, age_threshold=800, priority=2),
+            31: dict(row=31, kind=3, flags=544, text_record=319, duration=50, x=130, y=16, age_threshold=800, priority=2),
+            32: dict(row=32, kind=3, flags=544, text_record=320, duration=50, x=320, y=32, age_threshold=800, priority=2),
+            33: dict(row=33, kind=3, flags=544, text_record=321, duration=50, x=260, y=16, age_threshold=800, priority=2),
+            34: dict(row=34, kind=3, flags=544, text_record=322, duration=50, x=320, y=16, age_threshold=800, priority=2),
+            35: dict(row=35, kind=3, flags=1568, text_record=323, duration=50, x=0, y=0, age_threshold=800, priority=2),
             83: dict(row=83, kind=8, flags=0x280, text_record=345, duration=50, x=0, y=0, age_threshold=100, priority=5),
         }
         rows = [row for row in table['rows'] if row['row'] in expected]
@@ -386,6 +393,9 @@ class OriginalAssets:
         texts = {19: b'Destroy this for its mana', 20: b'Collect this spell by flying into it',
                  22: b'This stone restores your life', 25: b'This is an enemy castle',
                  26: b'This is an enemy balloon', 27: b'Marker stone',
+                 29: b'Castled mana, current and capacity', 30: b'Castle life', 31: b'Current size of castle',
+                 32: b'Mana held by balloons', 33: b'Number of balloons', 34: b'Balloons life',
+                 35: b'Castle mana required',
                  83: b'Fly here to exit the level'}
         result = {}
         for row in rows:
@@ -432,7 +442,7 @@ class OriginalAssets:
                             raster[at:at + glyph['width']] = masks[start:start + glyph['width']]
                     x += glyph['width']
             result[str(selector)] = dict(text=text.decode('ascii'), text_record=row['text_record'], flags=row['flags'],
-                duration=row['duration'], age_threshold=row['age_threshold'], priority=row['priority'], width=width,
+                duration=row['duration'], age_threshold=row['age_threshold'], priority=row['priority'], x=row['x'], y=row['y'], width=width,
                 height=height, box_width=box_width, mask=add(raster), advances=advances, frame=frame,
                 color=colors[4095], background=colors[0], line_color=colors[4095])
         return result

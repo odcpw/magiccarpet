@@ -47,6 +47,41 @@ MEDIA_CACHE = PRIVATE / "generated/mc2-campaign-media-cache-decoded"
 CAMPAIGN_LAUNCHER = PRIVATE / "remc2-unity-native/run-campaign.sh"
 
 
+class ObjectiveStage(c.Structure):
+    _fields_ = [('abi', c.c_uint32), ('size', c.c_uint32), ('generation', c.c_uint64),
+                ('objective_slot', c.c_uint8), ('stage_slot', c.c_uint8), ('is_level_end', c.c_uint8),
+                ('done', c.c_uint8), ('text_selector', c.c_uint8), ('stage_state', c.c_uint8),
+                ('stage_kind', c.c_int8), ('stage_flags', c.c_int8), ('axis_x', c.c_int16),
+                ('axis_y', c.c_int16), ('relation_domain', c.c_uint8), ('reserved0', c.c_uint8),
+                ('relation_value', c.c_uint16), ('reserved', c.c_uint32 * 4)]
+
+
+def castle_goal_hint_eligible(native, generation, player_slot):
+    """Read the two source stage lookups on the publication's owner thread."""
+    if c.sizeof(ObjectiveStage) != 48 or not 0 <= player_slot < 8:
+        raise ValueError('invalid source Castle help stage request')
+    fn = native.lib.mc_native_campaign_objective_stage_state
+    fn.argtypes = [c.c_uint64, c.c_uint64, c.c_uint8, c.c_uint8, c.POINTER(ObjectiveStage), c.c_uint32]
+    fn.restype = c.c_int32
+
+    def stage(slot):
+        row = ObjectiveStage()
+        native.check(fn(native.handle, generation, player_slot, slot, c.byref(row), c.sizeof(row)), 'Castle help stage')
+        if ((row.abi, row.size, row.generation, row.objective_slot, row.stage_slot) !=
+                (2, 48, generation, player_slot, slot) or row.relation_domain > 3 or row.reserved0 or any(row.reserved)):
+            raise ValueError('invalid source Castle help stage snapshot')
+        return row
+
+    first = stage(player_slot)
+    if first.is_level_end:
+        return False
+    # Outside a Castle status poll Unity does not access the second stage.
+    # Preserve unknown as null so a Castle-bearing consumer can reject it.
+    if not 0 <= first.stage_flags < 8:
+        return None
+    return stage(first.stage_flags).stage_kind == 0
+
+
 def campaign_packages(path: Path | None):
     """Use the installed launcher's resource set unless explicitly overridden."""
     if path is None:
@@ -736,6 +771,8 @@ class Bridge:
                     state["world_map"] = map_rows
                 hint_map = state.get('world_map') or minimap
                 if state['show_help'] and self.assets.manifest.get('help'):
+                    if '35' in self.assets.manifest['help'] and not (menu_state and menu_state['map_open']):
+                        state['castle_goal_hint_eligible'] = castle_goal_hint_eligible(native, gen, state['hud']['local_player_slot'])
                     subjects = {row['subject_entity_index'] for row in hint_map['entities']
                                 if (row['visible'] == 1 or (row['visible'] == 0 and row['help_selector'] == 27 and row['kind'] == 1))
                                 and row['help_selector'] in (19, 20, 22, 25, 26, 27) and row['subject_entity_index']}
