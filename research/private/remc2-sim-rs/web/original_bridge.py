@@ -659,6 +659,7 @@ class Bridge:
             pending_steps = deque()
             draw_boundary, draw_ready, draw_wait_started = None, False, None
             epoch = 0
+            deadline = time.monotonic()
             menu_state = None
             frame_remainder = 0
             def elapsed_centiseconds():
@@ -691,7 +692,7 @@ class Bridge:
                         self.publications.clear()
 
             def bind_package():
-                nonlocal package, world, modern, menu_state, epoch, draw_boundary, draw_ready, draw_wait_started
+                nonlocal package, world, modern, menu_state, epoch, draw_boundary, draw_ready, draw_wait_started, deadline
                 # Resolve from the native save definition, never a client path.
                 current = replay_package(self.packages, native.control("save", None))
                 assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
@@ -722,6 +723,7 @@ class Bridge:
                 package, world, modern = current, new_world, new_modern
                 epoch += 1; menu_state = None
                 draw_boundary, draw_ready, draw_wait_started = None, False, None
+                deadline = time.monotonic()
                 gameplay_audio.reset()
                 effects.reset(); speech.reset()
                 with self.lock:
@@ -735,11 +737,11 @@ class Bridge:
                     self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
                     self.asset_revision += 1
 
-            def finish_if_ready():
+            def finish_if_ready(observation=None):
                 nonlocal command, frame_remainder
                 # The source can request the ordinary Title boundary after an
                 # input other than the visible abandon confirmation.
-                if return_to_title_from_observation(native.observe()):
+                if return_to_title_from_observation(observation if observation is not None else native.observe()):
                     native.return_to_title()
                     pending_steps.clear()
                     command = dict(NEUTRAL)
@@ -875,7 +877,6 @@ class Bridge:
                 bind_package()
                 publish()
             with self.lock: self.ready = True
-            deadline = time.monotonic()
             while not self.stop.is_set():
                 wait = max(0, min(.05, deadline-time.monotonic())) if self.running and draw_ready else .05
                 try: item = self.items.get(timeout=wait if self.running else .1)
@@ -1107,22 +1108,42 @@ class Bridge:
                     native.control("pause", saved); self.paused = True; self.running = False
                     command = dict(NEUTRAL); publish()
                 if self.running and now >= deadline and draw_ready:
-                    if pending_steps:
-                        action, extra = pending_steps.popleft()
-                        map_states = (6, 7, 8, 11, 12, 14)
-                        map_before = native.player_menu_state() in map_states if action == 'map' else None
-                        step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
-                        if action == 'map' and (native.player_menu_state() in map_states) != map_before:
-                            command.update(cast_selected=False, cast_left=False, cast_right=False)
-                    else:
-                        step(selected_cast_or_recovery(native,
-                            {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
-                        # Each submitted cast request survives until its own native step.
-                        command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
-                        command.pop("remove_castle_stage", None)
-                        command.pop("recover_player", None)
-                    if not finish_if_ready(): publish()
-                    deadline = max(deadline + 1/30, time.monotonic())
+                    # An accepted draw services its source demand on the first
+                    # turn. Later overdue turns have no invented draw. At most
+                    # the 1.5s away timeout's worth of 30Hz turns is retained.
+                    geometry = bool(world) and not self.modern
+                    limit = 45 if geometry else 1
+                    turns, finished = 0, False
+                    while self.running and turns < limit and time.monotonic() >= deadline:
+                        action = None
+                        if pending_steps:
+                            action, extra = pending_steps.popleft()
+                            map_states = (6, 7, 8, 11, 12, 14)
+                            map_before = native.player_menu_state() in map_states if action == 'map' else None
+                            step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                            if action == 'map' and (native.player_menu_state() in map_states) != map_before:
+                                command.update(cast_selected=False, cast_left=False, cast_right=False)
+                        else:
+                            step(selected_cast_or_recovery(native,
+                                {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
+                            command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
+                            command.pop("remove_castle_stage", None)
+                            command.pop("recover_player", None)
+                        turns += 1
+                        deadline += 1/30
+                        observation = native.observe()
+                        # Drain real events on every simulated turn, including
+                        # those between browser presentations, so source audio
+                        # voice arbitration and objective notices do not lag.
+                        if geometry:
+                            gameplay_audio.poll(observation, self.gameplay_samples, True)
+                            speech.consume(effects.poll(observation))
+                        finished = finish_if_ready(observation)
+                        # Every explicit control gets its own observable frame.
+                        if finished or action is not None: break
+                    if not finished: publish()
+                    if not geometry or (turns == limit and deadline < time.monotonic()):
+                        deadline = max(deadline, time.monotonic())
         except Exception as exc:
             with self.lock: self.error = f"{type(exc).__name__}: {exc}"; self.ready = False; self.running = False
         finally:
