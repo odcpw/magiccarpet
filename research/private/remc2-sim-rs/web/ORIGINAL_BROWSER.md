@@ -53,9 +53,9 @@ from this directory on 3090:
 
 The runtime validates the replay. The bridge matches its campaign package
 hash to the owner-supplied package list and loads that mission's terrain,
-sprites, palette and map symbols. The replay file is read-only. F5 writes
-to the separate save slot. A new mission's replay can be opened with the
-same command and its matching resources.
+sprites, palette and map symbols. The replay file is read-only. Choose
+**Save** in the utility menu to write to the separate save slot. To open a
+different mission's replay, use the same command with its matching resources.
 
 At an earned ordinary exit, let the exit animation finish. Results shows the
 five statistics from the Rust campaign. Choose **Continue**, select an unlocked
@@ -115,8 +115,9 @@ the objective. Press the configured map key (Return by default), or press both
 mouse buttons together, to toggle the map. Tab also works while Return remains
 the configured map key. On the map, hold LeftAlt, the saved information key, or
 the saved previous key for player information. Esc opens the abandon
-confirmation, P pauses, F5 saves and F9 loads. The utility menu also
-provides resume, save, load, restart and fullscreen. Clicking the view captures
+confirmation and P pauses. F5 toggles sound effects, F6 toggles music
+and F9 loads the save slot. The utility menu provides resume, save, load,
+restart and fullscreen. Clicking the view captures
 the mouse; Esc releases it. Touch users drag the view to steer and use the
 flight pad and Cast button. Spells opens a tap grid with a Left/Right hand
 selector; flight controls move clear of it. The world fills portrait/landscape
@@ -211,7 +212,9 @@ waves/fog use local floating-point projection; native fixed-point raster parity
 is not claimed. SS2 delta images are decoded from source; their selector-global
 animation clock is unavailable, so texture cycling uses a stated presentation
 approximation (one transition per four native ticks). Native creature frame
-selection remains authoritative. HUD panels are opaque in geometry mode.
+selection remains authoritative. In Original geometry mode, the minimap uses
+the mission's panel setting and blends translucent pixels against the world
+using the original palette table.
 This route does not establish a complete mission playthrough or full Original
 port completion. Existing Rust gameplay defects remain with the Original team.
 
