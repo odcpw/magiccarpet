@@ -334,7 +334,7 @@ NEUTRAL = {"longitudinal": "coast", "lateral": "neutral", "roll_axis": 0,
 
 
 def validate_command(value):
-    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage"}:
+    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage", "recover_player"}:
         raise ValueError("invalid command fields")
     if value["longitudinal"] not in ("coast", "accelerate", "decelerate") or value["lateral"] not in ("neutral", "negative", "positive"):
         raise ValueError("invalid flight control")
@@ -345,17 +345,19 @@ def validate_command(value):
     if "show_objective" in value and type(value["show_objective"]) is not bool: raise ValueError("invalid objective control")
     if "remove_castle_stage" in value and type(value["remove_castle_stage"]) is not bool:
         raise ValueError("invalid Castle stage control")
+    if "recover_player" in value and type(value["recover_player"]) is not bool:
+        raise ValueError("invalid recovery control")
     return dict(value)
 
 
 def selected_cast_or_recovery(native, command):
-    """Resolve a Space edge against the current source player before its step."""
-    if not command['cast_selected']:
+    """Resolve explicit recovery and legacy selected-cast input at the live player."""
+    if not command['cast_selected'] and not command.get('recover_player'):
         return command
     _, generation, tick = native.counters()
     hud = read_hud(native.lib, native.handle.value, generation, tick)
     if hud['local_player_life'] >= 0:
-        return command
+        return dict(command, recover_player=False) if command.get('recover_player') else command
     # Native applies the source action-3 admission at the command boundary.
     return dict(command, cast_selected=False, recover_player=True)
 
@@ -769,6 +771,8 @@ class Bridge:
                             if native.identity_value.get("session") is not None:
                                 for key in ("cast_selected", "cast_left", "cast_right"):
                                     next_command[key] |= command[key]
+                                if command.get("recover_player"):
+                                    next_command["recover_player"] = True
                                 if command.get("remove_castle_stage"):
                                     next_command["remove_castle_stage"] = True
                                 command = next_command
@@ -968,6 +972,7 @@ class Bridge:
                     # Each submitted cast request survives until one native step.
                     command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
                     command.pop("remove_castle_stage", None)
+                    command.pop("recover_player", None)
                     if not finish_if_ready(): publish()
                     deadline += 1/30
                     if deadline < time.monotonic() - .25: deadline = time.monotonic()

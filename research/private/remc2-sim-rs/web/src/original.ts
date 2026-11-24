@@ -39,7 +39,7 @@ let configuredMapCode: string | null = null;
 let configuredKeys: readonly (string | null)[] = [];
 let configuredNames: readonly string[] = [];
 let spellCloseOnRelease = false;
-let mouseX = 0, mouseY = 0, queuedCasts = 0;
+let mouseX = 0, mouseY = 0, queuedCasts = 0, queuedRecovery = false;
 let removeCastleStage = false;
 let started = false, playing = false, busy = false, inputBusy = false;
 let controlsPending = 0;
@@ -385,7 +385,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
   const next = requestTail.then(request); requestTail = next.catch(() => undefined); return next;
 }
 
-function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; removeCastleStage = false; }
+function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; queuedRecovery = false; removeCastleStage = false; }
 function showSpeechPreference(enabled: unknown, available: unknown): void {
   speechButton.disabled = available !== true || typeof enabled !== 'boolean';
   speechButton.textContent = speechButton.disabled ? 'Speech unavailable' : `Speech: ${enabled ? 'On' : 'Off'}`;
@@ -695,9 +695,11 @@ async function sendInput(): Promise<void> {
     { selected: !abandonOpen && !cycleModifier && cast, left: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(0) && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(2) && mouseButtons.has(2) },
     modernRequested ? undefined : configuredKeys);
   mouseX *= .65; mouseY *= .65;
-  const input = removeCastleStage ? { ...command, remove_castle_stage: true } : command;
+  const recovery = queuedRecovery && !abandonOpen && !nativeMenus.spells_open && !nativeMenus.map_open;
+  const input = { ...command, ...(removeCastleStage ? { remove_castle_stage: true } : {}),
+    ...(recovery ? { recover_player: true } : {}) };
   removeCastleStage = false;
-  try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
+  try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); if (recovery) queuedRecovery = false; }
   catch (error) { fail(error); }
   finally { inputBusy = false; }
 }
@@ -850,7 +852,10 @@ window.addEventListener('keydown', event => {
   if (event.repeat) return;
   if (!modernRequested && playing && event.code === 'KeyL' && event.shiftKey && !event.altKey &&
       lastHudState?.source_top_status?.castle_rows.length) removeCastleStage = true;
-  if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
+  if (event.code === 'Space') {
+    if (modernRequested) queuedCasts = Math.min(4, queuedCasts + 1);
+    else if (!nativeMenus.spells_open && !nativeMenus.map_open) queuedRecovery = true;
+  }
   if (event.code === 'Escape' && playing && !nativeMenus.spells_open) void control('menu', { menu_action: 'open_abandon_confirmation' });
   else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
   if (modifiers.spells && !spellControlHeld) { spellControlHeld = true; spellCloseOnRelease = false; void control('menu', { menu_action: 'open_spell_menu' }); }
@@ -904,6 +909,7 @@ async function boot(): Promise<void> {
     configuredNames = status.preference_keys ?? [];
     configuredMapCode = configuredKeys[4] ?? null;
     updateControlsHelp();
+    if (!modernRequested) element('cast-keys').textContent = 'Mouse buttons cast · Space recovers after defeat';
     if (!modernRequested && status.preference_keys?.length)
       element('flight-keys').textContent = `${status.preference_keys.slice(0, 4).join(' / ')} move · Mouse steers`;
     speechButton.hidden = false;
