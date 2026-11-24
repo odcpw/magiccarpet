@@ -64,6 +64,8 @@ class Native:
             "mc_game_runtime_identity_json_v1": [u64, ptr, u32, ptr],
             "mc_game_runtime_bootstrap_package_set_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_open_level_v1": [u64, u64],
+            "mc_game_runtime_campaign_menu_command_json_v1": [u64, u64, ptr, u32],
+            "mc_game_runtime_finish_mission_if_ready_result_v1": [u64, u64, u64, u64, ptr],
             "mc_native_campaign_day_indexed_frame_render": [u64, u64, u64, ptr, u32],
             "mc_native_campaign_presentation_frame_copy": [u64, ptr, ptr, u32, ptr, u32, ptr, u32],
             "mc_native_campaign_day_indexed_frame_copy": [u64, u64, u64, ptr, u32, ptr, u32, ptr, ptr],
@@ -120,6 +122,8 @@ class Native:
         def identity():
             return self.read_json(self.lib.mc_game_runtime_identity_json_v1, handle)
         state = identity()
+        if state["mode"] not in ("playing", "paused"):
+            return
         resume = state["mode"] != "paused"
         if resume:
             self.check(self.lib.mc_game_runtime_pause_v1(handle, int(state["generation"])), "pause for language")
@@ -139,7 +143,31 @@ class Native:
         _, generation, tick = self.counters()
         payload = json.dumps(command, separators=(",", ":")).encode()
         self.check(self.lib.mc_game_session_step_json_v1(self.handle, generation, tick, payload, len(payload)), "step")
-        self.identity_value["session"]["tick"] = str(tick + 1)
+        # The source exit cinematic advances state while its gameplay tick is
+        # frozen; source speed can also advance by more than one turn.
+        self.identity_value = self.identity()
+
+    def finish_if_ready(self):
+        outer, generation, tick = self.counters()
+        changed = c.c_uint8()
+        self.check(self.lib.mc_game_runtime_finish_mission_if_ready_result_v1(
+            self.handle, outer, generation, tick, c.byref(changed)), "finish mission")
+        if changed.value not in (0, 1): raise RuntimeError("invalid mission transition flag")
+        if changed.value: self.identity_value = self.identity()
+        return bool(changed.value)
+
+    def campaign_menu(self, action, level_id=None):
+        command = {"action": action}
+        if level_id is not None: command["level_id"] = level_id
+        payload = json.dumps(command, separators=(",", ":")).encode()
+        self.check(self.lib.mc_game_runtime_campaign_menu_command_json_v1(
+            self.handle, int(self.identity_value["generation"]), payload, len(payload)), "campaign menu")
+        self.identity_value = self.identity()
+
+    def open_pending(self):
+        self.check(self.lib.mc_game_runtime_open_level_v1(
+            self.handle, int(self.identity_value["generation"])), "open selected mission")
+        self.identity_value = self.identity()
 
     def observe(self):
         outer, generation, tick = self.counters()
@@ -158,7 +186,10 @@ class Native:
             self.handle, outer, generation, tick, 1), "presentation frame")
 
     def control(self, action, saved):
-        outer, generation, tick = self.counters()
+        outer = int(self.identity_value["generation"])
+        session = self.identity_value.get("session")
+        generation = int(session["generation"]) if session else 0
+        tick = int(session["tick"]) if session else 0
         if action in ("pause", "resume"):
             fn = self.lib.mc_game_runtime_pause_v1 if action == "pause" else self.lib.mc_game_runtime_resume_v1
             self.check(fn(self.handle, outer), action)
@@ -319,7 +350,8 @@ def camera_from_observation(packet):
 
 def replay_package(packages, replay):
     """Resolve the replay's content-addressed campaign package to its owner assets."""
-    definition = json.loads(replay)["definition"]
+    source = json.loads(replay)
+    definition = source.get("definition") or source["state"]["definition"]
     hashes = [row["sha256"] for row in definition["artifacts"] if row["id"] == "campaign.package"]
     if len(hashes) != 1:
         raise ValueError("replay must identify one campaign package")
@@ -353,6 +385,8 @@ class Bridge:
         self.next_sequence = 0; self.last_reply = None; self.last_request = None
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
+        self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
+        self.can_refresh_assets = False
         self.modern_error = None
         self.thread = threading.Thread(target=self.run, name="original-native-owner", daemon=True)
         self.thread.start()
@@ -361,7 +395,9 @@ class Bridge:
         with self.lock:
             return {"ready": self.ready, "error": self.error, "running": self.running,
                     "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
-                    "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id}
+                    "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id,
+                    "phase": self.phase, "campaign_menu": self.campaign_menu, "asset_revision": self.asset_revision,
+                    "can_refresh_assets": self.can_refresh_assets}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -377,7 +413,7 @@ class Bridge:
             try:
                 ok, result = done.get(timeout=.1); break
             except queue.Empty:
-                if self.error: raise ValueError(self.error)
+                if self.error and not self.thread.is_alive(): raise ValueError(self.error)
                 if time.monotonic() >= deadline: raise ValueError("request timeout")
         if not ok: raise ValueError(result)
         return result
@@ -398,22 +434,91 @@ class Bridge:
                 native.bind_language(native.handle)
                 native.identity_value = native.identity()
                 replay = native.control("save", None)
-            package = replay_package(self.packages, replay)
-            self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
-            self.assets = OriginalAssets.from_package(package, help_cache=self.help_cache)
-            world = OriginalWorld(native) if self.renderer == "geometry" else None
+            package = None
+            world = None
             modern = None
-            if world and self.modern:
-                try: modern = ModernWorld(native)
-                except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
-            if world:
-                from original_world_assets import OriginalWorldAssets
-                self.world_assets = OriginalWorldAssets.from_package(package)
-                palette = self.world_assets.palette
-                if len(palette) != 768: raise RuntimeError("invalid source palette")
+            palette = None
             command, saved, sequence = dict(NEUTRAL), None, 0
             epoch = 0
             menu_state = None
+            frame_remainder = 0
+            def elapsed_centiseconds():
+                nonlocal frame_remainder
+                # Source time advances per submitted 30 Hz frame, including
+                # exit cinematics whose gameplay tick deliberately freezes.
+                elapsed, frame_remainder = divmod(frame_remainder + 100, 30)
+                return elapsed
+            def update_phase():
+                identity = native.identity_value
+                menu = identity.get("campaign_menu")
+                phase = menu.get("phase") if menu else identity["mode"]
+                with self.lock:
+                    self.phase = phase
+                    self.campaign_menu = menu
+                    if identity.get("session") is not None:
+                        self.level_id = identity["active_runtime_flow"]["bound_level_id"]
+                    if identity.get("session") is None:
+                        self.publications.clear()
+
+            def bind_package():
+                nonlocal package, world, modern, palette, menu_state, epoch
+                # Resolve from the native save definition, never a client path.
+                current = replay_package(self.packages, native.control("save", None))
+                assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
+                new_world = OriginalWorld(native) if self.renderer == "geometry" else None
+                if new_world and world:
+                    new_world.revision = world.revision
+                new_world_assets = None
+                if new_world:
+                    from original_world_assets import OriginalWorldAssets
+                    new_world_assets = OriginalWorldAssets.from_package(current)
+                    if len(new_world_assets.palette) != 768: raise RuntimeError("invalid source palette")
+                new_modern = None
+                if new_world and self.modern:
+                    try: new_modern = ModernWorld(native)
+                    except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
+                package, world, modern = current, new_world, new_modern
+                palette = new_world_assets.palette if new_world_assets else None
+                epoch += 1; menu_state = None
+                with self.lock:
+                    self.publications.clear()
+                    self.assets = assets
+                    self.world_assets = new_world_assets
+                    self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
+                    self.asset_revision += 1
+
+            def finish_if_ready():
+                nonlocal command, frame_remainder
+                if not native.finish_if_ready(): return False
+                command = dict(NEUTRAL)
+                frame_remainder = 0
+                if native.identity_value.get("session") is None:
+                    self.running = False; self.paused = False
+                    update_phase()
+                    return True
+                # Secret entry constructs its destination session directly,
+                # with no intervening campaign menu. Drop the old publication
+                # before binding the native destination's package.
+                binding_start = time.monotonic()
+                with self.lock:
+                    self.phase = "loading"
+                    self.publications.clear()
+                    self.assets = None; self.world_assets = None
+                try:
+                    native.bind_language(native.handle)
+                    native.identity_value = native.identity()
+                    bind_package(); update_phase(); publish()
+                    now = time.monotonic()
+                    self.last_contact = min(now, self.last_contact + (now - binding_start))
+                except Exception as exc:
+                    self.running = False; self.paused = native.identity_value["mode"] == "paused"
+                    update_phase()
+                    with self.lock:
+                        self.assets = None; self.world_assets = None
+                        self.ready = False; self.can_refresh_assets = True
+                        self.error = f"{type(exc).__name__}: {exc}"
+                return True
+
             def publish():
                 nonlocal sequence, menu_state, modern
                 native.presentation_frame()
@@ -440,7 +545,7 @@ class Bridge:
                 minimap["terrain"] = None if world else list(native.minimap_terrain)
                 minimap["coverage"] = list(minimap["coverage"])
                 state = {"sequence": sequence, "runtime_generation": outer, "session_generation": gen,
-                         "tick": tick, "player_pose": pose,
+                         "tick": tick, "asset_revision": self.asset_revision, "player_pose": pose,
                          "source_menu_admission": menu_state,
                          "hud": read_hud(native.lib, native.handle.value, gen, tick),
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
@@ -458,7 +563,10 @@ class Bridge:
                     state["world_map"] = map_rows
                 with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                                           world.terrain_gzip if world else None, modern_packet))
-            publish()
+            update_phase()
+            if native.identity_value.get("session") is not None:
+                bind_package()
+                publish()
             with self.lock: self.ready = True
             deadline = time.monotonic()
             while not self.stop.is_set():
@@ -475,14 +583,55 @@ class Bridge:
                         kind = value.get("kind")
                         if kind == "input":
                             next_command = validate_command(value.get("command"))
-                            for key in ("cast_selected", "cast_left", "cast_right"):
-                                next_command[key] |= command[key]
-                            command = next_command
+                            if native.identity_value.get("session") is not None:
+                                for key in ("cast_selected", "cast_left", "cast_right"):
+                                    next_command[key] |= command[key]
+                                command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets"):
                                 raise ValueError("invalid control action")
-                            if action == "start":
+                            if action == "refresh_assets":
+                                if native.identity_value.get("session") is None: raise ValueError("no active mission")
+                                with self.lock: self.phase = "loading"
+                                try:
+                                    native.bind_language(native.handle)
+                                    native.identity_value = native.identity()
+                                    bind_package(); update_phase(); publish()
+                                except Exception as exc:
+                                    update_phase()
+                                    with self.lock:
+                                        self.assets = None; self.world_assets = None
+                                        self.ready = False; self.can_refresh_assets = True
+                                        self.error = f"{type(exc).__name__}: {exc}"
+                                    raise
+                                with self.lock:
+                                    self.ready = True; self.error = None; self.can_refresh_assets = False
+                            elif action in ("dismiss_results", "select_mission", "start_mission"):
+                                level_id = value.get("level_id")
+                                if action == "select_mission" and (not isinstance(level_id, str) or not 1 <= len(level_id) <= 160):
+                                    raise ValueError("invalid level id")
+                                if action != "start_mission" or native.identity_value["mode"] != "loading":
+                                    native.campaign_menu(action, level_id if action == "select_mission" else None)
+                                    update_phase()
+                                if action == "start_mission":
+                                    native.open_pending()
+                                    self.running = False; self.paused = False; command = dict(NEUTRAL)
+                                    frame_remainder = 0
+                                    try:
+                                        native.bind_language(native.handle)
+                                        native.identity_value = native.identity()
+                                        bind_package(); update_phase(); publish()
+                                    except Exception as exc:
+                                        update_phase()
+                                        with self.lock:
+                                            self.assets = None; self.world_assets = None
+                                            self.ready = False; self.can_refresh_assets = True
+                                            self.error = f"{type(exc).__name__}: {exc}"
+                                        raise
+                            elif action == "start":
+                                if native.identity_value.get("session") is None: raise ValueError("no active mission")
+                                if not self.ready: raise ValueError("mission assets are unavailable; retry refresh_assets")
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
                                 publish()
@@ -490,6 +639,7 @@ class Bridge:
                                 if not self.paused: native.control("pause", saved); self.paused = True
                                 self.running = False; command = dict(NEUTRAL); publish()
                             elif action == "resume":
+                                if not self.ready: raise ValueError("mission assets are unavailable; retry refresh_assets")
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
                                 publish()
@@ -511,13 +661,11 @@ class Bridge:
                                         if type(tier) is not int or not 0 <= tier <= 2 or hand not in ("left", "right"):
                                             raise ValueError("invalid spell assignment")
                                         extra = {"assign_spell": {"spell_id": spell, "tier": tier, "hand": hand}}
-                                native.step({**NEUTRAL, **extra, "elapsed_centiseconds": 3})
-                                publish()
+                                native.step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                                if not finish_if_ready(): publish()
                             else:
                                 if action == "load" and saved is None and self.save_path and self.save_path.is_file():
                                     saved = self.save_path.read_bytes()
-                                if action == "load" and saved and replay_package(self.packages, saved) != package:
-                                    raise ValueError("this save uses different artwork; start the browser with --replay for that mission")
                                 if action == "reset" and self.paused:
                                     native.control("resume", saved)
                                     saved = native.control("reset", saved)
@@ -534,14 +682,30 @@ class Bridge:
                                 if action in ("reset", "load"):
                                     epoch += 1
                                     self.paused = native.identity_value["mode"] == "paused"
-                                    self.running = self.running and not self.paused
+                                    self.running = self.running and not self.paused and native.identity_value.get("session") is not None
                                     command = dict(NEUTRAL)
+                                    frame_remainder = 0
                                     menu_state = None
-                                publish()
+                                    if native.identity_value.get("session") is not None:
+                                        with self.lock:
+                                            self.phase = "loading"
+                                            self.publications.clear()
+                                        try: bind_package()
+                                        except Exception as exc:
+                                            update_phase()
+                                            with self.lock:
+                                                self.assets = None; self.world_assets = None
+                                                self.ready = False; self.can_refresh_assets = True
+                                                self.error = f"{type(exc).__name__}: {exc}"
+                                            raise
+                                    update_phase()
+                                if native.identity_value.get("session") is not None: publish()
                         else: raise ValueError("invalid request kind")
                         self.next_sequence += 1
                         result = {"ok": True, "next_sequence": self.next_sequence,
-                                  "running": self.running, "paused": self.paused}
+                                  "running": self.running, "paused": self.paused,
+                                  "phase": self.phase, "campaign_menu": self.campaign_menu,
+                                  "level_id": self.level_id, "asset_revision": self.asset_revision}
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
@@ -550,11 +714,10 @@ class Bridge:
                     native.control("pause", saved); self.paused = True; self.running = False
                     command = dict(NEUTRAL); publish()
                 if self.running and now >= deadline:
-                    tick = native.counters()[2]
-                    native.step({**command, "elapsed_centiseconds": 3 if tick % 3 else 4})
+                    native.step({**command, "elapsed_centiseconds": elapsed_centiseconds()})
                     # Each submitted cast request survives until one native step.
                     command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
-                    publish()
+                    if not finish_if_ready(): publish()
                     deadline += 1/30
                     if deadline < time.monotonic() - .25: deadline = time.monotonic()
         except Exception as exc:
@@ -687,11 +850,13 @@ class Handler(BaseHTTPRequestHandler):
                 token = nonce + "." + hmac.new(self.server.secret, nonce.encode(), hashlib.sha256).hexdigest()
             return self.send_json(200, bridge.status(), cookie=token)
         if target.path == "/original-api/assets/manifest":
-            if not bridge.assets: return self.send_json(503, {"error": "loading"})
-            return self.send_json(200, bridge.assets.manifest)
+            assets = bridge.assets
+            if not assets: return self.send_json(503, {"error": "loading"})
+            return self.send_json(200, assets.manifest)
         if target.path == "/original-api/assets/blob":
-            if not bridge.assets: return self.send_json(503, {"error": "loading"})
-            return self.send_data(200, bridge.assets.blob, "application/octet-stream")
+            assets = bridge.assets
+            if not assets: return self.send_json(503, {"error": "loading"})
+            return self.send_data(200, assets.blob, "application/octet-stream")
         if target.path in ("/original-api/world-assets/manifest", "/original-api/world-assets/blob"):
             assets = getattr(bridge, "world_assets", None)
             if not assets: return self.send_json(503, {"error": "world assets unavailable"})
@@ -705,6 +870,8 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, IndexError): return self.send_json(400, {"error": "invalid publication sequence"})
             publication = bridge.publication(requested)
             if publication is None:
+                if requested is None and bridge.ready and bridge.phase not in ("playing", "paused"):
+                    return self.send_data(204, b"", "application/octet-stream")
                 return self.send_json(410 if requested is not None else 503, {"error": "publication unavailable"})
             if target.path.endswith('/modern-frame'):
                 if bridge.renderer != 'geometry': return self.send_json(404, {'error': 'renderer unavailable'})
@@ -755,6 +922,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict): raise ValueError("request must be an object")
             kind = "input" if self.path.endswith("/input") else "control"
             control_fields = {"menu": {"menu_action"}, "select_spell": {"spell_id"},
+                              "select_mission": {"level_id"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))

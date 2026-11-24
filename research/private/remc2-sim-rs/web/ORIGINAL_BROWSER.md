@@ -43,6 +43,13 @@ sprites, palette and map symbols. The replay file is read-only. F5 writes
 to the separate save slot. A new mission's replay can be opened with the
 same command and its matching resources.
 
+At an earned ordinary exit, let the exit animation finish. Results shows the
+five statistics from the Rust campaign. Choose **Continue**, select an unlocked
+mission, then choose **Enter mission**. The browser loads the selected mission’s
+terrain and sprites. Rust carries the player’s learned spells and experience
+into that mission. Opening an earned Results or mission-selection save starts
+at that screen. The browser uses text and a mission picker for these screens.
+
 In T’Klom, open the map with Tab and click or tap the exit symbol to inspect
 its English help text. Clicking again or closing the map dismisses it.
 The full map uses the native marker positions and current terrain. The

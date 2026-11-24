@@ -42,6 +42,9 @@ let lastHudState: OriginalHudState | null = null;
 let inspectedExit: number | null = null;
 let inspectionGeneration = '';
 let currentLevelName = 'Level 1';
+let campaignPhase: string | null = null;
+let loadedAssetRevision: number | undefined;
+const enterMissionKey = 'mc2-browser-enter-mission';
 const history = new OriginalSceneHistory();
 
 function updateMapInspectionLabel(text: string | null): void {
@@ -123,9 +126,23 @@ interface BridgeStatus {
   paused?: boolean;
   next_sequence?: number;
   has_save?: boolean;
+  phase?: string;
+  asset_revision?: number;
+  can_refresh_assets?: boolean;
+  campaign_menu?: {
+    phase: 'results' | 'mission_select';
+    completed_level_id?: string;
+    selected_level_id?: string;
+    available_levels: string[];
+    completion_statistics?: {
+      spells_found_percent: number; hit_accuracy_percent: number; creatures_killed_percent: number;
+      mana_collected_percent: number; time_taken_seconds: number;
+    };
+  } | null;
 }
 interface BridgeState extends OriginalHudState {
   sequence: number | string;
+  asset_revision?: number;
   runtime_generation: number | string;
   session_generation: number | string;
   tick: number | string;
@@ -141,6 +158,89 @@ async function responseJson<T>(response: Response): Promise<T> {
   return value as T;
 }
 
+async function readStatus(): Promise<BridgeStatus> {
+  return responseJson<BridgeStatus>(await fetch(API + '/status', { cache: 'no-store', signal: AbortSignal.timeout(10000) }));
+}
+
+function showCampaign(status: BridgeStatus): boolean {
+  const phase = status.can_refresh_assets ? 'refresh_assets' : status.phase;
+  if (!phase || phase === 'playing' || phase === 'paused') return false;
+  campaignPhase = phase;
+  playing = false;
+  polling = false;
+  clearInput();
+  if (isGeometryDisplay(display)) display.setPlaying(false);
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  curtain.hidden = false;
+  element('campaign').hidden = false;
+  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
+  message.textContent = status.error ?? '';
+  const menu = status.campaign_menu;
+  const results = menu?.phase === 'results' && status.phase === 'results';
+  const select = menu?.phase === 'mission_select' && status.phase === 'mission_select';
+  const heading = document.querySelector('h2')!;
+  heading.textContent = results ? `${levelName(menu.completed_level_id)} · Results` :
+    select ? 'Select mission' : phase === 'refresh_assets' ? 'Mission assets unavailable' :
+    phase === 'loading' ? 'Loading mission' : phase;
+  document.title = `Magic Carpet II · ${heading.textContent}`;
+  const stats = element('campaign-stats');
+  stats.hidden = !results;
+  stats.replaceChildren();
+  if (results && menu.completion_statistics) {
+    const row = menu.completion_statistics;
+    const seconds = row.time_taken_seconds;
+    for (const [name, value] of [
+      ['Spells found', `${row.spells_found_percent}%`], ['Hit accuracy', `${row.hit_accuracy_percent}%`],
+      ['Creatures killed', `${row.creatures_killed_percent}%`], ['Mana collected', `${row.mana_collected_percent}%`],
+      ['Time taken', `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`]
+    ] as const) {
+      const term = document.createElement('dt'), detail = document.createElement('dd');
+      term.textContent = name; detail.textContent = value; stats.append(term, detail);
+    }
+  }
+  element('campaign-continue').hidden = !results;
+  element('campaign-picker').hidden = !select;
+  const enter = element<HTMLButtonElement>('campaign-enter');
+  enter.hidden = !select && phase !== 'loading' && phase !== 'refresh_assets';
+  enter.textContent = select ? 'Enter mission' : 'Retry loading mission';
+  enter.disabled = false;
+  if (select) {
+    const picker = element<HTMLSelectElement>('campaign-level');
+    picker.replaceChildren(...menu.available_levels.map(id => new Option(levelName(id), id, false, id === menu.selected_level_id)));
+    enter.disabled = !picker.value;
+  }
+  return true;
+}
+
+async function advanceCampaign(): Promise<void> {
+  if (busy) return;
+  controlsPending++; busy = true; controlVersion++;
+  try {
+    if (campaignPhase === 'results') {
+      await post('/control', { action: 'dismiss_results' });
+      showCampaign(await readStatus());
+    } else if (campaignPhase === 'mission_select' || campaignPhase === 'loading' || campaignPhase === 'refresh_assets') {
+      if (campaignPhase === 'mission_select') {
+        const chosen = element<HTMLSelectElement>('campaign-level').value;
+        const status = await readStatus();
+        if (chosen !== status.campaign_menu?.selected_level_id)
+          await post('/control', { action: 'select_mission', level_id: chosen });
+      }
+      message.textContent = 'Loading mission…';
+      await post('/control', { action: campaignPhase === 'refresh_assets' ? 'refresh_assets' : 'start_mission' });
+      const status = await readStatus();
+      if (!showCampaign(status)) {
+        // Replace the renderer and all package-bound assets together.
+        sessionStorage.setItem(enterMissionKey, JSON.stringify([status.level_id, status.asset_revision]));
+        location.reload();
+      }
+    }
+  } catch (error) {
+    try { showCampaign(await readStatus()); } catch { /* Keep the current controls available for a retry. */ }
+    message.textContent = error instanceof Error ? error.message : String(error);
+  } finally { controlsPending--; busy = controlsPending > 0; }
+}
+
 let requestTail: Promise<unknown> = Promise.resolve();
 function post(path: string, fields: Record<string, unknown>): Promise<Record<string, unknown>> {
   const request = async (): Promise<Record<string, unknown>> => {
@@ -151,7 +251,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
     for (let attempt = 0; attempt < 2; attempt++) {
       let response: Response;
       try { response = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
-        signal: AbortSignal.timeout(8000) }); }
+        signal: AbortSignal.timeout(fields.action === 'start_mission' || fields.action === 'refresh_assets' ? 180000 : 8000) }); }
       catch (error) { networkError = error; continue; }
       const value = await responseJson<Record<string, unknown>>(response);
       inputSequence++; return value;
@@ -226,6 +326,16 @@ async function pollFrame(): Promise<void> {
     if (busy) return;
     const geometry = isGeometryDisplay(display);
     const response = await fetch(API + (geometry ? '/world-frame' : '/frame'), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (response.status === 204) {
+      const status = await readStatus();
+      // A direct secret entry briefly has no frames while the owner binds the new mission.
+      if (version === controlVersion && (status.phase !== 'loading' || status.can_refresh_assets)) showCampaign(status);
+      return;
+    }
+    if (response.status === 503) {
+      const status = await readStatus();
+      if (version !== controlVersion || (status.can_refresh_assets && showCampaign(status))) return;
+    }
     if (!response.ok) { await responseJson(response); return; }
     const data = await response.arrayBuffer();
     const frame = geometry ? decodeWorldFrame(data) : decodeOriginalFrame(data);
@@ -239,6 +349,15 @@ async function pollFrame(): Promise<void> {
     ]);
     if (stateResponse.status === 410 || observationResponse.status === 410 || modernResponse?.status === 410) return;
     const state = await responseJson<BridgeState>(stateResponse);
+    if (version !== controlVersion) return;
+    if (state.asset_revision !== undefined && loadedAssetRevision !== undefined && state.asset_revision !== loadedAssetRevision) {
+      // A native secret entry or a loaded slot can change the mission without a menu.
+      const status = await readStatus();
+      if (version !== controlVersion || showCampaign(status)) return;
+      connected = false; playing = false;
+      if (status.running) sessionStorage.setItem(enterMissionKey, JSON.stringify([status.level_id, status.asset_revision]));
+      location.reload(); return;
+    }
     if (!observationResponse.ok) { await responseJson(observationResponse); return; }
     const observation = decodeRenderPublication(new Uint8Array(await observationResponse.arrayBuffer()));
     if (observation.runtime_generation !== frame.runtimeGeneration || observation.identity.generation !== frame.sessionGeneration ||
@@ -338,7 +457,7 @@ async function pollFrame(): Promise<void> {
       display_width: DISPLAY_WIDTH, display_height: DISPLAY_HEIGHT,
       playing, paused: !playing && started } });
   } catch (error) { fail(error); }
-  finally { if (connected) window.setTimeout(() => void pollFrame(), Math.max(5, 1000 / 30 - (performance.now() - before))); }
+  finally { if (connected && !campaignPhase) window.setTimeout(() => void pollFrame(), Math.max(5, 1000 / 30 - (performance.now() - before))); }
 }
 
 async function sendInput(): Promise<void> {
@@ -353,6 +472,8 @@ async function sendInput(): Promise<void> {
 }
 
 playButton.addEventListener('click', () => void control('start'));
+element('campaign-continue').addEventListener('click', () => void advanceCampaign());
+element('campaign-enter').addEventListener('click', () => void advanceCampaign());
 pauseButton.addEventListener('click', () => void control('resume'));
 menuButton.addEventListener('click', () => void control(playing ? 'pause' : 'resume'));
 for (const id of ['save', 'load', 'reset']) element(id).addEventListener('click', () => void control(id));
@@ -425,7 +546,7 @@ window.addEventListener('mousemove', event => {
   }
 });
 window.addEventListener('keydown', event => {
-  if (!started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
   if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','Tab'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
@@ -461,12 +582,16 @@ async function boot(): Promise<void> {
   try {
     let status: BridgeStatus | null = null;
     for (let attempt = 0; attempt < 600; attempt++) {
-      status = await responseJson<BridgeStatus>(await fetch(API + '/status', { cache: 'no-store', signal: AbortSignal.timeout(10000) }));
+      status = await readStatus();
+      if (status.can_refresh_assets || (status.ready && !(status.phase === 'loading' && status.running))) break;
       if (status.error) throw new Error(status.error);
-      if (status.ready) break;
       await new Promise(resolve => window.setTimeout(resolve, 300));
     }
-    if (!status?.ready) throw new Error('The original game did not finish loading.');
+    if (!status?.ready && !status?.can_refresh_assets) throw new Error('The original game did not finish loading.');
+    inputSequence = status.next_sequence ?? 0;
+    connected = true;
+    if (showCampaign(status)) return;
+    loadedAssetRevision = status.asset_revision;
     currentLevelName = levelName(status.level_id);
     const presentationName = modernRequested ? 'Modern' : 'Original';
     document.title = `Magic Carpet II · ${presentationName} ${currentLevelName}`;
@@ -482,7 +607,6 @@ async function boot(): Promise<void> {
       display.onError = fail;
     } else display = new IndexedDisplay();
     hud = await OriginalHud.load(API); tables = hud.tables;
-    inputSequence = status.next_sequence ?? 0; connected = true;
     if (display instanceof ModernWorldRenderer) {
       polling = true; await pollFrame();
       if (!connected) return;
@@ -490,6 +614,9 @@ async function boot(): Promise<void> {
     }
     playButton.disabled = false; message.textContent = modernRequested ? 'The world is ready.' : 'The original world is ready.';
     window.setInterval(() => void sendInput(), 1000 / 30);
+    const enter = sessionStorage.getItem(enterMissionKey);
+    sessionStorage.removeItem(enterMissionKey);
+    if (enter && enter === JSON.stringify([status.level_id, status.asset_revision])) await control('start');
   } catch (error) { fail(error); }
 }
 void boot();
