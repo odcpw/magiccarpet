@@ -8,7 +8,7 @@ type TierRow = { tier: number; width: number; height: number; color: number; rgb
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
 type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; tiers: TierRow[]; font1?: FontGlyph[]; help?: Record<string, HelpRow> | null };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; help?: Record<string, HelpRow> | null };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -61,6 +61,8 @@ export class OriginalHud {
   private readonly symbols = new Map<number, SymbolRow>();
   private readonly mapFont = new Map<number, FontGlyph>();
   private readonly objectives = new Map<number, ObjectiveRow>();
+  private readonly objectiveStages: number[];
+  private readonly objectiveEnd: number;
   private readonly tiers = new Map<number, TierRow>();
   private readonly exitHelp?: HelpRow;
   private readonly objectiveBackground: number;
@@ -115,10 +117,19 @@ export class OriginalHud {
       if (span(row.indices).length !== row.render_width * row.render_height || span(row.mask).length !== row.render_width * row.render_height) throw new Error('Invalid Original objective');
       this.objectives.set(row.selector, row);
     }
+    if (!Array.isArray(manifest.objective_stage_records) || manifest.objective_stage_records.length !== 8 ||
+        !manifest.objective_stage_records.every(value => Number.isSafeInteger(value) && this.objectives.has(value)) ||
+        !Number.isSafeInteger(manifest.objective_end_record) || !this.objectives.has(manifest.objective_end_record))
+      throw new Error('Invalid Original objective record binding');
+    this.objectiveStages = manifest.objective_stage_records.slice();
+    this.objectiveEnd = manifest.objective_end_record;
     for (const row of manifest.tiers) {
       if (span(row.rgba).length !== row.width * row.height * 4) throw new Error('Invalid Original tier');
       this.tiers.set(row.tier, row);
     }
+  }
+  objectiveRecord(textSelector: number, isLevelEnd: boolean): number | null {
+    return isLevelEnd ? this.objectiveEnd : this.objectiveStages[textSelector] ?? null;
   }
   static async load(base = '/original-api'): Promise<OriginalHud> {
     const [manifestResponse, blobResponse] = await Promise.all([

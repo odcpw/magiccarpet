@@ -382,7 +382,7 @@ async function pollFrame(): Promise<void> {
       mana: source.player_vitals.mana, wizard_colors: source.spell_menu_wizard_colors,
       panels_opaque: source.spell_menu_panels_opaque, spells: source.player_spells };
     const objectiveSelector = source.objective_secret_announcement_record ??
-      (state.objective ? state.objective.is_level_end ? 53 : 48 + state.objective.text_selector : null);
+      (state.objective ? hud.objectiveRecord(state.objective.text_selector, state.objective.is_level_end !== 0) : null);
     const hudState: OriginalHudState = { ...state, source_top_status: source.source_top_status,
       panels_opaque: source.spell_menu_panels_opaque, objective_selector: objectiveSelector,
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu };

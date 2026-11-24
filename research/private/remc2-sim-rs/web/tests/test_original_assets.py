@@ -26,12 +26,43 @@ class OwnerAssetTests(unittest.TestCase):
         self.assertEqual(bundle.blob[span['offset']:span['offset'] + span['length']], table[0x4000:0x14000])
         self.assertEqual(manifest['exit'], span)
         self.assertEqual(manifest['objective_background'], 61)
-        self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 54)))
+        self.assertEqual(manifest['objective_stage_records'], list(range(48, 56)))
+        self.assertEqual(manifest['objective_end_record'], 53)
+        self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 56)) + [284, 285])
+        # The new selected-language path preserves the prior NightSpire
+        # objective images byte-for-byte, including frame and text.
+        source = json.loads((assets.ROOT / 'night-presentation-v6/hud/level1.json').read_text())
+        for row in source['objective']['rows']:
+            current = next(item for item in manifest['objectives'] if item['selector'] == row['selector'])
+            raster = (assets.ROOT / 'night-presentation-v6' / row['raster_path']).read_bytes()
+            plane = row['raster_plane_bytes']
+            self.assertEqual(self.span(bundle, current['indices']), raster[:plane])
+            self.assertEqual(self.span(bundle, current['mask']), raster[plane:])
         self.assertIn(40, [row['selector'] for row in manifest['sprites']])
         self.assertGreater(len(manifest['symbols']), 200)
         self.assertEqual(ctypes.sizeof(assets.Hud), 272)
         self.assertEqual(ctypes.sizeof(assets.FrameQuery), 64)
         self.assertEqual(ctypes.sizeof(assets.FrameInfo), 128)
+
+    def test_real_payahandra_and_secret_bind_source_objective_records(self):
+        resources = json.loads((self.generated / 'continuity-20261115/installed-full-resources.json').read_text())
+        if isinstance(resources, dict): resources = resources['packages']
+        day = assets.OriginalAssets.from_package(resources[1])
+        self.assertEqual(day.manifest['objective_stage_records'], list(range(54, 62)))
+        self.assertEqual(day.manifest['objective_end_record'], 59)
+        rows = {row['selector']: row for row in day.manifest['objectives']}
+        self.assertEqual(rows[54]['text'], '"Seek my sign. There is a spell near there which will find out your enemies."')
+        self.assertEqual(day.manifest['objective_stage_records'][3], 57)
+        self.assertEqual(rows[57]['text'], '"Good work! Quickly, go to the ruins of Payahandra\'s tower."')
+        self.assertEqual(rows[58]['text'], '"Payahandra\'s spells are hidden inside these vaults. Raze them to the ground."')
+        self.assertTrue(any(self.span(day, rows[54]['mask'])))
+        self.assertNotEqual(self.span(day, rows[54]['mask']), self.span(day, rows[55]['mask']))
+        self.assertIn(284, rows)
+        self.assertIn(285, rows)
+        secret = assets.OriginalAssets.from_package(resources[25])
+        self.assertEqual(secret.manifest['objective_stage_records'], [51] * 8)
+        self.assertEqual(secret.manifest['objective_end_record'], 101)
+        self.assertEqual({row['selector'] for row in secret.manifest['objectives']}, {51, 101, 284, 285})
 
     def test_real_tklom_and_night_use_selected_map_assets_and_english_exit_help(self):
         help_cache = self.generated / 'exit-help-row83-20261124-candidate'

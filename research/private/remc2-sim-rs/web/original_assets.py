@@ -7,10 +7,29 @@ from __future__ import annotations
 
 import ctypes as c
 import hashlib
+import importlib.util
 import json
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / 'generated' / 'settlement-20261105-integration' / 'owner-closed-v6'
+PRIVATE = Path(__file__).resolve().parents[2]
+DEFAULT_MENU = PRIVATE / 'generated/mc2-campaign-menu-cache-current'
+OBJECTIVE_FIRST = (48, 54, 60, 66, 69, 72, 77, 79, 86, 92, 97, 102, 105,
+                   110, 115, 118, 124, 126, 131, 133, 136, 140, 143, 151, 156)
+OBJECTIVE_END = (53, 59, 65, 68, 71, 76, 78, 85, 91, 96, 101, 104, 109,
+                 114, 117, 123, 125, 130, 132, 135, 139, 142, 150, 156, 158)
+
+
+@cache
+def _objective_compositor():
+    """Use the same source textbox compositor as the owner asset exporter."""
+    path = PRIVATE / 'remc2-unity-asset-cache/build_cache.py'
+    spec = importlib.util.spec_from_file_location('mc_owner_cache_objective', path)
+    if spec is None or spec.loader is None: raise RuntimeError('source objective compositor unavailable')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_objective_rasters
 
 
 class Slot(c.Structure):
@@ -153,15 +172,6 @@ class OriginalAssets:
             rows.append({'selector': row['selector'], 'width': width, 'height': height,
                          'runtime_width': row['runtime_width'], 'runtime_height': row['runtime_height'],
                          'indices': add(indices), 'mask': add(mask)})
-        objectives = []
-        for row in source['objective']['rows']:
-            data = hud_cache.read(row['raster_path'])
-            plane = row['raster_plane_bytes']
-            if len(data) != plane * 2 or plane != row['render_width'] * row['render_height']:
-                raise ValueError('invalid source objective raster')
-            objectives.append({key: row[key] for key in ('selector', 'reference_x', 'reference_y',
-                              'render_width', 'render_height', 'blend_x', 'blend_y', 'blend_width', 'blend_height')}
-                              | {'indices': add(data[:plane]), 'mask': add(data[plane:])})
         tiers = []
         for row in source['spells']['tier_rows']:
             data = hud_cache.read(row['render_path'])
@@ -196,13 +206,93 @@ class OriginalAssets:
         colors = env_cache.read('palette/colors.u8')
         if len(colors) != 4096:
             raise ValueError('invalid Night color table')
+        objectives, objective_stages, objective_end = self._objectives(
+            help_cache or DEFAULT_MENU, profile, colors, add)
         help_rows = self._exit_help(help_cache, profile, colors, add) if help_cache else None
         self.blob = bytes(blob)
         self.manifest = {'schema': 'mc-original-assets/v1', 'bytes': len(blob), 'normal': normal,
                          'objective_background': colors[0], 'map_cross_color': colors[4095],
                          'exit': exit_table, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
                          'objectives': objectives, 'tiers': tiers, 'help': help_rows, 'font1': font1,
+                         'objective_stage_records': objective_stages, 'objective_end_record': objective_end,
                          'map_profile': profile['map_type']['name'].lower(), 'hud_profile': 'night'}
+
+    @staticmethod
+    def _objectives(menu_path: Path, profile: dict, colors: bytes, add):
+        # GameUI.cpp's level-indexed English strings; secret source levels
+        # 30..34 use the fixed stage/end pair 51/101.
+        internal = profile['internal_level']
+        if type(internal) is not int: raise ValueError('invalid objective source level')
+        if 0 <= internal < len(OBJECTIVE_FIRST):
+            first, end = OBJECTIVE_FIRST[internal], OBJECTIVE_END[internal]
+            stages = list(range(first, first + 8))
+        elif 30 <= internal <= 34:
+            stages, end = [51] * 8, 101
+        else:
+            raise ValueError('unsupported objective source level')
+        menu = _VerifiedCache(menu_path)
+        manifest = menu.manifest
+        if (manifest.get('schema') != 'mc2-owner-campaign-menu-cache/v3' or
+                manifest.get('source_commit') != '6806c7204d17220ecc0430759f784aea8ee2ddb2'):
+            raise ValueError('unexpected source objective cache identity')
+        language_root = (menu.root / manifest['language_cache']['path']).resolve(strict=True)
+        if not language_root.is_relative_to(menu.root): raise ValueError('language cache escapes selected root')
+        language = _VerifiedCache(language_root)
+        lm = language.manifest
+        if (lm.get('binding_sha256') != manifest['language_cache']['binding_sha256'] or
+                lm.get('default_locale_id') != manifest['language_cache']['default_locale_id'] or
+                lm.get('glyph_mapping') != 'mc2-byte-plus-one-controls/v1'):
+            raise ValueError('source objective language binding differs')
+        locale = next(row for row in lm['locales'] if row['id'] == lm['default_locale_id'])
+        if 'LANGUAGE/L1.TXT' not in locale['aliases'] or locale['pack_sha256'] != manifest['source_language_sha256']:
+            raise ValueError('source objective locale is not the selected English language')
+        if manifest['objective']['font_id'] != 'hfont3' or 'hfont3' not in locale['font_ids']:
+            raise ValueError('source objective font differs')
+        font = next(row for row in lm['fonts'] if row['id'] == 'hfont3')
+        masks = language.read(font['masks_path'])
+        for glyph in font['glyphs']:
+            offset, count = glyph['offset'], glyph['length']
+            data = masks[offset:offset + count]
+            if (offset < 0 or count != glyph['width'] * glyph['height'] or len(data) != count or
+                    hashlib.sha256(data).hexdigest() != glyph['sha256'] or any(value not in (0, 1) for value in data)):
+                raise ValueError('invalid source objective glyph')
+        name = profile['map_type']['name'].lower()
+        source_profile = next(row for row in manifest['objective']['profiles'] if row['id'] == name)
+        sprites = {}
+        for sprite in source_profile['sprites']:
+            indices, mask = menu.read(sprite['indices_path']), menu.read(sprite['mask_path'])
+            size = sprite['width'] * sprite['height']
+            if len(indices) != size or len(mask) != size or any(value not in (0, 1) for value in mask):
+                raise ValueError('invalid source objective frame')
+            sprites[sprite['selector']] = (indices, mask, sprite['width'], sprite['height'])
+        if set(sprites) != {171, 172, 173}: raise ValueError('source objective frame selectors differ')
+        palette = menu.read(source_profile['palette_path'])
+        if len(palette) != 768 or any(value > 63 for value in palette):
+            raise ValueError('invalid source objective palette')
+        rgb = bytes(value * 4 for value in palette)
+        records = language.read(locale['records_path'])
+        rows = []
+        for selector in sorted(set(stages + [end, 284, 285])):
+            record = locale['records'][selector]
+            start, length = record['offset'], record['bytes']
+            text = records[start:start + length]
+            if (record['selector'] != selector or start < 0 or not 0 < length <= 4096 or
+                    len(text) != length or hashlib.sha256(text).hexdigest() != record['sha256'] or
+                    any(value < 32 or value > 126 for value in text)):
+                raise ValueError('invalid English objective record')
+            data, _, geometry = _objective_compositor()(
+                text, font['glyphs'], masks, sprites, rgb, colors[3840], 1)
+            width, height = geometry['objective_width'], geometry['objective_height']
+            plane = width * height
+            blend = geometry['objective_blend_rect']
+            if len(data) != plane * 2: raise ValueError('invalid source objective raster')
+            rows.append({'selector': selector, 'text': text.decode('ascii'),
+                         'reference_x': geometry['objective_x'], 'reference_y': geometry['objective_y'],
+                         'render_width': width, 'render_height': height,
+                         'blend_x': blend['x'], 'blend_y': blend['y'],
+                         'blend_width': blend['width'], 'blend_height': blend['height'],
+                         'indices': add(data[:plane]), 'mask': add(data[plane:])})
+        return rows, stages, end
 
     @staticmethod
     def _exit_help(help_cache: Path, profile: dict, colors: bytes, add) -> dict | None:
