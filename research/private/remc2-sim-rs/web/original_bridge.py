@@ -737,7 +737,8 @@ class Bridge:
                 hint_map = state.get('world_map') or minimap
                 if state['show_help'] and self.assets.manifest.get('help'):
                     subjects = {row['subject_entity_index'] for row in hint_map['entities']
-                                if row['visible'] == 1 and row['help_selector'] in (19, 20, 22, 25, 26) and row['subject_entity_index']}
+                                if (row['visible'] == 1 or (row['visible'] == 0 and row['help_selector'] == 27 and row['kind'] == 1))
+                                and row['help_selector'] in (19, 20, 22, 25, 26, 27) and row['subject_entity_index']}
                     geometry_subjects = {struct.unpack_from('<H', rows, offset + 24)[0]
                                          for offset in range(0, len(rows), 64)} if world else set()
                     state['hint_entities'] = read_missing_hint_entities(native, subjects - geometry_subjects)

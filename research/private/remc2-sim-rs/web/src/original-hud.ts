@@ -139,7 +139,7 @@ export class OriginalHud {
     }
     for (const [id, record, flags, age, priority] of [
       [19, 307, 0x400, 160, 5], [20, 308, 0, 160, 5], [22, 310, 0, 320, 4],
-      [25, 313, 0, 160, 5], [26, 314, 0, 160, 5],
+      [25, 313, 0, 160, 5], [26, 314, 0, 160, 5], [27, 315, 0, 320, 3],
     ] as const) {
       const help = manifest.help?.[String(id)];
       if (!help) continue;
@@ -280,7 +280,8 @@ export class OriginalHud {
     if (context.suppressed) { if (this.hintCurrent) close(); this.hintDelay = 20; return; }
     const map = state.world_map ?? state.minimap, full = !!state.world_map, hud = state.hud;
     const marker = (row: MinimapEntity) => {
-      if (!hud || row.visible !== 1 || !row.subject_entity_index || !this.mapHelp.has(row.help_selector ?? 0) ||
+      const admitted = row.visible === 1 || (row.visible === 0 && row.help_selector === 27 && row.kind === 1);
+      if (!hud || !admitted || !row.subject_entity_index || !this.mapHelp.has(row.help_selector ?? 0) ||
           String(row.generation) !== String(hud.generation) || String(row.tick) !== String(hud.tick)) return null;
       const scale = full ? 1 : 2, x = Math.trunc(row.x / scale), y = Math.trunc(row.y / scale);
       if (row.x < 0 || row.y < 0 || x >= (full ? 191 : 64) || y >= (full ? 200 : 64)) return null;
@@ -298,7 +299,7 @@ export class OriginalHud {
       else { this.hintCurrent = found; this.hintDraw = found; if (--this.hintRemaining === 0) close(); }
     } else if (--this.hintDelay <= 0) {
       let best: { row: number; subject: number; x: number; y: number; overdue: number; priority: number } | null = null;
-      for (const id of [19, 20, 22, 25, 26]) {
+      for (const id of [19, 20, 22, 25, 26, 27]) {
         const info = this.hintRows.get(id), help = this.mapHelp.get(id);
         if (!info || !help || info.age <= help.age_threshold) continue;
         const candidates = marks.filter(row => row.row === id);

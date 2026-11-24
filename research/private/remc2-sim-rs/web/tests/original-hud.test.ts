@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { OriginalHud, type OriginalHudState } from '../src/original-hud.ts';
 
 const run = spawnSync('python3', ['-c', `import base64,json,sys
@@ -294,6 +295,61 @@ print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()
   const cornerMap = dayHud.compose(scene, palette, corner);
   assert.equal(cornerMap[Math.ceil((cornerCastle.y / 2) * 480 / 200) * 640 + cornerCastle.x],
     qualified.manifest.help['25'].line_color, 'corner leader reaches the expanded source marker');
+
+  assert.equal(qualified.manifest.help['27'].text, 'Marker stone');
+  // These projections and blink phases were captured from the actual Jaleen
+  // native marker rows; the single-subject pose below controls nearest selection.
+  const recorded = JSON.parse(readFileSync(`${generated}original-marker-stone-20261122/candidate-real-entries.json`, 'utf8'))
+    .filter((entry: {level: number}) => entry.level === 12);
+  assert.equal(recorded.length, 12);
+  const markerContext = {...context, generation: 10, entities: [{entity: 86, x: 35968, y: 28800}]};
+  for (let i = 0; i < recorded.length; i++) {
+    const entry = recorded[i];
+    const sample = entry.full.find((row: number[]) => row[0] === 86);
+    assert.ok(sample, 'the same authored Jaleen marker remains published');
+    const actual = {...marker, tick: entry.tick, subject_entity_index: sample[0],
+      x: sample[1], y: sample[2], visible: sample[3], help_selector: 27, kind: 1};
+    const frame = {...visible, hud: {...visible.hud!, tick: entry.tick},
+      world_map: {entities: [actual], marks: []}};
+    dayHud.advanceMapHints(frame, {...markerContext, sequence: i + 1});
+    if (i >= 2) {
+      assert.deepEqual(dayHud.visibleMapHint(), {row: 27, subject: 86, x: 222, y: 270},
+        'the live marker pointer survives both phases of the recorded blink');
+      const pixels = dayHud.compose(scene, palette, frame);
+      assert.equal(pixels[Math.ceil(actual.y * 480 / 200) * 640 + actual.x * 2],
+        qualified.manifest.help['27'].line_color, 'the leader reaches the actual full-map marker');
+    }
+  }
+  const outside = {...marker, tick: 11, subject_entity_index: 86, help_selector: 27, kind: 1, x: 191, y: 135};
+  dayHud.advanceMapHints({...visible, hud: {...visible.hud!, tick: 11}, world_map: {entities: [outside], marks: []}},
+    {...markerContext, sequence: 13});
+  assert.equal(dayHud.visibleMapHint(), null, 'a marker outside the source map clears its pointer');
+
+  for (let i = 0; i < recorded.length; i++) {
+    const entry = recorded[i];
+    const sample = entry.corner.find((row: number[]) => row[0] === 86);
+    const actual = {...marker, tick: entry.tick, subject_entity_index: sample[0],
+      x: sample[1], y: sample[2], visible: sample[3], help_selector: 27, kind: 1};
+    const frame = {...corner, hud: {...corner.hud!, tick: entry.tick},
+      minimap: {...corner.minimap, entities: [actual]}};
+    dayHud.advanceMapHints(frame, {...markerContext, generation: 11, sequence: i + 1});
+    if (i >= 2) {
+      assert.deepEqual(dayHud.visibleMapHint(), {row: 27, subject: 86, x: 90, y: 120},
+        'the corner-map pointer also survives the distinct blink cadence');
+      const pixels = dayHud.compose(scene, palette, frame);
+      assert.equal(pixels[Math.ceil(60 * 480 / 200) * 640 + 90],
+        qualified.manifest.help['27'].line_color, 'the corner leader reaches the source marker');
+    }
+  }
+  const outsideCorner = {...outside, x: 0, y: 0, visible: 0};
+  dayHud.advanceMapHints({...corner, hud: {...corner.hud!, tick: 11},
+    minimap: {...corner.minimap, entities: [outsideCorner]}}, {...markerContext, generation: 11, sequence: 13});
+  assert.equal(dayHud.visibleMapHint(), null, 'leaving the corner aperture retires the pointer');
+  const wrongKind = {...outside, x: 111, y: 135, visible: 0, kind: 2};
+  const wrongFrame = {...visible, hud: {...visible.hud!, tick: 11}, world_map: {entities: [wrongKind], marks: []}};
+  for (let sequence = 1; sequence <= 3; sequence++)
+    dayHud.advanceMapHints(wrongFrame, {...markerContext, generation: 12, sequence});
+  assert.equal(dayHud.visibleMapHint(), null, 'the blink exception does not admit another hidden entity kind');
 });
 
 test('source Castle and balloon rows control status bars', () => {
