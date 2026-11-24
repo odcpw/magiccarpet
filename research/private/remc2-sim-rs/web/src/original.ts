@@ -23,6 +23,7 @@ const element = <T extends HTMLElement>(id: string): T => {
 const canvas = element<HTMLCanvasElement>('original');
 const curtain = element('curtain'), message = element('message');
 const playButton = element<HTMLButtonElement>('play'), pauseButton = element<HTMLButtonElement>('pause');
+const speechButton = element<HTMLButtonElement>('speech');
 const menuButton = element<HTMLButtonElement>('menu');
 const keys = new Set<string>();
 const mouseButtons = new Set<number>();
@@ -151,6 +152,8 @@ interface BridgeStatus {
   phase?: string;
   asset_revision?: number;
   can_refresh_assets?: boolean;
+  speech_enabled?: boolean | null;
+  speech_available?: boolean;
   campaign_menu?: {
     phase: 'results' | 'mission_select';
     completed_level_id?: string;
@@ -207,7 +210,7 @@ function showCampaign(status: BridgeStatus): boolean {
   clearInput();
   if (isGeometryDisplay(display)) display.setPlaying(false);
   if (document.pointerLockElement === canvas) document.exitPointerLock();
-  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'abandon', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
+  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'speech', 'abandon', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
   if (phase === 'media') {
     curtain.hidden = true;
     if (!campaignMedia) {
@@ -327,10 +330,15 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
 }
 
 function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; }
+function showSpeechPreference(enabled: unknown, available: unknown): void {
+  speechButton.disabled = available !== true || typeof enabled !== 'boolean';
+  speechButton.textContent = speechButton.disabled ? 'Speech unavailable' : `Speech: ${enabled ? 'On' : 'Off'}`;
+}
 function showMenu(text: string): void {
   message.textContent = text; curtain.hidden = false;
   playButton.hidden = started; pauseButton.hidden = !started;
   for (const id of ['save', 'load', 'reset', 'abandon']) element(id).hidden = !started;
+  speechButton.hidden = !connected;
   menuButton.hidden = !started;
   element('touch').hidden = true;
   element('look-hint').hidden = true;
@@ -372,6 +380,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
     }
     else if (action === 'pause') { playing = false; showMenu('Paused'); }
     else if (action === 'save') { message.textContent = 'Game saved.'; element('hint').textContent = 'Game saved.'; }
+    else if (action === 'toggle_speech') showSpeechPreference(result.speech_enabled, result.speech_available);
     else if (action === 'load' || action === 'reset') {
       history.reset(); playing = result.running === true; showMenu(action === 'load' ? 'Game loaded.' : 'Level restarted.');
       if (playing) hideMenu();
@@ -434,6 +443,7 @@ async function pollFrame(): Promise<void> {
     if (stateResponse.status === 410 || observationResponse.status === 410 || modernResponse?.status === 410) return;
     const state = await responseJson<BridgeState>(stateResponse);
     if (version !== controlVersion) return;
+    showSpeechPreference(state.speech_enabled, state.speech_available);
     configuredMapCode = preferenceKeyCode(state.map_key);
     if (state.asset_revision !== undefined && loadedAssetRevision !== undefined && state.asset_revision !== loadedAssetRevision) {
       // A native secret entry or a loaded slot can change the mission without a menu.
@@ -597,6 +607,7 @@ element('abandon').addEventListener('click', () => void (async () => {
   if (playing) await control('menu', { menu_action: 'open_abandon_confirmation' });
 })());
 pauseButton.addEventListener('click', () => { gameplayAudio.activate(); void control('resume'); });
+speechButton.addEventListener('click', () => void control('toggle_speech'));
 menuButton.addEventListener('click', () => void control(playing ? 'pause' : 'resume'));
 for (const id of ['save', 'load', 'reset']) element(id).addEventListener('click', () => void control(id));
 element('retry').addEventListener('click', () => location.reload());
@@ -763,6 +774,8 @@ async function boot(): Promise<void> {
     inputSequence = status.next_sequence ?? 0;
     connected = true;
     if (showCampaign(status)) return;
+    showSpeechPreference(status.speech_enabled, status.speech_available);
+    speechButton.hidden = false;
     loadedAssetRevision = status.asset_revision;
     currentLevelName = levelName(status.level_id);
     const presentationName = modernRequested ? 'Modern' : 'Original';

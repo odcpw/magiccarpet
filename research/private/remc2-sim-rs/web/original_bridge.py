@@ -30,6 +30,7 @@ from original_media import OriginalMedia
 from original_gameplay_audio import GameplayJournal, GameplaySamples
 from original_campaign_effects import CampaignEffects
 from original_speech import SpeechCache, SpeechJournal
+from original_preferences import install_profile, toggle_speech
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -70,9 +71,10 @@ class FrameInfo(c.Structure):
 
 class Native:
     """All methods, including construction and destruction, run on one owner thread."""
-    def __init__(self, library: Path, packages: list[dict]):
+    def __init__(self, library: Path, packages: list[dict], profile_path=None):
         self.lib = c.CDLL(str(library.resolve()))
         self.handle = c.c_uint64()
+        self.profile_path = profile_path
         self.language_cache = None
         self.media_installed = False
         self.observation_buffer = (c.c_ubyte * (2 * 1024 * 1024))()
@@ -113,6 +115,8 @@ class Native:
             raise RuntimeError("native FrameInfo ABI layout mismatch")
         self.check(self.lib.mc_game_runtime_create_v1(c.byref(self.handle)), "create")
         try:
+            if self.profile_path is not None:
+                install_profile(self, self.handle, self.profile_path)
             self.check(self.lib.mc_game_runtime_bootstrap_package_set_json_v1(
                 self.handle, 1, self.request, len(self.request)), "bootstrap")
             identity = self.identity()
@@ -263,6 +267,8 @@ class Native:
             new_handle = c.c_uint64()
             self.check(self.lib.mc_game_runtime_create_v1(c.byref(new_handle)), "create load runtime")
             try:
+                if self.profile_path is not None:
+                    install_profile(self, new_handle, self.profile_path)
                 self.check(self.lib.mc_game_runtime_load_replay_from_runtime_json_v1(
                     new_handle, 1, self.handle, outer, self.request, len(self.request), saved, len(saved)), "load")
                 self.bind_language(new_handle)
@@ -435,13 +441,14 @@ def replay_package(packages, replay):
 
 class Bridge:
     def __init__(self, library, packages, save_path=None, renderer="indexed", modern=False,
-                 replay_path=None, help_cache=None, speech_cache=None):
+                 replay_path=None, help_cache=None, speech_cache=None, profile_path=None):
         self.library, self.packages = library, packages
         if renderer not in ("indexed", "geometry"): raise ValueError("invalid renderer")
         self.renderer = renderer
         if modern and renderer != 'geometry': raise ValueError('modern observations require geometry renderer')
         self.modern = modern
         self.replay_path = replay_path
+        self.profile_path = profile_path
         self.help_cache = help_cache
         self.speech_cache = speech_cache or PRIVATE / 'generated/mc2-campaign-speech-current'
         self.level_id = None
@@ -457,6 +464,7 @@ class Bridge:
         self.gameplay_samples = None
         self.speech_segments = {}
         self.speech_error = None
+        self.speech_enabled = None
         self.media = None; self.media_view = None
         self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
         self.can_refresh_assets = False
@@ -471,7 +479,8 @@ class Bridge:
                     "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id,
                     "phase": self.phase, "campaign_menu": self.campaign_menu, "asset_revision": self.asset_revision,
                     "can_refresh_assets": self.can_refresh_assets, "media": self.media_view,
-                    "speech_available": self.speech_error is None, "speech_error": self.speech_error}
+                    "speech_available": self.speech_error is None, "speech_error": self.speech_error,
+                    "speech_enabled": self.speech_enabled}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -495,7 +504,7 @@ class Bridge:
     def run(self):
         native = None
         try:
-            native = Native(self.library, self.packages)
+            native = Native(self.library, self.packages, self.profile_path)
             gameplay_audio = GameplayJournal(native)
             effects = CampaignEffects(native)
             try:
@@ -678,6 +687,7 @@ class Bridge:
                     state['hint_entities'] = read_missing_hint_entities(native, subjects - geometry_subjects)
                 with self.lock:
                     self.speech_error = speech.error
+                    self.speech_enabled = state['speech_enabled']
                     self.speech_segments = {key: row['wave'] for key, row in speech.events.items()}
                     self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                               world.terrain_gzip if world else None, modern_packet))
@@ -707,7 +717,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
@@ -791,6 +801,9 @@ class Bridge:
                                 if not self.ready: raise ValueError("mission assets are unavailable; retry refresh_assets")
                                 if self.paused: native.control("resume", saved); self.paused = False
                                 self.running = True; deadline = time.monotonic()
+                                publish()
+                            elif action == "toggle_speech":
+                                toggle_speech(native, speech.cache is not None)
                                 publish()
                             elif action in ("map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell"):
                                 if not self.running or self.paused: raise ValueError("game must be playing")
@@ -880,6 +893,8 @@ class Bridge:
                                   "running": self.running, "paused": self.paused,
                                   "phase": self.phase, "campaign_menu": self.campaign_menu,
                                   "level_id": self.level_id, "asset_revision": self.asset_revision,
+                                  "speech_enabled": self.speech_enabled,
+                                  "speech_available": speech.cache is not None,
                                   "media": self.media_view}
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
@@ -1162,6 +1177,8 @@ def main():
     parser.add_argument("--replay", type=Path, help="start at this read-only campaign replay")
     parser.add_argument("--help-cache", type=Path, help="use this owner-local gameplay help cache")
     parser.add_argument("--speech-cache", type=Path, help="use this owner-local campaign speech cache")
+    parser.add_argument("--profile", type=Path, default=PRIVATE / "generated/original-web-20261116/profile",
+                        help="browser-owned player preferences directory")
     parser.add_argument("--probe-frame", type=Path)
     parser.add_argument("--renderer", choices=("indexed", "geometry"), default="indexed")
     parser.add_argument("--modern", action="store_true", help="publish native Modern observations with geometry")
@@ -1178,7 +1195,7 @@ def main():
     if args.replay is not None and args.save.resolve() == args.replay.resolve():
         parser.error("--replay and the writable --save slot must be different files")
     if args.probe_frame:
-        runtime = Native(args.library, packages)
+        runtime = Native(args.library, packages, args.profile)
         try:
             frame = runtime.frame(1)
             args.probe_frame.parent.mkdir(parents=True, exist_ok=True)
@@ -1187,7 +1204,7 @@ def main():
                               "frame_sha256": hashlib.sha256(frame).hexdigest(), "file": str(args.probe_frame)}))
         finally: runtime.close()
         return
-    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern, args.replay, args.help_cache, args.speech_cache)
+    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern, args.replay, args.help_cache, args.speech_cache, args.profile)
     server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)

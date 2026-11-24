@@ -31,6 +31,12 @@ Original Unity plugin. Pass `--library PATH` to select a specific qualified
 build. Geometry rendering requires the campaign palette export shipped at
 `5d1a5546` on `codex/original-ending`.
 
+Use **Speech** on the opening or pause screen to turn spoken objectives on
+or off. The setting takes effect on the next cue and persists across launches.
+By default the browser stores its player preferences under
+`research/private/generated/original-web-20261116/profile`. Pass
+`--profile DIRECTORY` to use another profile. The campaign save has its own path.
+
 ### Open an Original mission replay
 
 Use the native-backed geometry renderer with the same installed package set,
