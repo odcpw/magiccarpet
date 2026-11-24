@@ -1,6 +1,34 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand } from '../src/original-adapter.ts';
+import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand, preferenceKeyCode, mapGestureAdmitted, MapMouseChord } from '../src/original-adapter.ts';
+
+test('map binding translates every native preference key to a physical browser code', () => {
+  for (const letter of 'ABCDEFGHIJKLMNOQSTUVWXYZ') assert.equal(preferenceKeyCode(letter), `Key${letter}`);
+  const named = { Minus: 'Minus', Equals: 'Equal', Semicolon: 'Semicolon', Backslash: 'Backslash',
+    Comma: 'Comma', Period: 'Period', Slash: 'Slash', UpArrow: 'ArrowUp', DownArrow: 'ArrowDown',
+    LeftArrow: 'ArrowLeft', RightArrow: 'ArrowRight', Return: 'Enter', Space: 'Space',
+    LeftControl: 'ControlLeft', RightControl: 'ControlRight', LeftShift: 'ShiftLeft',
+    RightShift: 'ShiftRight', LeftAlt: 'AltLeft', RightAlt: 'AltRight' };
+  for (const [key, code] of Object.entries(named)) assert.equal(preferenceKeyCode(key), code);
+  for (const invalid of [null, undefined, '', 'Tab', 'P', '__proto__']) assert.equal(preferenceKeyCode(invalid), null);
+});
+
+test('map chord uses a physical edge, consumes both buttons, and respects menu precedence', () => {
+  const flight = { mapOpen: false, spellsOpen: false, controlHeld: false, cycleHeld: false };
+  const chord = new MapMouseChord();
+  assert.equal(chord.press(0, flight), false);
+  assert.equal(chord.press(2, flight), true);
+  assert.equal(chord.isConsumed(0), true); assert.equal(chord.isConsumed(2), true);
+  assert.equal(chord.press(2, flight), false, 'held buttons do not toggle twice');
+  chord.release(2); assert.equal(chord.isConsumed(2), false); assert.equal(chord.isConsumed(0), true);
+  assert.equal(chord.press(2, { ...flight, mapOpen: true }), true, 'a fresh edge closes the map');
+  chord.clear();
+  assert.equal(chord.press(0, { ...flight, controlHeld: true }), false);
+  assert.equal(chord.press(2, { ...flight, controlHeld: true }), false, 'Ctrl wins in flight');
+  assert.equal(mapGestureAdmitted({ ...flight, cycleHeld: true }), false, 'modified spell cycling wins in flight');
+  assert.equal(mapGestureAdmitted({ ...flight, mapOpen: true, controlHeld: true }), true, 'map close precedes Ctrl');
+  assert.equal(mapGestureAdmitted({ ...flight, mapOpen: true, spellsOpen: true }), false, 'open spell menu wins');
+});
 
 test('source marked-spell gestures choose the clicked hand and reverse modifier', () => {
   assert.deepEqual(markedSpellCycle(0, true, false), {hand: 'left', direction: 'next'});

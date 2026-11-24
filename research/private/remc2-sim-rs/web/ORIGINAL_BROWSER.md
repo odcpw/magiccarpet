@@ -95,10 +95,14 @@ backgrounding the page pauses the game. The backend additionally pauses after
 1.5 seconds without input. This is a local/private experimental game service,
 not a public multiplayer server. Separate processes own separate sessions.
 
-Controls: W/S speed, A/D strafe, mouse or arrows steer, Space casts the selected
-spell, mouse buttons cast assigned hands. Hold Ctrl for the source spell grid;
-left/right click assigns the indicated tier to that hand. O shows the objective,
-Tab toggles the map, Esc pauses, F5 saves and F9 loads. The utility menu also
+W/S controls speed, A/D strafes, and the mouse or arrow keys steer. Space casts
+the selected spell. The mouse buttons cast from their assigned hands. Hold Ctrl
+to open the spell grid and click to assign a tier to a hand. Shift-click marks
+a spell for that hand. In flight, Shift-click advances through its marks and
+Alt-click goes back. O shows the objective. Press the configured map key
+(Return by default), press both mouse buttons together, or use Tab to toggle
+the map. Hold Alt on the map for player information. Esc opens the abandon
+confirmation, P pauses, F5 saves and F9 loads. The utility menu also
 provides resume, save, load, restart and fullscreen. Clicking the view captures
 the mouse; Esc releases it. Touch users drag the view to steer and use the
 flight pad and Cast button. Spells opens a tap grid with a Left/Right hand
@@ -173,8 +177,12 @@ environment's FONT1. In the paid Perilium save, the full map displayed Nyphur,
 Rahn and Belix. All 142 sampled glyph pixels matched the owner masks and
 palette, and the names disappeared when the spell expired at tick 184.
 
-Still incomplete: audio, original options/pause submenus,
-hand flashes and source shadow/reflection passes. The geometry renderer reads
+The flight audio player reads source voice commands and samples from the
+selected mission bank. One paid Fireball in Payahandra produced the launch
+and impact waveforms in Chrome's Web Audio output. Physical speaker output,
+gameplay music, the remaining original options and pause submenus, hand flashes
+and source shadow/reflection passes are still open in this client.
+The geometry renderer reads
 the current native campaign palette for both world and HUD. On a saved
 Payahandra entry, its objective flash and fade matched the indexed renderer
 through recovery in Chrome. Terrain

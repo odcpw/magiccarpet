@@ -84,6 +84,53 @@ export interface OriginalInput {
   show_objective: boolean;
 }
 
+/** Translate the native preference's portable physical key names to DOM codes. */
+export function preferenceKeyCode(key: unknown): string | null {
+  if (typeof key !== 'string') return null;
+  if (/^[A-OQSTU-Z]$/.test(key)) return `Key${key}`;
+  const codes: Record<string, string> = {
+    Minus: 'Minus', Equals: 'Equal', Semicolon: 'Semicolon', Backslash: 'Backslash',
+    Comma: 'Comma', Period: 'Period', Slash: 'Slash', UpArrow: 'ArrowUp',
+    DownArrow: 'ArrowDown', LeftArrow: 'ArrowLeft', RightArrow: 'ArrowRight',
+    Return: 'Enter', Space: 'Space', LeftControl: 'ControlLeft', RightControl: 'ControlRight',
+    LeftShift: 'ShiftLeft', RightShift: 'ShiftRight', LeftAlt: 'AltLeft', RightAlt: 'AltRight',
+  };
+  return Object.hasOwn(codes, key) ? codes[key]! : null;
+}
+
+export interface MapGestureContext {
+  mapOpen: boolean;
+  spellsOpen: boolean;
+  controlHeld: boolean;
+  cycleHeld: boolean;
+}
+
+/** Source menu ordering: spell menu first, then map close, then flight modifiers. */
+export function mapGestureAdmitted(context: MapGestureContext): boolean {
+  return !context.spellsOpen && (context.mapOpen || (!context.controlHeld && !context.cycleHeld));
+}
+
+/** Physical mouse edges survive a menu command clearing the outgoing input state. */
+export class MapMouseChord {
+  private readonly held = new Set<number>();
+  private readonly consumed = new Set<number>();
+
+  press(button: number, context: MapGestureContext): boolean {
+    if (button !== 0 && button !== 2) return false;
+    const bothBefore = this.held.has(0) && this.held.has(2);
+    this.held.add(button);
+    if (!bothBefore && this.held.has(0) && this.held.has(2) && mapGestureAdmitted(context)) {
+      this.consumed.add(0); this.consumed.add(2);
+      return true;
+    }
+    return false;
+  }
+
+  release(button: number): void { this.held.delete(button); this.consumed.delete(button); }
+  isConsumed(button: number): boolean { return this.consumed.has(button); }
+  clear(): void { this.held.clear(); this.consumed.clear(); }
+}
+
 /** Source modifier plus a physical casting-button edge; Alt takes precedence. */
 export function markedSpellCycle(button: number, shift: boolean, alt: boolean):
   { hand: 'left' | 'right'; direction: 'next' | 'previous' } | null {

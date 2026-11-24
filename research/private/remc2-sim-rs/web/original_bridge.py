@@ -27,6 +27,7 @@ from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFra
                              read_hud, read_minimap, read_objective, read_world_map, read_missing_hint_entities)
 from original_world import ModernWorld, OriginalWorld
 from original_media import OriginalMedia
+from original_gameplay_audio import GameplayJournal, GameplaySamples
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -450,6 +451,7 @@ class Bridge:
         self.next_sequence = 0; self.last_reply = None; self.last_request = None
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
+        self.gameplay_samples = None
         self.media = None; self.media_view = None
         self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
         self.can_refresh_assets = False
@@ -488,6 +490,7 @@ class Bridge:
         native = None
         try:
             native = Native(self.library, self.packages)
+            gameplay_audio = GameplayJournal(native)
             menu_cache = self.help_cache or PRIVATE / "generated/mc2-campaign-menu-cache-current"
             language_root = menu_cache / "language"
             if self.help_cache is not None or language_root.is_dir():
@@ -537,6 +540,7 @@ class Bridge:
                 # Resolve from the native save definition, never a client path.
                 current = replay_package(self.packages, native.control("save", None))
                 assets = OriginalAssets.from_package(current, help_cache=self.help_cache)
+                samples = GameplaySamples(current)
                 new_world = OriginalWorld(native) if self.renderer == "geometry" else None
                 if new_world and world:
                     new_world.revision = world.revision
@@ -551,9 +555,11 @@ class Bridge:
                     except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
                 package, world, modern = current, new_world, new_modern
                 epoch += 1; menu_state = None
+                gameplay_audio.reset()
                 with self.lock:
                     self.publications.clear()
                     self.assets = assets
+                    self.gameplay_samples = samples
                     self.world_assets = new_world_assets
                     self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
                     self.asset_revision += 1
@@ -565,6 +571,7 @@ class Bridge:
                 frame_remainder = 0
                 if native.identity_value.get("session") is None:
                     self.running = False; self.paused = False
+                    gameplay_audio.reset()
                     update_phase()
                     return True
                 # Secret entry constructs its destination session directly,
@@ -623,7 +630,13 @@ class Bridge:
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
                          "paused": self.paused}
                 preferences = (native.identity_value.get('player_preferences') or {}).get('preferences') or {}
+                preference_keys = preferences.get('keys') or []
+                state['map_key'] = preference_keys[4] if len(preference_keys) > 4 else None
                 state['show_help'] = preferences.get('show_help') is True
+                state['sound_enabled'] = preferences.get('sound_enabled') is True
+                state['sound_volume'] = preferences.get('sound_volume', 0)
+                state['gameplay_audio'] = gameplay_audio.poll(observation, self.gameplay_samples,
+                                                               self.running and not self.paused)
                 if world:
                     state["terrain_revision"] = revision
                     state["palette_source"] = "native-campaign-rgb8"
@@ -670,9 +683,16 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
-                            if action == "media_frame":
+                            if action == 'audio_complete':
+                                generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
+                                if (not isinstance(generation, str) or not generation.isascii() or not generation.isdecimal() or len(generation) > 20 or
+                                        not isinstance(event, str) or not event.isascii() or not event.isdecimal() or len(event) > 20 or
+                                        int(generation) > 2**64 - 1 or int(event) > 2**64 - 1 or type(voice) is not int or not 0 <= voice < 10):
+                                    raise ValueError('invalid gameplay voice completion')
+                                gameplay_audio.complete(int(generation), voice, int(event))
+                            elif action == "media_frame":
                                 elapsed, media_input, escape = value.get('elapsed_us'), value.get('input'), value.get('escape')
                                 if type(elapsed) is not int or not 0 <= elapsed <= 5_000_000 or type(media_input) is not bool or type(escape) is not bool:
                                     raise ValueError('invalid frontend media frame')
@@ -774,7 +794,11 @@ class Bridge:
                                         extra = {"assign_spell": {"spell_id": spell, "tier": tier, "hand": hand}}
                                 if action == "menu" and menu_action in ("open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
                                     command = dict(NEUTRAL)
+                                map_states = (6, 7, 8, 11, 12, 14)
+                                map_before = native.player_menu_state() in map_states if action == "map" else None
                                 native.step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
+                                if action == "map" and (native.player_menu_state() in map_states) != map_before:
+                                    command.update(cast_selected=False, cast_left=False, cast_right=False)
                                 if action == "menu" and menu_action == "confirm_abandon" and return_to_title_from_observation(native.observe()):
                                     native.return_to_title()
                                     self.running = False; self.paused = False; frame_remainder = 0
@@ -996,6 +1020,17 @@ class Handler(BaseHTTPRequestHandler):
             assets = bridge.assets
             if not assets: return self.send_json(503, {"error": "loading"})
             return self.send_data(200, assets.blob, "application/octet-stream")
+        if target.path == '/original-api/assets/gameplay-sound':
+            try:
+                params = parse_qs(target.query)
+                sound, revision = int(params['id'][0]), int(params['revision'][0])
+                with bridge.lock:
+                    samples = bridge.gameplay_samples if bridge.asset_revision == revision else None
+                data = samples.sample(sound) if samples else None
+                if data is None: return self.send_json(404, {'error': 'gameplay sound unavailable'})
+                return self.send_data(200, data, 'audio/wav')
+            except (KeyError, ValueError, IndexError):
+                return self.send_json(400, {'error': 'invalid gameplay sound request'})
         if target.path in ("/original-api/world-assets/manifest", "/original-api/world-assets/blob"):
             assets = getattr(bridge, "world_assets", None)
             if not assets: return self.send_json(503, {"error": "world assets unavailable"})
@@ -1065,6 +1100,7 @@ class Handler(BaseHTTPRequestHandler):
                               "media_frame": {"elapsed_us", "input", "escape"},
                               "mark_spell": {"spell_id", "hand", "holder_actor"},
                               "cycle_marked_spell": {"hand", "direction"},
+                              "audio_complete": {"generation", "voice", "event_sequence"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))

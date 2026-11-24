@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { decodeOriginalFrame, ORIGINAL_HEIGHT, ORIGINAL_WIDTH, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand,
+  preferenceKeyCode, mapGestureAdmitted, MapMouseChord,
   type OriginalFrame, type IndexedBlendTables } from './original-adapter';
 import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-hud';
 import { decodeRenderPublication } from './render-publication';
@@ -8,6 +9,7 @@ import { OriginalWorldRenderer } from './original-world-renderer';
 import { ModernWorldRenderer } from './modern-world-renderer';
 import { decodeModernFrame } from './modern-runtime';
 import { OriginalMediaPlayer, type MediaReply } from './original-media';
+import { OriginalGameplayAudio, type GameplayVoice } from './original-audio';
 
 const API = '/original-api';
 const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
@@ -23,9 +25,11 @@ const playButton = element<HTMLButtonElement>('play'), pauseButton = element<HTM
 const menuButton = element<HTMLButtonElement>('menu');
 const keys = new Set<string>();
 const mouseButtons = new Set<number>();
+const mapMouseChord = new MapMouseChord();
 const consumedCycleButtons = new Set<number>();
 const spellMenuButtons = new Set<number>();
 let spellControlHeld = false;
+let configuredMapCode: string | null = null;
 let spellCloseOnRelease = false;
 let mouseX = 0, mouseY = 0, queuedCasts = 0;
 let started = false, playing = false, busy = false, inputBusy = false;
@@ -55,6 +59,10 @@ let loadedAssetRevision: number | undefined;
 let campaignMedia: OriginalMediaPlayer | null = null;
 const enterMissionKey = 'mc2-browser-enter-mission';
 const history = new OriginalSceneHistory();
+const gameplayAudio = new OriginalGameplayAudio(API, row => {
+  void post('/control', { action: 'audio_complete', generation: row.generation,
+    voice: row.voice, event_sequence: row.sequence }).catch(error => console.error('Gameplay voice completion:', error));
+});
 
 function updateMapInspectionLabel(text: string | null): void {
   const label = text ? `Map inspection: ${text}` : 'Map inspection: click or tap an exit marker. Hold Alt for player information.';
@@ -157,6 +165,10 @@ interface BridgeState extends OriginalHudState {
   tick: number | string;
   paused: boolean;
   show_help?: boolean;
+  sound_enabled?: boolean;
+  sound_volume?: number;
+  map_key?: string | null;
+  gameplay_audio?: GameplayVoice[];
   hint_entities?: { entity: number; x: number; y: number }[];
   source_menu_admission?: { map_open: boolean; spells_open: boolean; player_information_open: boolean } | null;
   source_menu_state?: number;
@@ -178,6 +190,7 @@ function showCampaign(status: BridgeStatus): boolean {
   const phase = status.can_refresh_assets ? 'refresh_assets' : status.phase;
   if (!phase || phase === 'playing' || phase === 'paused') return false;
   campaignPhase = phase;
+  gameplayAudio.stop();
   abandonOpen = false; element('abandon-dialog').hidden = true;
   playing = false;
   polling = false;
@@ -318,6 +331,7 @@ function hideMenu(): void {
   element('look-hint').hidden = false;
 }
 function fail(error: unknown): void {
+  gameplayAudio.stop();
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
   if (leavingPage) return;
   playing = false; connected = false; clearInput();
@@ -332,6 +346,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
+  if (action === 'pause' || action === 'load' || action === 'reset') gameplayAudio.stop();
   controlsPending++; busy = true; controlVersion++;
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
     lastArrival = 0; intervals.length = 0;
@@ -407,6 +422,7 @@ async function pollFrame(): Promise<void> {
     if (stateResponse.status === 410 || observationResponse.status === 410 || modernResponse?.status === 410) return;
     const state = await responseJson<BridgeState>(stateResponse);
     if (version !== controlVersion) return;
+    configuredMapCode = preferenceKeyCode(state.map_key);
     if (state.asset_revision !== undefined && loadedAssetRevision !== undefined && state.asset_revision !== loadedAssetRevision) {
       // A native secret entry or a loaded slot can change the mission without a menu.
       const status = await readStatus();
@@ -423,6 +439,8 @@ async function pollFrame(): Promise<void> {
       throw new Error('The original scene and HUD do not describe the same native frame');
     if (version !== controlVersion) return;
     lastFrame = frame;
+    gameplayAudio.update(state.gameplay_audio ?? [], frame.sessionGeneration.toString(),
+      state.asset_revision ?? 0, state.sound_enabled === true, playing && !state.paused, state.sound_volume ?? 0);
     spellMutationPending = false;
     informationPending = false;
     const wasMapOpen = nativeMenus.map_open, wasSpellsOpen = nativeMenus.spells_open;
@@ -545,14 +563,14 @@ async function sendInput(): Promise<void> {
   const cast = queuedCasts > 0;
   const command = originalInput(abandonOpen || nativeMenus.spells_open || nativeMenus.map_open ? new Set<string>() : keys,
     abandonOpen ? 0 : mouseX, abandonOpen ? 0 : mouseY,
-    { selected: !abandonOpen && !cycleModifier && (cast || keys.has('Space')), left: !abandonOpen && !cycleModifier && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && mouseButtons.has(2) });
+    { selected: !abandonOpen && !cycleModifier && (cast || keys.has('Space')), left: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(0) && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(2) && mouseButtons.has(2) });
   mouseX *= .65; mouseY *= .65;
   try { await post('/input', { command }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
   catch (error) { fail(error); }
   finally { inputBusy = false; }
 }
 
-playButton.addEventListener('click', () => void control('start'));
+playButton.addEventListener('click', () => { gameplayAudio.activate(); void control('start'); });
 element('campaign-continue').addEventListener('click', () => void advanceCampaign());
 element('campaign-enter').addEventListener('click', () => void advanceCampaign());
 element('abandon-cancel').addEventListener('click', () => void control('menu', { menu_action: 'cancel_abandon_confirmation' }));
@@ -561,7 +579,7 @@ element('abandon').addEventListener('click', () => void (async () => {
   if (!playing) await control('resume');
   if (playing) await control('menu', { menu_action: 'open_abandon_confirmation' });
 })());
-pauseButton.addEventListener('click', () => void control('resume'));
+pauseButton.addEventListener('click', () => { gameplayAudio.activate(); void control('resume'); });
 menuButton.addEventListener('click', () => void control(playing ? 'pause' : 'resume'));
 for (const id of ['save', 'load', 'reset']) element(id).addEventListener('click', () => void control(id));
 element('retry').addEventListener('click', () => location.reload());
@@ -577,6 +595,7 @@ const hudPoint = (x: number, y: number): [number, number] => {
 };
 canvas.addEventListener('pointerdown', event => {
   if (!playing || abandonOpen || (busy && !informationPending) || consumedCycleButtons.has(event.button)) return;
+  gameplayAudio.activate();
   if (nativeMenus.spells_open && spellMenu) {
     event.preventDefault();
     if (event.button === 0 || event.button === 2) spellMenuButtons.add(event.button);
@@ -601,7 +620,6 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   if (nativeMenus.map_open && !(display instanceof ModernWorldRenderer)) {
-    event.preventDefault();
     const subject = lastHudState ? hud.exitMarkerAt(lastHudState, ...hudPoint(event.clientX, event.clientY)) : null;
     inspectedExit = subject === inspectedExit ? null : subject;
     const text = inspectedExit && lastHudState ? hud.exitInspectionText(lastHudState, inspectedExit) : null;
@@ -618,6 +636,17 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   mouseButtons.add(event.button);
+});
+// PointerEvent.pointerdown fires only for the first held mouse button; the
+// source map gesture needs the second physical button's mousedown edge too.
+canvas.addEventListener('mousedown', event => {
+  if (!playing || abandonOpen || busy || nativeMenus.spells_open || (event.button !== 0 && event.button !== 2)) return;
+  if (!nativeMenus.map_open && !new URLSearchParams(location.search).has('automation') && document.pointerLockElement !== canvas) return;
+  if (mapMouseChord.press(event.button, { mapOpen: nativeMenus.map_open, spellsOpen: nativeMenus.spells_open,
+    controlHeld: spellControlHeld || event.ctrlKey, cycleHeld: event.shiftKey || event.altKey })) {
+    event.preventDefault(); mouseButtons.delete(0); mouseButtons.delete(2); queuedCasts = 0;
+    void control('map');
+  }
 });
 canvas.addEventListener('pointermove', event => {
   const prior = touches.get(event.pointerId);
@@ -644,6 +673,7 @@ const releaseButton = (event: PointerEvent): void => {
 };
 window.addEventListener('pointerup', releaseButton);
 window.addEventListener('pointercancel', releaseButton);
+window.addEventListener('mouseup', event => mapMouseChord.release(event.button));
 window.addEventListener('mousemove', event => {
   if (playing && nativeMenus.spells_open && spellMenu) {
     const hit = hud.hitTest(...hudPoint(event.clientX, event.clientY), spellMenu);
@@ -659,7 +689,14 @@ window.addEventListener('keydown', event => {
   if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (abandonOpen) { if (event.code === 'Escape') { event.preventDefault(); void control('menu', { menu_action: 'cancel_abandon_confirmation' }); } return; }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
-  if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','Tab','AltLeft','AltRight'].includes(event.code)) event.preventDefault();
+  gameplayAudio.activate();
+  const mapKey = event.code === 'Tab' || event.code === configuredMapCode;
+  if (mapKey || ['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','AltLeft','AltRight'].includes(event.code)) event.preventDefault();
+  if (mapKey && mapGestureAdmitted({ mapOpen: nativeMenus.map_open, spellsOpen: nativeMenus.spells_open,
+    controlHeld: spellControlHeld || event.ctrlKey, cycleHeld: event.shiftKey || event.altKey })) {
+    if (!event.repeat && !busy) void control('map');
+    return;
+  }
   keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
@@ -669,7 +706,6 @@ window.addEventListener('keydown', event => {
   if (event.code === 'AltLeft' || event.code === 'AltRight') { informationHeld = true; syncPlayerInformation(); }
   if (event.code === 'F5') void control('save');
   if (event.code === 'F9') void control('load');
-  if (event.code === 'Tab') void control('map');
 });
 window.addEventListener('keyup', event => {
   keys.delete(event.code);
@@ -682,9 +718,9 @@ window.addEventListener('keyup', event => {
     }
   }
 });
-window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); clearInput(); if (playing) void control('pause'); });
-window.addEventListener('beforeunload', () => { leavingPage = true; connected = false; playing = false; clearInput(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (playing) void control('pause'); } });
+window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); });
+window.addEventListener('beforeunload', () => { gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); } });
 element('touch-map').addEventListener('click', () => void control('map'));
 element('touch-hand').addEventListener('click', () => { touchHand = touchHand === 'left' ? 'right' : 'left'; element('touch-hand').textContent = touchHand === 'left' ? 'Left hand' : 'Right hand'; });
 element('touch-spells').addEventListener('click', () => void control('menu', { menu_action: nativeMenus.spells_open ? 'close_spell_menu' : 'open_spell_menu' }));
