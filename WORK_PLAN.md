@@ -1,5 +1,42 @@
 # Shared-engine delivery plan
 
+### Castle revival, secret entry and spell marks on abandonment — November 24
+
+Runtime `a1797bb5` retains the player's hand marks when abandoning a mission.
+On the same saves that lost the marks in the previous native, the public API
+returned from Payahandra and reselected Castle on the right. Abandoning Pav
+Durivium, saving the Jaleen map, loading it cold and cycling the right hand
+selected Possession. Entry spell experience was preserved on both routes.
+
+A secret destination now applies its own LevelInit panel setting. T’Klom's
+actual portal into Karakir produced a Cave save that cold-loaded and returned
+to its Day parent. The check controlled the starting frontier and combat
+contacts. In a separate paid NightSpire Castle save, controlled damage,
+death and revival switched the music back to normal. A later hit restored
+combat music. The music check observed the native events.
+
+Browser `05b8fa7b` includes the Castle and balloon status help and loose-mana
+guidance. Chrome showed the Castle's mana, life and size on Spider Cave and
+“Possess This Mana” pointing to live sphere 259 on The Revealed Way. Claiming
+that sphere in the same browser run remains unobserved. The installed private
+Original opened NightSpire on native `fb6315dc5d4f` with Fireball, Possession,
+10,000 life and 1,000 mana. The map-save fixture correction `79912f5d`
+preserved the byte-roundtrip and tamper checks. The Unity player still uses
+`2f477f43c882`. Evidence is under `research/private/generated/earned-campaign-20261124/`
+in `mission-retry`, `castle-status-guidance` and `loose-mana-guidance`.
+
+### Marker stones in the private Original browser — November 24
+
+Browser `42df6493` is pushed and installed with runtime `97e1a224`.
+On The Revealed Way's full map, Chrome drew “Marker stone” pointing to
+the same stone (slot 233) on a dark frame at tick 2944 and a lit frame
+at tick 2951. Creature and spell-pickup hints appeared first. The
+ordinary launch opened NightSpire with Fireball and Possession.
+Focused presenter checks cover both map sizes and clearing the hint
+outside the map. Jaleen supplied real blinking markers, but its
+browser observation reached player death before the stone hint was seen.
+See `research/private/generated/earned-campaign-20261124/marker-stone-private/`.
+
 ### Replay victories, campaign spell marks and map guidance — November 24
 
 Runtime `97e1a224` keeps hand marks through ordinary victories, Results,
