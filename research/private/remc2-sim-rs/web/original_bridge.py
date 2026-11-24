@@ -703,7 +703,9 @@ class Bridge:
                          "hud": read_hud(native.lib, native.handle.value, gen, tick),
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
                          "paused": self.paused}
-                preferences = (native.identity_value.get('player_preferences') or {}).get('preferences') or {}
+                preference_state = native.identity_value.get('player_preferences') or {}
+                preferences = preference_state.get('preferences') or {}
+                state['flight_assistance_sequence'] = preference_state.get('assistance_sequence', 0)
                 preference_keys = preferences.get('keys') or []
                 state['preference_keys'] = preference_keys
                 state['map_key'] = preference_keys[4] if len(preference_keys) > 4 else None
@@ -772,7 +774,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_help", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
@@ -862,6 +864,9 @@ class Bridge:
                                 publish()
                             elif action == "toggle_help":
                                 apply_source_preference(native, {"operation": "source_help_mode"})
+                                publish()
+                            elif action == "toggle_flight_assistance":
+                                apply_source_preference(native, {"operation": "source_flight_assistance"})
                                 publish()
                             elif action in ("map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell"):
                                 if not self.running or self.paused: raise ValueError("game must be playing")

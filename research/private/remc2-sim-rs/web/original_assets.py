@@ -311,7 +311,8 @@ class OriginalAssets:
             raise ValueError('invalid source spell notification format')
         participant_notices = {}
         for kind, selector in (('participant.died', 374), ('participant.banished', 283),
-                               ('participant.help_mode_on', 400), ('participant.help_mode_off', 401)):
+                               ('participant.help_mode_on', 400), ('participant.help_mode_off', 401),
+                               ('participant.flight_assistance_on', 398), ('participant.flight_assistance_off', 399)):
             record = locale['records'][selector]
             start, length = record['offset'], record['bytes']
             text = records[start:start + length]

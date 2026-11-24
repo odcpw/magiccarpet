@@ -412,7 +412,7 @@ function fail(error: unknown): void {
 async function control(action: string, fields: Record<string, unknown> = {}): Promise<void> {
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
-  const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help';
+  const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -804,6 +804,11 @@ window.addEventListener('keydown', event => {
   if (!modernRequested && event.code === 'F1' && !event.shiftKey && !event.altKey) {
     event.preventDefault();
     if (!event.repeat) void control('toggle_help');
+    return;
+  }
+  if (!modernRequested && event.code === 'F2' && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    if (!event.repeat) void control('toggle_flight_assistance');
     return;
   }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
