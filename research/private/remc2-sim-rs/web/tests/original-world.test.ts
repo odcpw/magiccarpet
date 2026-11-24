@@ -1,6 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, terrainHeight, wrappedDelta, TmapDrawGate, TmapPixelState, type TmapDraw, type WorldSprite } from '../src/original-world-data.ts';
+import { admitsReflection, admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, orderReflectionRows, reflectionPainterRanks, reflectiveMaterial, sourceProjection, terrainHeight, wrappedDelta, TmapDrawGate, TmapPixelState, type TmapDraw, type WorldSprite } from '../src/original-world-data.ts';
+
+test('reflected terrain and actors follow source cell order and admission', () => {
+  const sine = new DataView(new ArrayBuffer(2048 * 4)); sine.setInt32(512 * 4, 65536, true);
+  const types = new Uint8Array(65536).fill(1);
+  const actorCell = 212 * 256 + 118, ownerCell = 213 * 256 + 118;
+  const ranks = reflectionPainterRanks({x: 30345, y: 55440, yaw: 0}, sine, types);
+  const terrainRank = (cell: number) => ranks.terrain[cell * 4]! + 256 * ranks.terrain[cell * 4 + 1]! + 65536 * ranks.terrain[cell * 4 + 2]!;
+  assert.equal(terrainRank(ownerCell) + 1, ranks.actors[actorCell], 'actor follows its source terrain owner');
+  assert.ok(terrainRank(actorCell) < ranks.actors[actorCell], 'earlier terrain stays behind this actor');
+  assert.equal(ranks.actors[0], 0, 'unvisited cells admit no reflected actors');
+  types[ownerCell] = 0;
+  const empty = reflectionPainterRanks({x: 30345, y: 55440, yaw: 0}, sine, types);
+  assert.equal(empty.terrain[ownerCell * 4], 0);
+  assert.equal(empty.terrain[ownerCell * 4 + 1], 0);
+  assert.equal(empty.terrain[ownerCell * 4 + 2], 0);
+  assert.equal(empty.actors[actorCell], ranks.actors[actorCell], 'zero terrain selector does not suppress the actor chain');
+});
 
 test('native TMAP images replace shared selector pixels and restore the owner base', () => {
   const pixels = new TmapPixelState([{selector: 14, pixels: Uint8Array.of(1, 2, 3, 4)},
@@ -73,6 +90,29 @@ test('source sprite admission excludes behind-camera, far and off-chain smoke wh
   // the live player, despite lying inside the old 128 renderer-unit radius.
   assert.equal(admitsSprite({ ...row, x: 20204, y: 56750 }, { x: 22387, y: 49108, yaw: 114 }), false);
   assert.equal(wrappedDelta(2, 1022), 4);
+});
+test('reflection uses source material, eye and current actor admission', () => {
+  const row = { ...decodeWorldFrame(packet()).sprites[0]!, entity: 51, x: 1000, y: 900, drawOrder: 0, controlFlags: 0 };
+  const eye = { x: 1000, y: 1000, z: 128, yaw: 0 };
+  assert.equal(admitsReflection(row, eye, true), true);
+  assert.equal(admitsReflection(row, eye, false), false);
+  assert.equal(admitsReflection(row, { ...eye, z: 4096 }, true), false);
+  assert.equal(admitsReflection({ ...row, controlFlags: 0x20 }, eye, true), false);
+  assert.equal(admitsReflection({ ...row, entity: 1000 }, eye, true), false);
+  assert.equal(admitsReflection({ ...row, drawOrder: 0xffffffff }, eye, true), false);
+  assert.equal(reflectiveMaterial(35), true); assert.equal(reflectiveMaterial(127), true);
+  assert.equal(reflectiveMaterial(34), false); assert.equal(reflectiveMaterial(128), false);
+  const first = { ...row, entity: 52, x: 1023, y: 990, drawOrder: 0 };
+  const second = { ...row, entity: 53, x: 900, y: 800, drawOrder: 1 };
+  assert.deepEqual(orderReflectionRows([second, first], eye).map(x => x.entity), [52, 53]);
+});
+test('source pitch offsets the projection without tilting either viewport', () => {
+  const flat = sourceProjection(128, 0, 0, false), pitched = sourceProjection(128, 11, 0, false);
+  assert.deepEqual(flat, { x: 328 / 320, y: 328 / 200, offsetX: 0, offsetY: -0 });
+  assert.equal(pitched.x, flat.x); assert.equal(pitched.y, flat.y);
+  assert.equal(pitched.offsetY, -26 / 200);
+  const map = sourceProjection(128, 11, 0, true);
+  assert.deepEqual(map, { x: 206 / 128, y: 206 / 200, offsetX: 0, offsetY: -10 / 200 });
 });
 test('terrain copies are bounded and source diagonal interpolation wraps at map edges', () => {
   const data = new Uint8Array(327680), planes = decodeTerrain(data);

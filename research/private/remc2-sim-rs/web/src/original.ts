@@ -217,6 +217,7 @@ interface BridgeState extends OriginalHudState {
   tick: number | string;
   paused: boolean;
   show_help?: boolean;
+  reflections?: boolean;
   sound_enabled?: boolean;
   sound_volume?: number;
   music_enabled?: boolean;
@@ -429,7 +430,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance' ||
-    action === 'toggle_sound' || action === 'toggle_music' || action === 'toggle_speech' || action === 'source_speed';
+    action === 'toggle_sound' || action === 'toggle_music' || action === 'toggle_speech' || action === 'source_speed' || action === 'source_brightness';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -652,7 +653,9 @@ async function pollFrame(): Promise<void> {
         if (version !== controlVersion) return;
         display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, modern);
         Object.assign(window, { modernState: modern });
-      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, hud.geometryPlan(), state.tmap_pixels);
+      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov,
+        overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused,
+        hud.geometryPlan(), state.tmap_pixels, state.reflections === true);
     } else {
     const sceneFrame = frame as OriginalFrame;
     const scene = history.compose(sceneFrame, tables);
@@ -860,6 +863,11 @@ window.addEventListener('keydown', event => {
     event.preventDefault();
     const action = sourceAudioShortcut(event.code, event.shiftKey, event.altKey, event.repeat);
     if (action && !nativeMenus.spells_open && !busy) void control(action);
+    return;
+  }
+  if (!modernRequested && event.code === 'F7') {
+    event.preventDefault();
+    if (!event.repeat && !event.shiftKey && !event.altKey && !busy) void control('source_brightness');
     return;
   }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;

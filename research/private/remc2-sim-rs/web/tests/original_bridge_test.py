@@ -57,6 +57,30 @@ class OriginalBridgeTest(unittest.TestCase):
         native.check.assert_called_once_with(0, 'source game speed')
         self.assertEqual(native.identity_value['source_speed_index'], 1)
 
+    def test_source_brightness_uses_current_guards_and_leaves_blocked_action_untouched(self):
+        native = bridge_module.Native.__new__(bridge_module.Native)
+        native.handle = c.c_uint64(7)
+        native.lib = mock.Mock()
+        initial = {'generation': 3, 'session': {'session_id': '9', 'generation': '4', 'tick': '5'}}
+        native.identity_value = initial
+        native.identity = mock.Mock(return_value={'generation': 3, 'session': initial['session']})
+        native.check = mock.Mock()
+        fn = native.lib.mc_game_runtime_preferences_command_json_v1
+        fn.return_value = 16
+        self.assertFalse(native.source_brightness())
+        native.identity.assert_not_called()
+        native.check.assert_not_called()
+        self.assertIs(native.identity_value, initial)
+        fn.return_value = 0
+        self.assertTrue(native.source_brightness())
+        args = fn.call_args.args
+        self.assertEqual(args[1], 3)
+        self.assertEqual(json.loads(args[2]), {'operation': 'source_brightness', 'action': 'cycle',
+            'session_guard': {'session_id': '9', 'generation': '4', 'expected_tick': '5'}})
+        self.assertEqual(args[3], len(args[2]))
+        native.check.assert_called_once_with(0, 'source brightness')
+        native.identity.assert_called_once_with()
+
     def test_tmap_snapshot_filters_siblings_and_checks_included_extent(self):
         m = bridge_module
         manifest = {'tmaps': [{'selector': 2, 'width': 2, 'height': 2}]}

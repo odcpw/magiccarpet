@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { admitsSprite, assetBytes, signedSourceAngle, wrappedDelta, TmapPixelState, TmapDrawGate, type TmapPixels, type TmapDraw, type TerrainPlanes, type WorldAssetManifest, type WorldFrame, type WorldSprite } from './original-world-data';
+import { admitsReflection, admitsSprite, assetBytes, orderReflectionRows, reflectionPainterRanks, reflectiveMaterial, signedSourceAngle, sourceProjection, wrappedDelta, TmapPixelState, TmapDrawGate, type TmapPixels, type TmapDraw, type TerrainPlanes, type WorldAssetManifest, type WorldFrame, type WorldSprite } from './original-world-data';
 import type { HudGeometryPlan } from './original-hud';
 
 export interface SourceCamera { x: number; y: number; z: number; yaw: number; pitch: number; roll: number }
 interface ImageFrame { x: number; y: number; width: number; height: number }
 interface ImageRow { frames: ImageFrame[]; animated: boolean }
-interface Chunk { mesh: THREE.Mesh; x: number; y: number }
+interface Chunk { mesh: THREE.Mesh; reflection: THREE.Mesh; x: number; y: number }
 interface SpriteRect { left: number; bottom: number; right: number; top: number; depth: number }
 const UNIT = 64, CHUNK = 16, MAX_SPRITES = 4096;
 const quad = new Float32Array([-.5, -.5, 0, .5, -.5, 0, -.5, .5, 0, .5, .5, 0]);
@@ -24,38 +24,51 @@ function shader(vertexShader: string, fragmentShader: string, uniforms: Record<s
 }
 const terrainVertex = `precision highp float;
   uniform mat4 projectionMatrix, modelViewMatrix, modelMatrix; uniform vec2 eyeMap; uniform float turn;
-  in vec3 position; in vec2 uv; in float tile; in float shade; in vec3 sourceNode;
-  out vec2 tileUv; flat out int tileId; out float brightness;
+  uniform sampler2D sineTable; uniform bool reflectedPass;
+  in vec3 position; in vec2 uv; in float tile; in float shade; in vec3 sourceNode; in vec2 cell;
+  out vec2 tileUv; flat out int tileId; flat out ivec2 terrainCell; out float brightness;
   void main(){
-    vec3 p=position; float wave=floor(sin((turn*64.+sourceNode.x*128.)*6.28318530718/2048.)*256.)*
-      floor(sin((turn*64.+sourceNode.y*128.)*6.28318530718/2048.)*256.);
-    float water=sourceNode.z; p.y-=water*floor(wave/1024.)/64.;
+    int sx=(int(turn)*64+int(sourceNode.x)*128)&2047, sy=(int(turn)*64+int(sourceNode.y)*128)&2047;
+    float wave=texelFetch(sineTable,ivec2(sx,0),0).r*texelFetch(sineTable,ivec2(sy,0),0).r;
+    vec3 p=position; float water=sourceNode.z;
+    if(reflectedPass)p.y=floor((position.y*2.)*(floor(wave/16.)+32768.)/1024.)/64.;
+    else p.y-=water*floor(wave/1024.)/64.;
     vec4 world=modelMatrix*vec4(p,1.); vec2 delta=(world.xz-eyeMap)*64.;
     float d=dot(delta,delta), fog=clamp((23658496.-d)/8912896.,0.,1.);
     brightness=(shade+.5+(shade<56.?water*wave/8192.:0.))*fog;
-    tileUv=uv;tileId=int(tile+.5); gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);
+    tileUv=uv;tileId=int(tile+.5);terrainCell=ivec2(cell); gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);
   }`;
 const terrainFragment = `precision highp float; precision highp sampler2DArray;
-  uniform sampler2DArray tiles; uniform sampler2D shadeLut;
-  in vec2 tileUv; flat in int tileId; in float brightness; out vec4 pixel;
+  uniform sampler2DArray tiles; uniform sampler2D shadeLut, blendLut, reflectedWorld, waterMask, painterRanks;
+  uniform bool reflections, reflectedPass;
+  in vec2 tileUv; flat in int tileId; flat in ivec2 terrainCell; in float brightness; out vec4 pixel;
   void main(){
     ivec2 p=clamp(ivec2(floor(tileUv*32.)),ivec2(0),ivec2(31));
     int source=int(texelFetch(tiles,ivec3(p,tileId),0).r*255.+.5);
     int row=int(mod(floor(brightness),256.)); if(row<0)row+=256;
-    pixel=vec4(texelFetch(shadeLut,ivec2(source,row),0).r,0.,0.,1.);
+    if(reflectedPass){vec3 r=floor(texelFetch(painterRanks,terrainCell,0).rgb*255.+.5);
+      float rank=dot(r,vec3(1.,256.,65536.)); if(rank==0.)discard;
+      gl_FragDepth=1.-rank/1048576.;} else gl_FragDepth=gl_FragCoord.z;
+    int shaded=int(texelFetch(shadeLut,ivec2(source,row),0).r*255.+.5);
+    if(!reflectedPass && reflections && texelFetch(waterMask,ivec2(tileId,0),0).r>.5 && source<12){
+      int prior=int(texelFetch(reflectedWorld,ivec2(gl_FragCoord.xy),0).r*255.+.5);
+      shaded=int(texelFetch(blendLut,ivec2(shaded,prior),0).r*255.+.5);
+    }
+    pixel=vec4(float(shaded)/255.,0.,0.,1.);
   }`;
 const spriteVertex = `precision highp float;
-  uniform mat4 projectionMatrix, viewMatrix;
-  in vec3 position; in vec3 center; in vec2 spriteSize; in vec4 imageRect; in vec4 operation;
-  out vec2 imageUv; flat out vec4 rect; flat out vec3 op;
+  uniform mat4 projectionMatrix, viewMatrix; uniform bool reflectedPass;
+  in vec3 position; in vec3 center; in vec2 spriteSize; in vec4 imageRect; in vec4 operation; in float painterRank;
+  out vec2 imageUv; flat out vec4 rect; flat out vec3 op; flat out float rank;
   void main(){
-    vec4 eye=viewMatrix*vec4(center,1.); eye.xy+=(position.xy+vec2(0.,.5))*spriteSize;
+    vec4 eye=viewMatrix*vec4(center,1.); eye.xy+=(position.xy+vec2(0.,reflectedPass?-.5:.5))*spriteSize;
     gl_Position=projectionMatrix*eye; imageUv=vec2(position.x+.5,.5-position.y);
-    if(operation.w>.5) imageUv.x=1.-imageUv.x; rect=imageRect; op=operation.xyz;
+    if(operation.w>.5) imageUv.x=1.-imageUv.x; if(reflectedPass)imageUv.y=1.-imageUv.y;
+    rect=imageRect; op=operation.xyz; rank=painterRank;
   }`;
 const spriteFragment = `precision highp float;
-  uniform sampler2D atlas, shadeLut, blendLut, destination; uniform vec2 resolution;
-  in vec2 imageUv; flat in vec4 rect; flat in vec3 op; out vec4 pixel;
+  uniform sampler2D atlas, shadeLut, blendLut, destination; uniform vec2 resolution; uniform bool reflectedPass;
+  in vec2 imageUv; flat in vec4 rect; flat in vec3 op; flat in float rank; out vec4 pixel;
   int shade(int offset,int source){return int(texelFetch(shadeLut,ivec2(source,(offset>>8)&255),0).r*255.+.5);}
   int blend(int high,int low){return int(texelFetch(blendLut,ivec2(low,high),0).r*255.+.5);}
   void main(){
@@ -71,6 +84,7 @@ const spriteFragment = `precision highp float;
     else if(mode==5)value=blend(source,owner);
     else if(mode==8)value=shade(brightness,target);
     if(mode==1||mode==6||mode==7)value=shade(brightness,value);
+    gl_FragDepth=reflectedPass?1.-rank/1048576.:gl_FragCoord.z;
     pixel=vec4(float(value)/255.,0.,0.,1.);
   }`;
 
@@ -81,6 +95,7 @@ export class OriginalWorldRenderer {
   onTmapDraw: (draw: TmapDraw) => void = () => {};
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
+  private readonly reflectionScene = new THREE.Scene();
   private readonly blendScene = new THREE.Scene();
   private readonly finalScene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(60, 4 / 3, .15, 128);
@@ -94,6 +109,11 @@ export class OriginalWorldRenderer {
   private transfer = rawTexture(this.transferBytes, 256, 1);
   private readonly target = new THREE.WebGLRenderTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
     depthBuffer: true, stencilBuffer: false, colorSpace: THREE.NoColorSpace });
+  private readonly reflectionTarget = new THREE.WebGLRenderTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+    depthBuffer: true, stencilBuffer: false, colorSpace: THREE.NoColorSpace });
+  private readonly painterBytes = new Uint8Array(65536 * 4);
+  private readonly painterRanks = rawTexture(this.painterBytes, 256, 256, THREE.RGBAFormat);
+  private actorRanks = new Uint32Array(65536);
   private snapshot = new THREE.FramebufferTexture(1, 1);
   private readonly images = new Map<number, ImageRow>();
   private readonly atlas: THREE.DataTexture;
@@ -106,17 +126,19 @@ export class OriginalWorldRenderer {
   private readonly copyBox = new THREE.Box2();
   private readonly unavailable: Set<number>;
   private readonly terrainMaterial: THREE.RawShaderMaterial;
+  private readonly reflectionTerrainMaterial: THREE.RawShaderMaterial;
   private readonly spriteMaterial: THREE.RawShaderMaterial;
   private readonly blendMaterial: THREE.RawShaderMaterial;
   private readonly finalMaterial: THREE.RawShaderMaterial;
   private readonly sprites: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
   private readonly blendSprite: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
+  private readonly reflectionSprites: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.RawShaderMaterial>;
   private chunks: Chunk[] = [];
   private planes: TerrainPlanes | null = null;
   private frame: WorldFrame | null = null;
   private sourceCamera: SourceCamera | null = null;
   private previousCamera: SourceCamera | null = null;
-  private arrival = 0; private fov = 256; private mapOpen = false; private playing = false;
+  private arrival = 0; private fov = 256; private mapOpen = false; private playing = false; private reflections = false;
   private width = 0; private height = 0; private dirty = true; private raf = 0; private lastDraw = 0;
   private frameTimes: number[] = []; private samplesAt = 0; private framesDrawn = 0; private spriteCount = 0;
   private draws = 0; private triangles = 0; private blendCopies = 0; private rebuiltChunks = 0;
@@ -143,6 +165,9 @@ export class OriginalWorldRenderer {
     this.mapColors = assetBytes(blob, manifest.terrain.map_colors, 256);
     const sine = assetBytes(blob, manifest.terrain.sine, 2048 * 4);
     this.mapSine = new DataView(sine.buffer, sine.byteOffset, sine.byteLength);
+    const sineValues = Float32Array.from({length: 2048}, (_, i) => this.mapSine.getInt32(i * 4, true) >> 8);
+    const sineTable = new THREE.DataTexture(sineValues, 2048, 1, THREE.RedFormat, THREE.FloatType);
+    sineTable.minFilter = sineTable.magFilter = THREE.NearestFilter; sineTable.generateMipmaps = false; sineTable.needsUpdate = true;
     this.mapDivider = assetBytes(blob, manifest.palette.clrn, 4096)[0]!;
     this.cave = manifest.map_type === 2;
     const shade = rawTexture(this.shadeBytes, 256, 256), blend = rawTexture(assetBytes(blob, manifest.palette.blend_lut, 65536), 256, 256);
@@ -154,19 +179,27 @@ export class OriginalWorldRenderer {
     this.renderer.info.autoReset = false;
     const gl = this.renderer.getContext(), debug = gl.getExtension('WEBGL_debug_renderer_info');
     this.gpu = debug ? String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-    this.terrainMaterial = shader(terrainVertex, terrainFragment, { tiles: { value: tiles }, shadeLut: { value: shade },
-      turn: { value: 0 }, eyeMap: { value: new THREE.Vector2() } });
+    const waterMask = rawTexture(Uint8Array.from({length: 152}, (_, tile) => reflectiveMaterial(tile) ? 255 : 0), 152, 1);
+    const terrainUniforms = { tiles: { value: tiles }, shadeLut: { value: shade }, blendLut: { value: blend },
+      reflectedWorld: { value: this.reflectionTarget.texture }, waterMask: { value: waterMask }, painterRanks: { value: this.painterRanks }, sineTable: { value: sineTable },
+      turn: { value: 0 }, eyeMap: { value: new THREE.Vector2() }, reflections: { value: false }, reflectedPass: { value: false } };
+    this.terrainMaterial = shader(terrainVertex, terrainFragment, terrainUniforms);
+    this.reflectionTerrainMaterial = shader(terrainVertex, terrainFragment,
+      { ...terrainUniforms, reflectedWorld: { value: waterMask }, reflectedPass: { value: true } });
     const atlas = this.makeAtlas(manifest, blob);
     this.atlas = atlas;
     this.tmapPixels = new TmapPixelState(manifest.tmaps.map(row => ({ selector: row.selector, pixels: assetBytes(blob, row.frames[0]!, row.width * row.height) })));
-    const spriteUniforms = { atlas: { value: atlas }, shadeLut: { value: shade }, blendLut: { value: blend },
+    const spriteUniforms = { atlas: { value: atlas }, shadeLut: { value: shade }, blendLut: { value: blend }, reflectedPass: { value: false },
       destination: { value: this.snapshot }, resolution: { value: new THREE.Vector2(1, 1) } };
     this.spriteMaterial = shader(spriteVertex, spriteFragment, spriteUniforms);
     this.blendMaterial = shader(spriteVertex, spriteFragment, spriteUniforms); this.blendMaterial.depthWrite = false;
     this.sprites = new THREE.Mesh(this.spriteGeometry(MAX_SPRITES), this.spriteMaterial);
     this.blendSprite = new THREE.Mesh(this.spriteGeometry(MAX_SPRITES), this.blendMaterial);
-    this.sprites.frustumCulled = this.blendSprite.frustumCulled = false;
+    this.reflectionSprites = new THREE.Mesh(this.spriteGeometry(MAX_SPRITES), shader(spriteVertex, spriteFragment,
+      { ...spriteUniforms, reflectedPass: { value: true } }));
+    this.sprites.frustumCulled = this.blendSprite.frustumCulled = this.reflectionSprites.frustumCulled = false;
     this.scene.add(this.sprites); this.blendScene.add(this.blendSprite);
+    this.reflectionScene.add(this.reflectionSprites);
     this.finalMaterial = shader(screenVertex, `precision highp float;
       uniform sampler2D worldIndices, palette, hud, hudTransfer; uniform vec2 viewport; uniform bool mapOpen, useTransfer;
       in vec2 screenUv; out vec4 pixel;
@@ -220,12 +253,12 @@ export class OriginalWorldRenderer {
   private spriteGeometry(capacity: number): THREE.InstancedBufferGeometry {
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(quad, 3)); geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-    for (const [key, size] of [['center', 3], ['spriteSize', 2], ['imageRect', 4], ['operation', 4]] as const)
+    for (const [key, size] of [['center', 3], ['spriteSize', 2], ['imageRect', 4], ['operation', 4], ['painterRank', 1]] as const)
       geometry.setAttribute(key, new THREE.InstancedBufferAttribute(new Float32Array(capacity * size), size).setUsage(THREE.DynamicDrawUsage));
     geometry.instanceCount = 0; return geometry;
   }
   private chunkGeometry(x0: number, y0: number, planes: TerrainPlanes): THREE.BufferGeometry {
-    const positions: number[] = [], uv: number[] = [], tile: number[] = [], shade: number[] = [], nodes: number[] = [];
+    const positions: number[] = [], uv: number[] = [], tile: number[] = [], shade: number[] = [], nodes: number[] = [], cells: number[] = [];
     for (let y = y0; y < y0 + CHUNK; y++) for (let x = x0; x < x0 + CHUNK; x++) {
       const cell = y * 256 + x, group = this.manifest.terrain.uv_groups[(planes.angles[cell]! >> 4) & 7]!;
       const corners = [[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]];
@@ -237,16 +270,19 @@ export class OriginalWorldRenderer {
         positions.push((cx! - x0) * 4, planes.heights[at]! / 2, (cy! - y0) * 4);
         uv.push(tc[0]!, tc[1]!); tile.push(selector); shade.push(planes.shades[at]!);
         nodes.push(cx!, cy!, (planes.angles[at]! & 8) ? 1 : 0);
+        cells.push(x, y);
       }
     }
     const g = new THREE.BufferGeometry();
-    for (const [name, values, size] of [['position', positions, 3], ['uv', uv, 2], ['tile', tile, 1], ['shade', shade, 1], ['sourceNode', nodes, 3]] as const)
+    for (const [name, values, size] of [['position', positions, 3], ['uv', uv, 2], ['tile', tile, 1], ['shade', shade, 1], ['sourceNode', nodes, 3], ['cell', cells, 2]] as const)
       g.setAttribute(name, new THREE.Float32BufferAttribute(values, size));
     g.computeBoundingSphere(); return g;
   }
   updateTerrain(planes: TerrainPlanes): void {
     if (!this.planes) for (let y = 0; y < 256; y += CHUNK) for (let x = 0; x < 256; x += CHUNK) {
-      const mesh = new THREE.Mesh(this.chunkGeometry(x, y, planes), this.terrainMaterial); this.scene.add(mesh); this.chunks.push({ mesh, x, y });
+      const geometry = this.chunkGeometry(x, y, planes);
+      const mesh = new THREE.Mesh(geometry, this.terrainMaterial), reflection = new THREE.Mesh(geometry, this.reflectionTerrainMaterial);
+      reflection.scale.y = -1; this.scene.add(mesh); this.reflectionScene.add(reflection); this.chunks.push({ mesh, reflection, x, y });
     }
     else for (const chunk of this.chunks) {
       let changed = false;
@@ -255,11 +291,11 @@ export class OriginalWorldRenderer {
         if (planes.heights[at] !== this.planes.heights[at] || planes.types[at] !== this.planes.types[at] ||
           planes.shades[at] !== this.planes.shades[at] || planes.angles[at] !== this.planes.angles[at]) { changed = true; break; }
       }
-      if (changed) { const prior = chunk.mesh.geometry; chunk.mesh.geometry = this.chunkGeometry(chunk.x, chunk.y, planes); prior.dispose(); this.rebuiltChunks++; }
+      if (changed) { const prior = chunk.mesh.geometry; chunk.reflection.geometry = chunk.mesh.geometry = this.chunkGeometry(chunk.x, chunk.y, planes); prior.dispose(); this.rebuiltChunks++; }
     }
     this.planes = planes; this.dirty = true;
   }
-  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean, plan?: HudGeometryPlan, tmapPixels?: readonly TmapPixels[]): void {
+  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean, plan?: HudGeometryPlan, tmapPixels?: readonly TmapPixels[], reflections = false): void {
     if (!this.planes) throw new Error('Native terrain must be installed before its world frame');
     this.tmapPixels.apply(tmapPixels, (selector, pixels) => {
       const frame = this.images.get(selector)!.frames[0]!;
@@ -268,7 +304,7 @@ export class OriginalWorldRenderer {
     });
     const sameEpoch = this.frame?.runtimeGeneration === frame.runtimeGeneration && this.frame.sessionGeneration === frame.sessionGeneration;
     this.previousCamera = sameEpoch ? this.sourceCamera : camera; this.sourceCamera = camera; this.frame = frame; this.fov = fov;
-    this.arrival = performance.now(); this.mapOpen = mapOpen; this.playing = playing;
+    this.arrival = performance.now(); this.mapOpen = mapOpen; this.playing = playing; this.reflections = reflections;
     for (let i = 0; i < 256; i++) { this.paletteBytes[i * 4] = frame.palette[i * 3]!; this.paletteBytes[i * 4 + 1] = frame.palette[i * 3 + 1]!;
       this.paletteBytes[i * 4 + 2] = frame.palette[i * 3 + 2]!; this.paletteBytes[i * 4 + 3] = 255; }
     if (plan) {
@@ -335,25 +371,29 @@ export class OriginalWorldRenderer {
     }
     return result;
   }
-  private writeSprite(geometry: THREE.InstancedBufferGeometry, index: number, row: WorldSprite, eye: THREE.Vector3): boolean {
-    if (!admitsSprite(row, { x: eye.x * 64, y: eye.z * 64, yaw: -this.camera.rotation.y * 1024 / Math.PI })) return false;
+  private writeSprite(geometry: THREE.InstancedBufferGeometry, index: number, row: WorldSprite, eye: THREE.Vector3, reflected = false): boolean {
+    const camera = { x: eye.x * 64, y: eye.z * 64, z: eye.y * 64, yaw: -this.camera.rotation.y * 1024 / Math.PI };
+    if (reflected ? !admitsReflection(row, camera, this.reflections && !this.cave) : !admitsSprite(row, camera)) return false;
+    const rank = reflected ? this.actorRanks[(((Math.trunc(row.y) >> 8) & 255) << 8) | ((Math.trunc(row.x) >> 8) & 255)]! : 0;
+    if (reflected && rank === 0) return false;
     const image = this.images.get(row.selector);
     if (!image) { if (this.unavailable.has(row.selector)) return false; throw new Error(`Unbound native TMAP ${row.selector}`); }
     if (row.pixelMode > 8) throw new Error(`Unsupported native sprite pixel mode ${row.pixelMode}`);
     // Native publishes the current selector-global pixels into this rectangle.
     const rect = image.frames[0]!, h = row.height / UNIT;
     const x = eye.x + wrappedDelta(row.x / UNIT, eye.x), z = eye.z + wrappedDelta(row.y / UNIT, eye.z);
-    this.spriteBounds.center.set(x, row.z / UNIT + h / 2, z);
+    this.spriteBounds.center.set(x, reflected ? -row.z / UNIT - h / 2 : row.z / UNIT + h / 2, z);
     this.spriteBounds.radius = Math.hypot(h * rect.width / rect.height, h) / 2;
     if (!this.frustum.intersectsSphere(this.spriteBounds)) return false;
-    (geometry.getAttribute('center') as THREE.InstancedBufferAttribute).setXYZ(index, x, row.z / UNIT, z);
+    (geometry.getAttribute('center') as THREE.InstancedBufferAttribute).setXYZ(index, x, (reflected ? -row.z : row.z) / UNIT, z);
     (geometry.getAttribute('spriteSize') as THREE.InstancedBufferAttribute).setXY(index, h * rect.width / rect.height, h);
     (geometry.getAttribute('imageRect') as THREE.InstancedBufferAttribute).setXYZW(index, rect.x, rect.y, rect.width, rect.height);
-    (geometry.getAttribute('operation') as THREE.InstancedBufferAttribute).setXYZW(index, row.pixelMode, row.brightness, row.ownerColor, row.mirrored ? 1 : 0);
+    (geometry.getAttribute('operation') as THREE.InstancedBufferAttribute).setXYZW(index, reflected ? 1 : row.pixelMode, row.brightness, row.ownerColor, row.mirrored ? 1 : 0);
+    (geometry.getAttribute('painterRank') as THREE.InstancedBufferAttribute).setX(index, rank + Math.min(row.drawOrder, 999));
     return true;
   }
   private upload(geometry: THREE.InstancedBufferGeometry): void {
-    for (const name of ['center', 'spriteSize', 'imageRect', 'operation']) {
+    for (const name of ['center', 'spriteSize', 'imageRect', 'operation', 'painterRank']) {
       const attribute = geometry.getAttribute(name) as THREE.InstancedBufferAttribute;
       attribute.clearUpdateRanges();
       if (geometry.instanceCount) attribute.addUpdateRange(0, geometry.instanceCount * attribute.itemSize);
@@ -365,7 +405,8 @@ export class OriginalWorldRenderer {
     const p = this.eyePoint.set(center.getX(0), center.getY(0), center.getZ(0)).applyMatrix4(this.camera.matrixWorldInverse);
     const depth = -p.z; if (depth <= 0) return null;
     const e = this.camera.projectionMatrix.elements, vw = this.width * (this.mapOpen ? .4 : 1), vx = this.mapOpen ? this.width - vw : 0;
-    const x = vx + (p.x * e[0]! / depth * .5 + .5) * vw, y = (p.y * e[5]! / depth * .5 + .5) * this.height;
+    const x = vx + ((p.x * e[0]! / depth - e[8]!) * .5 + .5) * vw;
+    const y = ((p.y * e[5]! / depth - e[9]!) * .5 + .5) * this.height;
     const w = size.getX(0) * e[0]! / depth * .5 * vw, h = size.getY(0) * e[5]! / depth * .5 * this.height;
     const left = Math.max(0, Math.floor(x - w / 2) - 1), right = Math.min(this.width, Math.ceil(x + w / 2) + 1);
     const bottom = Math.max(0, Math.floor(y) - 1), top = Math.min(this.height, Math.ceil(y + h) + 1);
@@ -375,9 +416,10 @@ export class OriginalWorldRenderer {
     const rect = this.canvas.getBoundingClientRect(), scale = Math.min(devicePixelRatio || 1, 1.5);
     const width = Math.max(1, Math.round(rect.width * scale)), height = Math.max(1, Math.round(rect.height * scale));
     if (width === this.width && height === this.height) return;
-    this.width = width; this.height = height; this.renderer.setSize(width, height, false); this.target.setSize(width, height);
+    this.width = width; this.height = height; this.renderer.setSize(width, height, false); this.target.setSize(width, height); this.reflectionTarget.setSize(width, height);
     this.snapshot.dispose(); this.snapshot = new THREE.FramebufferTexture(width, height); this.snapshot.minFilter = this.snapshot.magFilter = THREE.NearestFilter;
-    this.spriteMaterial.uniforms.destination!.value = this.blendMaterial.uniforms.destination!.value = this.snapshot;
+    this.spriteMaterial.uniforms.destination!.value = this.blendMaterial.uniforms.destination!.value =
+      this.reflectionSprites.material.uniforms.destination!.value = this.snapshot;
     this.finalMaterial.uniforms.viewport!.value.set(width, height); this.dirty = true;
   }
   private queueFrame(): void {
@@ -394,20 +436,43 @@ export class OriginalWorldRenderer {
     const lerp = (a: number, b: number) => a + (b - a) * t;
     this.camera.position.set(from.x / UNIT + wrappedDelta(to.x / UNIT, from.x / UNIT) * t,
       lerp(from.z, to.z) / UNIT, from.y / UNIT + wrappedDelta(to.y / UNIT, from.y / UNIT) * t);
-    const yaw = from.yaw + signedSourceAngle(to.yaw - from.yaw) * t, scale = Math.max(1, (7 * 377 * this.fov) >> 11);
-    this.camera.fov = Math.min(110, Math.max(25, 2 * Math.atan(120 / scale) * 180 / Math.PI));
+    const yaw = from.yaw + signedSourceAngle(to.yaw - from.yaw) * t;
     this.camera.aspect = this.width / this.height * (this.mapOpen ? .4 : 1);
-    this.camera.rotation.set(Math.atan2(lerp(from.pitch, to.pitch) * 1.25, scale), -yaw * Math.PI / 1024, -lerp(from.roll, to.roll) * Math.PI / 1024, 'YXZ');
+    const roll = lerp(from.roll, to.roll);
+    this.camera.rotation.set(0, -yaw * Math.PI / 1024, -roll * Math.PI / 1024, 'YXZ');
     this.camera.updateProjectionMatrix();
+    const projection = sourceProjection(this.fov, lerp(from.pitch, to.pitch), roll, this.mapOpen);
+    const matrix = this.camera.projectionMatrix.elements;
+    matrix[0] = projection.x; matrix[5] = projection.y; matrix[8] = projection.offsetX; matrix[9] = projection.offsetY;
+    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
     this.camera.updateMatrixWorld();
     this.frustum.setFromProjectionMatrix(this.viewProjection.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse));
     for (const chunk of this.chunks) {
       chunk.mesh.position.set(this.camera.position.x + wrappedDelta(chunk.x * 4 + CHUNK * 2, this.camera.position.x) - CHUNK * 2,
         0, this.camera.position.z + wrappedDelta(chunk.y * 4 + CHUNK * 2, this.camera.position.z) - CHUNK * 2);
+      chunk.reflection.position.copy(chunk.mesh.position);
     }
     this.terrainMaterial.uniforms.eyeMap!.value.set(this.camera.position.x, this.camera.position.z);
     this.terrainMaterial.uniforms.turn!.value = Number(this.frame.tick % 2048n);
+    this.renderer.info.reset();
     let opaqueCount = 0; const transparent: WorldSprite[] = [], drawnTmaps = new Set<number>();
+    const reflections = this.reflections && !this.cave && this.camera.position.y * UNIT < 4096;
+    this.terrainMaterial.uniforms.reflections!.value = reflections;
+    if (reflections) {
+      const ranks = reflectionPainterRanks({ x: this.camera.position.x * UNIT, y: this.camera.position.z * UNIT, yaw }, this.mapSine, this.planes!.types);
+      this.painterBytes.set(ranks.terrain); this.painterRanks.needsUpdate = true; this.actorRanks.set(ranks.actors);
+      const rows = orderReflectionRows(this.frame.sprites, { x: this.camera.position.x * UNIT,
+        y: this.camera.position.z * UNIT, yaw: -this.camera.rotation.y * 1024 / Math.PI });
+      let count = 0;
+      for (const row of rows) if (this.writeSprite(this.reflectionSprites.geometry, count, row, this.camera.position, true)) {
+        count++; if (this.images.get(row.selector)?.animated) drawnTmaps.add(row.selector);
+      }
+      this.reflectionSprites.geometry.instanceCount = count; this.upload(this.reflectionSprites.geometry);
+      this.renderer.setRenderTarget(this.reflectionTarget); this.renderer.setClearColor(0x000000, 1); this.renderer.clear();
+      this.renderer.setViewport(0, 0, this.width, this.height);
+      if (this.mapOpen) { const mapWidth = Math.floor(this.width * .6); this.renderer.setViewport(mapWidth, 0, this.width - mapWidth, this.height); }
+      this.renderer.render(this.reflectionScene, this.camera);
+    }
     for (const row of this.frame.sprites) {
       if ([2, 3, 6, 7, 8].includes(row.pixelMode)) { transparent.push(row); continue; }
       if (this.writeSprite(this.sprites.geometry, opaqueCount, row, this.camera.position)) {
@@ -415,7 +480,7 @@ export class OriginalWorldRenderer {
       }
     }
     this.sprites.geometry.instanceCount = opaqueCount; this.upload(this.sprites.geometry);
-    this.renderer.info.reset(); this.renderer.setRenderTarget(this.target); this.renderer.setClearColor(0x000000, 1); this.renderer.clear();
+    this.renderer.setRenderTarget(this.target); this.renderer.setClearColor(0x000000, 1); this.renderer.clear();
     this.renderer.setViewport(0, 0, this.width, this.height);
     if (this.mapOpen) {
       const mapWidth = Math.floor(this.width * .6);

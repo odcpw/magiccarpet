@@ -338,6 +338,22 @@ class Native:
         self.identity_value = self.identity()
         return True
 
+    def source_brightness(self):
+        identity = self.identity_value
+        session = identity.get('session')
+        if session is None: return False
+        payload = json.dumps({'operation': 'source_brightness', 'action': 'cycle',
+                              'session_guard': {'session_id': session['session_id'],
+                                                'generation': session['generation'],
+                                                'expected_tick': session['tick']}},
+                             separators=(',', ':')).encode()
+        status = self.lib.mc_game_runtime_preferences_command_json_v1(
+            self.handle, int(identity['generation']), payload, len(payload))
+        if status == 16: return False  # Source palette is not ready for a change.
+        self.check(status, 'source brightness')
+        self.identity_value = self.identity()
+        return True
+
     def tmap_pixels(self, outer, generation, tick, manifest):
         written = c.c_uint32()
         fn = self.lib.mc_game_runtime_tmap_pixels_copy_v1
@@ -855,6 +871,8 @@ class Bridge:
                 state['music_enabled'] = preferences.get('music_enabled') is True
                 state['music_volume'] = preferences.get('music_volume', 0)
                 state['source_speed_index'] = native.identity_value.get('source_speed_index', 0)
+                if world and not self.modern:
+                    state['reflections'] = native.identity_value['display_settings']['reflections']
                 state['campaign_music'] = CampaignMusicClock.publication(music_clock.state()) if self.music_asset else None
                 state['gameplay_audio'] = gameplay_audio.poll(observation, self.gameplay_samples,
                                                                self.running and not self.paused)
@@ -914,6 +932,7 @@ class Bridge:
                         kind = value.get("kind")
                         tmap_applied = None
                         speed_applied = None
+                        brightness_applied = None
                         if kind == "input":
                             next_command = validate_command(value.get("command"))
                             if native.identity_value.get("session") is not None:
@@ -925,7 +944,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "tmap_draw", "source_speed", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "tmap_draw", "source_speed", "source_brightness", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'tmap_draw':
                                 tmap_applied = submit_tmap_draw(native, value, bool(world) and not self.modern)
@@ -934,6 +953,9 @@ class Bridge:
                             elif action == 'source_speed':
                                 speed_applied = bool(self.running and not self.paused and native.source_speed())
                                 if speed_applied: publish()
+                            elif action == 'source_brightness':
+                                brightness_applied = bool(not self.modern and native.source_brightness())
+                                if brightness_applied: publish()
                             elif action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
                                 if (not isinstance(generation, str) or not generation.isascii() or not generation.isdecimal() or len(generation) > 20 or
@@ -1125,6 +1147,7 @@ class Bridge:
                                   "media": self.media_view}
                         if tmap_applied is not None: result['tmap_applied'] = tmap_applied
                         if speed_applied is not None: result['speed_applied'] = speed_applied
+                        if brightness_applied is not None: result['brightness_applied'] = brightness_applied
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
