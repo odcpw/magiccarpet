@@ -8,7 +8,8 @@ type TierRow = { tier: number; width: number; height: number; color: number; rgb
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
 type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null };
+type AbilityNotificationAssets = { format: string; families: string[]; color: number };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null; ability_notification: AbilityNotificationAssets };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -28,6 +29,7 @@ export interface OriginalHudState {
   hud?: OriginalHudSnapshot | null;
   objective_selector?: number | null;
   objective_visible?: boolean;
+  level_end?: boolean;
   panels_opaque?: boolean;
   top_bar_visible?: boolean;
   minimap?: (MapCommands & { terrain: number[]; coverage: number[] }) | null;
@@ -57,6 +59,11 @@ export interface MapHintContext {
   sequence: number | string; generation: number | string; enabled: boolean; paused: boolean; suppressed: boolean;
   player: { x: number; y: number }; entities: readonly { entity: number; x: number; y: number }[];
 }
+export interface AbilityNotificationContext {
+  generation: number | string; sequence: number | string; assetRevision: number;
+  suppressed: boolean;
+  effects: readonly { generation: number | string; sequence: number | string; kind: number; code: number; value0: number; value1: number }[];
+}
 
 export class OriginalHud {
   readonly width = 640;
@@ -66,6 +73,13 @@ export class OriginalHud {
   private readonly symbols = new Map<number, SymbolRow>();
   private readonly mapFont = new Map<number, FontGlyph>();
   private readonly gameplayFont = new Map<number, FontGlyph>();
+  private readonly abilityAssets: AbilityNotificationAssets;
+  private abilityRevision: number | null = null;
+  private abilityFrame = '';
+  private readonly abilityLastEffect = new Map<string, bigint>();
+  private abilityRemaining = 0;
+  private abilityText: string | null = null;
+  private abilityVisible = false;
   private readonly objectives = new Map<number, ObjectiveRow>();
   private readonly objectiveStages: number[];
   private readonly objectiveEnd: number;
@@ -92,6 +106,13 @@ export class OriginalHud {
       return blob.subarray(item.offset, item.offset + item.length);
     };
     this.tables = { normal: span(manifest.normal), exit: span(manifest.exit) };
+    const ability = manifest.ability_notification;
+    if (!ability || typeof ability.format !== 'string' || ability.format.split('%s').length !== 2 ||
+        !Array.isArray(ability.families) || ability.families.length !== 26 ||
+        ability.families.some(name => typeof name !== 'string' || !name) ||
+        !Number.isInteger(ability.color) || ability.color < 0 || ability.color > 255)
+      throw new Error('Invalid Original ability notification assets');
+    this.abilityAssets = ability;
     const exitHelp = manifest.help?.['83'];
     if (exitHelp) {
       if (exitHelp.text_record !== 345 || exitHelp.flags !== 0x280 || exitHelp.duration !== 50 ||
@@ -164,6 +185,32 @@ export class OriginalHud {
   objectiveRecord(textSelector: number, isLevelEnd: boolean): number | null {
     return isLevelEnd ? this.objectiveEnd : this.objectiveStages[textSelector] ?? null;
   }
+
+  /** Advance exactly once per accepted source presentation; repaint is read-only. */
+  advanceAbilityNotification(context: AbilityNotificationContext): void {
+    if (context.assetRevision !== this.abilityRevision) {
+      this.abilityRevision = context.assetRevision; this.abilityFrame = ''; this.abilityLastEffect.clear();
+      this.abilityRemaining = 0; this.abilityText = null; this.abilityVisible = false;
+    }
+    const frame = `${context.generation}:${context.sequence}`;
+    if (frame === this.abilityFrame) return;
+    this.abilityFrame = frame;
+    for (const effect of context.effects) {
+      if (effect.kind !== 0x101 || effect.code !== 5) continue;
+      const generation = String(effect.generation);
+      const sequence = BigInt(effect.sequence);
+      if (sequence <= (this.abilityLastEffect.get(generation) ?? -1n)) continue;
+      if (!Number.isInteger(effect.value1) || effect.value1 < 0 || effect.value1 >= this.abilityAssets.families.length)
+        throw new Error('Invalid Original ability notification family');
+      this.abilityLastEffect.set(generation, sequence);
+      this.abilityText = this.abilityAssets.format.replace('%s', this.abilityAssets.families[effect.value1]!).slice(0, 48);
+      this.abilityRemaining = 200;
+    }
+    this.abilityVisible = !context.suppressed && this.abilityRemaining > 0;
+    if (this.abilityVisible) this.abilityRemaining--;
+  }
+
+  abilityNotificationText(): string | null { return this.abilityVisible ? this.abilityText : null; }
   static async load(base = '/original-api'): Promise<OriginalHud> {
     const [manifestResponse, blobResponse] = await Promise.all([
       fetch(`${base}/assets/manifest`, { signal: AbortSignal.timeout(15000) }),
@@ -622,6 +669,20 @@ export class OriginalHud {
             if (coverage) coverage[pos] = 255;
           }
         }
+      }
+    }
+    const notification = this.abilityNotificationText();
+    if (notification) {
+      let x = fullMap ? 6 : 132;
+      let y = fullMap ? 6 : 50;
+      if (state.level_end) y += this.gameplayFont.get(65)?.height ?? 0;
+      if (state.pause_menu?.open) x += 8 * ('Paused!'.length + 2);
+      for (const character of notification) {
+        const code = character.charCodeAt(0), glyph = this.gameplayFont.get(code + 1);
+        if (!glyph) throw new Error('Missing Original ability notification glyph');
+        if (code !== 32 && code !== 9) for (let gy = 0; gy < glyph.height; gy++) for (let gx = 0; gx < glyph.width; gx++)
+          if (this.blob[glyph.mask.offset + gy * glyph.width + gx]) pixel(x + gx, y + gy, this.abilityAssets.color);
+        x += code === 32 || code === 9 ? this.gameplayFont.get(33)!.width : glyph.width;
       }
     }
     if (state.objective_visible && state.objective_selector != null) {

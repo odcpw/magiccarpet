@@ -10,6 +10,7 @@ import { ModernWorldRenderer } from './modern-world-renderer';
 import { decodeModernFrame } from './modern-runtime';
 import { OriginalMediaPlayer, type MediaReply } from './original-media';
 import { OriginalGameplayAudio, type GameplayVoice } from './original-audio';
+import { OriginalSpeech, type ObjectiveSpeechCue } from './original-speech';
 
 const API = '/original-api';
 const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
@@ -62,6 +63,10 @@ const history = new OriginalSceneHistory();
 const gameplayAudio = new OriginalGameplayAudio(API, row => {
   void post('/control', { action: 'audio_complete', generation: row.generation,
     voice: row.voice, event_sequence: row.sequence }).catch(error => console.error('Gameplay voice completion:', error));
+});
+const objectiveSpeech = new OriginalSpeech(API, () => gameplayAudio.audioContext(), action => gameplayAudio.speechMix(action), cue => {
+  void post('/control', { action: 'speech_complete', generation: cue.generation,
+    event_sequence: cue.sequence }).catch(error => console.error('Objective speech completion:', error));
 });
 
 function updateMapInspectionLabel(text: string | null): void {
@@ -169,6 +174,10 @@ interface BridgeState extends OriginalHudState {
   sound_volume?: number;
   map_key?: string | null;
   gameplay_audio?: GameplayVoice[];
+  objective_speech?: ObjectiveSpeechCue[];
+  speech_enabled?: boolean;
+  speech_available?: boolean;
+  campaign_effects?: {generation: string; sequence: string; kind: number; code: number; value0: number; value1: number}[];
   hint_entities?: { entity: number; x: number; y: number }[];
   source_menu_admission?: { map_open: boolean; spells_open: boolean; player_information_open: boolean } | null;
   source_menu_state?: number;
@@ -191,6 +200,7 @@ function showCampaign(status: BridgeStatus): boolean {
   if (!phase || phase === 'playing' || phase === 'paused') return false;
   campaignPhase = phase;
   gameplayAudio.stop();
+  objectiveSpeech.stop();
   abandonOpen = false; element('abandon-dialog').hidden = true;
   playing = false;
   polling = false;
@@ -332,6 +342,7 @@ function hideMenu(): void {
 }
 function fail(error: unknown): void {
   gameplayAudio.stop();
+  objectiveSpeech.stop();
   // Navigation cancels pending HTTP reads. It is not a failure of the next page.
   if (leavingPage) return;
   playing = false; connected = false; clearInput();
@@ -347,6 +358,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') gameplayAudio.stop();
+  if (action === 'load' || action === 'reset') objectiveSpeech.stop();
   controlsPending++; busy = true; controlVersion++;
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
     lastArrival = 0; intervals.length = 0;
@@ -441,6 +453,8 @@ async function pollFrame(): Promise<void> {
     lastFrame = frame;
     gameplayAudio.update(state.gameplay_audio ?? [], frame.sessionGeneration.toString(),
       state.asset_revision ?? 0, state.sound_enabled === true, playing && !state.paused, state.sound_volume ?? 0);
+    objectiveSpeech.update(state.objective_speech ?? [], state.asset_revision ?? 0,
+      state.sound_enabled === true, state.sound_volume ?? 0);
     spellMutationPending = false;
     informationPending = false;
     const wasMapOpen = nativeMenus.map_open, wasSpellsOpen = nativeMenus.spells_open;
@@ -473,6 +487,9 @@ async function pollFrame(): Promise<void> {
       panels_opaque: source.spell_menu_panels_opaque, objective_selector: objectiveSelector,
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu,
       player_information: nativeMenus.player_information_open ? source.source_scoreboard : null };
+    hud.advanceAbilityNotification({generation: frame.sessionGeneration.toString(), sequence: frame.sequence.toString(),
+      assetRevision: state.asset_revision ?? 0, effects: state.campaign_effects ?? [], suppressed: abandonOpen});
+    if (state.objective) hudState.level_end = state.objective.is_level_end !== 0;
     const sourceGeneration = `${frame.runtimeGeneration}:${frame.sessionGeneration}`;
     if (sourceGeneration !== inspectionGeneration) { inspectedExit = null; inspectionGeneration = sourceGeneration; }
     if (display instanceof ModernWorldRenderer) hudState.world_map = undefined;
@@ -719,7 +736,7 @@ window.addEventListener('keyup', event => {
   }
 });
 window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); });
-window.addEventListener('beforeunload', () => { gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
+window.addEventListener('beforeunload', () => { objectiveSpeech.stop(); gameplayAudio.stop(); leavingPage = true; connected = false; playing = false; clearInput(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { mapMouseChord.clear(); clearInput(); if (playing) void control('pause'); } });
 element('touch-map').addEventListener('click', () => void control('map'));
 element('touch-hand').addEventListener('click', () => { touchHand = touchHand === 'left' ? 'right' : 'left'; element('touch-hand').textContent = touchHand === 'left' ? 'Left hand' : 'Right hand'; });

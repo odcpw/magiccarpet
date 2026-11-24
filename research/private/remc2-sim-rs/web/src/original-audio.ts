@@ -18,6 +18,8 @@ export class OriginalGameplayAudio {
   private generation = '';
   private revision = -1;
   private lastSequence = 0n;
+  private soundVolume = 127;
+  private soundUnits = 127;
 
   private readonly api: string;
   private readonly complete: (voice: GameplayVoice) => void;
@@ -34,6 +36,23 @@ export class OriginalGameplayAudio {
       this.master.connect(this.context.destination);
     }
     if (this.context.state !== 'running') void this.context.resume();
+  }
+
+  audioContext(): AudioContext | null { return this.context; }
+
+  speechMix(action: 'duck' | 'restore' | 'reset'): void {
+    if (!this.context || !this.master) return;
+    const now = this.context.currentTime, gain = this.master.gain;
+    gain.cancelScheduledValues(now);
+    if (action === 'duck') this.soundUnits = Math.floor(this.soundVolume / 3);
+    if (action === 'reset') this.soundUnits = this.soundVolume;
+    gain.setValueAtTime(this.soundUnits / 127, now);
+    if (action === 'restore') {
+      const from = this.soundUnits;
+      for (let step = 1; step <= this.soundVolume - from; step++)
+        gain.setValueAtTime((from + step) / 127, now + step / 120);
+      this.soundUnits = this.soundVolume;
+    }
   }
 
   private retire(voice: VoiceOwner): void {
@@ -65,7 +84,10 @@ export class OriginalGameplayAudio {
       this.stop(); this.generation = generation; this.revision = revision; this.lastSequence = 0n;
       this.decoded.clear();
     }
-    if (this.master && this.context) this.master.gain.setValueAtTime(Math.max(0, Math.min(127, soundVolume)) / 127, this.context.currentTime);
+    if (this.soundVolume !== soundVolume) {
+      this.soundVolume = Math.max(0, Math.min(127, soundVolume));
+      this.speechMix('reset');
+    }
     if (!playing || !enabled) { this.stop(); return; }
     for (const row of [...rows].sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : 1)) {
       if (row.generation !== generation || !/^[0-9]+$/.test(row.sequence) ||

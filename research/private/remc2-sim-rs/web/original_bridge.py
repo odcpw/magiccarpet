@@ -28,6 +28,8 @@ from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFra
 from original_world import ModernWorld, OriginalWorld
 from original_media import OriginalMedia
 from original_gameplay_audio import GameplayJournal, GameplaySamples
+from original_campaign_effects import CampaignEffects
+from original_speech import SpeechCache, SpeechJournal
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -433,7 +435,7 @@ def replay_package(packages, replay):
 
 class Bridge:
     def __init__(self, library, packages, save_path=None, renderer="indexed", modern=False,
-                 replay_path=None, help_cache=None):
+                 replay_path=None, help_cache=None, speech_cache=None):
         self.library, self.packages = library, packages
         if renderer not in ("indexed", "geometry"): raise ValueError("invalid renderer")
         self.renderer = renderer
@@ -441,6 +443,7 @@ class Bridge:
         self.modern = modern
         self.replay_path = replay_path
         self.help_cache = help_cache
+        self.speech_cache = speech_cache or PRIVATE / 'generated/mc2-campaign-speech-current'
         self.level_id = None
         self.save_path = save_path
         self.has_save = bool(save_path and save_path.is_file())
@@ -452,6 +455,8 @@ class Bridge:
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
         self.gameplay_samples = None
+        self.speech_segments = {}
+        self.speech_error = None
         self.media = None; self.media_view = None
         self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
         self.can_refresh_assets = False
@@ -465,7 +470,8 @@ class Bridge:
                     "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
                     "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id,
                     "phase": self.phase, "campaign_menu": self.campaign_menu, "asset_revision": self.asset_revision,
-                    "can_refresh_assets": self.can_refresh_assets, "media": self.media_view}
+                    "can_refresh_assets": self.can_refresh_assets, "media": self.media_view,
+                    "speech_available": self.speech_error is None, "speech_error": self.speech_error}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -491,6 +497,13 @@ class Bridge:
         try:
             native = Native(self.library, self.packages)
             gameplay_audio = GameplayJournal(native)
+            effects = CampaignEffects(native)
+            try:
+                speech = SpeechJournal(SpeechCache(self.speech_cache))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                speech = SpeechJournal(None)
+                speech.error = f'{type(exc).__name__}: {exc}'
+            self.speech_error = speech.error
             menu_cache = self.help_cache or PRIVATE / "generated/mc2-campaign-menu-cache-current"
             language_root = menu_cache / "language"
             if self.help_cache is not None or language_root.is_dir():
@@ -556,10 +569,12 @@ class Bridge:
                 package, world, modern = current, new_world, new_modern
                 epoch += 1; menu_state = None
                 gameplay_audio.reset()
+                effects.reset(); speech.reset()
                 with self.lock:
                     self.publications.clear()
                     self.assets = assets
                     self.gameplay_samples = samples
+                    self.speech_segments = {}
                     self.world_assets = new_world_assets
                     self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
                     self.asset_revision += 1
@@ -572,6 +587,8 @@ class Bridge:
                 if native.identity_value.get("session") is None:
                     self.running = False; self.paused = False
                     gameplay_audio.reset()
+                    effects.reset(); speech.reset()
+                    with self.lock: self.speech_segments = {}
                     update_phase()
                     return True
                 # Secret entry constructs its destination session directly,
@@ -637,6 +654,10 @@ class Bridge:
                 state['sound_volume'] = preferences.get('sound_volume', 0)
                 state['gameplay_audio'] = gameplay_audio.poll(observation, self.gameplay_samples,
                                                                self.running and not self.paused)
+                state['speech_enabled'] = preferences.get('speech_enabled') is True
+                state['objective_speech'] = speech.consume(effects.poll(observation))
+                state['speech_available'] = speech.cache is not None
+                state['campaign_effects'] = list(effects.notices)
                 if world:
                     state["terrain_revision"] = revision
                     state["palette_source"] = "native-campaign-rgb8"
@@ -655,8 +676,11 @@ class Bridge:
                     geometry_subjects = {struct.unpack_from('<H', rows, offset + 24)[0]
                                          for offset in range(0, len(rows), 64)} if world else set()
                     state['hint_entities'] = read_missing_hint_entities(native, subjects - geometry_subjects)
-                with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
-                                                          world.terrain_gzip if world else None, modern_packet))
+                with self.lock:
+                    self.speech_error = speech.error
+                    self.speech_segments = {key: row['wave'] for key, row in speech.events.items()}
+                    self.publications.append((sequence, packet, state, observation, world_map, terrain,
+                                              world.terrain_gzip if world else None, modern_packet))
             update_phase()
             if native.identity_value.get("session") is not None:
                 bind_package()
@@ -683,7 +707,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
@@ -692,6 +716,15 @@ class Bridge:
                                         int(generation) > 2**64 - 1 or int(event) > 2**64 - 1 or type(voice) is not int or not 0 <= voice < 10):
                                     raise ValueError('invalid gameplay voice completion')
                                 gameplay_audio.complete(int(generation), voice, int(event))
+                            elif action == 'speech_complete':
+                                generation, event = value.get('generation'), value.get('event_sequence')
+                                if (not isinstance(generation, str) or not generation.isascii() or not generation.isdecimal() or len(generation) > 20 or
+                                        not isinstance(event, str) or not event.isascii() or not event.isdecimal() or len(event) > 20 or
+                                        int(generation) > 2**64 - 1 or int(event) > 2**64 - 1):
+                                    raise ValueError('invalid speech completion')
+                                key = (int(generation), int(event))
+                                speech.complete(*key)
+                                with self.lock: self.speech_segments.pop(key, None)
                             elif action == "media_frame":
                                 elapsed, media_input, escape = value.get('elapsed_us'), value.get('input'), value.get('escape')
                                 if type(elapsed) is not int or not 0 <= elapsed <= 5_000_000 or type(media_input) is not bool or type(escape) is not bool:
@@ -1031,6 +1064,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_data(200, data, 'audio/wav')
             except (KeyError, ValueError, IndexError):
                 return self.send_json(400, {'error': 'invalid gameplay sound request'})
+        if target.path == '/original-api/assets/objective-speech':
+            try:
+                params = parse_qs(target.query)
+                generation, sequence, revision = (int(params[key][0]) for key in ('generation', 'sequence', 'revision'))
+                with bridge.lock:
+                    data = bridge.speech_segments.get((generation, sequence)) if bridge.asset_revision == revision else None
+                if data is None: return self.send_json(404, {'error': 'objective speech unavailable or stale'})
+                return self.send_data(200, data, 'audio/wav')
+            except (KeyError, ValueError, IndexError):
+                return self.send_json(400, {'error': 'invalid objective speech request'})
         if target.path in ("/original-api/world-assets/manifest", "/original-api/world-assets/blob"):
             assets = getattr(bridge, "world_assets", None)
             if not assets: return self.send_json(503, {"error": "world assets unavailable"})
@@ -1101,6 +1144,7 @@ class Handler(BaseHTTPRequestHandler):
                               "mark_spell": {"spell_id", "hand", "holder_actor"},
                               "cycle_marked_spell": {"hand", "direction"},
                               "audio_complete": {"generation", "voice", "event_sequence"},
+                              "speech_complete": {"generation", "event_sequence"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))
@@ -1117,6 +1161,7 @@ def main():
     parser.add_argument("--packages", type=Path, help="use an explicit campaign package list")
     parser.add_argument("--replay", type=Path, help="start at this read-only campaign replay")
     parser.add_argument("--help-cache", type=Path, help="use this owner-local gameplay help cache")
+    parser.add_argument("--speech-cache", type=Path, help="use this owner-local campaign speech cache")
     parser.add_argument("--probe-frame", type=Path)
     parser.add_argument("--renderer", choices=("indexed", "geometry"), default="indexed")
     parser.add_argument("--modern", action="store_true", help="publish native Modern observations with geometry")
@@ -1142,7 +1187,7 @@ def main():
                               "frame_sha256": hashlib.sha256(frame).hexdigest(), "file": str(args.probe_frame)}))
         finally: runtime.close()
         return
-    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern, args.replay, args.help_cache)
+    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern, args.replay, args.help_cache, args.speech_cache)
     server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)

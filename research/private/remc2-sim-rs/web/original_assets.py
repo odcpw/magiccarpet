@@ -206,7 +206,7 @@ class OriginalAssets:
         colors = env_cache.read('palette/colors.u8')
         if len(colors) != 4096:
             raise ValueError('invalid Night color table')
-        objectives, objective_stages, objective_end, gameplay_font = self._objectives(
+        objectives, objective_stages, objective_end, gameplay_font, ability_notification = self._objectives(
             help_cache or DEFAULT_MENU, profile, colors, add)
         help_rows = self._exit_help(help_cache, profile, colors, add) if help_cache else None
         self.blob = bytes(blob)
@@ -214,7 +214,7 @@ class OriginalAssets:
                          'objective_background': colors[0], 'map_cross_color': colors[4095],
                          'exit': exit_table, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
                          'objectives': objectives, 'tiers': tiers, 'help': help_rows, 'font1': font1,
-                         'gameplay_font': gameplay_font,
+                         'gameplay_font': gameplay_font, 'ability_notification': ability_notification,
                          'objective_stage_records': objective_stages, 'objective_end_record': objective_end,
                          'map_profile': profile['map_type']['name'].lower(), 'hud_profile': 'night'}
 
@@ -296,7 +296,21 @@ class OriginalAssets:
                          'blend_x': blend['x'], 'blend_y': blend['y'],
                          'blend_width': blend['width'], 'blend_height': blend['height'],
                          'indices': add(data[:plane]), 'mask': add(data[plane:])})
-        return rows, stages, end, gameplay_font
+        ability_records = []
+        for selector in range(159, 186):
+            record = locale['records'][selector]
+            start, length = record['offset'], record['bytes']
+            text = records[start:start + length]
+            if (record['selector'] != selector or start < 0 or not 0 < length <= 4096 or
+                    len(text) != length or hashlib.sha256(text).hexdigest() != record['sha256'] or
+                    any(value < 32 or value > 126 for value in text)):
+                raise ValueError('invalid source spell notification language')
+            ability_records.append(text.decode('ascii'))
+        if ability_records[0].count('%s') != 1:
+            raise ValueError('invalid source spell notification format')
+        return rows, stages, end, gameplay_font, {'format': ability_records[0],
+                                                   'families': ability_records[1:],
+                                                   'color': colors[3840]}
 
     @staticmethod
     def _exit_help(help_cache: Path, profile: dict, colors: bytes, add) -> dict | None:

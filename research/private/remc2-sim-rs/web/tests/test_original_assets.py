@@ -29,6 +29,21 @@ class OwnerAssetTests(unittest.TestCase):
         self.assertEqual(manifest['objective_background'], 61)
         self.assertEqual(manifest['objective_stage_records'], list(range(48, 56)))
         self.assertEqual(manifest['objective_end_record'], 53)
+        menu = assets._VerifiedCache(assets.DEFAULT_MENU)
+        language = assets._VerifiedCache(menu.root / menu.manifest['language_cache']['path'])
+        lm = language.manifest
+        locale = next(row for row in lm['locales'] if row['id'] == lm['default_locale_id'])
+        records = language.read(locale['records_path'])
+        def text(selector):
+            record = locale['records'][selector]
+            raw = records[record['offset']:record['offset'] + record['bytes']]
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), record['sha256'])
+            return raw.decode('ascii')
+        notification = manifest['ability_notification']
+        self.assertEqual(notification['format'], text(159))
+        self.assertEqual(notification['families'], [text(i) for i in range(160, 186)])
+        colors = (assets.ROOT / 'environment-complete/cache-level1/palette/colors.u8').read_bytes()
+        self.assertEqual(notification['color'], colors[3840])
         self.assertEqual([row['selector'] for row in manifest['objectives']], list(range(48, 56)) + [284, 285])
         # The new selected-language path preserves the prior NightSpire
         # objective images byte-for-byte, including frame and text.

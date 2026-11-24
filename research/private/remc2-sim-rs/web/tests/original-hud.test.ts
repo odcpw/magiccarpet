@@ -28,6 +28,29 @@ const state: OriginalHudState = { panels_opaque: true, hud: { generation: 5, tic
   life_palette_index: 117, mana_palette_index: 118, mana_max_palette_index: 119,
   left: slot, right: slot } };
 
+test('spell improvement uses the owner text and lasts 200 admitted draws', () => {
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const event = { generation: '77', sequence: '17', kind: 0x101, code: 5, value0: 1, value1: 0 };
+  const advance = (sequence: number, suppressed = false) => hud.advanceAbilityNotification({
+    generation: '77', sequence, assetRevision: 7, effects: [event], suppressed,
+  });
+  const plain = hud.compose(scene, palette, state);
+  advance(1);
+  assert.equal(hud.abilityNotificationText(), 'Your ability to cast FIREBALL has improved.');
+  assert.notDeepEqual(hud.compose(scene, palette, state), plain);
+  // A duplicate publication or a repaint never consumes a draw.
+  for (let i = 0; i < 10; i++) { advance(1); hud.compose(scene, palette, state); }
+  hud.advanceAbilityNotification({ generation: '78', sequence: 1, assetRevision: 7, effects: [event], suppressed: true });
+  assert.equal(hud.abilityNotificationText(), null, 'pause-generation changes preserve the held notification');
+  advance(2, true); assert.equal(hud.abilityNotificationText(), null);
+  for (let sequence = 3; sequence <= 201; sequence++) advance(sequence);
+  assert.equal(hud.abilityNotificationText(), 'Your ability to cast FIREBALL has improved.');
+  advance(202); assert.equal(hud.abilityNotificationText(), null);
+  assert.deepEqual(hud.compose(scene, palette, state), plain);
+  hud.advanceAbilityNotification({ generation: '78', sequence: 203, assetRevision: 8, effects: [], suppressed: false });
+  assert.equal(hud.abilityNotificationText(), null, 'a new bound mission clears the notification');
+});
+
 test('owner indexed HUD preserves scene and reflects native life and objective admission', () => {
   const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
   const image = hud.compose(scene, palette, state);
