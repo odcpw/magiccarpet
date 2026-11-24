@@ -1,5 +1,49 @@
 # Shared-engine delivery plan
 
+### Wizard loss, restart and F9 in the private Original — November 24
+
+In the installed NightSpire, Shift+K set the wizard's life to −1. The death
+notice and turning camera appeared. Space reopened NightSpire at tick 0 with
+10,000 life. Forward input then moved the carpet from y=56960 to 55040.
+An isolated run checked that bare K and Alt+Shift+K left the wizard alive,
+and that holding Shift+K issued one surrender. That first run timed out
+waiting for Chrome to show the restart. The new native owner had reopened
+the mission. A second isolated run and the installed run both displayed
+the restarted flight. The cause of the first timeout is unresolved.
+
+Rust checks covered the recorded surrender, cold replay and no-Castle retry,
+and an older paid Castle save through death, revival and the next fight.
+The F9 bridge now excludes synchronous save loading from its inactivity
+timer. In Chrome, the 26.9-second restore kept Speed active. Enter opened
+the map at tick 8 without a resume, and leaving the browser paused play.
+
+Runtime `2d753b7e` and browser `fb499f55` are pushed. The private Original
+loaded native `cd6fe94208a6`. Evidence is in `flight-controls/surrender-public/`,
+`flight-controls/retry-diagnostic/` and `f9-map-diagnostic/` under
+`research/private/generated/earned-campaign-20261124/`. The broader
+player-loss and campaign acceptance remains open.
+
+### Flight speed, speech and braking in the private Original — November 24
+
+F3 switches between normal and fast simulation speed. The installed browser
+showed the two source notices in NightSpire at ticks 49 and 65. Fast flight
+also passed on the RTX 3090 and on software WebGL after the bridge began
+yielding between batches of elapsed turns. F4 toggles objective speech.
+In an isolated Chrome profile, restarting NightSpire with speech off produced
+no objective audio request. With speech on, Chrome fetched the original
+segment and started its decoded audio. A missing speech cache kept F4 inactive.
+
+Backspace stops the carpet and cancels an active Speed spell in flight and
+on the full map. A controlled campaign carry supplied Speed in NightSpire.
+The cast cost 1,000 mana. One physical keypress cleared the same spell holder
+and took target and actual speed from 160 to zero in both views. The map
+stayed open. The combined reload-to-map check timed out; the separate map
+check passed. In the normal installed launcher, Backspace took an unboosted
+carpet from speed 32 to zero. Browser `318e6704` is pushed and installed
+with native `637bfe6b41d9`. See `source-speed/`, `full-stop-browser/` and
+`flight-controls/` under `research/private/generated/earned-campaign-20261124/`
+and `research/private/generated/f4-speech-20261124/receipt-final.json`.
+
 ### NightSpire Goat animation in the private Original browser — November 24
 
 Rust now advances an animated sprite's shared texture after the browser draws
