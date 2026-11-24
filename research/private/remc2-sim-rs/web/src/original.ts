@@ -41,6 +41,7 @@ let configuredNames: readonly string[] = [];
 let spellCloseOnRelease = false;
 let mouseX = 0, mouseY = 0, queuedCasts = 0, queuedRecovery = false, queuedFullStops = 0;
 let removeCastleStage = false;
+let surrenderPlayer = false;
 let started = false, playing = false, busy = false, inputBusy = false;
 let controlsPending = 0;
 let spellMutationPending = false;
@@ -386,7 +387,12 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
   const next = requestTail.then(request); requestTail = next.catch(() => undefined); return next;
 }
 
-function clearInput(preserveFullStop = false): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; queuedRecovery = false; removeCastleStage = false; if (!preserveFullStop) queuedFullStops = 0; }
+function clearInput(preserveFullStop = false): void {
+  keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear();
+  mouseX = 0; mouseY = 0; queuedCasts = 0; queuedRecovery = false;
+  removeCastleStage = false; surrenderPlayer = false;
+  if (!preserveFullStop) queuedFullStops = 0;
+}
 function showSpeechPreference(enabled: unknown, available: unknown): void {
   speechButton.disabled = available !== true || typeof enabled !== 'boolean';
   speechButton.textContent = speechButton.disabled ? 'Speech unavailable' : `Speech: ${enabled ? 'On' : 'Off'}`;
@@ -699,8 +705,10 @@ async function sendInput(): Promise<void> {
   const recovery = queuedRecovery && !abandonOpen && !nativeMenus.spells_open && !nativeMenus.map_open;
   const fullStop = queuedFullStops > 0 && !abandonOpen && !nativeMenus.spells_open;
   const input = { ...command, ...(removeCastleStage ? { remove_castle_stage: true } : {}),
+    ...(surrenderPlayer ? { surrender_player: true } : {}),
     ...(recovery ? { recover_player: true } : {}), ...(fullStop ? { full_stop: true } : {}) };
   removeCastleStage = false;
+  surrenderPlayer = false;
   try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); if (recovery) queuedRecovery = false; if (fullStop) queuedFullStops = Math.max(0, queuedFullStops - 1); }
   catch (error) { fail(error); }
   finally { inputBusy = false; }
@@ -873,6 +881,7 @@ window.addEventListener('keydown', event => {
   }
   keys.add(event.code);
   if (event.repeat) return;
+  if (!modernRequested && playing && event.code === 'KeyK' && event.shiftKey && !event.altKey) surrenderPlayer = true;
   if (!modernRequested && playing && event.code === 'KeyL' && event.shiftKey && !event.altKey &&
       lastHudState?.source_top_status?.castle_rows.length) removeCastleStage = true;
   if (event.code === 'Space') {

@@ -445,7 +445,7 @@ NEUTRAL = {"longitudinal": "coast", "lateral": "neutral", "roll_axis": 0,
 
 
 def validate_command(value):
-    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage", "recover_player", "full_stop"}:
+    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage", "recover_player", "full_stop", "surrender_player"}:
         raise ValueError("invalid command fields")
     if value["longitudinal"] not in ("coast", "accelerate", "decelerate") or value["lateral"] not in ("neutral", "negative", "positive"):
         raise ValueError("invalid flight control")
@@ -460,6 +460,8 @@ def validate_command(value):
         raise ValueError("invalid recovery control")
     if "full_stop" in value and type(value["full_stop"]) is not bool:
         raise ValueError("invalid full stop control")
+    if "surrender_player" in value and type(value["surrender_player"]) is not bool:
+        raise ValueError("invalid surrender control")
     return dict(value)
 
 
@@ -916,12 +918,9 @@ class Bridge:
                             if native.identity_value.get("session") is not None:
                                 for key in ("cast_selected", "cast_left", "cast_right"):
                                     next_command[key] |= command[key]
-                                if command.get("recover_player"):
-                                    next_command["recover_player"] = True
-                                if command.get("remove_castle_stage"):
-                                    next_command["remove_castle_stage"] = True
-                                if command.get("full_stop"):
-                                    next_command["full_stop"] = True
+                                for key in ("recover_player", "remove_castle_stage", "full_stop", "surrender_player"):
+                                    if command.get(key):
+                                        next_command[key] = True
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
@@ -1157,6 +1156,7 @@ class Bridge:
                             command.pop("remove_castle_stage", None)
                             command.pop("recover_player", None)
                             command.pop("full_stop", None)
+                            command.pop("surrender_player", None)
                         turns += 1
                         deadline += 1/30
                         observation = native.observe()
