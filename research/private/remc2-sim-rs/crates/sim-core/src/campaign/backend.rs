@@ -1504,7 +1504,12 @@ struct Mc2SemanticSpellCarry {
     selected: Option<SpellKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     progression: Vec<Mc2SemanticSpellProgress>,
+    // Old replay receipts omit zero marks and keep their original digest.
+    #[serde(default, skip_serializing_if = "spell_marks_are_zero")]
+    hand_marks: [u8; 26],
 }
+
+fn spell_marks_are_zero(marks: &[u8; 26]) -> bool { *marks == [0; 26] }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1526,6 +1531,9 @@ impl Mc2SemanticSpellCarry {
         let invalid = |message: &str| RuntimeTransitionError::InvalidRuntimeFlow {
             message: message.to_owned(),
         };
+        if self.hand_marks.iter().any(|mark| *mark > 2) {
+            return Err(invalid("invalid carried spell hand marks"));
+        }
         let mut families = std::collections::BTreeSet::new();
         for kind in &self.acquired {
             let family = mc2_spell_family(*kind)
@@ -3788,16 +3796,17 @@ impl Mc2RuntimePackageResolver {
         let source_package = self.exact_package_for_definition(source.definition())?;
         let source_index = source_package.selection.internal_level;
         let reward_enabled = source.backend().campaign.simulation().mission_rewards() != super::rewards::MissionRewards::Suppressed;
-        let final_reward = source.backend().initial_final_reward && reward_enabled;
+        let ordinary = source_index <= 24;
+        let final_reward = source.backend().initial_final_reward;
         let source_player_names_visible = runtime.identity().source_player_names_visible;
-        let source_secret_announcement_count = if reward_enabled {
+        let source_secret_announcement_count = if reward_enabled || ordinary {
             source.backend().secret_announcement_after_statistics().collected_count
         } else { source.backend().campaign.simulation().secret_announcement().collected_count };
-        // The bit-4 replay branch resets the source result byte to 4 before
-        // MenusAndIntros observes it; it must not look like a fresh success.
-        let campaign_return = reward_enabled.then(|| (
-            crate::game_runtime::ending::milestone(source_index), source_index == 24,
-        ));
+        // A repeat suppresses experience banking, not the source result bit.
+        // Film history itself prevents a seen milestone from playing again;
+        // final-level credits are entered on every successful completion.
+        let campaign_return = (reward_enabled || ordinary).then(||
+            (crate::game_runtime::ending::milestone(source_index), source_index == 24));
         let (receipt, (carry, source_context)) = runtime.accept_transition_resolved_with_source(
             guard,
             session_guard,
@@ -3830,12 +3839,26 @@ impl Mc2RuntimePackageResolver {
                 } else if reward_enabled {
                     session.backend().transition_spell_carry()
                 } else {
-                    session.backend().initial_semantic_spell_carry()
+                    session.backend().initial_semantic_spell_carry().and_then(|mut carry| {
+                        // CollectLevelStats retains spells picked up during a
+                        // replay, although sub_6DB50 does not bank its XP.
+                        let live = session.backend().semantic_spell_carry()?;
+                        carry.hand_marks = live.hand_marks;
+                        if ordinary {
+                            for spell in live.acquired {
+                                if !carry.acquired.contains(&spell) {
+                                    carry.acquired.push(spell);
+                                }
+                            }
+                            carry.acquired.sort_by_key(|spell| mc2_spell_family(*spell));
+                        }
+                        Ok(carry)
+                    })
                 })
                     .map(|carry| (carry, session.backend().process_context(source_player_names_visible)))
             },
             campaign_return,
-            if reward_enabled { crate::game_runtime::CompletionDisposition::Results }
+            if reward_enabled || ordinary { crate::game_runtime::CompletionDisposition::Results }
             else { crate::game_runtime::CompletionDisposition::ReplayMap },
         )?;
         contexts.insert(guard.runtime_id, source_context);
@@ -5341,7 +5364,16 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let retry_spell_book = self.mission_retry_requested().then(|| {
             let mut book = RetrySpellBook::from_campaign(&self.campaign);
             let simulation = self.campaign.simulation();
-            if simulation.source_exit_result_byte() & 2 != 0 && simulation.mission_rewards().allows_experience() {
+            let result = simulation.source_exit_result_byte();
+            // Older replay prefixes never wrote objective bit 2. A save can
+            // already be waiting at 0x0c when loaded, so the ABI retries it
+            // before another source turn could publish the missing bit. Read
+            // the completed objective without changing the verified old state.
+            let player = usize::from(simulation.session.state.live.source_player_result.source_player_slot());
+            let historical_completion = self.objective_result_start_operation > 0
+                && result & 0x10 == 0
+                && simulation.runtime().objectives.get(player).is_some_and(|objective| objective.is_level_end != 0);
+            if (result & 2 != 0 || historical_completion) && simulation.mission_rewards().allows_experience() {
                 // The outer source loop visits sub_6DB50(1, 0) before it
                 // resolves retry bit 4, even when both result bits are set.
                 for row in simulation.retry_completion_spell_progression() {
@@ -5561,6 +5593,7 @@ impl Mc2CampaignBackend {
             acquired,
             selected,
             progression,
+            hand_marks: player.spell_hand_eligibility,
         })
     }
 
@@ -5579,6 +5612,7 @@ impl Mc2CampaignBackend {
         if current.acquired == carry.acquired
             && current.selected == carry.selected
             && (carry.progression.is_empty() || current.progression == carry.progression)
+            && current.hand_marks == carry.hand_marks
         {
             return Ok(());
         }
@@ -5646,6 +5680,7 @@ impl Mc2CampaignBackend {
                     campaign
                         .simulation_mut()
                         .apply_carried_spell_progression(&progression)?;
+                    campaign.simulation_mut().install_retry_hand_marks(carry.hand_marks)?;
                     Ok(selected)
                 })
                 .map_err(|error| {
@@ -5682,6 +5717,7 @@ impl Mc2CampaignBackend {
                 .iter()
                 .all(|kind| installed.acquired.contains(kind))
             || installed.selected != selected_family.and_then(mc2_spell_kind_for_family)
+            || installed.hand_marks != carry.hand_marks
             || carry.progression.iter().any(|entry| {
                 let family =
                     usize::from(mc2_spell_family(entry.spell).expect("validated carry family"));
@@ -5714,6 +5750,7 @@ impl Mc2CampaignBackend {
             acquired,
             selected,
             progression: Vec::new(),
+            hand_marks: [0; 26],
         })
     }
 
@@ -6637,6 +6674,7 @@ pub(crate) mod tests {
         let carry = Mc2SemanticSpellCarry {
             acquired: learned.clone(),
             selected: Some(SpellKind::BeyondSight),
+            hand_marks: [0; 26],
             progression: vec![
                 Mc2SemanticSpellProgress {
                     spell: SpellKind::Shield,
@@ -6863,6 +6901,7 @@ pub(crate) mod tests {
         assert_eq!(runtime.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::Results);
         let saved = resolver.save_replay(&runtime).unwrap();
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(61927).unwrap();
+        install_owner_return_media(&mut restored);
         let restore_guard = restored.identity().guard();
         resolver.load_replay(&mut restored, restore_guard, 61927, &saved).unwrap();
         assert_eq!(restored.played_cutscenes() & 0x20, 0x20);
@@ -6874,24 +6913,37 @@ pub(crate) mod tests {
         let loading = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::StartMission).unwrap();
         resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
         assert_eq!(restored.session().unwrap().backend().campaign.simulation().mission_rewards(), crate::campaign::rewards::MissionRewards::Suppressed);
-        let entry_carry = restored.session().unwrap().backend().initial_semantic_spell_carry().unwrap();
         let mut replay_result = replay_result;
         replay_result.simulation_mut().shared_spells_mut().set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
         restored.session_mut().unwrap().backend_mut().campaign = replay_result;
+        let replay_final_carry = restored.session().unwrap().backend().final_victory_spell_carry().unwrap();
         let replay = restored.identity();
         let receipt = resolver.accept_transition(&mut restored, replay.guard(), replay.session.as_ref().unwrap().guard()).unwrap();
-        assert_eq!(receipt.disposition, CompletionDisposition::ReplayMap);
-        assert_eq!(restored.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::MissionSelect);
+        assert_eq!(receipt.disposition, CompletionDisposition::Results);
+        assert_eq!(restored.identity().campaign_menu.as_ref().unwrap().phase, CampaignMenuPhase::Results);
+        assert!(restored.campaign_return_active(), "final replay enters source credits");
+        assert_eq!(restored.identity().frontend_media.as_ref().unwrap().campaign_return.as_ref().unwrap().cutscene_id, None,
+            "already consumed CUT6 must not play again");
+        restored.frontend_media_command(restored.identity().guard(), MediaCommand::Frame {
+            elapsed_us: 0, input: false, escape: false,
+        }).unwrap();
+        assert!(restored.identity().frontend_media.as_ref().unwrap().campaign_return.as_ref().unwrap().credits.is_some());
+        for (elapsed_us, input) in [(320_000, false), (0, true), (160_000, true), (0, false)] {
+            restored.frontend_media_command(restored.identity().guard(), MediaCommand::Frame {
+                elapsed_us, input, escape: false,
+            }).unwrap();
+        }
         assert!(!restored.campaign_return_active());
         assert_eq!(restored.played_cutscenes() & 0x20, 0x20);
         assert_eq!(restored.completed_level_statistics(), old_stats);
-        assert_eq!(resolver.pending_spell_carries.lock().unwrap()[&61927].carry, entry_carry);
-        let map = restored.identity();
+        assert_eq!(resolver.pending_spell_carries.lock().unwrap()[&61927].carry, replay_final_carry);
+        let results = restored.identity();
+        let map = resolver.campaign_menu_command(&mut restored, results.guard(), CampaignMenuCommand::DismissResults).unwrap();
         let map = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::SelectMission { level_id: first_level }).unwrap();
         let loading = resolver.campaign_menu_command(&mut restored, map.guard(), CampaignMenuCommand::StartMission).unwrap();
         resolver.open_pending(&mut restored, loading.guard(), 61927).unwrap();
         let destination = restored.session().unwrap().backend().semantic_spell_carry().unwrap();
-        assert_eq!(destination, entry_carry, "replay entry carry reaches the chosen destination");
+        assert_eq!(destination, replay_final_carry, "source final reward reaches the chosen destination");
         write_controlled_campaign_save("MC_COMPLETED_RESULTS_SAVE_OUTPUT", &saved);
     }
 
@@ -21715,6 +21767,70 @@ pub(crate) mod tests {
         }
         // Component boundary only: C ABI, Unity and a next-mission owner are
         // separately qualified; this declares the arrived contact above.
+    }
+
+    #[test]
+    fn historical_pending_retry_banks_completed_objective_without_another_turn() {
+        use crate::game_runtime::GameRuntime;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let level_two = std::env::var_os("MC_DAY_EXIT_PACKAGE").map_or_else(
+            || generated.join("mc-level2-vault-successor-closure-20261025"), PathBuf::from);
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(generated.join("mc-bhq8-level1-collision-v5-night")),
+            Mc2CampaignInputs::new(level_two),
+            Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
+        ]).unwrap();
+        let level = resolver.flow().entries()[1].level_id().clone();
+        let package = resolver.package(&level).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, Arc::clone(&package.definition), 8874, package.inputs.clone(),
+        ).unwrap();
+        session.backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[0], Some(0)).unwrap();
+        activate_original_level_two_scroll_group(&mut session);
+        let (player, scroll, before) = {
+            let sim = session.backend().campaign.simulation();
+            let scroll = *sim.economy().authored_class14().iter()
+                .find(|row| row.active && row.authored_index == 248).unwrap();
+            (sim.state.entity_index, scroll, sim.shared_spells().spell_experience()[0])
+        };
+        session.backend_mut().campaign.simulation_mut()
+            .set_level2_entity_position(player, scroll.position).unwrap();
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        let sim = session.backend().campaign.simulation();
+        assert!(sim.shared_spells().pickup_events().iter().any(|event| matches!(event,
+            Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, player_entity_index }
+                if *source_slot == scroll.source_entity_index && *player_entity_index == player)));
+        assert_eq!(sim.shared_spells().spell_experience()[0], before + 4);
+        let owner = sim.shared_spells().local_player();
+        let expected_bank = sim.bank_carried_spell_experience(0,
+            owner.persistent_spell_experience[0], owner.runtime_spell_experience[0]);
+        assert!(expected_bank > owner.persistent_spell_experience[0]);
+
+        // Explicitly stage the state admitted by the old replay loader. This
+        // is a compatibility boundary control, not an invented old save.
+        let backend = session.backend_mut();
+        assert!(!backend.replay_operations.is_empty());
+        backend.objective_result_start_operation = backend.replay_operations.len();
+        let sim = backend.campaign.simulation_mut();
+        let slot = usize::from(sim.session.state.live.source_player_result.source_player_slot());
+        sim.session.state.live.core.runtime.objectives[slot].is_level_end = 1;
+        sim.stage_no_castle_retry_for_test();
+        assert_eq!(sim.source_exit_result_byte(), 0x0c);
+        let tick = session.identity().tick;
+        let runtime = GameRuntime::check_retry_after_lethal_encounter(session);
+        assert!(tick > 0);
+        let restarted = runtime.session().unwrap().backend().campaign.simulation();
+        assert_eq!(restarted.shared_spells().local_player().persistent_spell_experience[0], expected_bank);
+        assert_eq!(restarted.shared_spells().local_player().runtime_spell_experience[0], 0);
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8875).unwrap();
+        let guard = cold.identity().guard();
+        resolver.load_replay(&mut cold, guard, 8876, &bytes).unwrap();
+        let restored = cold.session().unwrap().backend().campaign.simulation();
+        assert_eq!(restored.source_exit_result_byte(), 4);
+        assert_eq!(restored.shared_spells().local_player().persistent_spell_experience[0], expected_bank);
     }
 
     /// Stage the prior objective only; the group-8 producer, both paid

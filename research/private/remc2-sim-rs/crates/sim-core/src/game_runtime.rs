@@ -4785,6 +4785,7 @@ mod tests {
                 session.backend().semantic_spell_state_for_test().unwrap().1,
                 Some(SpellKind::Castle)
             );
+
         }
 
         for _ in 0..8 {
@@ -5155,64 +5156,99 @@ mod tests {
 
     #[test]
     fn runtime_completed_real_level_one_returns_to_map_before_loading_level_two_once() {
+        use crate::game_session::{MarkedSpellCycle, SpellAssignmentHand, SpellCycleDirection,
+            SpellHand, SpellMark, SpellMarkHand};
         let catalog = default_catalog().unwrap();
-        let level_one = level_one_package();
         let level_two = level_two_package();
         let level_three = level_three_package();
         let level_two_definition = Arc::new(load_mc2_campaign(&level_two, &catalog).unwrap());
         let level_three_definition = Arc::new(load_mc2_campaign(&level_three, &catalog).unwrap());
-        let resolver = Mc2RuntimePackageResolver::load([
-            Mc2CampaignInputs::new(&level_three),
-            Mc2CampaignInputs::new(&level_one),
-            Mc2CampaignInputs::new(&level_two),
-        ])
-        .unwrap();
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_INSTALLED_CAMPAIGN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<std::collections::BTreeMap<String, String>> =
+            serde_json::from_slice(&std::fs::read(resources).unwrap()).unwrap();
+        assert_eq!(resources.len(), 30, "the earned save binds the complete installed campaign");
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]))).unwrap();
         assert_eq!(
             resolver.flow().bound_level_id(),
             resolver.flow().entry_level_id()
         );
-        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(111).unwrap();
-        let title = runtime.identity();
-        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
-        let stale_open = resolver.open_pending(&mut runtime, title.guard(), 111);
+        let mut guard_runtime = GameRuntime::<Mc2CampaignBackend>::title(110).unwrap();
+        let title = guard_runtime.identity();
+        let loading = resolver.new_game(&mut guard_runtime, title.guard()).unwrap();
+        let stale_open = resolver.open_pending(&mut guard_runtime, title.guard(), 110);
         assert!(matches!(
             stale_open,
             Err(OpenLevelError::Transition(RuntimeTransitionError::Guard(error)))
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
-        assert_eq!(runtime.identity(), loading);
-        let playing = resolver
-            .open_pending(&mut runtime, loading.guard(), 111)
-            .unwrap();
-        let stale_level_one_tick_zero_guard = playing.session.as_ref().unwrap().guard();
-
-        // Replay only the retained public inputs in this fresh Level 1
-        // session. The old save's state and receipts are not loaded or trusted.
+        assert_eq!(guard_runtime.identity(), loading);
+        resolver.open_pending(&mut guard_runtime, loading.guard(), 110).unwrap();
+        drop(guard_runtime);
+        // Admit the unmodified earned checkpoint with its own verified replay
+        // receipt and matching installed 25+5 definition.
         let input_path = std::env::var_os("MC_NIGHT_SPIRE_INPUT_TRACE")
-            .expect("set MC_NIGHT_SPIRE_INPUT_TRACE to the retained Level 1 public input history");
-        let input: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(input_path).expect("retained Level 1 input history is readable"),
-        )
-        .expect("retained Level 1 input history is JSON");
-        let operations = input["operations"]
-            .as_array()
-            .expect("retained input history has operations");
-        assert!(!operations.is_empty());
+            .expect("set MC_NIGHT_SPIRE_INPUT_TRACE to the retained objective-5 checkpoint");
+        let checkpoint = std::fs::read(input_path).expect("retained Level 1 checkpoint is readable");
+        let input: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
+        let exit_path = std::env::var_os("MC_NIGHT_SPIRE_EXIT_TRACE")
+            .expect("set MC_NIGHT_SPIRE_EXIT_TRACE to the retained earned exit recording");
+        let exit_input: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(exit_path).expect("retained earned exit recording is readable"),
+        ).unwrap();
+        let prefix = input["operations"].as_array().unwrap();
+        let recorded = exit_input["operations"].as_array().unwrap();
+        assert!(recorded.len() > prefix.len());
+        assert_eq!(&recorded[..prefix.len()], prefix.as_slice(),
+            "the exit recording continues the exact earned checkpoint inputs");
+        let commands: Vec<GameCommand> = recorded[prefix.len()..].iter().map(|operation| {
+            assert_eq!(operation["operation"], "step");
+            serde_json::from_value(operation["command"].clone()).unwrap()
+        }).collect();
+        assert_eq!(commands[0], GameCommand::default(), "the recorded first approach step is neutral");
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(111).unwrap();
+        let title = runtime.identity();
+        let loaded = resolver.load_replay(&mut runtime, title.guard(), 111, &checkpoint)
+            .expect("the earned checkpoint must pass its real definition and replay receipt");
+        let stale_checkpoint_guard = loaded.session.as_ref().unwrap().guard();
         {
             let session = runtime.session_mut().unwrap();
-            for operation in operations {
-                let operation: ReplayOperation<GameCommand> = serde_json::from_value(operation.clone())
-                    .expect("valid public input operation");
-                let ReplayOperation::Step { command } = operation else {
-                    panic!("Level 1 retained history must contain only gameplay steps");
-                };
-                session.advance(session.identity().guard(), command).unwrap();
-            }
-            let progress = session.snapshot().value.objective_progress;
+            let snapshot = session.snapshot();
+            assert_eq!(snapshot.identity.tick, input["expected_tick"].as_u64().unwrap());
+            assert_eq!(snapshot.identity.definition_hash,
+                input["definition"]["definition_hash"].as_str().unwrap());
+            let pose = &snapshot.value.player_pose;
+            assert_eq!((pose.x, pose.y, pose.z, pose.yaw, pose.display_pitch,
+                pose.effective_pitch, pose.roll), (44740, 62941, 256, 1734, 3, 3, 34),
+                "the retained objective-5 input must reach its observed live player pose");
+            let progress = snapshot.value.objective_progress;
             assert_eq!(progress.completed_count, 5);
             assert!(progress.all_objectives_satisfied);
         }
+        // The retained public inputs already acquired the real Castle. Mark it
+        // before the ordinary exit; marking must preserve its current hand.
+        {
+            let session = runtime.session_mut().unwrap();
+            let before_mark = session.snapshot().value.player_spells.iter()
+                .find(|spell| spell.id.as_str() == "spell.castle").unwrap().hand;
+            let guard = session.identity().guard();
+            let marked = session.step(guard, GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: SemanticId::parse("spell.castle").unwrap(),
+                    hand: SpellMarkHand::Left,
+                    holder_actor: None,
+                }),
+                ..commands[0].clone()
+            }).unwrap();
+            let castle = marked.value.player_spells.iter()
+                .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+            assert_eq!(castle.marked_hand, SpellMarkHand::Left);
+            assert_eq!(castle.hand, before_mark, "marking preserves the actual pickup's hand");
+        }
         // The final objective admits the source exit group on a later pass.
+        let mut next_command = 1;
         for _ in 0..8 {
             let session = runtime.session_mut().unwrap();
             if session
@@ -5227,9 +5263,14 @@ mod tests {
                 break;
             }
             session
-                .step(session.identity().guard(), GameCommand::default())
+                .step(session.identity().guard(), commands[next_command].clone())
                 .unwrap();
+            next_command += 1;
         }
+        // Retain the actual first-visit state immediately before the exit
+        // approach for the controlled repeat-visit check below.
+        let repeat_pre_exit = runtime.session().unwrap().backend()
+            .compatibility_campaign().clone();
         {
             let session = runtime.session_mut().unwrap();
             let compatibility = session.backend().compatibility_campaign().simulation();
@@ -5241,7 +5282,21 @@ mod tests {
                 .copied()
                 .expect("the ordinary final objective materializes the real L1 exit trigger");
             assert_eq!((trigger.model, trigger.action), (12, 12));
-            fly_to_real_exit_trigger(session, 137);
+            for command in &commands[next_command..] {
+                session.advance(session.identity().guard(), command.clone()).unwrap();
+                if session.backend().compatibility_campaign().simulation().level_exit_sequence().active {
+                    break;
+                }
+            }
+            let exit = session.backend().compatibility_campaign().simulation().level_exit_sequence();
+            assert!(exit.active, "the recorded earned approach must enter row 137");
+            assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+            let reached = session.snapshot();
+            let pose = &reached.value.player_pose;
+            assert_eq!(reached.identity.tick, exit_input["expected_tick"].as_u64().unwrap());
+            assert_eq!((pose.x, pose.y, pose.z, pose.yaw, pose.display_pitch,
+                pose.effective_pitch, pose.roll), (19958, 56011, 4865, 1599, 3, 3, -9),
+                "the marked route reaches the observed native exit-entry pose");
         }
 
         let before_start = runtime.identity();
@@ -5303,7 +5358,7 @@ mod tests {
         let stale_session_rejection = resolver.accept_transition(
             &mut runtime,
             started_identity.guard(),
-            stale_level_one_tick_zero_guard,
+            stale_checkpoint_guard,
         );
         assert!(matches!(
             stale_session_rejection,
@@ -5527,6 +5582,168 @@ mod tests {
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
 
+        // Cold-open the genuine Results and its normal map/next-mission path.
+        // The already earned Castle is marked but not automatically assigned.
+        let results_save = resolver.save_replay(&runtime).unwrap();
+        let results_json: serde_json::Value = serde_json::from_slice(&results_save).unwrap();
+        assert_eq!(results_json["semantic_spell_carry"]["hand_marks"][2], 1);
+        // Start a real repeat from the earned map, then restore the declared
+        // pre-exit checkpoint from this same encounter to avoid a second
+        // playthrough. The mark command and exit happen after that boundary.
+        let mut repeated = GameRuntime::<Mc2CampaignBackend>::title(116).unwrap();
+        let title = repeated.identity();
+        resolver.load_replay(&mut repeated, title.guard(), 116, &results_save).unwrap();
+        let results = repeated.identity();
+        let map = resolver.campaign_menu_command(&mut repeated, results.guard(),
+            CampaignMenuCommand::DismissResults).unwrap();
+        let map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::SelectMission { level_id: resolver.flow().entries()[0].level_id().clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut repeated, loading.guard(), 116).unwrap();
+        {
+            let session = repeated.session_mut().unwrap();
+            assert_eq!(session.backend().compatibility_campaign().simulation().mission_rewards(),
+                crate::campaign::rewards::MissionRewards::Suppressed);
+            *session.backend_mut().compatibility_campaign_mut_for_test() = repeat_pre_exit;
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .shared_spells_mut().set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
+            let marked = session.step(session.identity().guard(), GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: SemanticId::parse("spell.castle").unwrap(),
+                    hand: SpellMarkHand::Right,
+                    holder_actor: None,
+                }),
+                ..GameCommand::default()
+            }).unwrap();
+            assert_eq!(marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.castle")
+                .unwrap().marked_hand, SpellMarkHand::Right);
+            assert!(!marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.speed")
+                .unwrap().acquired, "the first visit left authored Speed uncollected");
+            // Control the group-11 publication and approach to authored
+            // row100; the ordinary overlap performs the real acquisition.
+            let (player, pickup) = {
+                let sim = session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
+                if !sim.economy().spell_pickups().iter().any(|row| row.authored_index == 100) {
+                    sim.activate_authored_group_prerequisite_for_test(11).unwrap();
+                }
+                let pickup = *sim.economy().spell_pickups().iter()
+                    .find(|row| row.authored_index == 100).expect("authored NightSpire Speed");
+                (sim.state.entity_index, pickup)
+            };
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .set_level2_entity_position(player, pickup.position).unwrap();
+            for _ in 0..8 {
+                if session.snapshot().value.player_spells.iter()
+                    .any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired) { break; }
+                session.step(session.identity().guard(), GameCommand::default()).unwrap();
+            }
+            assert!(session.snapshot().value.player_spells.iter()
+                .any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired));
+            // The controlled pickup displaced the player. Put the live human
+            // at the live authored exit's centre and let its ordinary XY
+            // overlap and eight-phase visit start the actual exit sequence.
+            let (player, trigger) = {
+                let sim = session.backend().compatibility_campaign().simulation();
+                let trigger = *sim.economy().authored_switch_producers().iter()
+                    .find(|row| row.authored_index == 137 && row.active)
+                    .expect("the earned final objective published the repeat exit");
+                assert_eq!((trigger.model, trigger.action), (12, 12));
+                (sim.state.entity_index, trigger)
+            };
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .set_level2_entity_position(player, trigger.position).unwrap();
+            for _ in 0..8 {
+                session.advance(session.identity().guard(), GameCommand::default()).unwrap();
+                if session.backend().compatibility_campaign().simulation().level_exit_sequence().active { break; }
+            }
+            let exit = session.backend().compatibility_campaign().simulation().level_exit_sequence();
+            assert!(exit.active, "the actual repeat exit switch must observe the player");
+            assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+            for _ in 0..700 {
+                if matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }) { break; }
+                session.step(session.identity().guard(), GameCommand::default()).unwrap();
+            }
+            assert!(matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }));
+            assert_eq!(session.backend().compatibility_campaign().simulation().level_exit_sequence().result_code, 0x0a);
+        }
+        let repeat_identity = repeated.identity();
+        let repeat_stats = match repeated.session().unwrap().backend().completion_status() {
+            GameCompletionStatus::Completed { completion } => completion.statistics.unwrap(),
+            other => panic!("repeat must complete before Results: {other:?}"),
+        };
+        let repeat_receipt = resolver.accept_transition(&mut repeated, repeat_identity.guard(),
+            repeat_identity.session.as_ref().unwrap().guard()).unwrap();
+        assert_eq!(repeat_receipt.disposition, CompletionDisposition::Results);
+        let repeat_view = repeated.identity().campaign_menu.unwrap();
+        assert_eq!(repeat_view.phase, CampaignMenuPhase::Results);
+        assert_eq!(repeat_view.completion_statistics, Some(repeat_stats.clone()));
+        assert!(repeat_view.level_statistics.iter().any(|row| row.level_id.as_str() == "level.magic_carpet_2.night_spire"
+            && row.statistics == repeat_stats));
+        let repeat_save = resolver.save_replay(&repeated).unwrap();
+        let repeat_json: serde_json::Value = serde_json::from_slice(&repeat_save).unwrap();
+        assert_eq!(repeat_json["semantic_spell_carry"]["hand_marks"][2], 2);
+        let mut original_carry = results_json["semantic_spell_carry"].clone();
+        let mut repeat_carry = repeat_json["semantic_spell_carry"].clone();
+        original_carry["hand_marks"] = serde_json::Value::Null;
+        repeat_carry["hand_marks"] = serde_json::Value::Null;
+        let original_acquired = original_carry["acquired"].as_array().unwrap().clone();
+        let repeated_acquired = repeat_carry["acquired"].as_array().unwrap().clone();
+        assert!(!original_acquired.contains(&serde_json::json!("speed")));
+        assert!(repeated_acquired.contains(&serde_json::json!("speed")));
+        original_carry["acquired"] = serde_json::Value::Null;
+        repeat_carry["acquired"] = serde_json::Value::Null;
+        assert_eq!(repeat_carry, original_carry, "repeat retains banked XP while keeping the newly learned spell");
+        let mut cold_results = GameRuntime::<Mc2CampaignBackend>::title(117).unwrap();
+        let title = cold_results.identity();
+        resolver.load_replay(&mut cold_results, title.guard(), 117, &repeat_save).unwrap();
+        assert_eq!(cold_results.identity().campaign_menu.unwrap().completion_statistics, Some(repeat_stats));
+        let mut map = repeated.identity();
+        if map.campaign_menu.as_ref().unwrap().phase == CampaignMenuPhase::Results {
+            map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+                CampaignMenuCommand::DismissResults).unwrap();
+        }
+        assert_eq!(map.campaign_menu.as_ref().unwrap().selected_level_id.as_ref().unwrap().as_str(),
+            "level.magic_carpet_2.payahandra_ruins", "latest completion focuses the frontier after Results");
+        let map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::SelectMission { level_id: resolver.flow().entries()[1].level_id().clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut repeated, loading.guard(), 116).unwrap();
+        let entry = repeated.session().unwrap().snapshot();
+        let castle = entry.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert!(castle.acquired);
+        assert_eq!(castle.marked_hand, SpellMarkHand::Right);
+        assert!(entry.value.player_spells.iter().any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired),
+            "the spell learned during the replay reaches the next mission");
+        let mut marked_cold = GameRuntime::<Mc2CampaignBackend>::title(114).unwrap();
+        let title = marked_cold.identity();
+        resolver.load_replay(&mut marked_cold, title.guard(), 114, &results_save).unwrap();
+        let loading = start_selected_campaign_mission(&resolver, &mut marked_cold);
+        resolver.open_pending(&mut marked_cold, loading.guard(), 114).unwrap();
+        let entry = marked_cold.session().unwrap().snapshot();
+        let castle = entry.value.player_spells.iter()
+            .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert!(castle.acquired);
+        assert_eq!(castle.marked_hand, SpellMarkHand::Left);
+        assert_eq!(castle.hand, SpellHand::None, "entry reselects source default hands");
+        let entry_save = resolver.save_replay(&marked_cold).unwrap();
+        let mut entry_cold = GameRuntime::<Mc2CampaignBackend>::title(115).unwrap();
+        let title = entry_cold.identity();
+        resolver.load_replay(&mut entry_cold, title.guard(), 115, &entry_save).unwrap();
+        assert_eq!(entry_cold.session().unwrap().snapshot().value, entry.value);
+        let session = entry_cold.session_mut().unwrap();
+        let guard = session.identity().guard();
+        let cycled = session.step(guard, GameCommand {
+            cycle_marked_spell: Some(MarkedSpellCycle {
+                hand: SpellAssignmentHand::Left,
+                direction: SpellCycleDirection::Next,
+            }),
+            ..GameCommand::default()
+        }).unwrap();
+        let castle = cycled.value.player_spells.iter()
+            .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert_eq!((castle.marked_hand, castle.hand), (SpellMarkHand::Left, SpellHand::Left));
         let pending_level_two = start_selected_campaign_mission(&resolver, &mut runtime);
         let level_two_playing = resolver
             .open_pending(&mut runtime, pending_level_two.guard(), 111)
@@ -5541,7 +5758,8 @@ mod tests {
         assert_eq!(pending_level_two.runtime_id, 111);
         assert_eq!(level_two_playing.runtime_id, pending_level_two.runtime_id);
         assert_eq!(level_two_playing.session.as_ref().unwrap().session_id, 111);
-        assert_eq!(level_two_playing.session.as_ref().unwrap().generation, 2);
+        assert_eq!(level_two_playing.session.as_ref().unwrap().generation,
+            completed_identity.session.as_ref().unwrap().generation + 1);
         assert_eq!(
             level_two_playing
                 .session
@@ -5607,20 +5825,20 @@ mod tests {
         let stale_level_one = runtime
             .session_mut()
             .unwrap()
-            .step(stale_level_one_tick_zero_guard, GameCommand::default());
+            .step(stale_checkpoint_guard, GameCommand::default());
         assert!(matches!(
             stale_level_one,
             Err(GameSessionError::Guard(error))
                 if error.code == SessionGuardErrorCode::GenerationMismatch
         ));
 
-        // This uses a fresh execution of retained public inputs and a closed
+        // This admits the receipt-verified retained checkpoint and a closed
         // unordered installed set. It proves authoritative phase-12
         // capture, the declared L1->L2 edge without a caller level or path,
         // one guarded Loading transition, exact pending-definition-to-real-L2
         // same-handle open, and cross-level ABA rejection. It does not prove
         // package installation/discovery, L2 completion, L3->Title,
-        // native/Unity transition exposure, results UI, or save/load.
+        // native/Unity transition exposure or results UI.
     }
 
     #[test]

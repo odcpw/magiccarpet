@@ -404,19 +404,23 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.frontend_media.reset_campaign_return();
             }
             CampaignMenuCommand::DismissResults if *phase == CampaignMenuPhase::Results => {
-                // The map focuses its first unfinished portal, independently
-                // of which completed portal the results were showing. Results
-                // retain their saved flow; the map can adopt an installed suffix.
+                // After results, source map state 1 keeps an earlier replayed
+                // portal in view; the most recent completed portal instead
+                // advances toward the first unfinished one.
                 let retained_flow = definition.runtime_flow().unwrap();
                 let bound = retained_flow.bound_level_id();
                 let installed = resolve(bound)?;
                 validate_selected(definition, &installed, bound)?;
                 let installed_flow = installed.runtime_flow().unwrap();
-                let next = installed_flow
-                    .entries()
-                    .iter()
-                    .find(|entry| !self.completed_levels.contains(entry.level_id()))
+                let last_completed = installed_flow.entries().iter().rev()
+                    .find(|entry| self.completed_levels.contains(entry.level_id()))
                     .map(|entry| entry.level_id());
+                let replay_focus = completed_level.as_ref().filter(|level|
+                    installed_flow.entries().iter().any(|entry| entry.level_id() == *level)
+                        && last_completed.is_some_and(|last| last != *level));
+                let next = replay_focus.or_else(|| installed_flow.entries().iter()
+                    .find(|entry| !self.completed_levels.contains(entry.level_id()))
+                    .map(|entry| entry.level_id()));
                 let selected = match next {
                     Some(level_id) => {
                         let selected = resolve(level_id)?;
@@ -709,6 +713,13 @@ mod tests {
             Some(runtime.level_statistics[0].statistics.clone())
         );
         assert_eq!(restored.campaign_session_generation(), Some(1));
+        // Controlled map boundary: replaying the first mission after the
+        // second was completed keeps the earlier portal in view on dismiss.
+        restored.completed_levels.push(second.clone());
+        let older_results = restored.identity();
+        let older_map = resolver.campaign_menu_command(&mut restored, older_results.guard(),
+            CampaignMenuCommand::DismissResults).unwrap();
+        assert_eq!(older_map.campaign_menu.as_ref().unwrap().selected_level_id.as_ref(), Some(&first));
         let mut duplicate = saved;
         duplicate
             .level_statistics
