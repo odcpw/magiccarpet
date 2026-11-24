@@ -334,7 +334,7 @@ NEUTRAL = {"longitudinal": "coast", "lateral": "neutral", "roll_axis": 0,
 
 
 def validate_command(value):
-    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective"}:
+    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage"}:
         raise ValueError("invalid command fields")
     if value["longitudinal"] not in ("coast", "accelerate", "decelerate") or value["lateral"] not in ("neutral", "negative", "positive"):
         raise ValueError("invalid flight control")
@@ -343,6 +343,8 @@ def validate_command(value):
     if any(type(value[k]) is not bool for k in ("cast_selected", "cast_left", "cast_right")):
         raise ValueError("invalid casting control")
     if "show_objective" in value and type(value["show_objective"]) is not bool: raise ValueError("invalid objective control")
+    if "remove_castle_stage" in value and type(value["remove_castle_stage"]) is not bool:
+        raise ValueError("invalid Castle stage control")
     return dict(value)
 
 
@@ -765,6 +767,8 @@ class Bridge:
                             if native.identity_value.get("session") is not None:
                                 for key in ("cast_selected", "cast_left", "cast_right"):
                                     next_command[key] |= command[key]
+                                if command.get("remove_castle_stage"):
+                                    next_command["remove_castle_stage"] = True
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
@@ -955,6 +959,7 @@ class Bridge:
                         {**command, "elapsed_centiseconds": elapsed_centiseconds()}))
                     # Each submitted cast request survives until one native step.
                     command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
+                    command.pop("remove_castle_stage", None)
                     if not finish_if_ready(): publish()
                     deadline += 1/30
                     if deadline < time.monotonic() - .25: deadline = time.monotonic()

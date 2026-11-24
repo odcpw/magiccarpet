@@ -40,6 +40,7 @@ let configuredKeys: readonly (string | null)[] = [];
 let configuredNames: readonly string[] = [];
 let spellCloseOnRelease = false;
 let mouseX = 0, mouseY = 0, queuedCasts = 0;
+let removeCastleStage = false;
 let started = false, playing = false, busy = false, inputBusy = false;
 let controlsPending = 0;
 let spellMutationPending = false;
@@ -376,7 +377,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
   const next = requestTail.then(request); requestTail = next.catch(() => undefined); return next;
 }
 
-function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; }
+function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; removeCastleStage = false; }
 function showSpeechPreference(enabled: unknown, available: unknown): void {
   speechButton.disabled = available !== true || typeof enabled !== 'boolean';
   speechButton.textContent = speechButton.disabled ? 'Speech unavailable' : `Speech: ${enabled ? 'On' : 'Off'}`;
@@ -670,7 +671,9 @@ async function sendInput(): Promise<void> {
     { selected: !abandonOpen && !cycleModifier && cast, left: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(0) && mouseButtons.has(0), right: !abandonOpen && !cycleModifier && !mapMouseChord.isConsumed(2) && mouseButtons.has(2) },
     modernRequested ? undefined : configuredKeys);
   mouseX *= .65; mouseY *= .65;
-  try { await post('/input', { command }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
+  const input = removeCastleStage ? { ...command, remove_castle_stage: true } : command;
+  removeCastleStage = false;
+  try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
   catch (error) { fail(error); }
   finally { inputBusy = false; }
 }
@@ -811,6 +814,8 @@ window.addEventListener('keydown', event => {
   }
   keys.add(event.code);
   if (event.repeat) return;
+  if (!modernRequested && playing && event.code === 'KeyL' && event.shiftKey && !event.altKey &&
+      lastHudState?.source_top_status?.castle_rows.length) removeCastleStage = true;
   if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
   if (event.code === 'Escape' && playing && !nativeMenus.spells_open) void control('menu', { menu_action: 'open_abandon_confirmation' });
   else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
