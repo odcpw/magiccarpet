@@ -7,6 +7,7 @@ import { decodeWorldFrame, decodeTerrain, type WorldFrame } from './original-wor
 import { OriginalWorldRenderer } from './original-world-renderer';
 import { ModernWorldRenderer } from './modern-world-renderer';
 import { decodeModernFrame } from './modern-runtime';
+import { OriginalMediaPlayer, type MediaReply } from './original-media';
 
 const API = '/original-api';
 const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
@@ -44,6 +45,7 @@ let inspectionGeneration = '';
 let currentLevelName = 'Level 1';
 let campaignPhase: string | null = null;
 let loadedAssetRevision: number | undefined;
+let campaignMedia: OriginalMediaPlayer | null = null;
 const enterMissionKey = 'mc2-browser-enter-mission';
 const history = new OriginalSceneHistory();
 
@@ -171,9 +173,31 @@ function showCampaign(status: BridgeStatus): boolean {
   clearInput();
   if (isGeometryDisplay(display)) display.setPlaying(false);
   if (document.pointerLockElement === canvas) document.exitPointerLock();
+  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
+  if (phase === 'media') {
+    curtain.hidden = true;
+    if (!campaignMedia) {
+      const player = new OriginalMediaPlayer(element('stage'), API, async (elapsed, input, escape) =>
+        await post('/control', { action: 'media_frame', elapsed_us: elapsed, input, escape }) as MediaReply);
+      campaignMedia = player;
+      void player.run().then(async () => {
+        if (campaignMedia !== player) return;
+        campaignMedia = null;
+        showCampaign(await readStatus());
+      }).catch(error => {
+        if (campaignMedia !== player) return;
+        campaignMedia = null;
+        curtain.hidden = false; element('campaign').hidden = false;
+        element('campaign-continue').hidden = true; element('campaign-picker').hidden = true;
+        const retry = element<HTMLButtonElement>('campaign-enter');
+        retry.hidden = false; retry.disabled = false; retry.textContent = 'Retry intermission';
+        message.textContent = error instanceof Error ? error.message : String(error);
+      });
+    }
+    return true;
+  }
   curtain.hidden = false;
   element('campaign').hidden = false;
-  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
   message.textContent = status.error ?? '';
   const menu = status.campaign_menu;
   const results = menu?.phase === 'results' && status.phase === 'results';
@@ -216,7 +240,9 @@ async function advanceCampaign(): Promise<void> {
   if (busy) return;
   controlsPending++; busy = true; controlVersion++;
   try {
-    if (campaignPhase === 'results') {
+    if (campaignPhase === 'media') {
+      showCampaign(await readStatus());
+    } else if (campaignPhase === 'results') {
       await post('/control', { action: 'dismiss_results' });
       showCampaign(await readStatus());
     } else if (campaignPhase === 'mission_select' || campaignPhase === 'loading' || campaignPhase === 'refresh_assets') {

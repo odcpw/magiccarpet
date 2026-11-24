@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, parse_qs
 from original_assets import (OriginalAssets, FrameQuery, FrameInfo as GenericFrameInfo,
                              read_hud, read_minimap, read_objective, read_world_map)
 from original_world import ModernWorld, OriginalWorld
+from original_media import OriginalMedia
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE = ROOT / "research/private"
@@ -34,6 +35,7 @@ PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
 WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
 MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
+MEDIA_CACHE = PRIVATE / "generated/mc2-campaign-media-cache-decoded"
 
 
 class FrameInfo(c.Structure):
@@ -54,6 +56,7 @@ class Native:
         self.lib = c.CDLL(str(library.resolve()))
         self.handle = c.c_uint64()
         self.language_cache = None
+        self.media_installed = False
         self.observation_buffer = (c.c_ubyte * (2 * 1024 * 1024))()
         self.request = json.dumps({"request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
                                    "packages": packages}, separators=(",", ":")).encode()
@@ -65,6 +68,7 @@ class Native:
             "mc_game_runtime_bootstrap_package_set_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_open_level_v1": [u64, u64],
             "mc_game_runtime_campaign_menu_command_json_v1": [u64, u64, ptr, u32],
+            "mc_game_runtime_media_command_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_finish_mission_if_ready_result_v1": [u64, u64, u64, u64, ptr],
             "mc_native_campaign_day_indexed_frame_render": [u64, u64, u64, ptr, u32],
             "mc_native_campaign_presentation_frame_copy": [u64, ptr, ptr, u32, ptr, u32, ptr, u32],
@@ -169,6 +173,12 @@ class Native:
             self.handle, int(self.identity_value["generation"])), "open selected mission")
         self.identity_value = self.identity()
 
+    def media_command(self, command):
+        payload = json.dumps(command, separators=(",", ":"), ensure_ascii=False).encode()
+        self.check(self.lib.mc_game_runtime_media_command_json_v1(
+            self.handle, int(self.identity_value["generation"]), payload, len(payload)), "frontend media")
+        self.identity_value = self.identity()
+
     def observe(self):
         outer, generation, tick = self.counters()
         data, written = self.observation_buffer, c.c_uint32()
@@ -218,6 +228,7 @@ class Native:
                 self.check(self.lib.mc_game_runtime_destroy_v1(new_handle), "destroy failed load runtime")
                 raise
             old = self.handle; self.handle = new_handle
+            self.media_installed = False
             self.check(self.lib.mc_game_runtime_destroy_v1(old), "destroy previous runtime")
         self.identity_value = self.identity()
         return saved
@@ -385,6 +396,7 @@ class Bridge:
         self.next_sequence = 0; self.last_reply = None; self.last_request = None
         self.last_contact = time.monotonic(); self.stop = threading.Event()
         self.assets = None
+        self.media = None; self.media_view = None
         self.phase = "loading"; self.campaign_menu = None; self.asset_revision = 0
         self.can_refresh_assets = False
         self.modern_error = None
@@ -397,7 +409,7 @@ class Bridge:
                     "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
                     "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id,
                     "phase": self.phase, "campaign_menu": self.campaign_menu, "asset_revision": self.asset_revision,
-                    "can_refresh_assets": self.can_refresh_assets}
+                    "can_refresh_assets": self.can_refresh_assets, "media": self.media_view}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -451,10 +463,17 @@ class Bridge:
             def update_phase():
                 identity = native.identity_value
                 menu = identity.get("campaign_menu")
-                phase = menu.get("phase") if menu else identity["mode"]
+                media = identity.get("frontend_media")
+                pending_media = media and (media.get("campaign_return") or {}).get("blocking")
+                phase = "media" if pending_media else (menu.get("phase") if menu else identity["mode"])
+                if media and self.media:
+                    media = dict(media)
+                    media['actions'] = [dict(action, audio_index=self.media.audio_index(action.get('asset_path')))
+                                        for action in media.get('actions', [])]
                 with self.lock:
                     self.phase = phase
                     self.campaign_menu = menu
+                    self.media_view = media if pending_media else None
                     if identity.get("session") is not None:
                         self.level_id = identity["active_runtime_flow"]["bound_level_id"]
                     if identity.get("session") is None:
@@ -589,9 +608,22 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame"):
                                 raise ValueError("invalid control action")
-                            if action == "refresh_assets":
+                            if action == "media_frame":
+                                elapsed, media_input, escape = value.get('elapsed_us'), value.get('input'), value.get('escape')
+                                if type(elapsed) is not int or not 0 <= elapsed <= 5_000_000 or type(media_input) is not bool or type(escape) is not bool:
+                                    raise ValueError('invalid frontend media frame')
+                                if self.phase != 'media': raise ValueError('no campaign media is active')
+                                if self.media is None: self.media = OriginalMedia(MEDIA_CACHE)
+                                if not native.media_installed:
+                                    native.media_command({'operation': 'install', 'catalog': self.media.catalog,
+                                                          'startup': False, 'audio_available': True})
+                                    native.media_installed = True
+                                native.media_command({'operation': 'frame', 'elapsed_us': elapsed,
+                                                      'input': media_input, 'escape': escape})
+                                update_phase()
+                            elif action == "refresh_assets":
                                 if native.identity_value.get("session") is None: raise ValueError("no active mission")
                                 with self.lock: self.phase = "loading"
                                 try:
@@ -705,7 +737,8 @@ class Bridge:
                         result = {"ok": True, "next_sequence": self.next_sequence,
                                   "running": self.running, "paused": self.paused,
                                   "phase": self.phase, "campaign_menu": self.campaign_menu,
-                                  "level_id": self.level_id, "asset_revision": self.asset_revision}
+                                  "level_id": self.level_id, "asset_revision": self.asset_revision,
+                                  "media": self.media_view}
                         self.last_request, self.last_reply = value, result
                         done.put((True, result))
                     except Exception as exc: done.put((False, str(exc)))
@@ -849,6 +882,22 @@ class Handler(BaseHTTPRequestHandler):
                 nonce = secrets.token_urlsafe(24)
                 token = nonce + "." + hmac.new(self.server.secret, nonce.encode(), hashlib.sha256).hexdigest()
             return self.send_json(200, bridge.status(), cookie=token)
+        if target.path in ('/original-api/media/metadata', '/original-api/media/frame', '/original-api/media/audio'):
+            media = bridge.media
+            if not media: return self.send_json(503, {'error': 'media is not bound'})
+            try:
+                params = parse_qs(target.query)
+                if target.path.endswith('/metadata'): return self.send_json(200, media.metadata)
+                if target.path.endswith('/audio'):
+                    index = int(params['index'][0])
+                    return self.send_data(200, media.audio_bytes(index), 'audio/wav')
+                epoch, frame = int(params['epoch'][0]), int(params['frame'][0])
+                with bridge.lock: view = bridge.media_view
+                if not view or (view['epoch'], view['frame_index']) != (epoch, frame):
+                    return self.send_json(410, {'error': 'media frame is stale'})
+                return self.send_data(200, media.frame(view), 'application/octet-stream')
+            except (KeyError, ValueError, IndexError, OSError) as exc:
+                return self.send_json(503, {'error': str(exc)})
         if target.path == "/original-api/assets/manifest":
             assets = bridge.assets
             if not assets: return self.send_json(503, {"error": "loading"})
@@ -923,6 +972,7 @@ class Handler(BaseHTTPRequestHandler):
             kind = "input" if self.path.endswith("/input") else "control"
             control_fields = {"menu": {"menu_action"}, "select_spell": {"spell_id"},
                               "select_mission": {"level_id"},
+                              "media_frame": {"elapsed_us", "input", "escape"},
                               "assign_spell": {"spell_id", "tier", "hand"}}
             expected = ({"sequence", "command"} if kind == "input" else
                         {"sequence", "action"} | control_fields.get(data.get("action"), set()))
