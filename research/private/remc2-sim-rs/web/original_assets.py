@@ -338,6 +338,7 @@ class OriginalAssets:
                 'a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386'):
             raise ValueError('unexpected source help table identity')
         expected = {
+            18: dict(row=18, kind=2, flags=0x400, text_record=306, duration=50, x=0, y=0, age_threshold=160, priority=5),
             19: dict(row=19, kind=2, flags=0x400, text_record=307, duration=50, x=0, y=0, age_threshold=160, priority=5),
             20: dict(row=20, kind=2, flags=0, text_record=308, duration=50, x=0, y=0, age_threshold=160, priority=5),
             22: dict(row=22, kind=2, flags=0, text_record=310, duration=50, x=0, y=0, age_threshold=320, priority=4),
@@ -390,7 +391,7 @@ class OriginalAssets:
                               indices=add(indices), mask=add(mask)))
         if [row['selector'] for row in frame] != [171, 172, 173]:
             raise ValueError('source help frame selectors differ')
-        texts = {19: b'Destroy this for its mana', 20: b'Collect this spell by flying into it',
+        texts = {18: b'Possess This Mana', 19: b'Destroy this for its mana', 20: b'Collect this spell by flying into it',
                  22: b'This stone restores your life', 25: b'This is an enemy castle',
                  26: b'This is an enemy balloon', 27: b'Marker stone',
                  29: b'Castled mana, current and capacity', 30: b'Castle life', 31: b'Current size of castle',

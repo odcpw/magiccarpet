@@ -388,6 +388,31 @@ print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()
     dayHud.advanceMapHints(openMap, {...statusContext, generation: 15, sequence});
     assert.equal(dayHud.visibleMapHint(), null, 'status help is not selected over the full map');
   }
+
+  assert.equal(qualified.manifest.help['18'].text, 'Possess This Mana');
+  // Real Day 3 replay at tick 2431: slot 259 is an unclaimed 500-mana
+  // sphere. Hold its native projection and pose fixed to test selection.
+  const mana = {...marker, generation: 3, tick: 2431, subject_entity_index: 259,
+    help_selector: 18, kind: 1, selector: 0, palette_index: 232, x: 89, y: 89, visible: 1};
+  const other = {...creature, generation: 3, tick: 2431, subject_entity_index: 10};
+  const manaFrame = {...visible, hud: {...visible.hud!, generation: 3, tick: 2431},
+    world_map: {entities: [mana, other], marks: []}};
+  const manaContext = {...context, generation: 16, player: {x: 22629, y: 53300},
+    entities: [{entity: 259, x: 22629, y: 53300}, {entity: 10, x: 22629, y: 53300}]};
+  for (let sequence = 1; sequence <= 3; sequence++) dayHud.advanceMapHints(manaFrame, {...manaContext, sequence});
+  assert.deepEqual(dayHud.visibleMapHint(), {row: 18, subject: 259, x: 178, y: 178},
+    'source order selects the live loose-mana row before an equal-priority creature');
+  const manaPixels = dayHud.compose(scene, palette, manaFrame);
+  assert.equal(manaPixels[Math.ceil(89 * 480 / 200) * 640 + 178], qualified.manifest.help['18'].line_color);
+  const claimed = {...mana, help_selector: 0};
+  dayHud.advanceMapHints({...manaFrame, world_map: {entities: [claimed], marks: []}}, {...manaContext, sequence: 4});
+  assert.equal(dayHud.visibleMapHint(), null, 'claiming removes row18 even while its owned map dot remains');
+  let manaDraws = 0;
+  for (let sequence = 1; sequence <= 53; sequence++) {
+    dayHud.advanceMapHints({...manaFrame, world_map: {entities: [mana], marks: []}}, {...manaContext, generation: 17, sequence});
+    if (dayHud.visibleMapHint()?.row === 18) manaDraws++;
+  }
+  assert.equal(manaDraws, 50, 'loose-mana help expires after 50 source draws');
 });
 
 test('source Castle and balloon rows control status bars', () => {

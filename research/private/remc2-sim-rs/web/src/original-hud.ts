@@ -139,7 +139,7 @@ export class OriginalHud {
       this.exitHelp = exitHelp;
     }
     for (const [id, record, flags, age, priority] of [
-      [19, 307, 0x400, 160, 5], [20, 308, 0, 160, 5], [22, 310, 0, 320, 4],
+      [18, 306, 0x400, 160, 5], [19, 307, 0x400, 160, 5], [20, 308, 0, 160, 5], [22, 310, 0, 320, 4],
       [25, 313, 0, 160, 5], [26, 314, 0, 160, 5], [27, 315, 0, 320, 3],
       [29, 317, 544, 800, 2], [30, 318, 544, 800, 2], [31, 319, 544, 800, 2],
       [32, 320, 544, 800, 2], [33, 321, 544, 800, 2], [34, 322, 544, 800, 2], [35, 323, 1568, 800, 2],
@@ -307,7 +307,7 @@ export class OriginalHud {
       else { this.hintCurrent = found; this.hintDraw = found; if (--this.hintRemaining === 0) close(); }
     } else if (--this.hintDelay <= 0) {
       let best: { row: number; subject: number; x: number; y: number; overdue: number; priority: number } | null = null;
-      for (const id of [19, 20, 22, 25, 26, 27, 29, 30, 31, 32, 33, 34, 35]) {
+      for (const id of [18, 19, 20, 22, 25, 26, 27, 29, 30, 31, 32, 33, 34, 35]) {
         const info = this.hintRows.get(id), help = this.mapHelp.get(id);
         if (!info || !help || info.age <= help.age_threshold) continue;
         if (id >= 29 && id <= 35) {

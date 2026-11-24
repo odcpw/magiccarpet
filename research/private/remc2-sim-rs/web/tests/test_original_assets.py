@@ -145,6 +145,7 @@ class OwnerAssetTests(unittest.TestCase):
                 self.assertEqual((m['map_profile'], m['hud_profile']), (profile, 'night'))
                 hint = m['help']['83']
                 for selector, text, record, flags, age, priority in (
+                    (18, 'Possess This Mana', 306, 0x400, 160, 5),
                     (19, 'Destroy this for its mana', 307, 0x400, 160, 5),
                     (20, 'Collect this spell by flying into it', 308, 0, 160, 5),
                     (22, 'This stone restores your life', 310, 0, 320, 4),
@@ -198,7 +199,7 @@ class OwnerAssetTests(unittest.TestCase):
     def test_optional_help_and_confined_receipt_bound_paths(self):
         self.assertIsNone(assets.OriginalAssets().manifest['help'])
         old = self.generated / 'castle-status-help-20261122-candidate'
-        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'19', '20', '22', '25', '26', '27', '29', '30', '31', '32', '33', '34', '35'})
+        self.assertEqual(set(assets.OriginalAssets(help_cache=old).manifest['help']), {'18', '19', '20', '22', '25', '26', '27', '29', '30', '31', '32', '33', '34', '35'})
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'cache'
             root.mkdir()
