@@ -37,6 +37,7 @@ let tables: IndexedBlendTables | undefined;
 let hud: OriginalHud;
 let spellMenu: SpellMenu | null = null;
 let nativeMenus = { map_open: false, spells_open: false };
+let abandonOpen = false;
 let hoveredSlot = 0, hoveredTier = 0, intentionalUnlock = false;
 let touchHand: 'left' | 'right' = 'left';
 let lastHudState: OriginalHudState | null = null;
@@ -150,6 +151,7 @@ interface BridgeState extends OriginalHudState {
   tick: number | string;
   paused: boolean;
   source_menu_admission?: { map_open: boolean; spells_open: boolean } | null;
+  source_menu_state?: number;
   objective?: { is_level_end: number; text_selector: number } | null;
   player_pose: { x: number; y: number; z: number; yaw: number };
 }
@@ -168,12 +170,13 @@ function showCampaign(status: BridgeStatus): boolean {
   const phase = status.can_refresh_assets ? 'refresh_assets' : status.phase;
   if (!phase || phase === 'playing' || phase === 'paused') return false;
   campaignPhase = phase;
+  abandonOpen = false; element('abandon-dialog').hidden = true;
   playing = false;
   polling = false;
   clearInput();
   if (isGeometryDisplay(display)) display.setPlaying(false);
   if (document.pointerLockElement === canvas) document.exitPointerLock();
-  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
+  for (const id of ['controls', 'play', 'pause', 'save', 'load', 'reset', 'abandon', 'menu', 'touch', 'look-hint', 'hint', 'retry']) element(id).hidden = true;
   if (phase === 'media') {
     curtain.hidden = true;
     if (!campaignMedia) {
@@ -222,7 +225,9 @@ function showCampaign(status: BridgeStatus): boolean {
       term.textContent = name; detail.textContent = value; stats.append(term, detail);
     }
   }
-  element('campaign-continue').hidden = !results;
+  const continueButton = element<HTMLButtonElement>('campaign-continue');
+  continueButton.hidden = !results && phase !== 'title';
+  continueButton.textContent = results ? 'Continue' : 'Campaign map';
   element('campaign-picker').hidden = !select;
   const enter = element<HTMLButtonElement>('campaign-enter');
   enter.hidden = !select && phase !== 'loading' && phase !== 'refresh_assets';
@@ -244,6 +249,9 @@ async function advanceCampaign(): Promise<void> {
       showCampaign(await readStatus());
     } else if (campaignPhase === 'results') {
       await post('/control', { action: 'dismiss_results' });
+      showCampaign(await readStatus());
+    } else if (campaignPhase === 'title') {
+      await post('/control', { action: 'open_campaign' });
       showCampaign(await readStatus());
     } else if (campaignPhase === 'mission_select' || campaignPhase === 'loading' || campaignPhase === 'refresh_assets') {
       if (campaignPhase === 'mission_select') {
@@ -291,7 +299,7 @@ function clearInput(): void { keys.clear(); mouseButtons.clear(); mouseX = 0; mo
 function showMenu(text: string): void {
   message.textContent = text; curtain.hidden = false;
   playButton.hidden = started; pauseButton.hidden = !started;
-  for (const id of ['save', 'load', 'reset']) element(id).hidden = !started;
+  for (const id of ['save', 'load', 'reset', 'abandon']) element(id).hidden = !started;
   menuButton.hidden = !started;
   element('touch').hidden = true;
   element('look-hint').hidden = true;
@@ -328,6 +336,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       history.reset(); playing = result.running === true; showMenu(action === 'load' ? 'Game loaded.' : 'Level restarted.');
       if (playing) hideMenu();
     }
+    else if (action === 'menu' && result.phase === 'title') showCampaign(await readStatus());
     if (action !== 'start' && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
     if (isGeometryDisplay(display)) display.setPlaying(playing);
   } catch (error) {
@@ -394,11 +403,15 @@ async function pollFrame(): Promise<void> {
     lastFrame = frame;
     const wasMapOpen = nativeMenus.map_open;
     nativeMenus = state.source_menu_admission ?? { map_open: false, spells_open: false };
+    const wasAbandonOpen = abandonOpen;
+    abandonOpen = state.source_menu_state === 13 || state.source_menu_state === 14;
+    element('abandon-dialog').hidden = !abandonOpen;
+    if (abandonOpen && !wasAbandonOpen) { clearInput(); element<HTMLButtonElement>('abandon-cancel').focus(); }
     if (nativeMenus.map_open && !wasMapOpen && !(display instanceof ModernWorldRenderer)) updateMapInspectionLabel(null);
     if (!nativeMenus.map_open && wasMapOpen && !(display instanceof ModernWorldRenderer)) {
       inspectedExit = null;
       canvas.setAttribute('aria-label', `${currentLevelName} game view`);
-      element('hint').textContent = 'Click the view for mouse steering · Esc releases the mouse and pauses';
+      element('hint').textContent = 'Click the view for mouse steering · Esc opens abandon confirmation · P pauses';
     }
     document.body.dataset.gameMenu = element('touch').dataset.menu = nativeMenus.spells_open ? 'spells' : 'flight';
     element('touch-hand').hidden = !nativeMenus.spells_open;
@@ -489,8 +502,9 @@ async function pollFrame(): Promise<void> {
 async function sendInput(): Promise<void> {
   if (!playing || busy || inputBusy) return; inputBusy = true;
   const cast = queuedCasts > 0;
-  const command = originalInput(nativeMenus.spells_open || nativeMenus.map_open ? new Set<string>() : keys, mouseX, mouseY,
-    { selected: cast || keys.has('Space'), left: mouseButtons.has(0), right: mouseButtons.has(2) });
+  const command = originalInput(abandonOpen || nativeMenus.spells_open || nativeMenus.map_open ? new Set<string>() : keys,
+    abandonOpen ? 0 : mouseX, abandonOpen ? 0 : mouseY,
+    { selected: !abandonOpen && (cast || keys.has('Space')), left: !abandonOpen && mouseButtons.has(0), right: !abandonOpen && mouseButtons.has(2) });
   mouseX *= .65; mouseY *= .65;
   try { await post('/input', { command }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); }
   catch (error) { fail(error); }
@@ -500,6 +514,12 @@ async function sendInput(): Promise<void> {
 playButton.addEventListener('click', () => void control('start'));
 element('campaign-continue').addEventListener('click', () => void advanceCampaign());
 element('campaign-enter').addEventListener('click', () => void advanceCampaign());
+element('abandon-cancel').addEventListener('click', () => void control('menu', { menu_action: 'cancel_abandon_confirmation' }));
+element('abandon-confirm').addEventListener('click', () => void control('menu', { menu_action: 'confirm_abandon' }));
+element('abandon').addEventListener('click', () => void (async () => {
+  if (!playing) await control('resume');
+  if (playing) await control('menu', { menu_action: 'open_abandon_confirmation' });
+})());
 pauseButton.addEventListener('click', () => void control('resume'));
 menuButton.addEventListener('click', () => void control(playing ? 'pause' : 'resume'));
 for (const id of ['save', 'load', 'reset']) element(id).addEventListener('click', () => void control(id));
@@ -515,7 +535,7 @@ const hudPoint = (x: number, y: number): [number, number] => {
   const rect = canvas.getBoundingClientRect(); return [(x - rect.left) * 640 / rect.width, (y - rect.top) * 480 / rect.height];
 };
 canvas.addEventListener('pointerdown', event => {
-  if (!playing) return;
+  if (!playing || abandonOpen) return;
   if (nativeMenus.spells_open && spellMenu) {
     event.preventDefault();
     const hit = hud.hitTest(...hudPoint(event.clientX, event.clientY), spellMenu);
@@ -573,13 +593,14 @@ window.addEventListener('mousemove', event => {
 });
 window.addEventListener('keydown', event => {
   if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (abandonOpen) { if (event.code === 'Escape') { event.preventDefault(); void control('menu', { menu_action: 'cancel_abandon_confirmation' }); } return; }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
   if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','Tab'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
-  if (event.code === 'Escape' && (nativeMenus.spells_open || nativeMenus.map_open)) void control('menu', { menu_action: 'close_gameplay_menus' });
-  else if (event.code === 'Escape' || event.code === 'KeyP') void control(playing ? 'pause' : 'resume');
+  if (event.code === 'Escape' && playing && !nativeMenus.spells_open) void control('menu', { menu_action: 'open_abandon_confirmation' });
+  else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
   if (event.code === 'ControlLeft' || event.code === 'ControlRight') void control('menu', { menu_action: 'open_spell_menu' });
   if (event.code === 'F5') void control('save');
   if (event.code === 'F9') void control('load');

@@ -14,6 +14,7 @@
     body[data-renderer=geometry] #stage{width:100vw;height:100dvh;aspect-ratio:auto}
     canvas{display:block;width:100%;height:100%;image-rendering:pixelated;outline:none;touch-action:none}
     #curtain{position:absolute;inset:0;display:grid;place-items:center;background:#060909dd;padding:20px}
+    #abandon-dialog{position:absolute;inset:0;display:grid;place-items:center;background:#060909aa;padding:20px;z-index:4}
     #curtain[hidden], [hidden]{display:none!important}.panel{max-width:510px;text-align:center;padding:28px;background:#101612f2;border:1px solid #665c43;box-shadow:0 12px 60px #0008}
     h1{font:500 clamp(24px,4vw,38px) Georgia,serif;margin:0 0 .4rem;color:#e6cf94}h2{font-size:17px;font-weight:400;margin:.5rem 0 1.3rem;color:#afbaa8}
     #message{white-space:pre-wrap;line-height:1.5;margin:.7rem 0 1.1rem}.actions{display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
@@ -53,15 +54,22 @@
           <button id="save" hidden>Save</button>
           <button id="load" hidden>Load</button>
           <button id="reset" hidden>Restart level</button>
+          <button id="abandon" hidden>Abandon mission…</button>
           <button id="fullscreen">Fullscreen</button>
           <button id="retry" hidden>Retry connection</button>
         </div>
-        <p id="controls">W / S speed · A / D strafe<br>Mouse or arrows to steer · Space to cast<br>Hold Ctrl for spells · Left / right click assigns a hand<br>O objective · Tab map · Esc pause · F5 save · F9 load</p>
+        <p id="controls">W / S speed · A / D strafe<br>Mouse or arrows to steer · Space to cast<br>Hold Ctrl for spells · Left / right click assigns a hand<br>O objective · Tab map · Esc abandon · P pause · F5 save · F9 load</p>
+      </div>
+    </section>
+    <section id="abandon-dialog" role="dialog" aria-modal="true" aria-labelledby="abandon-title" hidden>
+      <div class="panel"><h2 id="abandon-title">Abandon this mission?</h2>
+        <p>Your progress in this mission will be lost.</p>
+        <div class="actions"><button id="abandon-cancel">Continue mission</button><button id="abandon-confirm">Abandon mission</button></div>
       </div>
     </section>
   </main>
   <button id="menu" hidden aria-label="Pause game">Pause</button>
-  <p id="hint" hidden>Click the view for mouse steering · Esc releases the mouse and pauses</p>
+  <p id="hint" hidden>Click the view for mouse steering · Esc opens abandon confirmation · P pauses</p>
   <nav id="touch" aria-label="Touch flight controls" hidden>
     <div class="pad">
       <span></span><button data-key="KeyW" aria-label="Accelerate">▲</button><span></span>

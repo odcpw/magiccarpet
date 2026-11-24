@@ -80,6 +80,10 @@ class Native:
             "mc_game_runtime_identity_json_v1": [u64, ptr, u32, ptr],
             "mc_game_runtime_bootstrap_package_set_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_open_level_v1": [u64, u64],
+            "mc_game_runtime_restart_new_game_v1": [u64, u64],
+            "mc_game_runtime_show_new_game_map_v1": [u64, u64],
+            "mc_game_runtime_close_v1": [u64, u64, u64, u64],
+            "mc_game_runtime_player_menu_state_v1": [u64, u64, u64, u64, ptr],
             "mc_game_runtime_campaign_menu_command_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_media_command_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_finish_mission_if_ready_result_v1": [u64, u64, u64, u64, ptr],
@@ -172,6 +176,26 @@ class Native:
         if changed.value not in (0, 1): raise RuntimeError("invalid mission transition flag")
         if changed.value: self.identity_value = self.identity()
         return bool(changed.value)
+
+    def player_menu_state(self):
+        outer, generation, tick = self.counters()
+        state = c.c_uint8()
+        self.check(self.lib.mc_game_runtime_player_menu_state_v1(
+            self.handle, outer, generation, tick, c.byref(state)), "player menu state")
+        return state.value
+
+    def return_to_title(self):
+        outer, generation, tick = self.counters()
+        self.check(self.lib.mc_game_runtime_close_v1(self.handle, outer, generation, tick), "return to title")
+        self.identity_value = self.identity()
+
+    def open_campaign_map(self):
+        self.check(self.lib.mc_game_runtime_restart_new_game_v1(
+            self.handle, int(self.identity_value["generation"])), "open campaign")
+        self.identity_value = self.identity()
+        self.check(self.lib.mc_game_runtime_show_new_game_map_v1(
+            self.handle, int(self.identity_value["generation"])), "open campaign map")
+        self.identity_value = self.identity()
 
     def campaign_menu(self, action, level_id=None):
         command = {"action": action}
@@ -338,6 +362,21 @@ def menu_from_observation(packet):
     action, admitted, map_open, spells_open, info_open = struct.unpack_from("<5B", packet, offset + 1)
     return {"action": action, "admitted": bool(admitted), "map_open": bool(map_open),
             "spells_open": bool(spells_open), "player_information_open": bool(info_open)}
+
+
+def return_to_title_from_observation(packet):
+    if struct.unpack_from("<I", packet, 4)[0] != 5: raise RuntimeError("unsupported native MCPO version")
+    offset = 12 + 8 + 8 + 1
+    for _ in range(3):
+        size = struct.unpack_from("<I", packet, offset)[0]
+        offset += 4 + size
+        if offset > len(packet): raise RuntimeError("truncated MCPO identity")
+    offset += 4 * 8 + 3 * 8 + 14 + 6 + 16
+    present = packet[offset]
+    if present not in (0, 1): raise RuntimeError("invalid MCPO menu option")
+    value = packet[offset + 1 + 13 * present]
+    if value not in (0, 1): raise RuntimeError("invalid MCPO return flag")
+    return bool(value)
 
 
 def camera_from_observation(packet):
@@ -578,7 +617,7 @@ class Bridge:
                 minimap["coverage"] = list(minimap["coverage"])
                 state = {"sequence": sequence, "runtime_generation": outer, "session_generation": gen,
                          "tick": tick, "asset_revision": self.asset_revision, "player_pose": pose,
-                         "source_menu_admission": menu_state,
+                         "source_menu_admission": menu_state, "source_menu_state": native.player_menu_state(),
                          "hud": read_hud(native.lib, native.handle.value, gen, tick),
                          "minimap": minimap, "objective": read_objective(native.lib, native.handle.value, gen, tick),
                          "paused": self.paused}
@@ -621,7 +660,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == "media_frame":
                                 elapsed, media_input, escape = value.get('elapsed_us'), value.get('input'), value.get('escape')
@@ -636,6 +675,8 @@ class Bridge:
                                 native.media_command({'operation': 'frame', 'elapsed_us': elapsed,
                                                       'input': media_input, 'escape': escape})
                                 update_phase()
+                            elif action == "open_campaign":
+                                native.open_campaign_map(); update_phase()
                             elif action == "refresh_assets":
                                 if native.identity_value.get("session") is None: raise ValueError("no active mission")
                                 with self.lock: self.phase = "loading"
@@ -693,7 +734,7 @@ class Bridge:
                                 if action == "map": extra = {"abandon_action": "toggle_gameplay_map"}
                                 elif action == "menu":
                                     menu_action = value.get("menu_action")
-                                    if menu_action not in ("open_spell_menu", "close_spell_menu", "toggle_gameplay_map", "close_gameplay_menus"):
+                                    if menu_action not in ("open_spell_menu", "close_spell_menu", "toggle_gameplay_map", "close_gameplay_menus", "open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
                                         raise ValueError("invalid menu action")
                                     extra = {"abandon_action": menu_action}
                                 else:
@@ -706,8 +747,14 @@ class Bridge:
                                         if type(tier) is not int or not 0 <= tier <= 2 or hand not in ("left", "right"):
                                             raise ValueError("invalid spell assignment")
                                         extra = {"assign_spell": {"spell_id": spell, "tier": tier, "hand": hand}}
+                                if action == "menu" and menu_action in ("open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
+                                    command = dict(NEUTRAL)
                                 native.step({**NEUTRAL, **extra, "elapsed_centiseconds": elapsed_centiseconds()})
-                                if not finish_if_ready(): publish()
+                                if action == "menu" and menu_action == "confirm_abandon" and return_to_title_from_observation(native.observe()):
+                                    native.return_to_title()
+                                    self.running = False; self.paused = False; frame_remainder = 0
+                                    update_phase()
+                                elif not finish_if_ready(): publish()
                             else:
                                 if action == "load" and saved is None and self.save_path and self.save_path.is_file():
                                     saved = self.save_path.read_bytes()
