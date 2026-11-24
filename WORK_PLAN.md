@@ -1,5 +1,78 @@
 # Shared-engine delivery plan
 
+### Replay victories, campaign spell marks and map guidance — November 24
+
+Runtime `97e1a224` keeps hand marks through ordinary victories, Results,
+save/load and entry into the next mission. The connected check loaded
+NightSpire's earned five-objective save and replayed the recorded flight
+into row 137. Castle was marked on an existing neutral input. The player
+reached the recorded exit position at tick 10695, carried the left mark
+through Results into Payahandra and selected Castle by cycling that hand.
+
+Completing an ordinary mission again now shows Results, refreshes its five
+statistics and retains the player's newly learned spells and marks. The
+repeat check reused the real pre-exit state, activated the authored Speed
+pickup group, and positioned the player for the pickup and portal. Payahandra
+opened with Speed and the right Castle mark. Banked XP survived without a
+second award. The Uluth check used a paid Meteor victory and replayed its
+completed ending state. The repeat showed credits and Results without
+replaying the already-consumed CUT6. Older pending-retry saves also bank an
+earned objective award on restart. Continuous campaign play remains open.
+
+Browser `bac0b9d3` presents the original rival Castle, revealed balloon and
+healing Dolmen map hints. Chrome displayed “This is an enemy castle” with the
+leader reaching the actual Castle dot on Perilium. The map selected the live
+Castle at slot 176 at tick 517. The paid Beyond Sight save also published the
+rival balloon at slot 370 and three Dolmens. When the reveal expired, the
+balloon marker cleared. The balloon and Dolmen labels have focused presenter
+checks. The Perilium screenshot demonstrates the Castle label. Evidence is
+in `research/private/generated/earned-campaign-20261124/mission-retry/`
+and `research/private/generated/earned-campaign-20261124/world-map-guidance/`.
+
+Both revisions are pushed. The installed private browser loaded NightSpire
+with native `8a6fa4c6faf5`, 10,000 life, 1,000 mana, Fireball in the left
+hand and Possession in the right. The service was paused after the launch.
+The native also loaded an older earned Results save, saved and loaded it
+again, and opened Payahandra with the same three spells. The Unity player
+still uses native `2f477f43c882` pending its Editor build.
+
+### Original flight help, Castle demolition and saved spell controls — November 24
+
+In NightSpire, F1 now turns map help off and on, writes the browser player's
+preference and displays remc2's “Help Mode Off” and “Help Mode On” messages.
+Chrome showed both original messages while flight continued. Holding F1
+produced one change. Shift+F1 and Alt+F1 left the help preference intact.
+Browser `f935dce6` first delivered the F1 control in the private Three.js Original.
+
+Browser `115c4bc7` adds F2 flight assistance and the campaign map's Save
+and Load actions. In Chrome, F2 displayed the original status messages and
+wrote the preference. After a cold launch, enabling assistance resumed the
+native carpet's idle recenter commands. Turning it off stopped those commands.
+From an earned NightSpire Results save, Chrome saved the map with NightSpire
+selected, entered Payahandra and loaded that map back from flight. Both
+unlocked missions and the player's Fireball, Possession and Castle survived.
+This browser uses its existing single save slot.
+
+Browser `9b85f182` restores the physical Space key to remc2's death-camera
+recovery. In NightSpire, pressing Space during flight kept the wizard at
+1,000 mana. Casting Fireball with the left mouse button then spent mana.
+In The Revealed Way, a saved flight reached lethal damage at tick 2111 and
+the death camera at 2112. One physical Space press restored 10,000 life in
+the same mission. The installed browser bundle and native `faff2bf937ab`
+matched the qualified copies. Evidence is in
+`research/private/generated/earned-campaign-20261124/physical-space/`.
+
+In remc2, Shift+L removes one stage of the player's Castle. In the private
+Three.js Original, one Shift+L on a paid NightSpire Castle sent command 42
+once. The stage-1 root entered its dying state and disappeared from the
+economy and HUD on the following tick. Bare L and Alt+Shift+L left it intact.
+The bundle also reads saved spell-menu, map, information, mark and
+hand-cycle keys. In Payahandra, two native preference profiles exercised
+marking Fireball and Possession, cycling between them and viewing the map's
+player information. Browser `764f1562` first delivered these controls. Unity source
+`47aa66ec` includes the corrected chord and compiled with the project's
+runtime references. Its player still requires an Editor build.
+
 ### Death without a Castle and same-mission restart — November 24
 
 On a saved approach in The Revealed Way, ordinary damage killed the player
@@ -16,7 +89,13 @@ the restarted Day 3 played Day music, effects and the opening objective
 speech in the same Chrome audio context. Entering Payahandra from the earned
 campaign map also started Day music, effects and speech. Night and Cave
 music, the slow Spider Cave load and saved movement controls passed in Chrome.
-The team is tracing XP when the objectives finish before the player dies.
+When Payahandra's player dies after completing the objectives and before
+leaving, the earned spell XP now survives the restart. The real scroll in
+row 248 awarded four points. Paid Fireballs opened the required vaults.
+With player health lowered for the death check, a Skeleton killed the player.
+The source result was 0x0e and the same mission restarted with the four points
+banked once. Reload preserved them. Runtime `0092fe27` was pushed and
+first delivered in the private Three.js Original with native `faff2bf937ab`.
 The Unity runtime assembly compiled from current
 sources. Its installed player still uses `2f477f43c882`. `mc-paj.6` stays
 open. Evidence is in `research/private/generated/earned-campaign-20261124/`.
