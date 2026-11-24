@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { admitsSprite, assetBytes, signedSourceAngle, wrappedDelta, type TerrainPlanes, type WorldAssetManifest, type WorldFrame, type WorldSprite } from './original-world-data';
+import type { HudGeometryPlan } from './original-hud';
 
 export interface SourceCamera { x: number; y: number; z: number; yaw: number; pitch: number; roll: number }
 interface ImageFrame { x: number; y: number; width: number; height: number }
@@ -87,6 +88,9 @@ export class OriginalWorldRenderer {
   private readonly palette = rawTexture(this.paletteBytes, 256, 1, THREE.RGBAFormat);
   private readonly hudBytes = new Uint8Array(640 * 480 * 2);
   private readonly hud = rawTexture(this.hudBytes, 640, 480, THREE.RGFormat);
+  private transferCapacity = 1;
+  private transferBytes = new Uint8Array(256);
+  private transfer = rawTexture(this.transferBytes, 256, 1);
   private readonly target = new THREE.WebGLRenderTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
     depthBuffer: true, stencilBuffer: false, colorSpace: THREE.NoColorSpace });
   private snapshot = new THREE.FramebufferTexture(1, 1);
@@ -158,7 +162,7 @@ export class OriginalWorldRenderer {
     this.sprites.frustumCulled = this.blendSprite.frustumCulled = false;
     this.scene.add(this.sprites); this.blendScene.add(this.blendSprite);
     this.finalMaterial = shader(screenVertex, `precision highp float;
-      uniform sampler2D worldIndices, palette, hud; uniform vec2 viewport; uniform bool mapOpen;
+      uniform sampler2D worldIndices, palette, hud, hudTransfer; uniform vec2 viewport; uniform bool mapOpen, useTransfer;
       in vec2 screenUv; out vec4 pixel;
       void main(){
         int index=int(texture(worldIndices,screenUv).r*255.+.5);
@@ -169,11 +173,16 @@ export class OriginalWorldRenderer {
         else if(h.y>=logicalHeight-120.)h.y+=480.-logicalHeight;
         else if(h.y>=160.){h.y-=(logicalHeight-480.)*.5; hudRegion=h.y>=160.&&h.y<360.;}
         if(hudRegion&&h.x>=0.&&h.x<640.&&h.y>=0.&&h.y<480.){
-          vec2 overlay=texelFetch(hud,ivec2(h),0).rg; if(overlay.g>.5)index=int(overlay.r*255.+.5);
+          vec2 overlay=texelFetch(hud,ivec2(h),0).rg;
+          if(useTransfer){
+            int code=int(overlay.r*255.+.5)+256*int(overlay.g*255.+.5);
+            if(code>256)index=int(texelFetch(hudTransfer,ivec2(index,code-257),0).r*255.+.5);
+            else if(code>0)index=code-1;
+          } else if(overlay.g>.5)index=int(overlay.r*255.+.5);
         }
         pixel=vec4(texelFetch(palette,ivec2(index,0),0).rgb,1.);
-      }`, { worldIndices: { value: this.target.texture }, palette: { value: this.palette }, hud: { value: this.hud }, viewport: { value: new THREE.Vector2(640, 480) },
-        mapOpen: { value: false } });
+      }`, { worldIndices: { value: this.target.texture }, palette: { value: this.palette }, hud: { value: this.hud }, hudTransfer: { value: this.transfer }, viewport: { value: new THREE.Vector2(640, 480) },
+        mapOpen: { value: false }, useTransfer: { value: false } });
     this.finalMaterial.depthTest = this.finalMaterial.depthWrite = false;
     this.finalScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.finalMaterial));
     this.queueFrame();
@@ -244,17 +253,31 @@ export class OriginalWorldRenderer {
     }
     this.planes = planes; this.dirty = true;
   }
-  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean): void {
+  present(frame: WorldFrame, camera: SourceCamera, fov: number, hudIndices: Uint8Array, coverage: Uint8Array, mapOpen: boolean, playing: boolean, plan?: HudGeometryPlan): void {
     if (!this.planes) throw new Error('Native terrain must be installed before its world frame');
     const sameEpoch = this.frame?.runtimeGeneration === frame.runtimeGeneration && this.frame.sessionGeneration === frame.sessionGeneration;
     this.previousCamera = sameEpoch ? this.sourceCamera : camera; this.sourceCamera = camera; this.frame = frame; this.fov = fov;
     this.arrival = performance.now(); this.mapOpen = mapOpen; this.playing = playing;
     for (let i = 0; i < 256; i++) { this.paletteBytes[i * 4] = frame.palette[i * 3]!; this.paletteBytes[i * 4 + 1] = frame.palette[i * 3 + 1]!;
       this.paletteBytes[i * 4 + 2] = frame.palette[i * 3 + 2]!; this.paletteBytes[i * 4 + 3] = 255; }
-    for (let i = 0; i < 640 * 480; i++) {
+    if (plan) {
+      if (plan.codes.length !== 640 * 480 || plan.rows.length !== plan.rowCount * 256 ||
+          plan.rowCount > this.renderer.capabilities.maxTextureSize) throw new Error('Invalid Original HUD transfer table');
+      if (plan.rowCount > this.transferCapacity) {
+        this.transferCapacity = Math.min(this.renderer.capabilities.maxTextureSize, 2 ** Math.ceil(Math.log2(plan.rowCount)));
+        this.transferBytes = new Uint8Array(256 * this.transferCapacity);
+        this.transfer.dispose(); this.transfer = rawTexture(this.transferBytes, 256, this.transferCapacity);
+        this.finalMaterial.uniforms.hudTransfer!.value = this.transfer;
+      }
+      this.transferBytes.set(plan.rows); this.transfer.needsUpdate = true;
+      for (let i = 0; i < 640 * 480; i++) {
+        const code = plan.codes[i]!; this.hudBytes[i * 2] = code & 255; this.hudBytes[i * 2 + 1] = code >> 8;
+      }
+    } else for (let i = 0; i < 640 * 480; i++) {
       this.hudBytes[i * 2] = hudIndices[i]!;
       this.hudBytes[i * 2 + 1] = mapOpen && i % 640 < 386 ? 255 : coverage[i]!;
     }
+    this.finalMaterial.uniforms.useTransfer!.value = !!plan;
     this.palette.needsUpdate = this.hud.needsUpdate = true; this.dirty = true;
   }
   setPlaying(value: boolean): void { this.playing = value; this.lastDraw = 0; if (!value) this.dirty = true; }

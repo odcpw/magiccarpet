@@ -816,7 +816,7 @@ class Bridge:
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
-                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
+                            if action not in ("start", "pause", "resume", "reset", "save", "load", "map", "menu", "select_spell", "assign_spell", "mark_spell", "cycle_marked_spell", "audio_complete", "speech_complete", "toggle_speech", "toggle_sound", "toggle_music", "toggle_help", "toggle_flight_assistance", "dismiss_results", "select_mission", "start_mission", "refresh_assets", "media_frame", "open_campaign"):
                                 raise ValueError("invalid control action")
                             if action == 'audio_complete':
                                 generation, voice, event = value.get('generation'), value.get('voice'), value.get('event_sequence')
@@ -903,6 +903,9 @@ class Bridge:
                                 publish()
                             elif action == "toggle_speech":
                                 toggle_speech(native, speech.cache is not None)
+                                publish()
+                            elif action in ("toggle_sound", "toggle_music"):
+                                apply_source_preference(native, {"operation": "source_audio", "action": action[7:]})
                                 publish()
                             elif action == "toggle_help":
                                 apply_source_preference(native, {"operation": "source_help_mode"})

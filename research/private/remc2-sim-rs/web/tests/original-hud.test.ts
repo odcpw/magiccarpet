@@ -78,6 +78,26 @@ test('owner indexed HUD preserves scene and reflects native life and objective a
   assert.throws(() => hud.compose(scene, palette, { ...state, objective_visible: true, objective_selector: 999 }), /objective/);
 });
 
+test('geometry transfer preserves indexed source order over the actual world', () => {
+  const world = Uint8Array.from({length: 64000}, (_, i) => (i * 37 + Math.floor(i / 320) * 13) & 255);
+  const palette = new Uint8Array(768), blank = new Uint8Array(64000);
+  const minimap = { terrain: Array.from({length: 4096}, (_, i) => (i * 7) & 255),
+    coverage: Array(4096).fill(1), entities: [], marks: [] };
+  for (const opaque of [false, true]) {
+    const current = {...state, panels_opaque: opaque, minimap, objective_visible: true, objective_selector: 48,
+      pause_menu: {open: true, can_load: false, sound_enabled: false, music_enabled: false}};
+    const expected = hud.compose(world, palette, current);
+    hud.compose(blank, palette, current, new Uint8Array(640 * 480), true);
+    const plan = hud.geometryPlan();
+    assert.ok(plan.rowCount > 0, 'translucent objective creates source-indexed transfers');
+    for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) {
+      const at = y * 640 + x, code = plan.codes[at]!, destination = world[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
+      const actual = code === 0 ? destination : code <= 256 ? code - 1 : plan.rows[(code - 257) * 256 + destination]!;
+      assert.equal(actual, expected[at], `indexed transfer at ${x},${y}, opaque=${opaque}`);
+    }
+  }
+});
+
 test('minimap commands must match source frame; terrain admission is bounded', () => {
   const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
   const minimap = { terrain: Array(4096).fill(39), coverage: Array(4096).fill(1), entities: [], marks: [] };

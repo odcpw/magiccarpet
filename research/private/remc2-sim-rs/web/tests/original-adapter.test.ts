@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand, preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, mapGestureAdmitted, MapMouseChord } from '../src/original-adapter.ts';
+import { decodeOriginalFrame, ORIGINAL_PACKET_BYTES, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand, preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, sourceAudioShortcut, mapGestureAdmitted, MapMouseChord } from '../src/original-adapter.ts';
+
+test('source F5/F6 audio shortcuts consume only unmodified press edges', () => {
+  for (const [code, expected] of [['F5', 'toggle_sound'], ['F6', 'toggle_music']] as const) {
+    assert.equal(sourceAudioShortcut(code, false, false, false), expected);
+    assert.equal(sourceAudioShortcut(code, true, false, false), null);
+    assert.equal(sourceAudioShortcut(code, false, true, false), null);
+    assert.equal(sourceAudioShortcut(code, true, true, false), null);
+    assert.equal(sourceAudioShortcut(code, false, false, true), null);
+  }
+  assert.equal(sourceAudioShortcut('F7', false, false, false), null);
+});
 
 test('map binding translates every native preference key to a physical browser code', () => {
   for (const letter of 'ABCDEFGHIJKLMNOQSTUVWXYZ') assert.equal(preferenceKeyCode(letter), `Key${letter}`);

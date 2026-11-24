@@ -165,6 +165,13 @@ export function markedSpellHand(button: number, marked: string): 'none' | 'left'
   return marked === hand ? 'none' : hand;
 }
 
+/** Source bare F5/F6; Alt and Shift select other source actions. */
+export function sourceAudioShortcut(code: string, shift: boolean, alt: boolean, repeat: boolean):
+  'toggle_sound' | 'toggle_music' | null {
+  if (shift || alt || repeat) return null;
+  return code === 'F5' ? 'toggle_sound' : code === 'F6' ? 'toggle_music' : null;
+}
+
 export function originalInput(keys: ReadonlySet<string>, mouseX = 0, mouseY = 0,
   casts: { selected?: boolean; left?: boolean; right?: boolean } = {},
   flightKeys?: readonly (string | null)[]): OriginalInput {

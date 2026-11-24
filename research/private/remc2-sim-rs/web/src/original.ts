@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { decodeOriginalFrame, ORIGINAL_HEIGHT, ORIGINAL_WIDTH, OriginalSceneHistory, originalInput, markedSpellCycle, markedSpellHand,
-  preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, mapGestureAdmitted, MapMouseChord,
+  preferenceKeyCode, sourceMenuKeys, sourceMapKey, sourceKeyChoices, sourceAudioShortcut, mapGestureAdmitted, MapMouseChord,
   type OriginalFrame, type IndexedBlendTables } from './original-adapter';
 import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-hud';
 import { decodeRenderPublication } from './render-publication';
@@ -421,7 +421,8 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   if (campaignPhase && busy) return;
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
-  const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance';
+  const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance' ||
+    action === 'toggle_sound' || action === 'toggle_music';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -448,6 +449,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       message.textContent = 'Game saved.'; element('hint').textContent = 'Game saved.';
     }
     else if (action === 'toggle_speech') showSpeechPreference(result.speech_enabled, result.speech_available);
+    else if (action === 'toggle_sound') { gameplayAudio.stop(); objectiveSpeech.stop(); }
     else if (action === 'load' || action === 'reset') {
       if (action === 'load' && !modernRequested) {
         const status = await readStatus();
@@ -634,19 +636,17 @@ async function pollFrame(): Promise<void> {
       if (state.minimap) hudState.minimap = { ...state.minimap, terrain: display.minimap(source.source_camera_pose) };
       if (nativeMenus.map_open) { hudState.minimap = undefined; hudState.top_bar_visible = false; }
       advanceHints(worldFrame.sprites);
-      // Source art stays indexed. Opaque panels avoid flattening a translucent
-      // HUD against an invented background; the 3D world is never read to CPU.
-      hudState.panels_opaque = true;
+      if (display instanceof ModernWorldRenderer) hudState.panels_opaque = true;
       const hudScene = nativeMenus.map_open && display instanceof OriginalWorldRenderer
         ? display.fullMapTerrain(source.source_camera_pose) : emptyScene;
-      const overlay = hud.compose(hudScene, frame.palette, hudState, hudCoverage);
+      const overlay = hud.compose(hudScene, frame.palette, hudState, hudCoverage, display instanceof OriginalWorldRenderer);
       if (display instanceof ModernWorldRenderer) {
         if (!modernResponse?.ok) throw new Error('This backend has no Modern asset observations; start it with --modern.');
         const modern = decodeModernFrame(await modernResponse.arrayBuffer());
         if (version !== controlVersion) return;
         display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, modern);
         Object.assign(window, { modernState: modern });
-      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused);
+      } else display.present(worldFrame, source.source_camera_pose, source.source_camera_fov, overlay, hudCoverage, nativeMenus.map_open, playing && !state.paused, hud.geometryPlan());
     } else {
     const sceneFrame = frame as OriginalFrame;
     const scene = history.compose(sceneFrame, tables);
@@ -836,6 +836,12 @@ window.addEventListener('keydown', event => {
     if (!event.repeat) void control('toggle_flight_assistance');
     return;
   }
+  if (!modernRequested && (event.code === 'F5' || event.code === 'F6')) {
+    event.preventDefault();
+    const action = sourceAudioShortcut(event.code, event.shiftKey, event.altKey, event.repeat);
+    if (action && !nativeMenus.spells_open && !busy) void control(action);
+    return;
+  }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
   heldMenuKeys.add(event.code);
   const modifiers = menuKeys();
@@ -860,7 +866,7 @@ window.addEventListener('keydown', event => {
   else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
   if (modifiers.spells && !spellControlHeld) { spellControlHeld = true; spellCloseOnRelease = false; void control('menu', { menu_action: 'open_spell_menu' }); }
   informationHeld = modifiers.information; syncPlayerInformation();
-  if (event.code === 'F5') void control('save');
+  if (modernRequested && event.code === 'F5') void control('save');
   if (event.code === 'F9') void control('load');
 });
 window.addEventListener('keyup', event => {

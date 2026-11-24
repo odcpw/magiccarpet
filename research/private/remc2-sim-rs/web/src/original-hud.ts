@@ -69,7 +69,16 @@ export interface AbilityNotificationContext {
   effects: readonly { generation: number | string; sequence: number | string; kind: number; code: number; value0: number; value1: number }[];
 }
 
+// Zero preserves the world, 1..256 replace it, and higher codes select a
+// source-indexed transfer row. Overlapping translucent draws share rows.
+export interface HudGeometryPlan { codes: Uint16Array; rows: Uint8Array; rowCount: number }
+
 export class OriginalHud {
+  private geometry: HudGeometryPlan | null = null;
+  geometryPlan(): HudGeometryPlan {
+    if (!this.geometry) throw new Error('Original geometry HUD plan is unavailable');
+    return this.geometry;
+  }
   readonly width = 640;
   readonly height = 480;
   readonly tables: IndexedBlendTables;
@@ -373,13 +382,45 @@ export class OriginalHud {
   }
 
   /** Returns a fresh top-down 640×480 indexed frame; never mutates scene history. */
-  compose(scene: Uint8Array, paletteRGB8: Uint8Array, state: OriginalHudState, coverage?: Uint8Array): Uint8Array {
+  compose(scene: Uint8Array, paletteRGB8: Uint8Array, state: OriginalHudState, coverage?: Uint8Array, geometry = false): Uint8Array {
     if (scene.length !== 64000 || paletteRGB8.length !== 768) throw new Error('Invalid Original HUD frame');
     if (coverage && coverage.length !== 640 * 480) throw new Error('Invalid Original HUD coverage');
     coverage?.fill(0);
     const result = scene.slice();
+    this.geometry = null;
+    const transferRows: Uint8Array[] = [];
+    const transferIds = new Map<number, number>();
+    const sourceBlend = this.tables.normal;
+    const transform = (previous: number, color: number, reverse: boolean): number => {
+      if (previous > 0 && previous <= 256) {
+        const destination = previous - 1;
+        return 1 + sourceBlend[reverse ? (color << 8) | destination : (destination << 8) | color]!;
+      }
+      const key = previous * 512 + (reverse ? 256 : 0) + color;
+      const cached = transferIds.get(key);
+      if (cached !== undefined) return cached;
+      const code = 257 + transferRows.length;
+      if (code > 65535) throw new Error('Original HUD has too many distinct indexed blends');
+      const row = new Uint8Array(256), prior = previous ? transferRows[previous - 257]! : null;
+      for (let destination = 0; destination < 256; destination++) {
+        const value = prior ? prior[destination]! : destination;
+        row[destination] = sourceBlend[reverse ? (color << 8) | value : (value << 8) | color]!;
+      }
+      transferRows.push(row); transferIds.set(key, code);
+      return code;
+    };
+    const sceneCodes = geometry ? new Uint16Array(64000) : null;
+    // The source full map owns the left viewport before its marks are drawn.
+    if (sceneCodes && state.world_map) for (let y = 0; y < 200; y++) for (let x = 0; x < 193; x++) {
+      const pos = y * 320 + x; sceneCodes[pos] = 1 + scene[pos]!;
+    }
     const sceneCoverage = coverage ? new Uint8Array(64000) : null;
-    const scenePixel = (pos: number, color: number) => { result[pos] = color; if (sceneCoverage) sceneCoverage[pos] = 255; };
+    const scenePixel = (pos: number, color: number, mode = 0) => {
+      result[pos] = mode === 1 ? sourceBlend[(result[pos]! << 8) | color]! :
+        mode === 2 ? sourceBlend[(color << 8) | result[pos]!]! : color;
+      if (sceneCoverage) sceneCoverage[pos] = 255;
+      if (sceneCodes) sceneCodes[pos] = mode ? transform(sceneCodes[pos]!, color, mode === 2) : 1 + color;
+    };
     const fullMap = state.world_map;
     const map = fullMap ?? state.minimap;
     const hud = state.hud;
@@ -398,7 +439,7 @@ export class OriginalHud {
         if (!Number.isInteger(terrain) || terrain < 0 || terrain > 255 || (minimap.coverage[i] !== 0 && minimap.coverage[i] !== 1)) throw new Error('Invalid Original minimap pixels');
         if (aperture(x, y)) {
           if (state.panels_opaque) scenePixel(pos, terrain);
-          else if (minimap.coverage[i]) scenePixel(pos, this.tables.normal[(result[pos]! << 8) | terrain]!);
+          else if (minimap.coverage[i]) scenePixel(pos, terrain, 1);
         }
       }
       const bound = (row: { generation: number | string; tick: number | string }) => {
@@ -443,12 +484,12 @@ export class OriginalHud {
           const x = x0 + dx, y = y0 + dy, si = dy * w + dx;
           if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight || (!fullMap && !aperture(x, y)) || (symbol && !this.blob[symbol.mask.offset + si])) continue;
           const pos = y * 320 + x, color = symbol ? this.blob[symbol.indices.offset + si]! : row.palette_index;
-          scenePixel(pos, row.kind === 3 ? this.tables.normal[(result[pos]! << 8) | color]! : color);
+          scenePixel(pos, color, row.kind === 3 ? 1 : 0);
         }
       }
       if (nextLabel !== labels.length) throw new Error('Beyond Sight name has no matching player dot');
       if (fullMap) {
-        const cross = (x: number, y: number) => { const pos = y * 320 + x; scenePixel(pos, this.tables.normal[(this.mapCrossColor << 8) | result[pos]!]!); };
+        const cross = (x: number, y: number) => { const pos = y * 320 + x; scenePixel(pos, this.mapCrossColor, 2); };
         cross(94, 100);
         for (let arm = 1; arm <= 15; arm++) { cross(94 - arm, 100); cross(94 + arm, 100); cross(94, 100 - arm); cross(94, 100 + arm); }
       }
@@ -489,13 +530,16 @@ export class OriginalHud {
     // Unity's source layout is 640×480, scaled against a 320×200 source world.
     const screen = new Uint8Array(640 * 480);
     for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) screen[y * 640 + x] = result[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
+    const codes = geometry ? new Uint16Array(640 * 480) : null;
+    if (codes && sceneCodes) for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) codes[y * 640 + x] = sceneCodes[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
     if (coverage && sceneCoverage) for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) coverage[y * 640 + x] = sceneCoverage[Math.floor(y * 200 / 480) * 320 + Math.floor(x / 2)]!;
     const blend = this.tables.normal;
-    const pixel = (x: number, y: number, index: number, transparent = false) => {
+    const pixel = (x: number, y: number, index: number, transparent = false, reverse = false) => {
       if (x < 0 || x >= 640 || y < 0 || y >= 480) return;
       const pos = y * 640 + x;
-      screen[pos] = transparent ? blend[(screen[pos]! << 8) | index]! : index;
+      screen[pos] = transparent ? blend[reverse ? (index << 8) | screen[pos]! : (screen[pos]! << 8) | index]! : index;
       if (coverage) coverage[pos] = 255;
+      if (codes) codes[pos] = transparent ? transform(codes[pos]!, index, reverse) : 1 + index;
     };
     const sprite = (selector: number, x: number, y: number, transparent = false, tint?: number) => {
       const row = this.sprites.get(selector);
@@ -697,10 +741,8 @@ export class OriginalHud {
           const row = this.sprites.get(entry.selector)!;
           // Load shades the 102×32 area; volume buttons shade their source extent.
           for (let y = entry.y; y < entry.y + row.runtime_height; y++) for (let x = entry.x; x < entry.x + row.runtime_width; x++) {
-            const pos = y * 640 + x;
-            screen[pos] = blend[(this.objectiveBackground << 8) | screen[pos]!]!;
-            screen[pos] = blend[(this.objectiveBackground << 8) | screen[pos]!]!;
-            if (coverage) coverage[pos] = 255;
+            pixel(x, y, this.objectiveBackground, true, true);
+            pixel(x, y, this.objectiveBackground, true, true);
           }
         }
       }
@@ -746,8 +788,7 @@ export class OriginalHud {
       if (!row) throw new Error(`Missing Original objective ${state.objective_selector}`);
       // Source background uses TABLESN[CLRN[0] << 8 | destination].
       for (let y = row.blend_y; y < row.blend_y + row.blend_height; y++) for (let x = row.blend_x; x < row.blend_x + row.blend_width; x++) {
-        const at = y * 640 + x; screen[at] = blend[(this.objectiveBackground << 8) | screen[at]!]!;
-        if (coverage) coverage[at] = 255;
+        pixel(x, y, this.objectiveBackground, true, true);
       }
       for (let y = 0; y < row.render_height; y++) for (let x = 0; x < row.render_width; x++) {
         const i = y * row.render_width + x;
@@ -815,6 +856,11 @@ export class OriginalHud {
       }
       for (let y = 0; y < help.height; y++) for (let x = 0; x < help.width; x++)
         if (this.blob[help.mask.offset + y * help.width + x]) pixel(textX + x, textY + y, help.color);
+    }
+    if (codes) {
+      const rows = new Uint8Array(transferRows.length * 256);
+      transferRows.forEach((row, index) => rows.set(row, index * 256));
+      this.geometry = { codes, rows, rowCount: transferRows.length };
     }
     return screen;
   }
