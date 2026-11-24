@@ -1,5 +1,29 @@
 # Shared-engine delivery plan
 
+### NightSpire player information and spoken objectives — November 24
+
+NightSpire now draws its one actual player on the full map. On the same start
+save, holding Alt showed “PLAYER INFORMATION UNAVAILABLE” in the previous
+installed Original. The updated player showed PLAYER with maximum mana 1000;
+releasing Alt restored the map. The mission count limits visible rows, while
+the source keeps eight kill columns. A real-package check covers NightSpire,
+Payahandra’s two participants and an invalid in-range entity link. Chrome
+also displayed the repaired NightSpire row. Runtime `bf2a84b8` is pushed.
+The installed Original native is `2f477f43c882` and the browser native is
+`ddf6dffbd1c6`. The Unity build uses the matching existing managed ABI and
+the browser uses its campaign palette export.
+
+In the private browser, Payahandra’s opening objective selected original CD
+track 2, segment 4. A Chrome recording of both channels matched the owner
+recording. Turning Speech off survived a service restart and suppressed the cue
+through tick 35. Turning it on restored the cue on mission restart. The
+browser also presents the spell-ability improvement message; the earned
+scroll pickup and its on-screen notice together still need a connected check.
+Browser revisions `8ae4e10d` and `629d9b84` are pushed; `629d9b84` is
+installed. Evidence is under `research/private/generated/earned-campaign-20261124`
+and `research/private/generated/night-scoreboard-unity-20261124`. Physical
+audio output and the continuous earned campaign remain open.
+
 ### Flight sound and map controls in the private browser — November 24
 
 On an earned Payahandra save, casting Fireball spent 100 mana. The native
