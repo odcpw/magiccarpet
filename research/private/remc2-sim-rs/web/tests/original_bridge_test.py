@@ -27,6 +27,17 @@ spec.loader.exec_module(bridge_module)
 
 
 class OriginalBridgeTest(unittest.TestCase):
+    def test_full_stop_validates_a_source_pulse_and_overrides_earlier_actions(self):
+        m = bridge_module
+        command = dict(m.NEUTRAL, full_stop=True, cast_selected=True, recover_player=True, remove_castle_stage=True)
+        self.assertEqual(m.validate_command(command), command)
+        with self.assertRaises(ValueError):
+            m.validate_command(dict(m.NEUTRAL, full_stop=1))
+        native = mock.Mock()
+        self.assertEqual(m.selected_cast_or_recovery(native, command),
+                         dict(command, cast_selected=False, recover_player=False, remove_castle_stage=False))
+        native.counters.assert_not_called()
+
     def test_source_speed_uses_live_guards_and_leaves_blocked_action_untouched(self):
         native = bridge_module.Native.__new__(bridge_module.Native)
         native.handle = c.c_uint64(7)

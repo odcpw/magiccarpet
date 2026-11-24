@@ -39,7 +39,7 @@ let configuredMapCode: string | null = null;
 let configuredKeys: readonly (string | null)[] = [];
 let configuredNames: readonly string[] = [];
 let spellCloseOnRelease = false;
-let mouseX = 0, mouseY = 0, queuedCasts = 0, queuedRecovery = false;
+let mouseX = 0, mouseY = 0, queuedCasts = 0, queuedRecovery = false, queuedFullStops = 0;
 let removeCastleStage = false;
 let started = false, playing = false, busy = false, inputBusy = false;
 let controlsPending = 0;
@@ -386,7 +386,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
   const next = requestTail.then(request); requestTail = next.catch(() => undefined); return next;
 }
 
-function clearInput(): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; queuedRecovery = false; removeCastleStage = false; }
+function clearInput(preserveFullStop = false): void { keys.clear(); mouseButtons.clear(); consumedCycleButtons.clear(); mouseX = 0; mouseY = 0; queuedCasts = 0; queuedRecovery = false; removeCastleStage = false; if (!preserveFullStop) queuedFullStops = 0; }
 function showSpeechPreference(enabled: unknown, available: unknown): void {
   speechButton.disabled = available !== true || typeof enabled !== 'boolean';
   speechButton.textContent = speechButton.disabled ? 'Speech unavailable' : `Speech: ${enabled ? 'On' : 'Off'}`;
@@ -423,7 +423,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
   const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   const keepFlightInput = spellMutation || informationMutation || action === 'toggle_help' || action === 'toggle_flight_assistance' ||
-    action === 'toggle_sound' || action === 'toggle_music' || action === 'source_speed';
+    action === 'toggle_sound' || action === 'toggle_music' || action === 'toggle_speech' || action === 'source_speed';
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   if (action === 'pause' || action === 'load' || action === 'reset') {
@@ -436,7 +436,7 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
     lastArrival = 0; intervals.length = 0;
   }
-  if (!keepFlightInput) clearInput();
+  if (!keepFlightInput) clearInput(!['pause', 'load', 'reset'].includes(action));
   try {
     if (action === 'save' && campaignPhase === 'mission_select') await selectCampaignMission();
     const result = await post('/control', { action, ...fields });
@@ -697,10 +697,11 @@ async function sendInput(): Promise<void> {
     modernRequested ? undefined : configuredKeys);
   mouseX *= .65; mouseY *= .65;
   const recovery = queuedRecovery && !abandonOpen && !nativeMenus.spells_open && !nativeMenus.map_open;
+  const fullStop = queuedFullStops > 0 && !abandonOpen && !nativeMenus.spells_open;
   const input = { ...command, ...(removeCastleStage ? { remove_castle_stage: true } : {}),
-    ...(recovery ? { recover_player: true } : {}) };
+    ...(recovery ? { recover_player: true } : {}), ...(fullStop ? { full_stop: true } : {}) };
   removeCastleStage = false;
-  try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); if (recovery) queuedRecovery = false; }
+  try { await post('/input', { command: input }); if (cast) queuedCasts = Math.max(0, queuedCasts - 1); if (recovery) queuedRecovery = false; if (fullStop) queuedFullStops = Math.max(0, queuedFullStops - 1); }
   catch (error) { fail(error); }
   finally { inputBusy = false; }
 }
@@ -842,6 +843,11 @@ window.addEventListener('keydown', event => {
     if (!event.repeat && playing && !busy) void control('source_speed');
     return;
   }
+  if (!modernRequested && event.code === 'F4' && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    if (!event.repeat && !busy && !speechButton.disabled) void control('toggle_speech');
+    return;
+  }
   if (!modernRequested && (event.code === 'F5' || event.code === 'F6')) {
     event.preventDefault();
     const action = sourceAudioShortcut(event.code, event.shiftKey, event.altKey, event.repeat);
@@ -849,6 +855,11 @@ window.addEventListener('keydown', event => {
     return;
   }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
+  if (!modernRequested && event.code === 'Backspace') {
+    event.preventDefault();
+    if (!event.repeat && playing && !nativeMenus.spells_open) queuedFullStops = Math.min(4, queuedFullStops + 1);
+    return;
+  }
   heldMenuKeys.add(event.code);
   const modifiers = menuKeys();
   gameplayAudio.activate();

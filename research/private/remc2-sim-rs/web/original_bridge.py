@@ -445,7 +445,7 @@ NEUTRAL = {"longitudinal": "coast", "lateral": "neutral", "roll_axis": 0,
 
 
 def validate_command(value):
-    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage", "recover_player"}:
+    if not isinstance(value, dict) or not set(NEUTRAL) <= set(value) or set(value) - set(NEUTRAL) - {"show_objective", "remove_castle_stage", "recover_player", "full_stop"}:
         raise ValueError("invalid command fields")
     if value["longitudinal"] not in ("coast", "accelerate", "decelerate") or value["lateral"] not in ("neutral", "negative", "positive"):
         raise ValueError("invalid flight control")
@@ -458,11 +458,17 @@ def validate_command(value):
         raise ValueError("invalid Castle stage control")
     if "recover_player" in value and type(value["recover_player"]) is not bool:
         raise ValueError("invalid recovery control")
+    if "full_stop" in value and type(value["full_stop"]) is not bool:
+        raise ValueError("invalid full stop control")
     return dict(value)
 
 
 def selected_cast_or_recovery(native, command):
     """Resolve explicit recovery and legacy selected-cast input at the live player."""
+    # PlayerInput's Backspace action 39 overwrites an earlier action in the
+    # same source input pass, including recovery and Castle-stage removal.
+    if command.get('full_stop'):
+        return dict(command, cast_selected=False, recover_player=False, remove_castle_stage=False)
     if not command['cast_selected'] and not command.get('recover_player'):
         return command
     _, generation, tick = native.counters()
@@ -914,6 +920,8 @@ class Bridge:
                                     next_command["recover_player"] = True
                                 if command.get("remove_castle_stage"):
                                     next_command["remove_castle_stage"] = True
+                                if command.get("full_stop"):
+                                    next_command["full_stop"] = True
                                 command = next_command
                         elif kind == "control":
                             action = value.get("action")
@@ -1148,6 +1156,7 @@ class Bridge:
                             command = {**command, "cast_selected": False, "cast_left": False, "cast_right": False}
                             command.pop("remove_castle_stage", None)
                             command.pop("recover_player", None)
+                            command.pop("full_stop", None)
                         turns += 1
                         deadline += 1/30
                         observation = native.observe()

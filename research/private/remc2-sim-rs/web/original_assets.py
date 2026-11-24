@@ -314,7 +314,8 @@ class OriginalAssets:
                                ('participant.help_mode_on', 400), ('participant.help_mode_off', 401),
                                ('participant.flight_assistance_on', 398), ('participant.flight_assistance_off', 399),
                                ('participant.game_speed_normal', 381), ('participant.game_speed_fast', 382),
-                               ('participant.game_speed_super_fast', 383)):
+                               ('participant.game_speed_super_fast', 383),
+                               ('participant.speech_on', 469), ('participant.speech_off', 470)):
             record = locale['records'][selector]
             start, length = record['offset'], record['bytes']
             text = records[start:start + length]
