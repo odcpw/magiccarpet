@@ -1,5 +1,24 @@
 # Shared-engine delivery plan
 
+### Payahandra experience scroll sound in the private Original — November 24
+
+The browser now looks up missing gameplay sounds in the selected mission's
+owner cache. A matching presentation sample keeps priority. Across all 30
+installed packages, all 1,617 previously available mission/sample pairs kept
+their descriptors. Payahandra now resolves original sound 63, `SPELLUP.WAV`.
+
+In the whole Payahandra package, five controlled player positions activated
+the authored switches. On contact, row 248 awarded four Fireball experience
+points and emitted sound 63 on the same turn. These four points did not cross
+a spell tier. In a separate Chrome check the captured event fetched the
+25,824-byte owner WAV and started its 1.16-second Web Audio source. The
+single forward-flight attempt ended before reaching the scroll. A live browser
+pickup and physical audio output remain unobserved.
+
+Browser `01ae67c2` is pushed and installed on native `cd6fe94208a6`.
+The installed NightSpire opened with 10,000 life, 1,000 mana, Fireball and
+Possession. Evidence is in `research/private/generated/scroll-audio-20261124/`.
+
 ### Wizard loss, restart and F9 in the private Original — November 24
 
 In the installed NightSpire, Shift+K set the wizard's life to −1. The death
@@ -238,8 +257,9 @@ In the private browser, Payahandra’s opening objective selected original CD
 track 2, segment 4. A Chrome recording of both channels matched the owner
 recording. Turning Speech off survived a service restart and suppressed the cue
 through tick 35. Turning it on restored the cue on mission restart. The
-browser also presents the spell-ability improvement message; the earned
-scroll pickup and its on-screen notice together still need a connected check.
+browser also presents the spell-ability improvement message when a pickup
+crosses a tier. The four-point Payahandra pickup is covered above. An earned
+tier crossing and its on-screen notice together remain unobserved.
 Browser revisions `8ae4e10d` and `629d9b84` are pushed; `629d9b84` is
 installed. Evidence is under `research/private/generated/earned-campaign-20261124`
 and `research/private/generated/night-scoreboard-unity-20261124`. Physical
