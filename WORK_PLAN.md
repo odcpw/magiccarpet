@@ -1,6 +1,22 @@
 # Shared-engine delivery plan
 
-### Installed browser brightness and outdoor reflections; next Castle check — November 24
+### Castle collector cleanup in the private Original — November 24
+
+Runtime `d7d89563` is pushed and installed with native `e9a394b13f4a`.
+On the same paid NightSpire Castle checkpoint, the old collector kept flying
+after demolition. The fixed runtime retired it on the update that removed
+the Castle. Both rival Castle-loss checks passed, including the eligible
+rival's replacement and paid upgrade. The full-pool regression confirmed
+that collectors retire even when releasing the Castle's mana reclaims its
+slot first. The browser opened NightSpire on the matching native.
+
+The same build passed focused checks for the Bee absence switch, the
+Payahandra vault objective opening its exit, and the experience-scroll
+award through tier publication and reset. This covers those routes.
+The broader objective and reward acceptance stays open. Evidence is under
+`research/private/generated/earned-campaign-20261124/castle-defender/`.
+
+### Installed browser brightness and outdoor reflections — November 24
 
 Private Three.js Original `37739e43` is installed on runtime `2d753b7e`.
 In Payahandra, F7 cycled Day brightness from 4 to 0 and changed both HUD
@@ -10,14 +26,8 @@ The GPU outlines still differ from the native reference. The combined
 build opened the map and returned to flight on the RTX 3090. On the installed
 service NightSpire opened with 10,000 life, 1,000 mana, Fireball and Possession.
 
-The next gameplay check is the Castle collector. The installed engine leaves
-a balloon flying after the last Castle disappears. The two-file working
-patch runs remc2's final collector update on the Castle that was just hidden.
-The final patch is unverified and unshipped. Resume with the paid NightSpire
-demolition and the Level 5 rival's paid rebuild. Use the forward source rule
-for every play session. Evidence is under `research/private/generated/` in
-`geometry-reflection-20261124`, `f7-brightness-20261124` and
-`earned-campaign-20261124/castle-defender`.
+Evidence is under `research/private/generated/` in
+`geometry-reflection-20261124` and `f7-brightness-20261124`.
 
 ### Payahandra experience scroll sound in the private Original — November 24
 
