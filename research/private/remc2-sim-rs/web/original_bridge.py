@@ -743,7 +743,7 @@ class Bridge:
                                 if action == "map": extra = {"abandon_action": "toggle_gameplay_map"}
                                 elif action == "menu":
                                     menu_action = value.get("menu_action")
-                                    if menu_action not in ("open_spell_menu", "close_spell_menu", "toggle_gameplay_map", "close_gameplay_menus", "open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
+                                    if menu_action not in ("open_spell_menu", "close_spell_menu", "toggle_gameplay_map", "show_player_information", "hide_player_information", "close_gameplay_menus", "open_abandon_confirmation", "confirm_abandon", "cancel_abandon_confirmation"):
                                         raise ValueError("invalid menu action")
                                     extra = {"abandon_action": menu_action}
                                 elif action == "cycle_marked_spell":

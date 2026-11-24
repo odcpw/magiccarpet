@@ -31,6 +31,7 @@ let mouseX = 0, mouseY = 0, queuedCasts = 0;
 let started = false, playing = false, busy = false, inputBusy = false;
 let controlsPending = 0;
 let spellMutationPending = false;
+let informationPending = false, informationHeld = false;
 let inputSequence = 0, controlVersion = 0;
 let connected = false;
 let leavingPage = false;
@@ -41,7 +42,7 @@ const emptyScene = new Uint8Array(64000), hudCoverage = new Uint8Array(640 * 480
 let tables: IndexedBlendTables | undefined;
 let hud: OriginalHud;
 let spellMenu: SpellMenu | null = null;
-let nativeMenus = { map_open: false, spells_open: false };
+let nativeMenus = { map_open: false, spells_open: false, player_information_open: false };
 let abandonOpen = false;
 let hoveredSlot = 0, hoveredTier = 0, intentionalUnlock = false;
 let touchHand: 'left' | 'right' = 'left';
@@ -56,7 +57,7 @@ const enterMissionKey = 'mc2-browser-enter-mission';
 const history = new OriginalSceneHistory();
 
 function updateMapInspectionLabel(text: string | null): void {
-  const label = text ? `Map inspection: ${text}` : 'Map inspection: click or tap an exit marker.';
+  const label = text ? `Map inspection: ${text}` : 'Map inspection: click or tap an exit marker. Hold Alt for player information.';
   canvas.setAttribute('aria-label', label);
   element('hint').textContent = label;
 }
@@ -157,7 +158,7 @@ interface BridgeState extends OriginalHudState {
   paused: boolean;
   show_help?: boolean;
   hint_entities?: { entity: number; x: number; y: number }[];
-  source_menu_admission?: { map_open: boolean; spells_open: boolean } | null;
+  source_menu_admission?: { map_open: boolean; spells_open: boolean; player_information_open: boolean } | null;
   source_menu_state?: number;
   objective?: { is_level_end: number; text_selector: number } | null;
   player_pose: { x: number; y: number; z: number; yaw: number };
@@ -313,7 +314,7 @@ function showMenu(text: string): void {
 }
 function hideMenu(): void {
   curtain.hidden = true; menuButton.hidden = false; element('hint').hidden = false; element('touch').hidden = false;
-  element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Ctrl: spells';
+  element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
   element('look-hint').hidden = false;
 }
 function fail(error: unknown): void {
@@ -328,13 +329,14 @@ function fail(error: unknown): void {
 
 async function control(action: string, fields: Record<string, unknown> = {}): Promise<void> {
   const spellMutation = action === 'mark_spell' || action === 'cycle_marked_spell';
+  const informationMutation = action === 'menu' && (fields.menu_action === 'show_player_information' || fields.menu_action === 'hide_player_information');
   if (spellMutation && spellMutationPending) return;
   if (spellMutation) spellMutationPending = true;
   controlsPending++; busy = true; controlVersion++;
   if (['start', 'pause', 'resume', 'load', 'reset'].includes(action)) {
     lastArrival = 0; intervals.length = 0;
   }
-  if (!spellMutation) clearInput();
+  if (!spellMutation && !informationMutation) clearInput();
   try {
     const result = await post('/control', { action, ...fields });
     if (action === 'start' || action === 'resume') {
@@ -348,16 +350,24 @@ async function control(action: string, fields: Record<string, unknown> = {}): Pr
       if (playing) hideMenu();
     }
     else if (action === 'menu' && result.phase === 'title') showCampaign(await readStatus());
-    if (action !== 'start' && !spellMutation && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
+    if (action !== 'start' && !spellMutation && !informationMutation && document.pointerLockElement === canvas) { intentionalUnlock = true; document.exitPointerLock(); }
     if (isGeometryDisplay(display)) display.setPlaying(playing);
   } catch (error) {
     if (spellMutation) spellMutationPending = false;
+    if (informationMutation) informationPending = false;
     // A refused save/selection leaves the existing native owner intact.
     message.textContent = error instanceof Error ? error.message : String(error);
     if (!playing) showMenu(message.textContent);
     else { element('hint').textContent = message.textContent; element('hint').hidden = false; }
   }
   finally { controlsPending--; busy = controlsPending > 0; }
+}
+
+function syncPlayerInformation(): void {
+  if (!playing || busy || informationPending || abandonOpen || !nativeMenus.map_open || nativeMenus.spells_open) return;
+  if (informationHeld === nativeMenus.player_information_open) return;
+  informationPending = true;
+  void control('menu', { menu_action: informationHeld ? 'show_player_information' : 'hide_player_information' });
 }
 
 let display: IndexedDisplay | GeometryDisplay;
@@ -414,8 +424,9 @@ async function pollFrame(): Promise<void> {
     if (version !== controlVersion) return;
     lastFrame = frame;
     spellMutationPending = false;
+    informationPending = false;
     const wasMapOpen = nativeMenus.map_open, wasSpellsOpen = nativeMenus.spells_open;
-    nativeMenus = state.source_menu_admission ?? { map_open: false, spells_open: false };
+    nativeMenus = state.source_menu_admission ?? { map_open: false, spells_open: false, player_information_open: false };
     const wasAbandonOpen = abandonOpen;
     abandonOpen = state.source_menu_state === 13 || state.source_menu_state === 14;
     element('abandon-dialog').hidden = !abandonOpen;
@@ -423,13 +434,13 @@ async function pollFrame(): Promise<void> {
     if (nativeMenus.spells_open !== wasSpellsOpen) {
       element('hint').textContent = nativeMenus.spells_open
         ? 'Shift+left/right click marks or unmarks a spell for that hand'
-        : 'Shift+click: next marked spell · Alt+click: previous · Ctrl: spells';
+        : 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
     }
     if (nativeMenus.map_open && !wasMapOpen && !(display instanceof ModernWorldRenderer)) updateMapInspectionLabel(null);
     if (!nativeMenus.map_open && wasMapOpen && !(display instanceof ModernWorldRenderer)) {
       inspectedExit = null;
       canvas.setAttribute('aria-label', `${currentLevelName} game view`);
-      element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Ctrl: spells';
+      element('hint').textContent = 'Shift+click: next marked spell · Alt+click: previous · Hold Alt on map: player information · Ctrl: spells';
     }
     document.body.dataset.gameMenu = element('touch').dataset.menu = nativeMenus.spells_open ? 'spells' : 'flight';
     element('touch-hand').hidden = !nativeMenus.spells_open;
@@ -442,7 +453,8 @@ async function pollFrame(): Promise<void> {
       (state.objective ? hud.objectiveRecord(state.objective.text_selector, state.objective.is_level_end !== 0) : null);
     const hudState: OriginalHudState = { ...state, source_top_status: source.source_top_status,
       panels_opaque: source.spell_menu_panels_opaque, objective_selector: objectiveSelector,
-      objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu };
+      objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu,
+      player_information: nativeMenus.player_information_open ? source.source_scoreboard : null };
     const sourceGeneration = `${frame.runtimeGeneration}:${frame.sessionGeneration}`;
     if (sourceGeneration !== inspectionGeneration) { inspectedExit = null; inspectionGeneration = sourceGeneration; }
     if (display instanceof ModernWorldRenderer) hudState.world_map = undefined;
@@ -457,7 +469,7 @@ async function pollFrame(): Promise<void> {
     const advanceHints = (entities: readonly { entity: number; x: number; y: number }[]) =>
       hud.advanceMapHints(hudState, { generation: sourceGeneration, sequence: frame.sequence.toString(),
         enabled: state.show_help === true, paused: state.paused,
-        suppressed: abandonOpen || nativeMenus.spells_open || source.player_vitals.life < 0 ||
+        suppressed: abandonOpen || nativeMenus.spells_open || nativeMenus.player_information_open || source.player_vitals.life < 0 ||
           source.objective_textbox_ticks > 0 || source.exit_sequence_active || state.objective?.is_level_end !== 0,
         player: state.player_pose, entities: [...entities, ...(state.hint_entities ?? [])] });
     // Flight history is independent of map presentation and remains at the
@@ -506,6 +518,7 @@ async function pollFrame(): Promise<void> {
     display.present(hud.compose(nativeMenus.map_open ? visible.indices : scene, visible.palette, hudState), visible.palette);
     }
     Object.assign(window, { originalState: state, originalObservation: observation });
+    syncPlayerInformation();
     if (started && !busy && source.source_menu_admission?.spells_open && document.pointerLockElement === canvas) {
       intentionalUnlock = true; document.exitPointerLock();
     }
@@ -563,7 +576,7 @@ const hudPoint = (x: number, y: number): [number, number] => {
   const rect = canvas.getBoundingClientRect(); return [(x - rect.left) * 640 / rect.width, (y - rect.top) * 480 / rect.height];
 };
 canvas.addEventListener('pointerdown', event => {
-  if (!playing || abandonOpen || busy || consumedCycleButtons.has(event.button)) return;
+  if (!playing || abandonOpen || (busy && !informationPending) || consumedCycleButtons.has(event.button)) return;
   if (nativeMenus.spells_open && spellMenu) {
     event.preventDefault();
     if (event.button === 0 || event.button === 2) spellMenuButtons.add(event.button);
@@ -646,19 +659,21 @@ window.addEventListener('keydown', event => {
   if (campaignPhase || !started || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (abandonOpen) { if (event.code === 'Escape') { event.preventDefault(); void control('menu', { menu_action: 'cancel_abandon_confirmation' }); } return; }
   if (!playing && !['Escape','KeyP','F5','F9'].includes(event.code)) return;
-  if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','Tab'].includes(event.code)) event.preventDefault();
+  if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Escape','F5','F9','Tab','AltLeft','AltRight'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.repeat) return;
   if (event.code === 'Space') queuedCasts = Math.min(4, queuedCasts + 1);
   if (event.code === 'Escape' && playing && !nativeMenus.spells_open) void control('menu', { menu_action: 'open_abandon_confirmation' });
   else if (event.code === 'KeyP' || (event.code === 'Escape' && !playing)) void control(playing ? 'pause' : 'resume');
   if (event.code === 'ControlLeft' || event.code === 'ControlRight') { spellControlHeld = true; spellCloseOnRelease = false; void control('menu', { menu_action: 'open_spell_menu' }); }
+  if (event.code === 'AltLeft' || event.code === 'AltRight') { informationHeld = true; syncPlayerInformation(); }
   if (event.code === 'F5') void control('save');
   if (event.code === 'F9') void control('load');
   if (event.code === 'Tab') void control('map');
 });
 window.addEventListener('keyup', event => {
   keys.delete(event.code);
+  if (event.code === 'AltLeft' || event.code === 'AltRight') { informationHeld = event.altKey; syncPlayerInformation(); }
   if (event.code === 'ControlLeft' || event.code === 'ControlRight') {
     spellControlHeld = event.ctrlKey;
     if (playing && !spellControlHeld) {
@@ -667,7 +682,7 @@ window.addEventListener('keyup', event => {
     }
   }
 });
-window.addEventListener('blur', () => { spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); clearInput(); if (playing) void control('pause'); });
+window.addEventListener('blur', () => { informationHeld = false; spellControlHeld = false; spellCloseOnRelease = false; spellMenuButtons.clear(); clearInput(); if (playing) void control('pause'); });
 window.addEventListener('beforeunload', () => { leavingPage = true; connected = false; playing = false; clearInput(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { clearInput(); if (playing) void control('pause'); } });
 element('touch-map').addEventListener('click', () => void control('map'));

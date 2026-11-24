@@ -74,6 +74,24 @@ test('split world map retains native map scale and rejects stale rows', () => {
   assert.throws(() => hud.compose(scene, palette, {...state, world_map: {entities: [], marks: [{...mark, tick: 4}]}}), /Stale/);
 });
 
+test('player information draws live owner rows on the map and clears on release', () => {
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const map = {...state, top_bar_visible: false, world_map: {entities: [], marks: []}};
+  const plain = hud.compose(scene, palette, map);
+  const board = { projection_error: null, players: [{source_slot: 0, display_name: 'Player',
+    outline_palette_index: 41, text_palette_index: 42, max_mana: 123,
+    kills8: [0, 0, 0, 0, 0, 0, 0, 0]}] };
+  const visible = hud.compose(scene, palette, {...map, player_information: board});
+  // One source row is centred using the 104x38 and 36x38 owner tiles.
+  assert.equal(visible[225 * 640 + 288], 41);
+  const withObjective = hud.compose(scene, palette, {...map, player_information: board, objective_visible: true, objective_selector: 48});
+  assert.equal(withObjective[244 * 640 + 288], 41, 'scoreboard stays above the objective textbox');
+  assert.ok(visible.includes(42), 'owner font draws the native name and mana in the player colour');
+  assert.notDeepEqual(visible, plain);
+  assert.deepEqual(hud.compose(scene, palette, {...map, player_information: null}), plain);
+  assert.throws(() => hud.compose(scene, palette, {...map, player_information: {...board, projection_error: 'missing'}}), /unavailable/);
+});
+
 test('corner Beyond Sight names follow the source aperture and low-resolution FONT1 placement', () => {
   const dot = { generation: 5, tick: 3, source_order: 1, subject_entity_index: 344, x: 65, y: 63,
     selector: 0, palette_index: 119, kind: 1, size: 1, anchor: 0, visible: 1 };

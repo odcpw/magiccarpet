@@ -206,7 +206,7 @@ class OriginalAssets:
         colors = env_cache.read('palette/colors.u8')
         if len(colors) != 4096:
             raise ValueError('invalid Night color table')
-        objectives, objective_stages, objective_end = self._objectives(
+        objectives, objective_stages, objective_end, gameplay_font = self._objectives(
             help_cache or DEFAULT_MENU, profile, colors, add)
         help_rows = self._exit_help(help_cache, profile, colors, add) if help_cache else None
         self.blob = bytes(blob)
@@ -214,6 +214,7 @@ class OriginalAssets:
                          'objective_background': colors[0], 'map_cross_color': colors[4095],
                          'exit': exit_table, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
                          'objectives': objectives, 'tiers': tiers, 'help': help_rows, 'font1': font1,
+                         'gameplay_font': gameplay_font,
                          'objective_stage_records': objective_stages, 'objective_end_record': objective_end,
                          'map_profile': profile['map_type']['name'].lower(), 'hud_profile': 'night'}
 
@@ -250,12 +251,15 @@ class OriginalAssets:
             raise ValueError('source objective font differs')
         font = next(row for row in lm['fonts'] if row['id'] == 'hfont3')
         masks = language.read(font['masks_path'])
+        gameplay_font = []
         for glyph in font['glyphs']:
             offset, count = glyph['offset'], glyph['length']
             data = masks[offset:offset + count]
             if (offset < 0 or count != glyph['width'] * glyph['height'] or len(data) != count or
                     hashlib.sha256(data).hexdigest() != glyph['sha256'] or any(value not in (0, 1) for value in data)):
                 raise ValueError('invalid source objective glyph')
+            gameplay_font.append({'selector': glyph['index'], 'width': glyph['width'],
+                                  'height': glyph['height'], 'mask': add(data)})
         name = profile['map_type']['name'].lower()
         source_profile = next(row for row in manifest['objective']['profiles'] if row['id'] == name)
         sprites = {}
@@ -292,7 +296,7 @@ class OriginalAssets:
                          'blend_x': blend['x'], 'blend_y': blend['y'],
                          'blend_width': blend['width'], 'blend_height': blend['height'],
                          'indices': add(data[:plane]), 'mask': add(data[plane:])})
-        return rows, stages, end
+        return rows, stages, end, gameplay_font
 
     @staticmethod
     def _exit_help(help_cache: Path, profile: dict, colors: bytes, add) -> dict | None:

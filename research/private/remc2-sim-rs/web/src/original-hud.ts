@@ -8,7 +8,7 @@ type TierRow = { tier: number; width: number; height: number; color: number; rgb
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
 type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; box_width?: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
 type FontGlyph = { selector: number; width: number; height: number; mask: Span };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; help?: Record<string, HelpRow> | null };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; objective_stage_records: number[]; objective_end_record: number; tiers: TierRow[]; font1?: FontGlyph[]; gameplay_font?: FontGlyph[]; help?: Record<string, HelpRow> | null };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -36,6 +36,7 @@ export interface OriginalHudState {
   exit_inspection_subject?: number | null;
   source_top_status?: SourceTopStatus | null;
   spell_menu?: SpellMenu | null;
+  player_information?: { players: readonly { source_slot: number; display_name: string; outline_palette_index: number; text_palette_index: number; max_mana: number; kills8: readonly number[] }[]; projection_error: string | null } | null;
   pause_menu?: { open: boolean; can_load: boolean; sound_enabled: boolean; music_enabled: boolean } | null;
 }
 export interface SpellMenuRow {
@@ -64,6 +65,7 @@ export class OriginalHud {
   private readonly sprites = new Map<number, SpriteRow>();
   private readonly symbols = new Map<number, SymbolRow>();
   private readonly mapFont = new Map<number, FontGlyph>();
+  private readonly gameplayFont = new Map<number, FontGlyph>();
   private readonly objectives = new Map<number, ObjectiveRow>();
   private readonly objectiveStages: number[];
   private readonly objectiveEnd: number;
@@ -138,6 +140,11 @@ export class OriginalHud {
       if (glyph.width <= 0 || glyph.height <= 0 || span(glyph.mask).length !== glyph.width * glyph.height || this.mapFont.has(glyph.selector))
         throw new Error('Invalid Original FONT1 glyph');
       this.mapFont.set(glyph.selector, glyph);
+    }
+    for (const glyph of manifest.gameplay_font ?? []) {
+      if (glyph.width < 0 || glyph.height < 0 || span(glyph.mask).length !== glyph.width * glyph.height || this.gameplayFont.has(glyph.selector))
+        throw new Error('Invalid Original gameplay glyph');
+      this.gameplayFont.set(glyph.selector, glyph);
     }
     for (const row of manifest.objectives) {
       if (span(row.indices).length !== row.render_width * row.render_height || span(row.mask).length !== row.render_width * row.render_height) throw new Error('Invalid Original objective');
@@ -545,6 +552,54 @@ export class OriginalHud {
         }
       }
     }
+    const drawPlayerInformation = () => {
+      if (!state.player_information) return;
+      const board = state.player_information, large = this.symbols.get(85), mini = this.symbols.get(86);
+      if (board.projection_error || !large || !mini || !this.gameplayFont.size || board.players.length > 8 ||
+          board.players.some((p, i) => p.source_slot < 0 || p.source_slot >= 8 || (i > 0 && p.source_slot <= board.players[i - 1]!.source_slot) ||
+            !p.display_name || [...p.display_name].some(c => c.charCodeAt(0) === 0 || c.charCodeAt(0) > 255) || p.kills8.length !== 8))
+        throw new Error('Original player information unavailable');
+      const tile = (row: SymbolRow, x: number, y: number) => {
+        for (let dy = 0; dy < row.height * 2; dy++) for (let dx = 0; dx < row.width * 2; dx++) {
+          const i = Math.floor(dy / 2) * row.width + Math.floor(dx / 2);
+          if (this.blob[row.mask.offset + i]) pixel(x + dx, y + dy, this.blob[row.indices.offset + i]!);
+        }
+      };
+      const outline = (x: number, y: number, w: number, h: number, color: number) => {
+        fill(x, y, w, 1, color); fill(x, y + h - 1, w, 1, color);
+        fill(x, y + 1, 1, h - 2, color); fill(x + w - 1, y + 1, 1, h - 2, color);
+      };
+      const text = (value: string, x: number, y: number, color: number) => {
+        for (const ch of value) {
+          const code = ch.charCodeAt(0), glyph = this.gameplayFont.get(code + 1);
+          if (!glyph) throw new Error('Missing Original gameplay glyph');
+          if (code !== 32 && code !== 9) for (let gy = 0; gy < glyph.height; gy++) for (let gx = 0; gx < glyph.width; gx++)
+            if (this.blob[glyph.mask.offset + gy * glyph.width + gx]) pixel(x + gx, y + gy, color);
+          x += code === 32 || code === 9 ? this.gameplayFont.get(33)!.width : glyph.width;
+        }
+      };
+      const lw = large.width * 2, lh = large.height * 2, mw = mini.width * 2, mh = mini.height * 2;
+      const x = Math.trunc((640 - (board.players.length * mw + mw)) / 2);
+      let y = Math.trunc((480 - board.players.length * lh) / 2);
+      for (const player of board.players) {
+        tile(large, x, y); outline(x + 4, y + 4, lw - 8, lh - 8, player.outline_palette_index);
+        text(player.display_name, x + 8, y + 6, player.text_palette_index);
+        text(String(player.max_mana), x + 8, y + 20, player.text_palette_index);
+        let mx = x + lw;
+        for (const opponent of board.players) {
+          tile(mini, mx, y);
+          const own = opponent.source_slot === player.source_slot;
+          outline(mx + 4, y + 4, mw - 8, mh - 8, own ? this.objectiveBackground : opponent.outline_palette_index);
+          if (!own) {
+            const kills = player.kills8[opponent.source_slot]!;
+            const formatted = kills < 0 ? '-' + String(-kills).padStart(2, '0') : String(kills).padStart(3, '0');
+            text(formatted, mx + 8, y + 10, opponent.text_palette_index);
+          }
+          mx += mw;
+        }
+        y += mh;
+      }
+    };
     if (state.pause_menu?.open) {
       // DrawPauseMenu_2FD90; selectors 175–177 use source twice-shading when disabled.
       const baseX = 268, baseY = 76;
@@ -582,6 +637,7 @@ export class OriginalHud {
         if (this.blob[row.mask.offset + i]) pixel(row.reference_x + x, row.reference_y + y, this.blob[row.indices.offset + i]!);
       }
     }
+    drawPlayerInformation();
     const inspected = state.exit_inspection_subject ? this.exitMarker(state, state.exit_inspection_subject) : undefined;
     const automatic = this.hintDraw;
     const help = inspected ? this.exitHelp : automatic ? this.mapHelp.get(automatic.row) : undefined;
