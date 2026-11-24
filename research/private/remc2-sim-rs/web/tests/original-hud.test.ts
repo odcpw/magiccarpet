@@ -74,6 +74,49 @@ test('split world map retains native map scale and rejects stale rows', () => {
   assert.throws(() => hud.compose(scene, palette, {...state, world_map: {entities: [], marks: [{...mark, tick: 4}]}}), /Stale/);
 });
 
+test('explicit exit-map inspection follows the admitted source marker and uses owner help pixels', async () => {
+  const generated = new URL('../../../generated/', import.meta.url).pathname;
+  const capture = spawnSync('python3', ['-c', `import base64,json,sys
+from pathlib import Path
+sys.path.insert(0,'${new URL('..', import.meta.url).pathname}')
+from original_assets import OriginalAssets
+g=Path('${generated}')
+x=OriginalAssets.from_package({'package_dir':str(g/'dragon-bee-20261105-integration/level5-owner-current/level5'),
+ 'owner_cache_path':str(g/'secret-lifecycle-20261111-source4-environment')},g/'exit-help-row83-20261124-candidate')
+print(json.dumps({'manifest':x.manifest,'blob':base64.b64encode(x.blob).decode()}))`],
+    { encoding: 'utf8', maxBuffer: 4_000_000 });
+  if (capture.status !== 0) throw new Error(capture.stderr);
+  const qualified = JSON.parse(capture.stdout);
+  const bytes = Uint8Array.from(Buffer.from(qualified.blob, 'base64'));
+  globalThis.fetch = async input => String(input).endsWith('/manifest')
+    ? new Response(JSON.stringify(qualified.manifest)) : new Response(bytes);
+  let dayHud: OriginalHud;
+  try { dayHud = await OriginalHud.load('/original-api'); } finally { globalThis.fetch = savedFetch; }
+  assert.equal(qualified.manifest.map_profile, 'day');
+  assert.equal(qualified.manifest.help['83'].text, 'Fly here to exit the level');
+  const marker = {generation: 5, tick: 3, subject_entity_index: 298, help_selector: 83,
+    x: 67, y: 4, selector: 84, palette_index: 0, kind: 2, size: 0, anchor: 3, visible: 1};
+  const visible: OriginalHudState = {...state, world_map: {entities: [marker], marks: []}, exit_inspection_allowed: true};
+  assert.equal(dayHud.exitMarkerAt(visible, 134, 10), 298);
+  assert.equal(dayHud.exitMarkerAt(visible, 250, 100), null);
+  assert.equal(dayHud.exitInspectionText(visible, 298), qualified.manifest.help['83'].text);
+  const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
+  const baseline = dayHud.compose(scene, palette, visible);
+  const coverage = new Uint8Array(640 * 480);
+  const inspected = dayHud.compose(scene, palette, {...visible, exit_inspection_subject: 298}, coverage);
+  assert.notDeepEqual(inspected, baseline, 'inspection draws owner text and its source-frame leader');
+  assert.equal(inspected[10 * 640 + 134], qualified.manifest.help['83'].line_color, 'leader reaches the map marker');
+  assert.equal(coverage[10 * 640 + 134], 255);
+  const moved = {...visible, world_map: {entities: [{...marker, x: 70, y: 8}], marks: []}};
+  assert.equal(dayHud.exitMarkerAt(moved, 140, 20), 298);
+  assert.notDeepEqual(dayHud.compose(scene, palette, {...moved, exit_inspection_subject: 298}), inspected);
+  const stale = {...visible, world_map: {entities: [{...marker, generation: 6}], marks: []}};
+  assert.equal(dayHud.exitInspectionText(stale, 298), null);
+  assert.equal(dayHud.exitInspectionText({...visible, exit_inspection_allowed: false}, 298), null);
+  assert.equal(dayHud.exitInspectionText({...visible, world_map: {entities: [], marks: []}}, 298), null);
+  assert.equal(dayHud.exitMarkerAt({...visible, world_map: {entities: [{...marker, y: -1}], marks: []}}, 134, 0), null);
+});
+
 test('source Castle and balloon rows control status bars', () => {
   const scene = new Uint8Array(64000).fill(7), palette = new Uint8Array(768);
   const status = {castle_rows: [{stage: 1, panel_selector: 41, icon_selector: 43, life: 40, max_life: 100,

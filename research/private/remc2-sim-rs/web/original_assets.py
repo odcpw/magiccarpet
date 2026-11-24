@@ -6,6 +6,7 @@ thread, and serve only ``manifest`` and ``blob`` through the loopback bridge.
 from __future__ import annotations
 
 import ctypes as c
+import hashlib
 import json
 from pathlib import Path
 
@@ -60,27 +61,93 @@ def read_hud(lib, handle, generation: int, tick: int) -> dict:
     return result
 
 
+class _VerifiedCache:
+    """Read only receipt-bound files below one explicitly selected cache."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root).resolve(strict=True)
+        manifest_path = (self.root / 'manifest.json').resolve(strict=True)
+        if not manifest_path.is_relative_to(self.root):
+            raise ValueError('cache manifest escapes selected root')
+        self.manifest = json.loads(manifest_path.read_bytes())
+        rows = self.manifest.get('outputs')
+        if not isinstance(rows, list):
+            raise ValueError('cache has no output receipts')
+        self.receipts = {row['path']: row for row in rows}
+        if len(self.receipts) != len(rows):
+            raise ValueError('duplicate cache output receipt')
+
+    def read(self, relative: str) -> bytes:
+        if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+            raise ValueError('invalid cache output path')
+        path = (self.root / relative).resolve(strict=True)
+        if not path.is_relative_to(self.root):
+            raise ValueError('cache output escapes selected root')
+        receipt = self.receipts.get(relative)
+        if receipt is None:
+            raise ValueError(f'unlisted cache output: {relative}')
+        if (not isinstance(receipt['bytes'], int) or not 0 <= receipt['bytes'] <= 16 * 1024 * 1024 or
+                path.stat().st_size != receipt['bytes']):
+            raise ValueError(f'invalid cache output size: {relative}')
+        data = path.read_bytes()
+        if len(data) != receipt['bytes'] or hashlib.sha256(data).hexdigest() != receipt['sha256']:
+            raise ValueError(f'cache output receipt mismatch: {relative}')
+        return data
+
+
 class OriginalAssets:
     """Bounded source sprite bundle; HTTP callers never supply filesystem paths."""
-    def __init__(self, root: Path = ROOT):
+    @classmethod
+    def from_package(cls, resource_dict: dict, help_cache: Path | None = None):
+        package = Path(resource_dict['package_dir']).resolve(strict=True)
+        level = json.loads((package / 'manifest.json').read_bytes())['level']
+        candidates = [resource_dict.get('presentation_cache_path'), resource_dict.get('owner_cache_path')]
+        environment = next((Path(path) for path in candidates if path and
+                            (Path(path) / 'materials/descriptor.json').is_file()), None)
+        if environment is None:
+            raise ValueError('selected package has no qualified environment cache')
+        result = cls(environment=environment, help_cache=help_cache)
+        profile = result._environment_profile
+        if (profile['external_level'], profile['internal_level'], profile['map_type']['id']) != (
+                level['external'], level['internal'], level['map_type']['id']):
+            raise ValueError('environment cache does not match selected package')
+        return result
+
+    def __init__(self, root: Path = ROOT, *, environment: Path | None = None,
+                 help_cache: Path | None = None):
         night = root / 'night-presentation-v6'
-        environment = root / 'environment-complete' / 'cache-level1'
-        source = json.loads((night / 'hud/level1.json').read_text())
+        environment = environment or root / 'environment-complete' / 'cache-level1'
+        hud_cache, env_cache = _VerifiedCache(night), _VerifiedCache(environment)
+        source = json.loads(hud_cache.read('hud/level1.json'))
         blob = bytearray()
         def add(data: bytes):
             offset = len(blob)
             blob.extend(data)
             return {'offset': offset, 'length': len(data)}
-        tables = (environment / 'palette/tables.u8').read_bytes()
+        tables = env_cache.read('palette/tables.u8')
         if len(tables) != 83456:
             raise ValueError('invalid Night palette tables')
         normal = add(tables[0x4000:0x14000])
         aperture = add(tables[0x14300:0x14400])
-        # Night uses TABLESN for history, including exit; GTD2 exists only for Day.
+        environment_descriptor = json.loads(env_cache.read('materials/descriptor.json'))
+        profile = environment_descriptor['profile']
+        self._environment_profile = profile
+        map_type = profile['map_type']['id']
+        if map_type not in (0, 1, 2):
+            raise ValueError('unsupported environment map profile')
+        exit_table = normal
+        if map_type == 0:
+            exit_path = environment_descriptor.get('day_exit_tables', {}).get('path')
+            if not exit_path:
+                raise ValueError('Day environment lacks its source GTD2 table')
+            exit_data = env_cache.read(exit_path)
+            if len(exit_data) != 65536:
+                raise ValueError('invalid Day exit table')
+            exit_table = add(exit_data)
         rows = []
         for row in source['bitmap_assets']:
             width, height = row['stored_width'], row['stored_height']
-            indices, mask = (night / row['indices_path']).read_bytes(), (night / row['mask_path']).read_bytes()
+            indices, mask = hud_cache.read(row['indices_path']), hud_cache.read(row['mask_path'])
             if len(indices) != width * height or len(mask) != len(indices):
                 raise ValueError(f"invalid source sprite {row['selector']}")
             rows.append({'selector': row['selector'], 'width': width, 'height': height,
@@ -88,7 +155,7 @@ class OriginalAssets:
                          'indices': add(indices), 'mask': add(mask)})
         objectives = []
         for row in source['objective']['rows']:
-            data = (night / row['raster_path']).read_bytes()
+            data = hud_cache.read(row['raster_path'])
             plane = row['raster_plane_bytes']
             if len(data) != plane * 2 or plane != row['render_width'] * row['render_height']:
                 raise ValueError('invalid source objective raster')
@@ -97,31 +164,115 @@ class OriginalAssets:
                               | {'indices': add(data[:plane]), 'mask': add(data[plane:])})
         tiers = []
         for row in source['spells']['tier_rows']:
-            data = (night / row['render_path']).read_bytes()
+            data = hud_cache.read(row['render_path'])
             if len(data) != row['render_width'] * row['render_height'] * 4:
                 raise ValueError('invalid source tier raster')
             tiers.append({'tier': row['tier'], 'width': row['render_width'], 'height': row['render_height'],
                           'color': row['palette_index'], 'rgba': add(data)})
-        environment_descriptor = json.loads((environment / 'materials/descriptor.json').read_text())
-        bank_name = environment_descriptor['profile']['sprites']
+        bank_name = profile['sprites']
         bank = next(bank for bank in environment_descriptor['bitmap_banks'] if bank['bank'] == bank_name)
         symbols = []
         for row in bank['bitmaps']:
             if row.get('source_empty'):
                 continue
-            indices, mask = (environment / row['indices_path']).read_bytes(), (environment / row['mask_path']).read_bytes()
+            indices, mask = env_cache.read(row['indices_path']), env_cache.read(row['mask_path'])
             if len(indices) != row['width'] * row['height'] or len(mask) != len(indices):
                 raise ValueError(f"invalid minimap symbol {row['selector']}")
             symbols.append({'selector': row['selector'], 'width': row['width'], 'height': row['height'],
                             'indices': add(indices), 'mask': add(mask)})
-        self.blob = bytes(blob)
-        colors = (environment / 'palette/colors.u8').read_bytes()
+        colors = env_cache.read('palette/colors.u8')
         if len(colors) != 4096:
             raise ValueError('invalid Night color table')
+        help_rows = self._exit_help(help_cache, profile, colors, add) if help_cache else None
+        self.blob = bytes(blob)
         self.manifest = {'schema': 'mc-original-assets/v1', 'bytes': len(blob), 'normal': normal,
                          'objective_background': colors[0], 'map_cross_color': colors[4095],
-                         'exit': normal, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
-                         'objectives': objectives, 'tiers': tiers}
+                         'exit': exit_table, 'aperture': aperture, 'sprites': rows, 'symbols': symbols,
+                         'objectives': objectives, 'tiers': tiers, 'help': help_rows,
+                         'map_profile': profile['map_type']['name'].lower(), 'hud_profile': 'night'}
+
+    @staticmethod
+    def _exit_help(help_cache: Path, profile: dict, colors: bytes, add) -> dict | None:
+        menu = _VerifiedCache(help_cache)
+        manifest = menu.manifest
+        if (manifest.get('schema') != 'mc2-owner-campaign-menu-cache/v3' or
+                manifest.get('source_commit') != '6806c7204d17220ecc0430759f784aea8ee2ddb2' or
+                manifest.get('gameplay_help_path') != 'gameplay-help.json'):
+            raise ValueError('unexpected source help cache identity')
+        table = json.loads(menu.read('gameplay-help.json'))
+        if (table.get('schema') != 'mc2-gameplay-help/v1' or table.get('source_sha256') !=
+                'a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386'):
+            raise ValueError('unexpected source help table identity')
+        rows = [row for row in table['rows'] if row['row'] == 83]
+        if not rows:
+            return None
+        expected = dict(row=83, kind=8, flags=0x280, text_record=345, duration=50,
+                        x=0, y=0, age_threshold=100, priority=5)
+        if rows != [expected]:
+            raise ValueError('source exit help row differs')
+        language_path = manifest['language_cache']['path']
+        language_root = (menu.root / language_path).resolve(strict=True)
+        if not language_root.is_relative_to(menu.root):
+            raise ValueError('language cache escapes selected root')
+        language = _VerifiedCache(language_root)
+        lm = language.manifest
+        if (lm.get('binding_sha256') != manifest['language_cache']['binding_sha256'] or
+                lm.get('default_locale_id') != manifest['language_cache']['default_locale_id'] or
+                lm.get('glyph_mapping') != 'mc2-byte-plus-one-controls/v1'):
+            raise ValueError('source language binding differs')
+        locale = next(row for row in lm['locales'] if row['id'] == lm['default_locale_id'])
+        if 'LANGUAGE/L1.TXT' not in locale['aliases'] or locale['pack_sha256'] != manifest['source_language_sha256']:
+            raise ValueError('source help locale is not the selected English language')
+        record = locale['records'][345]
+        records = language.read(locale['records_path'])
+        offset, length = record['offset'], record['bytes']
+        text = records[offset:offset + length]
+        if (record['selector'] != 345 or length > 4096 or len(text) != length or
+                hashlib.sha256(text).hexdigest() != record['sha256'] or
+                text != b'Fly here to exit the level'):
+            raise ValueError('source exit help text differs')
+        font_id = manifest['objective']['font_id']
+        if font_id != 'hfont3' or font_id not in locale['font_ids']:
+            raise ValueError('source help font differs')
+        font = next(row for row in lm['fonts'] if row['id'] == font_id)
+        masks = language.read(font['masks_path'])
+        glyphs = font['glyphs']
+        selected = [glyphs[33 if value in (9, 32) else value + 1] for value in text]
+        advances = []
+        for glyph in selected:
+            start, count = glyph['offset'], glyph['length']
+            data = masks[start:start + count]
+            if (start < 0 or count != glyph['width'] * glyph['height'] or len(data) != count or
+                    hashlib.sha256(data).hexdigest() != glyph['sha256'] or any(v not in (0, 1) for v in data)):
+                raise ValueError('invalid source help glyph')
+            advances.append(glyph['width'])
+        width, height = sum(advances), max(glyph['height'] for glyph in selected)
+        if not (0 < width <= 640 and 0 < height <= 64):
+            raise ValueError('source help raster exceeds bounds')
+        raster = bytearray(width * height)
+        x = 0
+        for value, glyph in zip(text, selected, strict=True):
+            if value not in (9, 32):
+                for y in range(glyph['height']):
+                    start = glyph['offset'] + y * glyph['width']
+                    raster[y * width + x:y * width + x + glyph['width']] = masks[start:start + glyph['width']]
+            x += glyph['width']
+        name = profile['map_type']['name'].lower()
+        source_profile = next(row for row in manifest['objective']['profiles'] if row['id'] == name)
+        frame = []
+        for sprite in source_profile['sprites']:
+            indices, mask = menu.read(sprite['indices_path']), menu.read(sprite['mask_path'])
+            size = sprite['width'] * sprite['height']
+            if len(indices) != size or len(mask) != size or any(value not in (0, 1) for value in mask):
+                raise ValueError('invalid source help frame sprite')
+            frame.append(dict(selector=sprite['selector'], width=sprite['width'], height=sprite['height'],
+                              indices=add(indices), mask=add(mask)))
+        if [row['selector'] for row in frame] != [171, 172, 173]:
+            raise ValueError('source help frame selectors differ')
+        return {'83': dict(text=text.decode('ascii'), text_record=345, flags=0x280,
+                           duration=50, age_threshold=100, priority=5, width=width,
+                           height=height, mask=add(raster), advances=advances, frame=frame,
+                           color=colors[4095], background=colors[0], line_color=colors[4095])}
 
 class MinimapState(c.Structure):
     _fields_ = [('abi_version', c.c_uint32), ('struct_size', c.c_uint32), ('generation', c.c_uint64), ('tick', c.c_uint64),

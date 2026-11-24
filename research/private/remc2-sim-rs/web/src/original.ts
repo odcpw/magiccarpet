@@ -38,7 +38,25 @@ let spellMenu: SpellMenu | null = null;
 let nativeMenus = { map_open: false, spells_open: false };
 let hoveredSlot = 0, hoveredTier = 0, intentionalUnlock = false;
 let touchHand: 'left' | 'right' = 'left';
+let lastHudState: OriginalHudState | null = null;
+let inspectedExit: number | null = null;
+let inspectionGeneration = '';
+let currentLevelName = 'Level 1';
 const history = new OriginalSceneHistory();
+
+function updateMapInspectionLabel(text: string | null): void {
+  const label = text ? `Map inspection: ${text}` : 'Map inspection: click or tap an exit marker.';
+  canvas.setAttribute('aria-label', label);
+  element('hint').textContent = label;
+}
+
+function levelName(levelId: string | null | undefined): string {
+  const slug = levelId?.match(/^level\.magic_carpet_2\.([a-z0-9_]+)$/)?.[1];
+  if (!slug) return 'Level 1';
+  if (slug === 't_klom') return "T’Klom";
+  if (slug === 'night_spire') return 'NightSpire';
+  return slug.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
 
 class IndexedDisplay {
   private readonly renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false,
@@ -98,6 +116,7 @@ function isGeometryDisplay(value: IndexedDisplay | GeometryDisplay): value is Ge
 }
 interface BridgeStatus {
   ready: boolean;
+  level_id?: string | null;
   renderer?: 'indexed' | 'geometry';
   error?: string | null;
   running?: boolean;
@@ -228,7 +247,14 @@ async function pollFrame(): Promise<void> {
       throw new Error('The original scene and HUD do not describe the same native frame');
     if (version !== controlVersion) return;
     lastFrame = frame;
+    const wasMapOpen = nativeMenus.map_open;
     nativeMenus = state.source_menu_admission ?? { map_open: false, spells_open: false };
+    if (nativeMenus.map_open && !wasMapOpen && !(display instanceof ModernWorldRenderer)) updateMapInspectionLabel(null);
+    if (!nativeMenus.map_open && wasMapOpen && !(display instanceof ModernWorldRenderer)) {
+      inspectedExit = null;
+      canvas.setAttribute('aria-label', `${currentLevelName} game view`);
+      element('hint').textContent = 'Click the view for mouse steering · Esc releases the mouse and pauses';
+    }
     document.body.dataset.gameMenu = element('touch').dataset.menu = nativeMenus.spells_open ? 'spells' : 'flight';
     element('touch-hand').hidden = !nativeMenus.spells_open;
     element('touch-spells').textContent = nativeMenus.spells_open ? 'Close spells' : 'Spells';
@@ -241,6 +267,17 @@ async function pollFrame(): Promise<void> {
     const hudState: OriginalHudState = { ...state, source_top_status: source.source_top_status,
       panels_opaque: source.spell_menu_panels_opaque, objective_selector: objectiveSelector,
       objective_visible: source.objective_textbox_ticks > 0, spell_menu: spellMenu };
+    const sourceGeneration = `${frame.runtimeGeneration}:${frame.sessionGeneration}`;
+    if (sourceGeneration !== inspectionGeneration) { inspectedExit = null; inspectionGeneration = sourceGeneration; }
+    if (display instanceof ModernWorldRenderer) hudState.world_map = undefined;
+    hudState.exit_inspection_allowed = !!hudState.world_map && nativeMenus.map_open && !nativeMenus.spells_open &&
+      state.objective?.is_level_end === 0 && source.objective_textbox_ticks === 0 && !source.exit_sequence_active;
+    if (inspectedExit !== null && !hud.exitMarker(hudState, inspectedExit)) {
+      inspectedExit = null;
+      if (nativeMenus.map_open) updateMapInspectionLabel(null);
+    }
+    hudState.exit_inspection_subject = inspectedExit;
+    lastHudState = hudState;
     // Flight history is independent of map presentation and remains at the
     // correct native revision while the source split map is displayed.
     if (isGeometryDisplay(display)) {
@@ -259,7 +296,9 @@ async function pollFrame(): Promise<void> {
       // Source art stays indexed. Opaque panels avoid flattening a translucent
       // HUD against an invented background; the 3D world is never read to CPU.
       hudState.panels_opaque = true;
-      const overlay = hud.compose(emptyScene, frame.palette, hudState, hudCoverage);
+      const hudScene = nativeMenus.map_open && display instanceof OriginalWorldRenderer
+        ? display.fullMapTerrain(source.source_camera_pose) : emptyScene;
+      const overlay = hud.compose(hudScene, frame.palette, hudState, hudCoverage);
       if (display instanceof ModernWorldRenderer) {
         if (!modernResponse?.ok) throw new Error('This backend has no Modern asset observations; start it with --modern.');
         const modern = decodeModernFrame(await modernResponse.arrayBuffer());
@@ -336,6 +375,14 @@ canvas.addEventListener('pointerdown', event => {
     if (hit) { hoveredSlot = hit.hoveredSlot; hoveredTier = hit.hoveredTier; }
     if (hit?.spellId != null && hit.tier != null && (event.button === 0 || event.button === 2))
       void control('assign_spell', { spell_id: hit.spellId, tier: hit.tier, hand: event.pointerType === 'touch' ? touchHand : event.button === 0 ? 'left' : 'right' });
+    return;
+  }
+  if (nativeMenus.map_open && !(display instanceof ModernWorldRenderer)) {
+    event.preventDefault();
+    const subject = lastHudState ? hud.exitMarkerAt(lastHudState, ...hudPoint(event.clientX, event.clientY)) : null;
+    inspectedExit = subject === inspectedExit ? null : subject;
+    const text = inspectedExit && lastHudState ? hud.exitInspectionText(lastHudState, inspectedExit) : null;
+    updateMapInspectionLabel(text);
     return;
   }
   canvas.focus();
@@ -420,12 +467,16 @@ async function boot(): Promise<void> {
       await new Promise(resolve => window.setTimeout(resolve, 300));
     }
     if (!status?.ready) throw new Error('The original game did not finish loading.');
+    currentLevelName = levelName(status.level_id);
+    const presentationName = modernRequested ? 'Modern' : 'Original';
+    document.title = `Magic Carpet II · ${presentationName} ${currentLevelName}`;
+    document.querySelector('h2')!.textContent = `${presentationName} · ${currentLevelName}`;
+    playButton.textContent = `Play ${currentLevelName}`;
+    canvas.setAttribute('aria-label', `${currentLevelName} game view`);
     if (status.renderer === 'geometry') {
       document.body.dataset.renderer = 'geometry';
       if (modernRequested) {
-        document.title = 'Magic Carpet II · Modern Level 1';
-        document.querySelector('h2')!.textContent = 'Modern · Level 1';
-        message.textContent = 'Loading the Level 1 models and environment…';
+        message.textContent = `Loading the ${currentLevelName} models and environment…`;
         display = await ModernWorldRenderer.load(canvas, API);
       } else display = await OriginalWorldRenderer.load(canvas, API);
       display.onError = fail;

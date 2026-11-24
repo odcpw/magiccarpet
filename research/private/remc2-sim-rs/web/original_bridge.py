@@ -33,7 +33,6 @@ PACKAGES = PRIVATE / "generated/mc-voxel-combat-20261107/native-mana-scenario-01
 PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
 WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
-SOURCE_PALETTE = PRIVATE / "generated/settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1/palette/source.rgb8"
 MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
 
 
@@ -54,6 +53,7 @@ class Native:
     def __init__(self, library: Path, packages: list[dict]):
         self.lib = c.CDLL(str(library.resolve()))
         self.handle = c.c_uint64()
+        self.language_cache = None
         self.observation_buffer = (c.c_ubyte * (2 * 1024 * 1024))()
         self.request = json.dumps({"request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
                                    "packages": packages}, separators=(",", ":")).encode()
@@ -72,6 +72,7 @@ class Native:
             "mc_game_session_reset_v1": [u64, u64, u64],
             "mc_game_runtime_pause_v1": [u64, u64],
             "mc_game_runtime_resume_v1": [u64, u64],
+            "mc_game_runtime_preferences_command_json_v1": [u64, u64, ptr, u32],
             "mc_game_runtime_toggle_icons_map_v1": [u64, u64, u64, u64],
             "mc_game_runtime_save_replay_json_v1": [u64, u64, u64, u64, ptr, u32, ptr],
             "mc_game_runtime_load_replay_from_runtime_json_v1": [u64, u64, u64, u64, ptr, u32, ptr, u32],
@@ -112,6 +113,23 @@ class Native:
 
     def identity(self):
         return self.read_json(self.lib.mc_game_runtime_identity_json_v1, self.handle)
+
+    def bind_language(self, handle):
+        if self.language_cache is None:
+            return
+        def identity():
+            return self.read_json(self.lib.mc_game_runtime_identity_json_v1, handle)
+        state = identity()
+        resume = state["mode"] != "paused"
+        if resume:
+            self.check(self.lib.mc_game_runtime_pause_v1(handle, int(state["generation"])), "pause for language")
+        try:
+            command = json.dumps({"operation": "install_languages", "cache_dir": str(self.language_cache)}).encode()
+            self.check(self.lib.mc_game_runtime_preferences_command_json_v1(
+                handle, int(identity()["generation"]), command, len(command)), "install selected language")
+        finally:
+            if resume:
+                self.check(self.lib.mc_game_runtime_resume_v1(handle, int(identity()["generation"])), "resume after language")
 
     def counters(self):
         ident = self.identity_value
@@ -164,6 +182,7 @@ class Native:
             try:
                 self.check(self.lib.mc_game_runtime_load_replay_from_runtime_json_v1(
                     new_handle, 1, self.handle, outer, self.request, len(self.request), saved, len(saved)), "load")
+                self.bind_language(new_handle)
             except BaseException:
                 self.check(self.lib.mc_game_runtime_destroy_v1(new_handle), "destroy failed load runtime")
                 raise
@@ -298,13 +317,33 @@ def camera_from_observation(packet):
     return {'x': x, 'y': y, 'z': z, 'yaw': yaw, 'pitch': pitch, 'roll': roll, 'fov': fov}
 
 
+def replay_package(packages, replay):
+    """Resolve the replay's content-addressed campaign package to its owner assets."""
+    definition = json.loads(replay)["definition"]
+    hashes = [row["sha256"] for row in definition["artifacts"] if row["id"] == "campaign.package"]
+    if len(hashes) != 1:
+        raise ValueError("replay must identify one campaign package")
+    matches = []
+    for package in packages:
+        manifest = json.loads((Path(package["package_dir"]) / "manifest.json").read_bytes())
+        if manifest["package_sha256"] == hashes[0]:
+            matches.append(package)
+    if len(matches) != 1:
+        raise ValueError("replay must match one supplied campaign package")
+    return matches[0]
+
+
 class Bridge:
-    def __init__(self, library, packages, save_path=None, renderer="indexed", modern=False):
+    def __init__(self, library, packages, save_path=None, renderer="indexed", modern=False,
+                 replay_path=None, help_cache=None):
         self.library, self.packages = library, packages
         if renderer not in ("indexed", "geometry"): raise ValueError("invalid renderer")
         self.renderer = renderer
         if modern and renderer != 'geometry': raise ValueError('modern observations require geometry renderer')
         self.modern = modern
+        self.replay_path = replay_path
+        self.help_cache = help_cache
+        self.level_id = None
         self.save_path = save_path
         self.has_save = bool(save_path and save_path.is_file())
         self.items = queue.Queue(maxsize=128)
@@ -322,7 +361,7 @@ class Bridge:
         with self.lock:
             return {"ready": self.ready, "error": self.error, "running": self.running,
                     "paused": self.paused, "has_save": self.has_save, "next_sequence": self.next_sequence,
-                    "renderer": self.renderer, "modern_error": self.modern_error}
+                    "renderer": self.renderer, "modern_error": self.modern_error, "level_id": self.level_id}
 
     def publication(self, sequence=None):
         with self.lock:
@@ -347,7 +386,21 @@ class Bridge:
         native = None
         try:
             native = Native(self.library, self.packages)
-            self.assets = OriginalAssets()
+            menu_cache = self.help_cache or PRIVATE / "generated/mc2-campaign-menu-cache-current"
+            language_root = menu_cache / "language"
+            if self.help_cache is not None or language_root.is_dir():
+                native.language_cache = language_root.resolve(strict=True)
+            if self.replay_path is not None:
+                replay = self.replay_path.read_bytes()
+                native.control("load", replay)
+                self.paused = native.identity_value["mode"] == "paused"
+            else:
+                native.bind_language(native.handle)
+                native.identity_value = native.identity()
+                replay = native.control("save", None)
+            package = replay_package(self.packages, replay)
+            self.level_id = native.identity_value["active_runtime_flow"]["bound_level_id"]
+            self.assets = OriginalAssets.from_package(package, help_cache=self.help_cache)
             world = OriginalWorld(native) if self.renderer == "geometry" else None
             modern = None
             if world and self.modern:
@@ -355,8 +408,8 @@ class Bridge:
                 except (AttributeError, RuntimeError) as exc: self.modern_error = str(exc)
             if world:
                 from original_world_assets import OriginalWorldAssets
-                self.world_assets = OriginalWorldAssets()
-                palette = SOURCE_PALETTE.read_bytes()
+                self.world_assets = OriginalWorldAssets.from_package(package)
+                palette = self.world_assets.palette
                 if len(palette) != 768: raise RuntimeError("invalid source palette")
             command, saved, sequence = dict(NEUTRAL), None, 0
             epoch = 0
@@ -397,10 +450,11 @@ class Bridge:
                     state["palette_source"] = "static-owner-source-rgb8"
                     state["source_camera"] = camera
                 world_map = None
-                if not world and menu_state and menu_state["map_open"]:
+                if menu_state and menu_state["map_open"] and not modern:
                     indices, map_palette, map_rows = read_world_map(native.lib, native.handle.value, gen, tick)
-                    world_map = HEADER.pack(b"MCM1", 1, HEADER.size, 320, 200, 0,
-                                            outer, gen, tick, sequence, sequence) + indices + map_palette
+                    if not world:
+                        world_map = HEADER.pack(b"MCM1", 1, HEADER.size, 320, 200, 0,
+                                                outer, gen, tick, sequence, sequence) + indices + map_palette
                     state["world_map"] = map_rows
                 with self.lock: self.publications.append((sequence, packet, state, observation, world_map, terrain,
                                                           world.terrain_gzip if world else None, modern_packet))
@@ -462,6 +516,8 @@ class Bridge:
                             else:
                                 if action == "load" and saved is None and self.save_path and self.save_path.is_file():
                                     saved = self.save_path.read_bytes()
+                                if action == "load" and saved and replay_package(self.packages, saved) != package:
+                                    raise ValueError("this save uses different artwork; start the browser with --replay for that mission")
                                 if action == "reset" and self.paused:
                                     native.control("resume", saved)
                                     saved = native.control("reset", saved)
@@ -713,6 +769,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--library", type=Path, default=LIBRARY)
     parser.add_argument("--packages", type=Path, default=PACKAGES)
+    parser.add_argument("--replay", type=Path, help="start at this read-only campaign replay")
+    parser.add_argument("--help-cache", type=Path, help="use this owner-local gameplay help cache")
     parser.add_argument("--probe-frame", type=Path)
     parser.add_argument("--renderer", choices=("indexed", "geometry"), default="indexed")
     parser.add_argument("--modern", action="store_true", help="publish native Modern observations with geometry")
@@ -723,7 +781,12 @@ def main():
     parser.add_argument("--web-root", type=Path)
     parser.add_argument("--save", type=Path, default=PRIVATE / "generated/original-web-20261116/save.json")
     args = parser.parse_args()
-    packages = json.loads(args.packages.read_text())["packages"]
+    resources = json.loads(args.packages.read_text())
+    packages = resources["packages"] if isinstance(resources, dict) else resources
+    if not isinstance(packages, list) or not packages:
+        parser.error("the campaign package list is empty or invalid")
+    if args.replay is not None and args.save.resolve() == args.replay.resolve():
+        parser.error("--replay and the writable --save slot must be different files")
     if args.probe_frame:
         runtime = Native(args.library, packages)
         try:
@@ -734,7 +797,7 @@ def main():
                               "frame_sha256": hashlib.sha256(frame).hexdigest(), "file": str(args.probe_frame)}))
         finally: runtime.close()
         return
-    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern)
+    bridge = Bridge(args.library, packages, args.save, args.renderer, args.modern, args.replay, args.help_cache)
     server = Server((args.host, args.port), bridge, args.web_root, args.allow_host)
     print(f"Original native bridge: http://{args.host}:{args.port}", flush=True)
     try: server.serve_forever(poll_interval=.2)

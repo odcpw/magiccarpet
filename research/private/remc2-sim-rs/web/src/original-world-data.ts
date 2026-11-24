@@ -14,8 +14,8 @@ export interface TerrainPlanes {
 }
 export interface ByteRange { offset: number; length: number }
 export interface WorldAssetManifest {
-  schema: string; bytes: number;
-  terrain: { width: number; height: number; count: number; indices: ByteRange; map_colors: ByteRange; uv_groups: number[][][] };
+  schema: string; bytes: number; map_type: number;
+  terrain: { width: number; height: number; count: number; indices: ByteRange; map_colors: ByteRange; sine: ByteRange; uv_groups: number[][][] };
   palette: { rgb8: ByteRange; shade_lut: ByteRange; blend_lut: ByteRange; clrn: ByteRange };
   tmaps: { selector: number; width: number; height: number; animated: boolean; frames: ByteRange[] }[];
   unavailable_selectors: number[];

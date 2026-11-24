@@ -22,7 +22,7 @@ function shader(vertexShader: string, fragmentShader: string, uniforms: Record<s
     blending: THREE.NoBlending, toneMapped: false, side: THREE.DoubleSide });
 }
 const terrainVertex = `precision highp float;
-  uniform mat4 projectionMatrix, modelViewMatrix, modelMatrix; uniform vec2 eyeMap; uniform float turn; uniform bool topDownMap;
+  uniform mat4 projectionMatrix, modelViewMatrix, modelMatrix; uniform vec2 eyeMap; uniform float turn;
   in vec3 position; in vec2 uv; in float tile; in float shade; in vec3 sourceNode;
   out vec2 tileUv; flat out int tileId; out float brightness;
   void main(){
@@ -30,7 +30,7 @@ const terrainVertex = `precision highp float;
       floor(sin((turn*64.+sourceNode.y*128.)*6.28318530718/2048.)*256.);
     float water=sourceNode.z; p.y-=water*floor(wave/1024.)/64.;
     vec4 world=modelMatrix*vec4(p,1.); vec2 delta=(world.xz-eyeMap)*64.;
-    float d=dot(delta,delta), fog=topDownMap?1.:clamp((23658496.-d)/8912896.,0.,1.);
+    float d=dot(delta,delta), fog=clamp((23658496.-d)/8912896.,0.,1.);
     brightness=(shade+.5+(shade<56.?water*wave/8192.:0.))*fog;
     tileUv=uv;tileId=int(tile+.5); gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);
   }`;
@@ -83,7 +83,6 @@ export class OriginalWorldRenderer {
   private readonly finalScene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(60, 4 / 3, .15, 128);
   private readonly screenCamera = new THREE.Camera();
-  private readonly mapCamera = new THREE.OrthographicCamera(-256, 256, 256, -256, .1, 1024);
   private readonly paletteBytes = new Uint8Array(1024);
   private readonly palette = rawTexture(this.paletteBytes, 256, 1, THREE.RGBAFormat);
   private readonly hudBytes = new Uint8Array(640 * 480 * 2);
@@ -114,6 +113,9 @@ export class OriginalWorldRenderer {
   private frameTimes: number[] = []; private samplesAt = 0; private framesDrawn = 0; private spriteCount = 0;
   private draws = 0; private triangles = 0; private blendCopies = 0; private rebuiltChunks = 0;
   private readonly shadeBytes: Uint8Array; private readonly mapColors: Uint8Array;
+  private readonly mapSine: DataView;
+  private readonly mapDivider: number;
+  private readonly cave: boolean;
 
   static async load(canvas: HTMLCanvasElement, base = '/original-api'): Promise<OriginalWorldRenderer> {
     const [manifestResponse, blobResponse] = await Promise.all([
@@ -131,6 +133,10 @@ export class OriginalWorldRenderer {
     this.unavailable = new Set(manifest.unavailable_selectors);
     this.shadeBytes = assetBytes(blob, manifest.palette.shade_lut, 65536);
     this.mapColors = assetBytes(blob, manifest.terrain.map_colors, 256);
+    const sine = assetBytes(blob, manifest.terrain.sine, 2048 * 4);
+    this.mapSine = new DataView(sine.buffer, sine.byteOffset, sine.byteLength);
+    this.mapDivider = assetBytes(blob, manifest.palette.clrn, 4096)[0]!;
+    this.cave = manifest.map_type === 2;
     const shade = rawTexture(this.shadeBytes, 256, 256), blend = rawTexture(assetBytes(blob, manifest.palette.blend_lut, 65536), 256, 256);
     const tiles = new THREE.DataArrayTexture(assetBytes(blob, manifest.terrain.indices, 152 * 1024), 32, 32, 152);
     tiles.format = THREE.RedFormat; tiles.type = THREE.UnsignedByteType; tiles.colorSpace = THREE.NoColorSpace;
@@ -141,7 +147,7 @@ export class OriginalWorldRenderer {
     const gl = this.renderer.getContext(), debug = gl.getExtension('WEBGL_debug_renderer_info');
     this.gpu = debug ? String(gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
     this.terrainMaterial = shader(terrainVertex, terrainFragment, { tiles: { value: tiles }, shadeLut: { value: shade },
-      turn: { value: 0 }, eyeMap: { value: new THREE.Vector2() }, topDownMap: { value: false } });
+      turn: { value: 0 }, eyeMap: { value: new THREE.Vector2() } });
     const atlas = this.makeAtlas(manifest, blob);
     const spriteUniforms = { atlas: { value: atlas }, shadeLut: { value: shade }, blendLut: { value: blend },
       destination: { value: this.snapshot }, resolution: { value: new THREE.Vector2(1, 1) } };
@@ -152,23 +158,22 @@ export class OriginalWorldRenderer {
     this.sprites.frustumCulled = this.blendSprite.frustumCulled = false;
     this.scene.add(this.sprites); this.blendScene.add(this.blendSprite);
     this.finalMaterial = shader(screenVertex, `precision highp float;
-      uniform sampler2D worldIndices, palette, hud; uniform vec2 viewport; uniform bool mapOpen; uniform float mapCross;
+      uniform sampler2D worldIndices, palette, hud; uniform vec2 viewport; uniform bool mapOpen;
       in vec2 screenUv; out vec4 pixel;
       void main(){
         int index=int(texture(worldIndices,screenUv).r*255.+.5);
-        vec2 crossDelta=abs(screenUv*viewport-vec2(viewport.x*.3,viewport.y*.5));
-        if(mapOpen&&((crossDelta.x<12.&&crossDelta.y<1.5)||(crossDelta.y<12.&&crossDelta.x<1.5)))index=int(mapCross);
         float logicalHeight=viewport.y*640./viewport.x;
         vec2 h=vec2(screenUv.x*640.,(1.-screenUv.y)*logicalHeight);
         bool hudRegion=true;
-        if(h.y>=logicalHeight-120.)h.y+=480.-logicalHeight;
+        if(mapOpen){h.y=(1.-screenUv.y)*480.;}
+        else if(h.y>=logicalHeight-120.)h.y+=480.-logicalHeight;
         else if(h.y>=160.){h.y-=(logicalHeight-480.)*.5; hudRegion=h.y>=160.&&h.y<360.;}
         if(hudRegion&&h.x>=0.&&h.x<640.&&h.y>=0.&&h.y<480.){
           vec2 overlay=texelFetch(hud,ivec2(h),0).rg; if(overlay.g>.5)index=int(overlay.r*255.+.5);
         }
         pixel=vec4(texelFetch(palette,ivec2(index,0),0).rgb,1.);
       }`, { worldIndices: { value: this.target.texture }, palette: { value: this.palette }, hud: { value: this.hud }, viewport: { value: new THREE.Vector2(640, 480) },
-        mapOpen: { value: false }, mapCross: { value: assetBytes(blob, manifest.palette.clrn, 4096)[4095] } });
+        mapOpen: { value: false } });
     this.finalMaterial.depthTest = this.finalMaterial.depthWrite = false;
     this.finalScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.finalMaterial));
     this.queueFrame();
@@ -176,7 +181,8 @@ export class OriginalWorldRenderer {
   private readonly manifest: WorldAssetManifest;
 
   private makeAtlas(manifest: WorldAssetManifest, blob: Uint8Array): THREE.DataTexture {
-    const width = 1024; let x = 1, y = 1, line = 0;
+    const width = Math.min(4096, this.renderer.capabilities.maxTextureSize);
+    let x = 1, y = 1, line = 0;
     for (const row of manifest.tmaps) {
       if (row.width <= 0 || row.height <= 0 || row.width > width - 2 || row.height > 1024 || !row.frames.length) throw new Error('Invalid source sprite extent');
       const frames: ImageFrame[] = [];
@@ -188,7 +194,7 @@ export class OriginalWorldRenderer {
       this.images.set(row.selector, { frames, animated: row.animated });
     }
     let height = 1; while (height < y + line + 1) height *= 2;
-    if (height > 4096) throw new Error('Source atlas exceeds bounded browser allocation');
+    if (height > width) throw new Error('Source atlas exceeds bounded browser allocation');
     const pixels = new Uint8Array(width * height);
     for (const row of manifest.tmaps) row.frames.forEach((range, index) => {
       const frame = this.images.get(row.selector)!.frames[index]!, source = assetBytes(blob, range);
@@ -245,16 +251,43 @@ export class OriginalWorldRenderer {
     this.arrival = performance.now(); this.mapOpen = mapOpen; this.playing = playing;
     for (let i = 0; i < 256; i++) { this.paletteBytes[i * 4] = frame.palette[i * 3]!; this.paletteBytes[i * 4 + 1] = frame.palette[i * 3 + 1]!;
       this.paletteBytes[i * 4 + 2] = frame.palette[i * 3 + 2]!; this.paletteBytes[i * 4 + 3] = 255; }
-    for (let i = 0; i < 640 * 480; i++) { this.hudBytes[i * 2] = hudIndices[i]!; this.hudBytes[i * 2 + 1] = coverage[i]!; }
+    for (let i = 0; i < 640 * 480; i++) {
+      this.hudBytes[i * 2] = hudIndices[i]!;
+      this.hudBytes[i * 2 + 1] = mapOpen && i % 640 < 386 ? 255 : coverage[i]!;
+    }
     this.palette.needsUpdate = this.hud.needsUpdate = true; this.dirty = true;
   }
   setPlaying(value: boolean): void { this.playing = value; this.lastDraw = 0; if (!value) this.dirty = true; }
   hudPoint(x: number, y: number): [number, number] {
     const rect = this.canvas.getBoundingClientRect(), h = rect.height * 640 / rect.width;
+    if (this.mapOpen) return [(x - rect.left) * 640 / rect.width, (y - rect.top) * 480 / rect.height];
     let py = (y - rect.top) * 640 / rect.width;
     if (py >= h - 120) py += 480 - h;
     else if (py >= 160) { py -= (h - 480) / 2; if (py < 160 || py >= 360) return [-1, -1]; }
     return [(x - rect.left) * 640 / rect.width, py];
+  }
+  /** Source split map at VGA1 scale 408. The narrow right viewport stays in Three.js. */
+  fullMapTerrain(camera: SourceCamera): Uint8Array {
+    if (!this.planes) throw new Error('Full map requires the published terrain planes');
+    const planes = this.planes;
+    const sine = (yaw: number) => (408 * this.mapSine.getInt32((yaw & 2047) * 4, true)) >> 16;
+    const sin = sine(camera.yaw), cos = sine(camera.yaw + 512);
+    const stepX = Math.trunc(200 * cos / 191), stepY = Math.trunc(200 * sin / 191);
+    let rowX = camera.x - Math.trunc((191 * stepX - 200 * sin) / 2);
+    let rowY = camera.y - Math.trunc((200 * cos + 191 * stepY) / 2);
+    const frame = new Uint8Array(320 * 200);
+    for (let row = 0; row < 200; row++, rowX -= sin, rowY += cos) {
+      let x = rowX, y = rowY;
+      const start = row * 320;
+      for (let col = 0; col < 191; col++, x += stepX, y += stepY) {
+        const tile = (((y >> 8) & 255) << 8) | ((x >> 8) & 255);
+        if (!this.cave || (planes.angles[tile]! & 8) === 0) {
+          frame[start + col] = this.shadeBytes[(planes.shades[tile]! << 8) | this.mapColors[planes.types[tile]!]!]!;
+        }
+      }
+      frame[start + 191] = frame[start + 192] = this.mapDivider;
+    }
+    return frame;
   }
   minimap(camera: SourceCamera): number[] {
     if (!this.planes) return new Array<number>(4096).fill(0);
@@ -352,13 +385,7 @@ export class OriginalWorldRenderer {
     this.renderer.setViewport(0, 0, this.width, this.height);
     if (this.mapOpen) {
       const mapWidth = Math.floor(this.width * .6);
-      this.mapCamera.position.set(this.camera.position.x, 600, this.camera.position.z); this.mapCamera.up.set(0, 0, -1);
-      this.mapCamera.lookAt(this.camera.position.x, 0, this.camera.position.z); this.mapCamera.left = -256 * mapWidth / this.height;
-      this.mapCamera.right = -this.mapCamera.left; this.mapCamera.updateProjectionMatrix();
-      this.terrainMaterial.uniforms.topDownMap!.value = true;
-      this.sprites.visible = false; this.renderer.setViewport(0, 0, mapWidth, this.height); this.renderer.render(this.scene, this.mapCamera);
-      this.terrainMaterial.uniforms.topDownMap!.value = false;
-      this.sprites.visible = true; this.renderer.setViewport(mapWidth, 0, this.width - mapWidth, this.height);
+      this.renderer.setViewport(mapWidth, 0, this.width - mapWidth, this.height);
     }
     this.renderer.render(this.scene, this.camera); this.blendCopies = 0;
     const visible: { row: WorldSprite; rect: SpriteRect; layer: number }[] = [];

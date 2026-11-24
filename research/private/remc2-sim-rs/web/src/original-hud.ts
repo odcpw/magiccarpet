@@ -6,7 +6,8 @@ type SpriteRow = { selector: number; width: number; height: number; runtime_widt
 type ObjectiveRow = { selector: number; reference_x: number; reference_y: number; render_width: number; render_height: number; blend_x: number; blend_y: number; blend_width: number; blend_height: number; indices: Span; mask: Span };
 type TierRow = { tier: number; width: number; height: number; color: number; rgba: Span };
 type SymbolRow = { selector: number; width: number; height: number; indices: Span; mask: Span };
-type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; tiers: TierRow[] };
+type HelpRow = { text: string; text_record: number; flags: number; duration: number; age_threshold: number; priority: number; width: number; height: number; mask: Span; advances: number[]; color: number; background: number; line_color: number; frame: SymbolRow[] };
+type Manifest = { schema: string; bytes: number; normal: Span; exit: Span; aperture: Span; objective_background: number; map_cross_color: number; sprites: SpriteRow[]; symbols: SymbolRow[]; objectives: ObjectiveRow[]; tiers: TierRow[]; help?: Record<string, HelpRow> | null };
 
 export interface OriginalHudSlot {
   holder_entity_index: number; draw_admitted: number; frame_selector: number; icon_selector: number;
@@ -30,6 +31,8 @@ export interface OriginalHudState {
   top_bar_visible?: boolean;
   minimap?: { terrain: number[]; coverage: number[]; entities: MinimapEntity[]; marks: MinimapMark[] } | null;
   world_map?: { entities: MinimapEntity[]; marks: MinimapMark[] } | null;
+  exit_inspection_allowed?: boolean;
+  exit_inspection_subject?: number | null;
   source_top_status?: SourceTopStatus | null;
   spell_menu?: SpellMenu | null;
   pause_menu?: { open: boolean; can_load: boolean; sound_enabled: boolean; music_enabled: boolean } | null;
@@ -44,7 +47,7 @@ export interface SpellMenuRow {
 export interface SpellMenu { open: boolean; hovered_slot: number; hovered_tier: number; mana: number; wizard_colors: readonly number[]; panels_opaque: boolean; spells: readonly SpellMenuRow[] }
 interface SourceCastleStatus { stage: number; panel_selector: number; icon_selector: number; life: number; max_life: number; mana: number; max_mana: number; owner_mana_aggregate: number }
 interface SourceTopStatus { castle_rows: readonly SourceCastleStatus[]; balloon_panel_selector: number; balloon_icon_selector: number; balloons: readonly { present: boolean; life: number; max_life: number; mana: number; max_mana: number }[]; mana_goal_percent: number; goal_palette_index: number }
-type MinimapEntity = { generation: number | string; tick: number | string; x: number; y: number; selector: number; palette_index: number; kind: number; size: number; anchor: number; visible: number };
+type MinimapEntity = { generation: number | string; tick: number | string; x: number; y: number; selector: number; palette_index: number; kind: number; size: number; anchor: number; visible: number; subject_entity_index?: number; help_selector?: number };
 type MinimapMark = { generation: number | string; tick: number | string; source_order: number; x: number; y: number; palette_index: number; kind: number; visible: number };
 
 export class OriginalHud {
@@ -55,6 +58,7 @@ export class OriginalHud {
   private readonly symbols = new Map<number, SymbolRow>();
   private readonly objectives = new Map<number, ObjectiveRow>();
   private readonly tiers = new Map<number, TierRow>();
+  private readonly exitHelp?: HelpRow;
   private readonly objectiveBackground: number;
   private readonly mapCrossColor: number;
   private readonly aperture: Uint8Array;
@@ -67,6 +71,22 @@ export class OriginalHud {
       return blob.subarray(item.offset, item.offset + item.length);
     };
     this.tables = { normal: span(manifest.normal), exit: span(manifest.exit) };
+    const exitHelp = manifest.help?.['83'];
+    if (exitHelp) {
+      if (exitHelp.text_record !== 345 || exitHelp.flags !== 0x280 || exitHelp.duration !== 50 ||
+          exitHelp.age_threshold !== 100 || exitHelp.priority !== 5 || !exitHelp.text ||
+          !Number.isInteger(exitHelp.width) || exitHelp.width <= 0 || !Number.isInteger(exitHelp.height) || exitHelp.height <= 0 ||
+          !Number.isInteger(exitHelp.color) || exitHelp.color < 0 || exitHelp.color > 255 ||
+          !Number.isInteger(exitHelp.background) || exitHelp.background < 0 || exitHelp.background > 255 ||
+          !Number.isInteger(exitHelp.line_color) || exitHelp.line_color < 0 || exitHelp.line_color > 255 ||
+          span(exitHelp.mask).length !== exitHelp.width * exitHelp.height ||
+          !Array.isArray(exitHelp.advances) || exitHelp.advances.length !== exitHelp.text.length ||
+          !Array.isArray(exitHelp.frame) || exitHelp.frame.length !== 3 ||
+          exitHelp.frame.some((row, index) => row.selector !== 171 + index || row.width <= 0 || row.height <= 0 ||
+            span(row.indices).length !== row.width * row.height || span(row.mask).length !== row.width * row.height))
+        throw new Error('Invalid Original exit help asset');
+      this.exitHelp = exitHelp;
+    }
     if (!Number.isInteger(manifest.objective_background) || manifest.objective_background < 0 || manifest.objective_background > 255) throw new Error('Invalid Original objective color');
     this.objectiveBackground = manifest.objective_background;
     if (!Number.isInteger(manifest.map_cross_color) || manifest.map_cross_color < 0 || manifest.map_cross_color > 255) throw new Error('Invalid Original map cross color');
@@ -98,6 +118,33 @@ export class OriginalHud {
     ]);
     if (!manifestResponse.ok || !blobResponse.ok) throw new Error('Original owner HUD assets unavailable');
     return new OriginalHud(new Uint8Array(await blobResponse.arrayBuffer()), await manifestResponse.json() as Manifest);
+  }
+
+  /** Deliberate map inspection; this is not the source's automatic help scan. */
+  exitMarker(state: OriginalHudState, subject: number): MinimapEntity | undefined {
+    if (!this.exitHelp || !state.exit_inspection_allowed || !state.world_map || !state.hud || !subject) return undefined;
+    return state.world_map.entities.find(row => row.help_selector === 83 && row.subject_entity_index === subject &&
+      row.visible === 1 && row.kind === 2 && (row.selector === 83 || row.selector === 84) &&
+      row.x >= 0 && row.x < 191 && row.y >= 0 && row.y < 200 &&
+      String(row.generation) === String(state.hud!.generation) && String(row.tick) === String(state.hud!.tick));
+  }
+
+  exitMarkerAt(state: OriginalHudState, x: number, y: number): number | null {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !state.world_map) return null;
+    let best: number | null = null, distance = Infinity;
+    for (const row of state.world_map.entities) {
+      const subject = row.subject_entity_index ?? 0;
+      if (this.exitMarker(state, subject) !== row) continue;
+      // compose() expands the 320×200 source map to 640×480.
+      const dx = x - 2 * row.x, dy = y - row.y * 480 / 200;
+      const d = dx * dx + dy * dy;
+      if (Math.abs(dx) <= 16 && Math.abs(dy) <= 16 && d < distance) { best = subject; distance = d; }
+    }
+    return best;
+  }
+
+  exitInspectionText(state: OriginalHudState, subject: number): string | null {
+    return this.exitMarker(state, subject) ? this.exitHelp!.text : null;
   }
 
   /** Source logical coordinates. Returned spell is a UI intent, not an admitted action. */
@@ -390,6 +437,62 @@ export class OriginalHud {
         const i = y * row.render_width + x;
         if (this.blob[row.mask.offset + i]) pixel(row.reference_x + x, row.reference_y + y, this.blob[row.indices.offset + i]!);
       }
+    }
+    const inspected = state.exit_inspection_subject ? this.exitMarker(state, state.exit_inspection_subject) : undefined;
+    if (inspected && this.exitHelp) {
+      const help = this.exitHelp;
+      const [corner, side, horizontal] = help.frame;
+      if (!corner || !side || !horizontal) throw new Error('Missing Original exit help frame');
+      // Explicit map inspection uses the source Type-8 leader and owner font;
+      // the live WebGL scene receives an opaque source-colour box.
+      const anchorX = inspected.x * 2, anchorY = Math.ceil(inspected.y * 480 / 200);
+      const boxWidth = help.text.length * 8, boxHeight = 14;
+      if (boxWidth <= 0 || boxWidth > 220 || help.width > boxWidth || help.height > boxHeight)
+        throw new Error('Invalid Original exit help text dimensions');
+      const centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
+      const centerY = anchorY - 94 + 28 < 80 ? anchorY + 66 : anchorY - 94;
+      const textX = Math.min(600 - boxWidth, Math.max(40 + corner.width, centerX - Math.floor(boxWidth / 2)));
+      const textY = Math.min(260 - boxHeight, Math.max(80 + corner.height, centerY - Math.floor(boxHeight / 2)));
+      const frameWidth = horizontal.width * Math.ceil((boxWidth + 8) / horizontal.width);
+      const frameHeight = Math.ceil(boxHeight / side.height) * side.height + 2 * (corner.height - horizontal.height);
+      const frameX = textX - Math.floor((frameWidth - boxWidth) / 2);
+      const frameY = textY - Math.floor((frameHeight - boxHeight) / 2);
+      const lineX = anchorX < frameX - 30 ? frameX - 2 : anchorX > frameX + frameWidth + 30 ? frameX + frameWidth : textX + Math.floor(boxWidth / 2);
+      const lineY = anchorY < frameY - 30 ? frameY - 2 : anchorY > frameY + frameHeight + 30 ? frameY + frameHeight : textY + Math.floor(boxHeight / 2);
+      const line = (x0: number, y0: number, x1: number, y1: number, color: number) => {
+        if (y0 > y1) { [x0, x1] = [x1, x0]; [y0, y1] = [y1, y0]; }
+        const dx = Math.abs(x1 - x0), dy = y1 - y0, direction = x1 < x0 ? -1 : 1;
+        const major = Math.max(dx, dy), minor = Math.min(dx, dy); let error = 2 * minor - major;
+        pixel(x0, y0, color);
+        for (let i = 0; i < major; i++) {
+          if (dx >= dy) x0 += direction; else y0++;
+          if (error >= 0) { if (dx >= dy) y0++; else x0 += direction; error += 2 * (minor - major); }
+          else error += 2 * minor;
+          pixel(x0, y0, color);
+        }
+      };
+      if (lineX !== textX + Math.floor(boxWidth / 2) || lineY !== textY + Math.floor(boxHeight / 2)) {
+        line(anchorX, anchorY, lineX, lineY, help.line_color);
+        line(anchorX + 1, anchorY, lineX + 1, lineY, help.color);
+      }
+      fill(frameX, frameY, frameWidth, frameHeight, help.background);
+      const frameSprite = (row: SymbolRow, x: number, y: number) => {
+        for (let dy = 0; dy < row.height; dy++) for (let dx = 0; dx < row.width; dx++) {
+          const i = dy * row.width + dx;
+          if (this.blob[row.mask.offset + i]) pixel(x + dx, y + dy, this.blob[row.indices.offset + i]!);
+        }
+      };
+      const top = frameY - horizontal.height, bottom = frameY + frameHeight;
+      for (const x of [frameX - side.width, frameX + frameWidth]) {
+        frameSprite(corner, x, top);
+        frameSprite(side, x, top + corner.height);
+        frameSprite(corner, x, top + corner.height + side.height);
+      }
+      for (let x = frameX; x < frameX + frameWidth; x += horizontal.width) {
+        frameSprite(horizontal, x, top); frameSprite(horizontal, x, bottom);
+      }
+      for (let y = 0; y < help.height; y++) for (let x = 0; x < help.width; x++)
+        if (this.blob[help.mask.offset + y * help.width + x]) pixel(textX + x, textY + y, help.color);
     }
     return screen;
   }

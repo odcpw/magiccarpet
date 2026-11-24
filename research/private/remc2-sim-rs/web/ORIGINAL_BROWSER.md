@@ -23,6 +23,42 @@ entry, then serves it and the native API from one origin. Owner packages, native
 library and decoded source assets must already exist locally. Missing inputs
 produce an explicit loading error. There is no synthetic game fallback.
 
+### Open an Original mission replay
+
+Use the native-backed geometry renderer with the same installed package set,
+authored workspace and native revision that accept the replay. For example,
+from this directory on 3090:
+
+```sh
+./run-original.sh --port 8891 \
+  --packages ../../generated/three-exit-20261124/resources.json \
+  --replay ../../generated/original-exit-hint-20261124/source4-first-visit-t301.mcs \
+  --help-cache ../../generated/exit-help-row83-20261124-candidate \
+  --save ../../generated/three-exit-20261124/browser-slot.mcs
+```
+
+The runtime validates the replay. The bridge matches its campaign package
+hash to the owner-supplied package list and loads that mission's terrain,
+sprites, palette and map symbols. The replay file is read-only. F5 writes
+to the separate save slot. A new mission's replay can be opened with the
+same command and its matching resources.
+
+In T’Klom, open the map with Tab and click or tap the exit symbol to inspect
+its English help text. Clicking again or closing the map dismisses it.
+The full map uses the native marker positions and current terrain. The
+browser draws the map and the three-dimensional flight view locally. This
+interaction is specific to the browser; the Unity automatic help popup has
+its own admission and lifetime. The top status panel still uses the
+experiment's original Night HUD artwork.
+
+On November 24, Chrome on the RTX 3090 loaded the controlled first-visit
+T’Klom replay with native `0fc9d27e2b46`. The live slot 298 marker appeared
+on the full map. Clicking it displayed “Fly here to exit the level” in the
+source font with a pointer to its symbol. Closing the map cleared the hint.
+The browser requested geometry, terrain and stamped state. Captures are in
+`../../generated/three-exit-20261124/`. This was a map inspection from a
+saved state; a complete mission playthrough is still open.
+
 For private tailnet access on this machine:
 
 ```sh
@@ -117,7 +153,7 @@ accesses and divisions whose dimensions/depths are checked. The launcher uses
 Whole-file totals include the existing HUD and are not a new-defect count.
 
 Still incomplete: audio, original options/pause submenus, Beyond Sight labels,
-map entity symbols and hand flashes, source shadow/reflection passes and dynamic
+hand flashes, source shadow/reflection passes and dynamic
 palette effects. The source palette matches the normal Night reference, but
 field-dependent palette changes have no narrow native export yet. Terrain
 waves/fog use local floating-point projection; native fixed-point raster parity

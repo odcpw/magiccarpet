@@ -1,6 +1,7 @@
 """Qualify the browser bundle against the real, ignored owner cache."""
 import hashlib
 import json
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -29,6 +30,9 @@ class WorldAssetsTest(unittest.TestCase):
         self.assertEqual(m['bytes'], len(self.bundle.blob))
         self.assertLess(m['bytes'], 2_000_000)
         t = m['terrain']
+        self.assertEqual(m['map_type'], 1)
+        sine = struct.unpack('<2048i', self.get(t['sine']))
+        self.assertEqual([sine[i] for i in (0, 512, 1024, 1536)], [0, 65536, 0, -65536])
         self.assertEqual((t['count'], t['width'], t['height']), (152, 32, 32))
         tiles = self.get(t['indices'])
         self.assertEqual(tiles, (self.night / self.source['bl32n']['indices_path']).read_bytes())
@@ -77,6 +81,71 @@ class WorldAssetsTest(unittest.TestCase):
         payload = (self.night / row['decoded_payload_path']).read_bytes()
         with self.assertRaises(ValueError):
             _frames(payload[:-1], 152, row['width'], row['height'], True, row['frame_count'])
+
+
+@unittest.skipUnless((ROOT.parent.parent / 'continuity-20261115/installed-full-resources.json').is_file(),
+                     'local campaign resources unavailable')
+class MissionWorldAssetsTest(unittest.TestCase):
+    def test_package_night_keeps_source_empty_selectors(self):
+        resources = json.loads((ROOT.parent.parent / 'continuity-20261115/installed-full-resources.json').read_text())
+        resource = resources[0]
+        descriptor = json.loads((Path(resource['owner_cache_path']) / 'materials/descriptor.json').read_text())
+        bundle = OriginalWorldAssets.from_package(resource)
+        self.assertEqual(bundle.manifest['map_type'], 1)
+        self.assertEqual(set(bundle.manifest['unavailable_selectors']),
+                         {row['index'] for row in descriptor['tmaps']['textures'] if row.get('source_empty')})
+        self.assertEqual(bundle.palette,
+                         (Path(resource['owner_cache_path']) / descriptor['palette']['rgb8_path']).read_bytes())
+
+    def test_tklom_owner_bundle_uses_real_day_resources(self):
+        resources = json.loads((ROOT.parent.parent / 'continuity-20261115/installed-full-resources.json').read_text())
+        resource = resources[4]
+        root = Path(resource['owner_cache_path'])
+        descriptor = json.loads((root / 'materials/descriptor.json').read_text())
+        bundle = OriginalWorldAssets.from_package(resource)
+        def get(span):
+            return bundle.blob[span['offset']:span['offset'] + span['length']]
+        self.assertEqual(descriptor['profile']['map_type']['name'], 'Day')
+        self.assertEqual(bundle.manifest['map_type'], descriptor['profile']['map_type']['id'])
+        sine = struct.unpack('<2048i', get(bundle.manifest['terrain']['sine']))
+        self.assertEqual([sine[i] for i in (0, 512, 1024, 1536)], [0, 65536, 0, -65536])
+        self.assertEqual(bundle.palette, (root / descriptor['palette']['rgb8_path']).read_bytes())
+        self.assertEqual(bundle.palette, get(bundle.manifest['palette']['rgb8']))
+        self.assertEqual(get(bundle.manifest['palette']['blend_lut']),
+                         (root / descriptor['tables']['path']).read_bytes()[0x4000:0x14000])
+        blocks = descriptor['blocks']
+        atlas = (root / blocks['atlas_path']).read_bytes()
+        tiles = get(bundle.manifest['terrain']['indices'])
+        size, width = blocks['tile_size'], blocks['width']
+        for tile in (0, 1, 8, blocks['tile_count'] - 1):
+            x, y = (tile % (width // size)) * size, (tile // (width // size)) * size
+            expected = b''.join(atlas[(y + row) * width + x:(y + row) * width + x + size]
+                                for row in range(size))
+            self.assertEqual(tiles[tile * size * size:(tile + 1) * size * size], expected)
+        rows = {row['selector']: row for row in bundle.manifest['tmaps']}
+        source = {row['index']: row for row in descriptor['tmaps']['textures']}
+        self.assertEqual(set(rows), set(source))
+        self.assertEqual(bundle.manifest['unavailable_selectors'], [])
+        for selector, row in rows.items():
+            self.assertEqual(get(row['frames'][0]), (root / source[selector]['indices_path']).read_bytes())
+        # Day selector 34 has a real multi-child transition, including a type-4
+        # palette child which the gameplay decoder deliberately skips.
+        source34 = source[34]
+        payload = (root / source34['decoded_payload_path']).read_bytes()
+        outer = 6 + source34['width'] * source34['height'] + 6
+        children = struct.unpack_from('<H', payload, outer + 6)[0]
+        self.assertGreater(children, 1)
+        child = outer + 16
+        types = []
+        for _ in range(children):
+            length, kind = struct.unpack_from('<IH', payload, child)
+            types.append(kind)
+            child += length
+        self.assertIn(4, types)
+        self.assertEqual(get(rows[34]['frames'][0]), get(rows[34]['frames'][-1]))
+        wrong = dict(resource, package_dir=resources[0]['package_dir'])
+        with self.assertRaises(ValueError):
+            OriginalWorldAssets.from_package(wrong)
 
 
 if __name__ == '__main__':
