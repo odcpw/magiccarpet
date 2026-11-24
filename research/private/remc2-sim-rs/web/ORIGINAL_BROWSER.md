@@ -1,8 +1,10 @@
-# Original Level 1 in the browser
+# Original campaign in the browser
 
 The native Rust runtime owns gameplay, input admission, RNG, scheduling and
 save/load. `original_bridge.py` loads the installed `sim-capi` library and starts
-the ordinary campaign from the existing four owner packages. The default route
+at NightSpire. It uses the Original launcher's 25 ordinary and five secret
+mission packages. Campaign progress unlocks later missions. Use `--packages`
+to select a different installed package set for a specific replay. The default route
 now renders the terrain, source-selected original sprite frames, water motion
 and indexed particle blends locally with Three.js/WebGL2. The browser also
 composes the source HUD, spell grid, objectives and minimap. There is no Unity

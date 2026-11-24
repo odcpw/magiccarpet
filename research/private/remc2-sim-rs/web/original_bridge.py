@@ -14,6 +14,7 @@ import re
 import secrets
 import stat
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -36,6 +37,18 @@ HEADER = struct.Struct("<4sHHHHIQQQQQ")
 WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
 MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
 MEDIA_CACHE = PRIVATE / "generated/mc2-campaign-media-cache-decoded"
+CAMPAIGN_LAUNCHER = PRIVATE / "remc2-unity-native/run-campaign.sh"
+
+
+def campaign_packages(path: Path | None):
+    """Use the installed launcher's resource set unless explicitly overridden."""
+    if path is None:
+        contents = subprocess.check_output([str(CAMPAIGN_LAUNCHER), "--print-resources"],
+                                           text=True, timeout=10)
+    else:
+        contents = path.read_text()
+    resources = json.loads(contents)
+    return resources["packages"] if isinstance(resources, dict) else resources
 
 
 class FrameInfo(c.Structure):
@@ -991,7 +1004,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--library", type=Path, default=LIBRARY)
-    parser.add_argument("--packages", type=Path, default=PACKAGES)
+    parser.add_argument("--packages", type=Path, help="use an explicit campaign package list")
     parser.add_argument("--replay", type=Path, help="start at this read-only campaign replay")
     parser.add_argument("--help-cache", type=Path, help="use this owner-local gameplay help cache")
     parser.add_argument("--probe-frame", type=Path)
@@ -1004,8 +1017,7 @@ def main():
     parser.add_argument("--web-root", type=Path)
     parser.add_argument("--save", type=Path, default=PRIVATE / "generated/original-web-20261116/save.json")
     args = parser.parse_args()
-    resources = json.loads(args.packages.read_text())
-    packages = resources["packages"] if isinstance(resources, dict) else resources
+    packages = campaign_packages(args.packages)
     if not isinstance(packages, list) or not packages:
         parser.error("the campaign package list is empty or invalid")
     if args.replay is not None and args.save.resolve() == args.replay.resolve():
