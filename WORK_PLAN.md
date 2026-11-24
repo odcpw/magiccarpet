@@ -1,5 +1,33 @@
 # Shared-engine delivery plan
 
+### Payahandra spell pickups, Fireball accuracy and campaign intermissions — November 24
+
+Payahandra’s authored Speed pickup now remains a held spell after the same
+simulation pass. Both player records and the world slot retain its owner.
+The Results spell count uses the authored rows remaining after initial spawns
+and refreshes on revival, as in remc2. In the actual Payahandra package,
+controlled pickup approaches gave 0% after Speed, 50% after the dormant
+Heal reward and 0% after revival. A separate acquired-Speed check exercised
+the public cast. A paid Fireball that splashes into water leaves hit accuracy
+unchanged. Its ordinary solid impact on Day 3 still counts.
+
+The rig-built native `743ac8febd62` and all 478 Rust inputs match the
+installed Original. The launcher loaded Payahandra from a save written by
+the preceding native. Cold replay also preserved the old cast and the next
+cast recorded with the new behavior. Runtime source is pushed at `7d2dfd9d`
+on `codex/original-ending`.
+
+The Three.js client carries an earned NightSpire exit through Results and the
+map into Payahandra with Fireball, Possession and Castle. Holding O there
+displays Payahandra's actual objective text. It also presents the first
+campaign intermission using the native media owner. With the campaign return
+explicitly staged, Chrome consumed all 529 CUT1 frames, including Vissuluth’s
+subtitle and audio events, through input release. An earned T’Klom victory
+and speaker output remain unverified. Browser source is pushed at
+`df33e843` on `codex/browser-exit-hint`. The private service loaded the
+installed native and its published client bundle. Evidence for these routes
+is in `research/private/generated/earned-campaign-20261124/`.
+
 ### Live exit controllers on the Original maps — November 24
 
 The map now reads the current exit controller when an authored switch creates
