@@ -973,6 +973,10 @@ impl From<crate::game_runtime::DisplaySettings> for StoredDisplaySettings {
 struct Mc2CampaignReplaySave {
     save_contract: String,
     paused: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    initial_mission_retry: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial_retry_spell_book: Option<RetrySpellBook>,
     #[serde(default, skip_serializing_if = "StoredDisplaySettings::is_default")]
     initial_display_settings: StoredDisplaySettings,
     #[serde(default, skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
@@ -1000,6 +1004,9 @@ struct Mc2CampaignReplaySave {
     /// First operation using the authored spell tier for grouped Meteor and Wind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     authored_effect_tiers_start_operation: Option<usize>,
+    /// First operation applying the source action/life gate to recovery input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_admission_start_operation: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     global_context_changes: Vec<Mc2GlobalContextChange>,
     #[serde(
@@ -1050,6 +1057,10 @@ struct Mc2CampaignReplaySave {
 struct Mc2CampaignReplaySavePayload<'a> {
     save_contract: &'a str,
     paused: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    initial_mission_retry: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_retry_spell_book: &'a Option<RetrySpellBook>,
     #[serde(skip_serializing_if = "StoredDisplaySettings::is_default")]
     initial_display_settings: StoredDisplaySettings,
     #[serde(skip_serializing_if = "super::objective_speech::SecretAnnouncementState::is_default")]
@@ -1070,6 +1081,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     source_results_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authored_effect_tiers_start_operation: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_admission_start_operation: Option<usize>,
     #[serde(skip_serializing_if = "<[Mc2GlobalContextChange]>::is_empty")]
     global_context_changes: &'a [Mc2GlobalContextChange],
     #[serde(skip_serializing_if = "dynamic_lighting_is_default")]
@@ -1122,6 +1135,8 @@ impl Mc2CampaignReplaySave {
         let mut save = Self {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
             paused,
+            initial_mission_retry: false,
+            initial_retry_spell_book: None,
             initial_display_settings: StoredDisplaySettings::default(),
             initial_secret_announcement: super::objective_speech::SecretAnnouncementState::default(),
             definition,
@@ -1133,6 +1148,7 @@ impl Mc2CampaignReplaySave {
             wind_audio_start_operation: Some(0),
             source_results_start_operation: Some(0),
             authored_effect_tiers_start_operation: Some(0),
+            recovery_admission_start_operation: Some(0),
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
@@ -1165,6 +1181,8 @@ impl Mc2CampaignReplaySave {
         let payload = Mc2CampaignReplaySavePayload {
             save_contract: &self.save_contract,
             paused: self.paused,
+            initial_mission_retry: self.initial_mission_retry,
+            initial_retry_spell_book: &self.initial_retry_spell_book,
             initial_display_settings: self.initial_display_settings,
             initial_secret_announcement: self.initial_secret_announcement,
             definition: &self.definition,
@@ -1176,6 +1194,7 @@ impl Mc2CampaignReplaySave {
             wind_audio_start_operation: self.wind_audio_start_operation,
             source_results_start_operation: self.source_results_start_operation,
             authored_effect_tiers_start_operation: self.authored_effect_tiers_start_operation,
+            recovery_admission_start_operation: self.recovery_admission_start_operation,
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
@@ -1205,12 +1224,13 @@ impl Mc2CampaignReplaySave {
     }
 
     fn verify(&self) -> bool {
-        let historical_fields_absent = self.initial_hand_selection_flash_ticks == [0; 2]
+        let historical_fields_absent = !self.initial_mission_retry && self.initial_retry_spell_book.is_none() && self.initial_hand_selection_flash_ticks == [0; 2]
             && self.hand_selection_flash_start_operation.is_none()
             && self.goat_audio_start_operation.is_none()
             && self.wind_audio_start_operation.is_none()
             && self.source_results_start_operation.is_none()
             && self.authored_effect_tiers_start_operation.is_none()
+            && self.recovery_admission_start_operation.is_none()
             && self.hud_admission_changes.is_empty()
             && self.palette_changes.is_empty()
             && self.global_context_changes.iter().all(|change| change.hand_selection_flash_ticks.is_none()
@@ -1411,6 +1431,62 @@ struct Mc2GlobalContextChange {
     source_speed_index: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     speed_action: Option<bool>,
+}
+
+/// The five source arrays copied by sub_549A0 before InitialiseSpells.
+/// That initializer clears selected tiers and mission-only experience.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetrySpellBook {
+    known: [u8; 26],
+    hand_marks: [u8; 26],
+    persistent_experience: [i32; 26],
+    unlocked_levels: [i8; 26],
+}
+
+impl RetrySpellBook {
+    fn from_campaign(campaign: &CampaignSession) -> Self {
+        let player = campaign.simulation().shared_spells().local_player();
+        Self {
+            known: player.spell_enabled_flags,
+            hand_marks: player.spell_hand_eligibility,
+            persistent_experience: player.persistent_spell_experience,
+            unlocked_levels: player.spell_unlocked_levels,
+        }
+    }
+
+    fn install(&self, campaign: &mut CampaignSession) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        use crate::game_runtime::RuntimeTransitionError;
+        let invalid = |message: String| RuntimeTransitionError::InvalidRuntimeFlow { message };
+        if self.known.iter().any(|value| *value > 1)
+            || self.hand_marks.iter().any(|value| *value > 2)
+            || self.unlocked_levels.iter().any(|value| !(0..=2).contains(value))
+        {
+            return Err(invalid("invalid retry spell book".into()));
+        }
+        let learned = self.known.iter().enumerate()
+            .filter_map(|(family, known)| (*known != 0).then_some(family as u8))
+            .collect::<Vec<_>>();
+        // InitialiseSpells chooses new hands even when known families are
+        // unchanged; cloning the old entry would retain its prior choices.
+        campaign.rebuild_for_spell_carry(&learned, None).map_err(|error| invalid(error.to_string()))?;
+        let player = campaign.simulation().shared_spells().local_player();
+        let progression = (0..26).filter_map(|family| {
+            (player.persistent_spell_experience[family] != self.persistent_experience[family]
+                || player.runtime_spell_experience[family] != 0
+                || player.spell_unlocked_levels[family] != self.unlocked_levels[family]
+                || player.family_selected_tiers[family] != 0)
+                .then_some(crate::native_world::CarriedSpellProgress {
+                    family: family as u8, persistent_experience: self.persistent_experience[family],
+                    runtime_experience: 0, unlocked_tier: self.unlocked_levels[family], selected_tier: 0,
+                })
+        }).collect::<Vec<_>>();
+        campaign.simulation_mut().apply_carried_spell_progression(&progression)
+            .map_err(|error| invalid(error.to_string()))?;
+        campaign.simulation_mut().install_retry_hand_marks(self.hand_marks)
+            .map_err(|error| invalid(error.to_string()))?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2519,7 +2595,12 @@ impl Mc2RuntimePackageResolver {
         save.wind_audio_start_operation = Some(session.backend().wind_audio_start_operation);
         save.source_results_start_operation = Some(session.backend().source_results_start_operation);
         save.authored_effect_tiers_start_operation = Some(session.backend().authored_effect_tiers_start_operation);
+        save.recovery_admission_start_operation = Some(session.backend().recovery_admission_start_operation);
         save.initial_secret_announcement = session.backend().package_campaign.simulation().secret_announcement();
+        save.initial_mission_retry = session.backend().package_campaign.simulation().source_exit_result_byte() == 4;
+        if save.initial_mission_retry {
+            save.initial_retry_spell_book = Some(RetrySpellBook::from_campaign(&session.backend().package_campaign));
+        }
         save.global_context_changes = session.backend().global_context_changes.clone();
         save.initial_dynamic_lighting = session
             .backend()
@@ -2823,6 +2904,11 @@ impl Mc2RuntimePackageResolver {
                 message: "authored spell tiers have an invalid replay boundary".to_owned(),
             });
         }
+        if save.recovery_admission_start_operation.is_some_and(|start| start > save.operations.len()) {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "recovery admission has an invalid replay boundary".to_owned(),
+            });
+        }
         if save.played_cutscenes.unwrap_or(0) & !0x3f != 0 || save.initial_final_reward == Some(false) {
             return Err(Mc2CampaignReplaySaveError::InvalidSave { message: "invalid campaign return state".to_owned() });
         }
@@ -3017,7 +3103,10 @@ impl Mc2RuntimePackageResolver {
         let wind_audio_start = save.wind_audio_start_operation.unwrap_or(save.operations.len());
         let source_results_start = save.source_results_start_operation.unwrap_or(save.operations.len());
         let authored_effect_tiers_start = save.authored_effect_tiers_start_operation.unwrap_or(save.operations.len());
+        let recovery_admission_start = save.recovery_admission_start_operation.unwrap_or(save.operations.len());
         let initial_secret_announcement = save.initial_secret_announcement;
+        let initial_mission_retry = save.initial_mission_retry;
+        let initial_retry_spell_book = save.initial_retry_spell_book;
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
@@ -3078,6 +3167,14 @@ impl Mc2RuntimePackageResolver {
                     candidate
                         .backend_mut()
                         .apply_semantic_spell_carry(&semantic_spell_carry)?;
+                    if let Some(book) = &initial_retry_spell_book {
+                        if !initial_mission_retry {
+                            return Err(crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                                message: "retry spell book requires a retry entry".into(),
+                            });
+                        }
+                        candidate.backend_mut().install_retry_spell_book(book)?;
+                    }
                     candidate
                         .backend_mut()
                         .install_initial_source_context(initial_global_context)?;
@@ -3094,9 +3191,14 @@ impl Mc2RuntimePackageResolver {
                     backend.campaign.simulation_mut().set_replay_legacy_source_results(source_results_start != 0);
                     backend.authored_effect_tiers_start_operation = authored_effect_tiers_start;
                     backend.campaign.simulation_mut().set_replay_legacy_authored_effect_tiers(authored_effect_tiers_start != 0);
+                    backend.recovery_admission_start_operation = recovery_admission_start;
+                    backend.replay_legacy_recovery_admission = recovery_admission_start != 0;
                     candidate.backend_mut().hud_admission = None;
                     candidate.backend_mut().pending_hud_top_bar = None;
                     candidate.backend_mut().install_initial_secret_announcement(initial_secret_announcement)?;
+                    if initial_mission_retry {
+                        candidate.backend_mut().mark_mission_retry_entry();
+                    }
                     candidate
                         .backend_mut()
                         .install_initial_exit_route(initial_exit_route)?;
@@ -3127,6 +3229,9 @@ impl Mc2RuntimePackageResolver {
                     }
                     if operation_index == authored_effect_tiers_start {
                         candidate.backend_mut().campaign.simulation_mut().set_replay_legacy_authored_effect_tiers(false);
+                    }
+                    if operation_index == recovery_admission_start {
+                        candidate.backend_mut().replay_legacy_recovery_admission = false;
                     }
                     if voxel_mode_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
                         let change = voxel_mode_changes.next().expect("matched voxel replay boundary");
@@ -3335,6 +3440,7 @@ impl Mc2RuntimePackageResolver {
             save.wind_audio_start_operation = None;
             save.source_results_start_operation = None;
             save.authored_effect_tiers_start_operation = None;
+            save.recovery_admission_start_operation = None;
         }
         save.receipt_sha256 = save.compute_receipt_sha256();
         serde_json::to_vec(&save).unwrap()
@@ -3810,6 +3916,8 @@ pub struct Mc2CampaignBackend {
     wind_audio_start_operation: usize,
     source_results_start_operation: usize,
     authored_effect_tiers_start_operation: usize,
+    recovery_admission_start_operation: usize,
+    replay_legacy_recovery_admission: bool,
     hud_admission_changes: Vec<Mc2HudAdmissionChange>,
     palette_changes: Vec<Mc2PaletteChange>,
     pending_palette_brightness: Option<[u8; 3]>,
@@ -4320,6 +4428,27 @@ impl Mc2CampaignBackend {
         &self.campaign
     }
 
+    /// InGameLoop_47320 exits on bit 3. The outer source loop then gives
+    /// bit 2 precedence over success, ordinary banishment and secret return.
+    pub fn mission_retry_requested(&self) -> bool {
+        self.campaign.simulation().source_exit_result_byte() & 0x0c == 0x0c
+    }
+
+    pub(crate) fn mark_mission_retry_entry(&mut self) {
+        self.campaign.simulation_mut().mark_mission_retry_entry();
+        self.package_campaign.simulation_mut().mark_mission_retry_entry();
+    }
+
+    fn install_retry_spell_book(&mut self, book: &RetrySpellBook) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        let mut campaign = self.campaign.clone();
+        let mut package = self.package_campaign.clone();
+        book.install(&mut campaign)?;
+        book.install(&mut package)?;
+        self.campaign = campaign;
+        self.package_campaign = package;
+        Ok(())
+    }
+
     /// Observe only the participant text domain, without projecting the world.
     #[must_use]
     pub fn participant_notifications(&self) -> Vec<sim_session::ParticipantNotification> {
@@ -4474,6 +4603,8 @@ impl GameAdapter for Mc2CampaignAdapter {
             wind_audio_start_operation: 0,
             source_results_start_operation: 0,
             authored_effect_tiers_start_operation: 0,
+            recovery_admission_start_operation: 0,
+            replay_legacy_recovery_admission: false,
             hud_admission_changes: Vec::new(),
             hud_admission: Some(true),
             pending_hud_top_bar: None,
@@ -5184,7 +5315,11 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let dynamic_lighting_enabled = self.dynamic_lighting_enabled();
         let help_enabled = self.help_enabled();
         let secret_announcement = self.campaign.simulation().secret_announcement().after_level_init();
+        let retry_spell_book = self.mission_retry_requested().then(|| RetrySpellBook::from_campaign(&self.campaign));
         let mut campaign = self.package_campaign.clone();
+        if let Some(book) = &retry_spell_book {
+            book.install(&mut campaign).map_err(|error| CampaignBackendError::StepRejected { message: error.to_string() })?;
+        }
         campaign
             .apply_semantic_level_variant(
                 definition
@@ -5229,6 +5364,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
         self.package_campaign.simulation_mut().install_initial_secret_announcement(secret_announcement)
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
+        if retry_spell_book.is_some() {
+            self.package_campaign = campaign.clone();
+        }
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
@@ -5249,6 +5387,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.wind_audio_start_operation = 0;
         self.source_results_start_operation = 0;
         self.authored_effect_tiers_start_operation = 0;
+        self.recovery_admission_start_operation = 0;
+        self.replay_legacy_recovery_admission = false;
         self.primary_visibility_changes.clear();
         self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
@@ -5863,6 +6003,13 @@ impl Mc2CampaignBackend {
             self.validate_spell_holder_actor(&mark.spell_id, mark.holder_actor)?;
         }
         let mut player_command = campaign_player_command(command);
+        if command.recover_player && !self.replay_legacy_recovery_admission {
+            let simulation = self.campaign.simulation();
+            let player = simulation.entities().get(usize::from(simulation.state.entity_index));
+            if !player.is_some_and(|row| row.active && row.life < 0 && row.action == 3) {
+                player_command.opcode = 0;
+            }
+        }
         if command.recover_player
             || command.remove_castle_stage
             || command.recenter
@@ -6027,6 +6174,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn recovery_admission_preserves_historical_operations_and_gates_new_input() {
+        use crate::game_runtime::GameRuntime;
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ]).unwrap();
+        let mut historical = GameRuntime::<Mc2CampaignBackend>::title(8105).unwrap();
+        let title = historical.identity();
+        let loading = resolver.new_game(&mut historical, title.guard()).unwrap();
+        resolver.open_pending(&mut historical, loading.guard(), 8105).unwrap();
+        let command = GameCommand { recover_player: true, ..GameCommand::default() };
+        let session = historical.session_mut().unwrap();
+        session.backend_mut().replay_legacy_recovery_admission = true;
+        assert_eq!(session.backend().campaign_player_command(&command).unwrap().opcode, 15);
+        session.step(guard(session), command.clone()).unwrap();
+        let expected = historical.session().unwrap().backend().snapshot();
+        // Model a receipt written before this admission existed using the
+        // production save producer and the old input policy above.
+        let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&resolver.save_replay(&historical).unwrap()).unwrap();
+        old.recovery_admission_start_operation = None;
+        old.receipt_sha256 = old.compute_receipt_sha256();
+        let old_bytes = serde_json::to_vec(&old).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8106).unwrap();
+        let title = restored.identity();
+        resolver.load_replay(&mut restored, title.guard(), 8106, &old_bytes).unwrap();
+        assert_eq!(restored.session().unwrap().backend().snapshot(), expected);
+        let migrated: Mc2CampaignReplaySave = serde_json::from_slice(&resolver.save_replay(&restored).unwrap()).unwrap();
+        assert_eq!(migrated.recovery_admission_start_operation, Some(old.operations.len()));
+        let session = restored.session_mut().unwrap();
+        assert!(session.backend().campaign.simulation().entities()[usize::from(
+            session.backend().campaign.simulation().state.entity_index)].life >= 0);
+        assert_eq!(session.backend().campaign_player_command(&command).unwrap().opcode, 0);
+        session.step(guard(session), command).unwrap();
+        let continued = resolver.save_replay(&restored).unwrap();
+        let mut cold = GameRuntime::<Mc2CampaignBackend>::title(8107).unwrap();
+        let title = cold.identity();
+        resolver.load_replay(&mut cold, title.guard(), 8107, &continued).unwrap();
+        assert_eq!(cold.session().unwrap().backend().snapshot(), restored.session().unwrap().backend().snapshot());
+        let mut invalid: Mc2CampaignReplaySave = serde_json::from_slice(&continued).unwrap();
+        invalid.recovery_admission_start_operation = Some(invalid.operations.len() + 1);
+        invalid.receipt_sha256 = invalid.compute_receipt_sha256();
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(8108).unwrap();
+        let title = rejected.identity();
+        assert!(resolver.load_replay(&mut rejected, title.guard(), 8108,
+            &serde_json::to_vec(&invalid).unwrap()).is_err());
+        assert_eq!(rejected.identity(), title);
+    }
+
+    #[test]
     fn paid_water_fireball_replay_preserves_old_accuracy_then_uses_source_writer() {
         use crate::game_runtime::{CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeTransitionError};
         use crate::native_world::{start_fireball_terminal_trace, take_fireball_terminal_trace};
@@ -6094,6 +6291,7 @@ pub(crate) mod tests {
         let mut old: Mc2CampaignReplaySave = serde_json::from_slice(&produced).unwrap();
         old.source_results_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
+        old.recovery_admission_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         let old_bytes = serde_json::to_vec(&old).unwrap();
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(8102).unwrap();
@@ -7318,6 +7516,7 @@ pub(crate) mod tests {
         old.wind_audio_start_operation = None;
         old.source_results_start_operation = None;
         old.authored_effect_tiers_start_operation = None;
+        old.recovery_admission_start_operation = None;
         old.receipt_sha256 = old.compute_receipt_sha256();
         assert!(old.verify());
         let old_bytes = serde_json::to_vec(&old).unwrap();

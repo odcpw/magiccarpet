@@ -9327,6 +9327,40 @@ impl Mc2Simulation {
         self.session.state.live.source_player_result.result_byte()
     }
 
+    pub(crate) fn mark_mission_retry_entry(&mut self) {
+        // sub_46830: after sub_56D60 has reconstructed this same map, overwrite
+        // only byte 2 of the local player's result header. Bit 3 is now clear.
+        self.session.state.live.source_player_result.record_exit_result(4);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_no_castle_retry_for_test(&mut self) {
+        self.session.state.live.source_player_result.record_single_player_no_castle_recovery();
+    }
+
+    /// sub_549A0 retains the per-family hand marks through a same-level
+    /// reconstruction; InitialiseSpells separately resets the chosen hands.
+    pub(crate) fn install_retry_hand_marks(&mut self, marks: [u8; PLAYER_SPELL_COUNT]) -> Result<()> {
+        if self.session.state.live.core.state.tick != 0 || marks.iter().any(|mark| *mark > 2) {
+            return Err(NativeWorldError::new("invalid retry hand marks"));
+        }
+        let live = &mut self.session.state.live;
+        let entity_index = live.shared_spells.local_player.entity_index;
+        let mut player = live.shared_spells.local_player.clone();
+        player.spell_hand_eligibility = marks;
+        player.record[398..424].copy_from_slice(&marks);
+        for target in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut()) {
+            if target.entity_index == entity_index {
+                target.spell_hand_eligibility = marks;
+                target.record[398..424].copy_from_slice(&marks);
+            }
+        }
+        live.shared_spells.local_player = player;
+        self.sync_level2_spell_fire_context();
+        self.session.rebase();
+        Ok(())
+    }
+
     pub(crate) fn player_lifecycle_notifications(
         &self,
     ) -> &crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications {

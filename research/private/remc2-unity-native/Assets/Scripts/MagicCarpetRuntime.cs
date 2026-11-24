@@ -10077,7 +10077,13 @@ namespace MagicCarpet.Native
             }
             var receipt = session.GameRuntimeFinishMissionIfReady();
             if (receipt == null) return false;
-            if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
+            if (receipt.kind == SecretTransitionTransport.MissionRetryBoundaryKind)
+            {
+                FreezeGameRuntimeInput();
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
+                PresentResetGameRuntimeMission();
+            }
+            else if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
             {
                 Require(receipt.ordinary_completion != null && receipt.secret_transition == null,
                     "ordinary accepted boundary carries only its completion receipt");
@@ -11499,6 +11505,11 @@ namespace MagicCarpet.Native
                 PauseGameRuntimeAndRebindAudio();
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
             }
+            PresentResetGameRuntimeMission();
+        }
+
+        private void PresentResetGameRuntimeMission()
+        {
             gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();

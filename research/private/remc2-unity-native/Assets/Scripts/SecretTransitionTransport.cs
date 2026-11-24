@@ -19,6 +19,7 @@ namespace MagicCarpet.Native
         internal const string ReceiptContract =
             "carpet-flight-secret-transition-receipt/v1";
         internal const string OrdinaryCompletionBoundaryKind = "ordinary_completion";
+        internal const string MissionRetryBoundaryKind = "mission_retry";
         internal const string SecretTransitionBoundaryKind = "secret_transition";
         internal const string EntryKind = "entry";
         internal const string CompletedReturnKind = "completed_return";
@@ -136,6 +137,8 @@ namespace MagicCarpet.Native
 
             var hasOrdinary = envelope.ordinary_completion != null;
             var hasSecret = envelope.secret_transition != null;
+            if (envelope.kind == MissionRetryBoundaryKind &&
+                !envelope.HasOrdinaryCompletionField && !envelope.HasSecretTransitionField) return;
             if (envelope.kind == OrdinaryCompletionBoundaryKind)
             {
                 if (!envelope.HasOrdinaryCompletionField || !hasOrdinary ||
@@ -232,7 +235,12 @@ namespace MagicCarpet.Native
             if (reader.MoveToContent() != XmlNodeType.None)
                 throw new InvalidDataException("accepted boundary receipt has trailing JSON data");
 
-            if (kind == OrdinaryCompletionBoundaryKind)
+            if (kind == MissionRetryBoundaryKind)
+            {
+                if (hasOrdinaryCompletion || hasSecretTransition)
+                    throw new InvalidDataException("mission retry must carry only its kind");
+            }
+            else if (kind == OrdinaryCompletionBoundaryKind)
             {
                 if (!hasOrdinaryCompletion || hasSecretTransition)
                     throw new InvalidDataException(

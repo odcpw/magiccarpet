@@ -516,5 +516,42 @@ mod tests {
             SpellMarkHand::Left
         );
         assert_eq!(source_player_record(restored_session)[398], 1);
+
+        // Controlled outer boundary: the real no-Castle death/recovery
+        // producer is covered by player_lifecycle_tests. Here retain the
+        // genuinely marked spell through retry and its cold replay.
+        let before_retry = super::super::RetrySpellBook::from_campaign(
+            &loaded.session().unwrap().backend().campaign);
+        assert_eq!(before_retry.hand_marks[0], 1);
+        loaded.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .stage_no_castle_retry_for_test();
+        let runtime_guard = loaded.identity().guard();
+        let session_guard = loaded.session().unwrap().identity().guard();
+        assert!(loaded.retry_mission_if_ready(runtime_guard, session_guard).unwrap());
+        let retried = loaded.session().unwrap();
+        let after_retry = super::super::RetrySpellBook::from_campaign(&retried.backend().campaign);
+        assert_eq!(after_retry, before_retry);
+        assert_eq!(retried.backend().campaign.simulation().source_exit_result_byte(), 4);
+        assert_eq!(fireball(&retried.snapshot().value).marked_hand, SpellMarkHand::Left);
+        assert_eq!(retried.backend().campaign.simulation().shared_spells().local_player().runtime_spell_experience, [0; 26]);
+
+        let retry_save = resolver.save_replay(&loaded).unwrap();
+        let mut cold_retry = GameRuntime::<Mc2CampaignBackend>::title(8806).unwrap();
+        let guard = cold_retry.identity().guard();
+        resolver.load_replay(&mut cold_retry, guard, 8807, &retry_save).unwrap();
+        let cold = cold_retry.session_mut().unwrap();
+        assert_eq!(cold.backend().campaign.simulation().source_exit_result_byte(), 4);
+        assert_eq!(super::super::RetrySpellBook::from_campaign(&cold.backend().campaign), before_retry);
+        assert_eq!(fireball(&cold.snapshot().value).marked_hand, SpellMarkHand::Left);
+        let guard = super::super::tests::guard(cold);
+        let cycled = cold.step(guard, GameCommand {
+            cycle_marked_spell: Some(MarkedSpellCycle {
+                hand: SpellAssignmentHand::Left,
+                direction: SpellCycleDirection::Next,
+            }),
+            ..GameCommand::default()
+        }).unwrap().value;
+        assert_eq!(fireball(&cycled).hand, SpellHand::Left);
+        assert_eq!(fireball(&cycled).marked_hand, SpellMarkHand::Left);
     }
 }

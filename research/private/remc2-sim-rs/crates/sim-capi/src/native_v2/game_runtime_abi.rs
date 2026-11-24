@@ -1118,6 +1118,16 @@ impl RuntimeRecord {
         expected_tick: u64,
     ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        if self.session()?.backend().mission_retry_requested() {
+            self.runtime.retry_mission_if_ready(
+                RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+                SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+            ).map_err(map_transition_error)?;
+            self.completion_transition_receipt = Some(BoundaryTransitionReceipt::MissionRetry);
+            self.campaign_presentation = None;
+            self.reset_audio()?;
+            return Ok(());
+        }
         let resolver = self.resolver.as_ref().ok_or_else(|| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,

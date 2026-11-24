@@ -2071,6 +2071,65 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    #[cfg(test)]
+    pub(crate) fn check_retry_after_lethal_encounter(
+        session: GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+    ) {
+        let before_session = session.identity();
+        assert!(session.backend().mission_retry_requested());
+        let mut runtime = Self::title(before_session.session_id).unwrap();
+        runtime.state = RuntimeState::Playing { session, paused: false };
+        let before = runtime.identity();
+        let progress = runtime.completed_levels().to_vec();
+        let guard = before_session.guard();
+        assert!(runtime.retry_mission_if_ready(before.guard(), SessionGuard {
+            expected_tick: guard.expected_tick + 1, ..guard
+        }).is_err());
+        assert_eq!(before, runtime.identity());
+        assert!(runtime.retry_mission_if_ready(before.guard(), guard).unwrap());
+        let after = runtime.identity();
+        let rebuilt = runtime.session().unwrap();
+        assert_eq!(after.mode, RuntimeMode::Playing);
+        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.active_runtime_flow, before.active_runtime_flow);
+        assert_eq!(rebuilt.identity().generation, before_session.generation + 1);
+        assert_eq!(rebuilt.identity().definition_hash, before_session.definition_hash);
+        assert_eq!(rebuilt.identity().tick, 0);
+        assert_eq!(rebuilt.backend().campaign_presentation_source().simulation().source_exit_result_byte(), 4);
+        assert_eq!(runtime.completed_levels(), progress);
+        let next_guard = rebuilt.identity().guard();
+        assert!(!runtime.retry_mission_if_ready(after.guard(), next_guard).unwrap());
+        assert_eq!(runtime.identity(), after);
+    }
+
+    /// Accept a pending source retry at the outer loop boundary. The nested
+    /// session rebuilds its original mission, including the entry spell carry.
+    /// The campaign frontier and an active secret's parent stay in this owner.
+    pub fn retry_mission_if_ready(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let next_generation = self.next_generation()?;
+        let Some(session) = self.session_mut() else {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing, actual: self.identity().mode,
+            });
+        };
+        session.completion_status(session_guard).map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        if !session.backend().mission_retry_requested() {
+            return Ok(false);
+        }
+        session.reset(session_guard).map_err(|error| RuntimeTransitionError::InvalidNextDefinition {
+            message: format!("cannot restart the current mission: {error}"),
+        })?;
+        session.backend_mut().mark_mission_retry_entry();
+        self.reset_panel_transparency_to_level_default();
+        self.reset_preference_input();
+        self.generation = next_generation;
+        Ok(true)
+    }
+
     /// Source cases9..12. Startup speed5 admits all four capabilities and
     /// the source sky buffer is process-global, independent of map assets.
     pub fn source_graphics(&mut self,guard:RuntimeGuard,session_guard:SessionGuard,action:SourceGraphicsAction)

@@ -915,7 +915,20 @@ namespace MagicCarpet.Native
                 maximumLength,
                 "read accepted runtime boundary receipt");
             var receipt = SecretTransitionTransport.Decode(bytes, maximumLength);
-            if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
+            if (receipt.kind == SecretTransitionTransport.MissionRetryBoundaryKind)
+            {
+                if (before.session == null || after.session == null || after.mode != PlayingMode ||
+                    before.runtime_id != after.runtime_id || before.session.session_id != after.session.session_id ||
+                    before.active_runtime_flow?.bound_level_id != after.active_runtime_flow?.bound_level_id ||
+                    before.session.definition_hash != after.session.definition_hash ||
+                    before.session.package_graph_hash != after.session.package_graph_hash ||
+                    ParseCounter(after.generation, "generation") != checked(generation + 1) ||
+                    ParseCounter(after.session.generation, "session generation") !=
+                        checked(ParseCounter(before.session.generation, "session generation") + 1) ||
+                    ParseCounter(after.session.tick, "tick") != 0)
+                    throw new InvalidDataException("mission retry failed to rebuild the same bound mission");
+            }
+            else if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
             {
                 ValidateCompletionTransitionReceipt(
                     receipt.ordinary_completion, before, after, generation);
