@@ -43,12 +43,17 @@ namespace MagicCarpet.Native.Tests
                 // The old and new forward keys, map key, and confirming mouse
                 // button are down when the draft is committed.
                 keys.UnionWith(new[] { KeyCode.UpArrow, KeyCode.W, KeyCode.Return, KeyCode.LeftShift,
-                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10 });
+                    KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F1, KeyCode.F2, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.F10,
+                    KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.F4);
+                downKeys.Add(KeyCode.F2);
+                downKeys.Add(KeyCode.F1);
+                downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Apply(), Is.True);
                 Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
@@ -57,10 +62,15 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyHeld(KeyCode.LeftShift), Is.False, "source fixed modifier is suppressed");
                 Assert.That(preferences.KeyHeld(KeyCode.RightShift), Is.False);
                 Assert.That(preferences.KeyHeld(KeyCode.RightAlt), Is.False, "both physical Alt keys share source modifier precedence");
-                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.False, "held F5 cannot leak a save or display toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F4), Is.False, "held F4 cannot leak the speech toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F2), Is.False, "held F2 cannot leak the flight assistance toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F1), Is.False, "held F1 cannot leak the help mode toggle");
+                Assert.That(preferences.KeyPressed(KeyCode.F5), Is.False, "held F5 cannot leak the sound or display toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.False, "held F6 cannot leak the transparency toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.False, "held F7 cannot leak the flat shading toggle");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.False, "held F3 cannot leak the speed action");
+                Assert.That(preferences.KeyPressed(KeyCode.LeftBracket), Is.False, "held enlarge cannot leak through settings");
+                Assert.That(preferences.KeyPressed(KeyCode.RightBracket), Is.False, "held shrink cannot leak through settings");
                 Assert.That(preferences.KeyHeld(KeyCode.F10), Is.True, "reserved recovery controls stay available");
                 Assert.That(preferences.Held(4), Is.False);
                 Assert.That(preferences.Pressed(4), Is.False, "same-frame confirmation cannot open the map");
@@ -86,16 +96,20 @@ namespace MagicCarpet.Native.Tests
                 // Observe release while no flight input is sampled, then a
                 // subsequent press is fresh rather than permanently latched.
                 keys.ExceptWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.LeftShift, KeyCode.RightShift,
-                    KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7 });
+                    KeyCode.RightAlt, KeyCode.F1, KeyCode.F2, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Clear();
                 buttons.Remove(0);
                 preferences.AdvanceInputReleaseBarrier();
-                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7 });
+                keys.UnionWith(new[] { KeyCode.W, KeyCode.Return, KeyCode.RightShift, KeyCode.RightAlt, KeyCode.F1, KeyCode.F2, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7, KeyCode.LeftBracket, KeyCode.RightBracket });
                 downKeys.Add(KeyCode.Return);
                 downKeys.Add(KeyCode.F5);
                 downKeys.Add(KeyCode.F6);
                 downKeys.Add(KeyCode.F7);
                 downKeys.Add(KeyCode.F3);
+                downKeys.Add(KeyCode.F4);
+                downKeys.Add(KeyCode.F2);
+                downKeys.Add(KeyCode.F1);
+                downKeys.Add(KeyCode.LeftBracket); downKeys.Add(KeyCode.RightBracket);
                 buttons.Add(0);
                 Assert.That(preferences.Held(0), Is.True);
                 Assert.That(preferences.Pressed(4), Is.True);
@@ -111,6 +125,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(preferences.KeyPressed(KeyCode.F6), Is.True, "release and repress admits the fresh F6 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F7), Is.True, "release and repress admits the fresh F7 edge");
                 Assert.That(preferences.KeyPressed(KeyCode.F3), Is.True, "release and repress admits the fresh F3 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.F4), Is.True, "release and repress admits the fresh F4 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.F2), Is.True, "release and repress admits the fresh F2 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.F1), Is.True, "release and repress admits the fresh F1 edge");
+                Assert.That(preferences.KeyPressed(KeyCode.LeftBracket), Is.True);
+                Assert.That(preferences.KeyPressed(KeyCode.RightBracket), Is.True);
                 Assert.That(preferences.MouseHeld(0), Is.True);
 
                 // Cancelling another draft preserves the committed mapping
@@ -160,25 +179,50 @@ namespace MagicCarpet.Native.Tests
                         "capture edits the pending preferences, not live controls");
                     preferences.BeginKeyCapture(1);
                     Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Minus }), Is.True);
-                    var menuKeys = new[] { KeyCode.Q, KeyCode.E, KeyCode.T, KeyCode.Y, KeyCode.U, KeyCode.I };
-                    for (var slot = 4; slot < 10; slot++)
+                    var menuKeys = new[] { KeyCode.E, KeyCode.T, KeyCode.Y, KeyCode.U, KeyCode.I };
+                    for (var slot = 5; slot < 10; slot++)
                     {
                         preferences.BeginKeyCapture(slot);
-                        Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = menuKeys[slot - 4] }), Is.True);
+                        Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = menuKeys[slot - 5] }), Is.True);
                     }
+                    preferences.BeginKeyCapture(4);
+                    Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Q }), Is.True);
+                    var qText = new Event { type = EventType.KeyDown, keyCode = KeyCode.None, character = 'q' };
+                    Assert.That(preferences.CaptureKey(qText), Is.True);
+                    Assert.That(qText.type, Is.EqualTo(EventType.Used));
                     Assert.That(preferences.Apply(), Is.True);
                     Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
                     Assert.That(preferences.Current.preferences.keys[1], Is.EqualTo("Minus"));
                     Assert.That(preferences.Current.preferences.player_name, Is.EqualTo("PLAYER"));
-                    var confirmed = File.ReadAllBytes(Path.Combine(profile, "player-preferences.json"));
+                    var profilePath = Path.Combine(profile, "player-preferences.json");
+                    var confirmed = File.ReadAllBytes(profilePath);
+
+                    preferences.Open();
+                    preferences.BeginKeyCapture(4);
+                    foreach (var (fixedKey, character) in new[] {
+                        (KeyCode.C, 'c'), (KeyCode.L, 'l'), (KeyCode.O, 'o'), (KeyCode.Space, ' ')
+                    })
+                    {
+                        var reserved = new Event { type = EventType.KeyDown, keyCode = fixedKey };
+                        Assert.That(preferences.CaptureKey(reserved), Is.True);
+                        Assert.That(reserved.type, Is.EqualTo(EventType.Used));
+                        var text = new Event { type = EventType.KeyDown, keyCode = KeyCode.None, character = character };
+                        Assert.That(preferences.CaptureKey(text), Is.True);
+                        Assert.That(preferences.Apply(), Is.False, $"{fixedKey} cannot be assigned to the map");
+                        Assert.That(preferences.IsOpen, Is.True);
+                        Assert.That(preferences.Current.preferences.keys[4], Is.EqualTo("Q"));
+                        Assert.That(File.ReadAllBytes(profilePath), Is.EqualTo(confirmed));
+                    }
+                    Assert.That(preferences.CaptureKey(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape }),
+                        Is.True, "Escape still exits a rejected capture");
+                    preferences.Cancel();
 
                     preferences.Open();
                     preferences.BeginKeyCapture(0);
                     Assert.That(preferences.CaptureKey(Event.KeyboardEvent("s")), Is.True);
                     preferences.Cancel();
                     Assert.That(preferences.Current.preferences.keys[0], Is.EqualTo("W"));
-                    Assert.That(File.ReadAllBytes(Path.Combine(profile, "player-preferences.json")),
-                        Is.EqualTo(confirmed));
+                    Assert.That(File.ReadAllBytes(profilePath), Is.EqualTo(confirmed));
 
                     preferences.Open();
                     preferences.BeginKeyCapture(0);

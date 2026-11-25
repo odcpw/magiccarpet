@@ -1,174 +1,653 @@
 # Shared-engine delivery plan
 
-## Level 1 Modern assets in the browser — 2026-11-16
+### Rendering and scene delivery measured separately — November 25
 
-Oliver confirms the browser-rendered Original PoC and asks to commit/push it
-and make Level 1's 3D assets. Original renderer `0d38268e` is already pushed.
-Reuse the approved Modern masters and source bindings from LEVEL1_ASSETS.md;
-export portable meshes/materials/animations and connect them to native state
-in the Three.js client. Preserve both Original browser routes, Voxel masters,
-the older Modern experiment and ongoing OG work. No paid 3D generation.
-Root owns the browser environment/renderer and integrated visual/gameplay checks;
-modern_browser_characters owns character export and animation consumer;
-modern_browser_world_assets owns props/architecture/world asset export and
-placement; modern_browser_bridge owns typed native observations and allowlisted
-asset delivery. Retain source scale, gait, arrow release and lifetime. Missing
-runtime admissions stay explicit; do not invent gameplay or add canned actors
-to claim a complete Level 1. Inspect real browser frames and check performance
-before handing over the installed result.
+Browser `71c703fb` is pushed and installed on runtime `d7d89563`. The
+browser now receives the scene and matching HUD in one response, and a
+repeat poll needs only a header. Warm NightSpire samples at 1080×810 on
+the RTX 3090 held about 60 draw frames per second on the 60 Hz display.
+Uncapped Chrome submitted about 758 draws per second in the same scene.
+This measures draw submission throughput. With 25 ms of added latency,
+fresh scene delivery rose from 6.4 to 9.3 per second while simulation stayed
+near 30 turns per second. One map-open sample took 256 ms in both builds.
+Without added latency, fresh scene delivery was 27.6 before and 27.2 after
+in one eight-second loopback sample per build.
+The installed smoke opened NightSpire, rendered at 58 FPS with a 16.8 ms
+95th-percentile frame time, and paused without browser errors. The installed
+native and served bundle matched. Evidence is in
+`research/private/generated/browser-profile-20261125/`.
 
-Delivered portable Modern art through `0bedf0de`/`c8506de0`: twelve rigged
-character GLBs, eight world GLBs, source colours/textures, 17 building and seven
-Castle profiles. Integrated native-backed Three.js presents the opening 33
-Goats, 28 residents and 41 matched buildings on 8884 (`?visual=modern`), retaining
-Original on 8882/8883. Root reviewed real frames and corrected terrain/water
-artifacts; workers corrected bow morphs/shaft aim, grounded character tilt,
-material tints and masonry. Source terrain publication fix `e41b9668` compares
-actual plane bytes; renderer caches reconstruction/scatter without reducing
-detail. Real desktop/touch flight, cast, map, pause, reset and save/load pass,
-as does the shared Original browser regression. The measured opening village
-after seven-second warmup holds 60.0 FPS, 16.8 ms p95/p99 at 1280×960 on the
-3090/60 Hz desktop; startup stalls are outside that sample. Native binary is
-pinned to SHA889b4704 for these checks, not the independently moving OG source.
-Conditional creature spawns, Archer native firing cadence, per-hoof IK, dynamic
-Castle/construction, live mana collection, burning and low shoreline foundations
-remain unqualified here. Staged art reviews do not close those paths or a full
-mission. No Unity/Voxel installation or physical-phone FPS claim. Recipes,
-launch and focused checks are in web/ORIGINAL_BROWSER.md; masters stay local.
+### Smoother scene delivery in the private Original — November 25
 
-## Browser-local Original rendering — 2026-11-16
+Browser `f3355888` was installed on runtime `d7d89563`. In three
+five-second NightSpire samples per build on the RTX 3090, the median fresh
+scene rate rose from 24.9 to 27.5 per second. The 95th-percentile scene gap
+fell from 66.7 to about 50 ms. Simulation stayed near 30 turns per second.
+Scene requests rose from about 30 to 33 per second. A paid Fireball spent
+100 mana, the map opened and closed, and pause worked on the candidate.
+The installed build opened NightSpire with no browser errors.
 
-Oliver now authorizes actual Three.js world rendering in the browser with the
-existing native Rust backend. Render terrain and original source sprites/effects
-locally from native world state and owner assets; do not implement WASM or a
-second gameplay simulation. Preserve the indexed streamed PoC for comparison.
-Root owns the renderer, HUD integration and usable desktop/touch controls;
-browser_world_bridge owns the geometry publication and lifecycle bridge;
-browser_world_assets owns the source terrain/TMAP bundle. Reuse native source
-selectors, exact scene identity and terrain revisions. Check actual gameplay,
-inspect representative frames and measure real browser frame distributions;
-prove the geometry route does not fetch streamed world frames. Keep the existing
-Modern/Voxel experiment and ongoing Original port work untouched.
+The F8 preference has a guarded Rust command and an indexed-renderer
+consumer. The default geometry client still lacks in-world player labels.
+Evidence is in `research/private/generated/browser-finish-20261125/` and
+the November 25 paired samples under `earned-campaign-20261124/goat-tmap/`.
 
-Delivered geometry feed `9d187125`/`017c8b0d` and source asset bundle
-`918712f3`/`63cf5cc8`; the browser now renders source terrain and sprites locally,
-with GPU indexed blending, wrapped-map/frustum culling, ordered particle batches
-and partial GPU copies. Root checked live desktop gameplay, hand assignment,
-casting, maps, mouse capture, pause/reset/save/load and touch steering/casting/
-assignment. Request tracing confirms no streamed world-image endpoints in
-geometry mode. The final 1280×960 3090 sample averaged 56.9 FPS with 16.8 ms p95
-on the 60 Hz desktop; phone checks use emulation, not a physical-phone FPS claim.
-Portrait HUD duplication and a pending-control/read race found during checks
-are fixed with browser regressions. Live geometry is on port 8882, the retained
-indexed PoC on 8883, served by separate transient user services and saves.
-Source shadow/reflection passes, dynamic palette effects, full map symbols,
-audio and some original menus remain open; exact SS2 global timing and original
-fixed-point raster parity are not claimed. Full mission acceptance remains open.
+### Castle collector cleanup in the private Original — November 24
 
-## Original Level 1 browser adapter — 2026-11-16
+Runtime `d7d89563` is pushed and installed with native `e9a394b13f4a`.
+On the same paid NightSpire Castle checkpoint, the old collector kept flying
+after demolition. The fixed runtime retired it on the update that removed
+the Castle. Both rival Castle-loss checks passed, including the eligible
+rival's replacement and paid upgrade. The full-pool regression confirmed
+that collectors retire even when releasing the Castle's mana reclaims its
+slot first. The browser opened NightSpire on the matching native.
 
-Oliver explicitly requests playable Level 1 with original assets in Three.js,
-using the existing Rust backend. Keep WASM as discussion, not implementation.
-The browser consumes original indexed scene/palette data and source HUD/menu
-observations, and sends native input/control requests. Do not build another
-simulation or alter gameplay rules. Root owns the Three.js client and integrated
-browser checks; the native bridge owner owns startup, scheduling, input and
-save/load; the HUD owner owns source asset/overlay consumers. Preserve the
-separate existing Modern browser experiment and all ongoing OG work. Verify
-real startup, visible terrain/sprites/HUD, flight/casting, pause, reset and
-save/load in the browser. State local-backend versus standalone-WASM support
-truthfully; raw world frames alone do not establish complete Original UI.
+The same build passed focused checks for the Bee absence switch, the
+Payahandra vault objective opening its exit, and the experience-scroll
+award through tier publication and reset. This covers those routes.
+The broader objective and reward acceptance stays open. Evidence is under
+`research/private/generated/earned-campaign-20261124/castle-defender/`.
 
-The first integrated Three.js/native browser route now shows source terrain,
-sprites, palette, HUD, objective and maps. Actual 3090 Chrome checks pass flight,
-spell-grid hand assignment, casting with native mana use, pause tick stability,
-and persistent save/load restoring tick and pose, with no browser errors. The
-retained streamed route is `http://3090.bumblebee-hue.ts.net:8883/`; exact launch and
-verification commands are in `web/ORIGINAL_BROWSER.md` under the Rust workspace.
-This route displays Rust's existing software world renderer through Three.js;
-it is not yet a Three.js geometry renderer or standalone WASM. Audio, original
-pause/options submenus, Beyond Sight labels and map-mode hand flashes remain
-open. The resume/publication race is fixed in `cfcf308f`; a final real-browser
-run on the built Tailnet route also passes actual mouse capture, Escape pause,
-reload and the previous checks, with no console or HTTP errors. Full mission
-completion remains separate.
+### Installed browser brightness and outdoor reflections — November 24
 
-## Operator scope — art alongside Original completion (2026-11-15)
+Private Three.js Original `37739e43` is installed on runtime `2d753b7e`.
+In Payahandra, F7 cycled Day brightness from 4 to 0 and changed both HUD
+and world pixels. After a cold launch the next press advanced the saved
+Day value from 1 to 2. Actual Day and Night actors now reflect in water.
+The GPU outlines still differ from the native reference. The combined
+build opened the map and returned to flight on the RTX 3090. On the installed
+service NightSpire opened with 10,000 life, 1,000 mana, Fireball and Possession.
 
-Oliver clarified that Modern/Voxel assets and environment should be completed
-in parallel while the Original Rust port reaches full gameplay completion.
-Continue the existing Level 1 art inventory, source-faithful animation, both
-rendering styles and presentation bindings with two asset owners plus root
-integration. Preserve approved work and use existing Rust behavior; do not add
-alternative gameplay routes, change gameplay rules or interfere with the OG
-team. Review representative frames in the actual asset consumer. Keep final
-full-mission gameplay qualification pending the completed Original port, without
-mistaking art readiness for that acceptance. No paid 3D generation.
+Evidence is under `research/private/generated/` in
+`geometry-reflection-20261124` and `f7-brightness-20261124`.
 
-Current art results: `c255ed5b`/`775905c5` add smooth, source-coloured Modern
-mana and source-sized fireballs beside the existing Voxel variants; `3ad54c0b`
-adds the separate blue Possession projectile. `482d9278`/`8cb7034a` replace
-source-bound fire/impact artwork while retaining transparent source tail frames.
-`f228721f` fixes the exit target's import scale, URP materials, facing and open
-mouth in both derivatives. `7783c615` supplies 17 source building profiles and
-seven cumulative Castle composites, Modern/Voxel LOD meshes and visible glazing.
-`867407c8` refines tree wood/leaves, distant meshes and burned materials. These
-have actual isolated Unity renders checked by root and their owners, not new
-mission-playthrough or installed-player proof. Media and XML are compact under
-generated/level1-assets-20261115. Clean Castle head `7201c8ec`, whole-map sectioned
-Voxel terrain `be7c2958`, Collector Voxel LODs `ab6237c0` and all-opening-building
-Voxel selection `ae8479dc` are now prepared and reviewed. Root join `224f10b9`
-grounds consumers on the rendered block surface, connects the new assets and
-keeps coloured ownership halos distinct from fire. The combined isolated Unity
-run passes 59/59 checks; paired actual-map art views include 41 architectural
-buildings, window lighting, terrain, water and sky. Decorative Voxel vegetation
-`c2892a24` and root join `1a17198b` now cover all seven scenery parts with
-prebuilt shared meshes and cheap, Voxel-derived distant foliage impostors.
-The paired terrain/nature run passes 26/26 checks. Low shoreline views exposed
-floating cliff-house bases; sampled foundation meshes now close those gaps in
-both styles and pass 9/9 focused checks, including the paired map gallery.
-Rejected candidates are not accepted as finished assets. Full gameplay/FPS/
-install acceptance below remains open pending OG completion; LEVEL1_ASSETS.md
-is the current detailed art status. Castle auxiliary art reuses the Archer;
-its observation/animation consumer and dynamic-building consumer still need
-OG-connected qualification. No alternative gameplay route was implemented.
+### Payahandra experience scroll sound in the private Original — November 24
 
-The building extraction found a source-consumer discrepancy for the OG owner:
-remc2 DatTabIndexes.cpp:5–13,105–114 doubles runtime TAB dimensions in VGA mode1;
-EventsFunctions.cpp:27240–27251 halves those indexed dimensions in the ordinary
-building handler, leaving the raw owner extent. Rust house.rs:82–91 instead
-halves raw exported dimensions and consumes their prefix. Art uses full raw
-source shapes; do not invent houses around the sparse prefix or silently fix
-Rust from this asset work. Castle construction uses a separate cumulative
-overlay. The source art library records this distinction; dynamic runtime
-placement remains gated on the real native consumer.
+The browser now looks up missing gameplay sounds in the selected mission's
+owner cache. A matching presentation sample keeps priority. Across all 30
+installed packages, all 1,617 previously available mission/sample pairs kept
+their descriptors. Payahandra now resolves original sound 63, `SPELLUP.WAV`.
 
-## Current asset delivery — 2026-11-13
+In the whole Payahandra package, five controlled player positions activated
+the authored switches. On contact, row 248 awarded four Fireball experience
+points and emitted sound 63 on the same turn. These four points did not cross
+a spell tier. In a separate Chrome check the captured event fetched the
+25,824-byte owner WAV and started its 1.16-second Web Audio source. The
+single forward-flight attempt ended before reaching the scroll. A live browser
+pickup and physical audio output remain unobserved.
 
-The selected Modern scroll is committed as `292f5562`; its broad paper layer and
-rolled end replace the rejected rail-like edges. The accepted Voxel FBX is
-unchanged and passed an earned 100-frame integrated11 view. Dolmen fix `eaf0f0e6`
-preserves its imported transform: actual Voxel height 0.048828→6.25. Source
-Dolmens are static; player contact selects recharge, without a charged or
-exhausted appearance. The existing shared-consumer test distinguishes that
-recharge path; the Level1 HUD-only near/away experiment did not.
+Browser `01ae67c2` is pushed and installed on native `cd6fe94208a6`.
+The installed NightSpire opened with 10,000 life, 1,000 mana, Fireball and
+Possession. Evidence is in `research/private/generated/scroll-audio-20261124/`.
 
-Both jars passed earned on-screen pickup removal, four actual-player F5/R
-cycles, fresh-player pre-reset save loads and independent native checks of all
-eight pre/post-reset saves. Collector collision admission is fixed in source
-`74cc4999` with a passing constructor→projectile-consumer regression, but that
-fix is not in the pinned `ed08` native used for the asset captures. Keep Collector
-loss/reclaim and the next native installation open.
+### Wizard loss, restart and F9 in the private Original — November 24
 
-Eight combined Scroll/Dolmen Unity checks pass against the private integration
-project. The new disk-backed player at generated/level1-assets-20261110/player
-built successfully with the proven `ed08` plugin. Earned Modern scroll and normal-
-camera Voxel Dolmen captures are the current installation gate; the normal
-Presentation launcher still selects the previous player until those pass.
-Seven superseded settlement/benchmark player copies were removed after their
-top-level receipts were retained, recovering about 3.4 GiB. Source, masters,
-installed/rollback players and warm build caches were preserved. Large outputs
-stay off tmpfs. Keep two asset owners plus root integration and compact media.
+In the installed NightSpire, Shift+K set the wizard's life to −1. The death
+notice and turning camera appeared. Space reopened NightSpire at tick 0 with
+10,000 life. Forward input then moved the carpet from y=56960 to 55040.
+An isolated run checked that bare K and Alt+Shift+K left the wizard alive,
+and that holding Shift+K issued one surrender. That first run timed out
+waiting for Chrome to show the restart. The new native owner had reopened
+the mission. A second isolated run and the installed run both displayed
+the restarted flight. The cause of the first timeout is unresolved.
+
+Rust checks covered the recorded surrender, cold replay and no-Castle retry,
+and an older paid Castle save through death, revival and the next fight.
+The F9 bridge now excludes synchronous save loading from its inactivity
+timer. In Chrome, the 26.9-second restore kept Speed active. Enter opened
+the map at tick 8 without a resume, and leaving the browser paused play.
+
+Runtime `2d753b7e` and browser `fb499f55` are pushed. The private Original
+loaded native `cd6fe94208a6`. Evidence is in `flight-controls/surrender-public/`,
+`flight-controls/retry-diagnostic/` and `f9-map-diagnostic/` under
+`research/private/generated/earned-campaign-20261124/`. The broader
+player-loss and campaign acceptance remains open.
+
+### Flight speed, speech and braking in the private Original — November 24
+
+F3 switches between normal and fast simulation speed. The installed browser
+showed the two source notices in NightSpire at ticks 49 and 65. Fast flight
+also passed on the RTX 3090 and on software WebGL after the bridge began
+yielding between batches of elapsed turns. F4 toggles objective speech.
+In an isolated Chrome profile, restarting NightSpire with speech off produced
+no objective audio request. With speech on, Chrome fetched the original
+segment and started its decoded audio. A missing speech cache kept F4 inactive.
+
+Backspace stops the carpet and cancels an active Speed spell in flight and
+on the full map. A controlled campaign carry supplied Speed in NightSpire.
+The cast cost 1,000 mana. One physical keypress cleared the same spell holder
+and took target and actual speed from 160 to zero in both views. The map
+stayed open. The combined reload-to-map check timed out; the separate map
+check passed. In the normal installed launcher, Backspace took an unboosted
+carpet from speed 32 to zero. Browser `318e6704` is pushed and installed
+with native `637bfe6b41d9`. See `source-speed/`, `full-stop-browser/` and
+`flight-controls/` under `research/private/generated/earned-campaign-20261124/`
+and `research/private/generated/f4-speech-20261124/receipt-final.json`.
+
+### NightSpire Goat animation in the private Original browser — November 24
+
+Rust now advances an animated sprite's shared texture after the browser draws
+that selector. In NightSpire, Chrome acknowledged 90 of 90 draws with a camera
+positioned to see the authored Goats. Selector 152 produced four different
+native images. On the installed cadence revision, two real WebGL uploads to
+the Goats' 22 × 22 atlas rectangle matched the native pixel bytes. Its pixels
+stayed fixed for six updates after the Goats left
+view and during pause. The first candidate missed all 115 draws because the
+server advanced before Chrome could acknowledge them. A cold Rust replay
+reconstructed the current image. The existing indexed-renderer check passed
+for NightSpire Goats and a Day Villager.
+
+The bridge lets the simulation take elapsed turns between browser frames.
+A queued map open and close each took one turn, flight resumed, and one
+Fireball spent 100 mana. On the RTX 3090, eight seconds of ordinary NightSpire
+flight measured 30.10 native ticks and 18.86 new scene publications per
+second. Before the animation change the same check measured 29.98 and 29.23.
+On SwiftShader the new bridge measured 25.80 native ticks per second, up
+from 1.62 when every turn waited for a draw. These are publication and
+simulation measurements. The Goat camera check leaves exact terrain
+occlusion and human play open.
+
+Browser `cfa9a417` and runtime `73a36309` are pushed; the private Original
+service loaded NightSpire on native `637bfe6b41d9`, with Fireball, Possession,
+10,000 life and 1,000 mana. Unity still runs `2f477f43c882`. Evidence is in
+`research/private/generated/earned-campaign-20261124/goat-tmap/`,
+`tmap-goat-browser/` alongside it, and `research/private/generated/tmap-bridge-20261124/`.
+
+### Castle revival, secret entry and spell marks on abandonment — November 24
+
+The private Original now serves browser `b3e6a320` on native `fb6315dc5d4f`.
+F5 toggles sound and F6 toggles music. In Payahandra, two paid casts spent mana.
+The muted cast started no browser audio source. The next cast, with sound on,
+started two. F6 stopped and restarted the music; the save slot stayed
+byte-identical. The GPU now draws the Day minimap and HUD against the live
+world with the source palette lookup. Chrome showed the translucent panels
+in Payahandra at tick 96 and opaque panels in Spider Cave at tick 6. The CPU
+check compared all 640 × 480 output indices in each mode. The installed build
+opened NightSpire. See `audio-panel-joined` and `mission-retry/f5-audio-b3e6-proof`
+under `research/private/generated/earned-campaign-20261124/`.
+
+Runtime `a1797bb5` retains the player's hand marks when abandoning a mission.
+On the same saves that lost the marks in the previous native, the public API
+returned from Payahandra and reselected Castle on the right. Abandoning Pav
+Durivium, saving the Jaleen map, loading it cold and cycling the right hand
+selected Possession. Entry spell experience was preserved on both routes.
+
+A secret destination now applies its own LevelInit panel setting. T’Klom's
+actual portal into Karakir produced a Cave save that cold-loaded and returned
+to its Day parent. The check controlled the starting frontier and combat
+contacts. In a separate paid NightSpire Castle save, controlled damage,
+death and revival switched the music back to normal. A later hit restored
+combat music. The music check observed the native events.
+
+Browser `05b8fa7b` includes the Castle and balloon status help and loose-mana
+guidance. Chrome showed the Castle's mana, life and size on Spider Cave and
+“Possess This Mana” pointing to live sphere 259 on The Revealed Way. Claiming
+that sphere in the same browser run remains unobserved. The installed private
+Original opened NightSpire on native `fb6315dc5d4f` with Fireball, Possession,
+10,000 life and 1,000 mana. The map-save fixture correction `79912f5d`
+preserved the byte-roundtrip and tamper checks. The Unity player still uses
+`2f477f43c882`. Evidence is under `research/private/generated/earned-campaign-20261124/`
+in `mission-retry`, `castle-status-guidance` and `loose-mana-guidance`.
+
+### Marker stones in the private Original browser — November 24
+
+Browser `42df6493` is pushed and installed with runtime `97e1a224`.
+On The Revealed Way's full map, Chrome drew “Marker stone” pointing to
+the same stone (slot 233) on a dark frame at tick 2944 and a lit frame
+at tick 2951. Creature and spell-pickup hints appeared first. The
+ordinary launch opened NightSpire with Fireball and Possession.
+Focused presenter checks cover both map sizes and clearing the hint
+outside the map. Jaleen supplied real blinking markers, but its
+browser observation reached player death before the stone hint was seen.
+See `research/private/generated/earned-campaign-20261124/marker-stone-private/`.
+
+### Replay victories, campaign spell marks and map guidance — November 24
+
+Runtime `97e1a224` keeps hand marks through ordinary victories, Results,
+save/load and entry into the next mission. The connected check loaded
+NightSpire's earned five-objective save and replayed the recorded flight
+into row 137. Castle was marked on an existing neutral input. The player
+reached the recorded exit position at tick 10695, carried the left mark
+through Results into Payahandra and selected Castle by cycling that hand.
+
+Completing an ordinary mission again now shows Results, refreshes its five
+statistics and retains the player's newly learned spells and marks. The
+repeat check reused the real pre-exit state, activated the authored Speed
+pickup group, and positioned the player for the pickup and portal. Payahandra
+opened with Speed and the right Castle mark. Banked XP survived without a
+second award. The Uluth check used a paid Meteor victory and replayed its
+completed ending state. The repeat showed credits and Results without
+replaying the already-consumed CUT6. Older pending-retry saves also bank an
+earned objective award on restart. Continuous campaign play remains open.
+
+Browser `bac0b9d3` presents the original rival Castle, revealed balloon and
+healing Dolmen map hints. Chrome displayed “This is an enemy castle” with the
+leader reaching the actual Castle dot on Perilium. The map selected the live
+Castle at slot 176 at tick 517. The paid Beyond Sight save also published the
+rival balloon at slot 370 and three Dolmens. When the reveal expired, the
+balloon marker cleared. The balloon and Dolmen labels have focused presenter
+checks. The Perilium screenshot demonstrates the Castle label. Evidence is
+in `research/private/generated/earned-campaign-20261124/mission-retry/`
+and `research/private/generated/earned-campaign-20261124/world-map-guidance/`.
+
+Both revisions are pushed. The installed private browser loaded NightSpire
+with native `8a6fa4c6faf5`, 10,000 life, 1,000 mana, Fireball in the left
+hand and Possession in the right. The service was paused after the launch.
+The native also loaded an older earned Results save, saved and loaded it
+again, and opened Payahandra with the same three spells. The Unity player
+still uses native `2f477f43c882` pending its Editor build.
+
+### Original flight help, Castle demolition and saved spell controls — November 24
+
+In NightSpire, F1 now turns map help off and on, writes the browser player's
+preference and displays remc2's “Help Mode Off” and “Help Mode On” messages.
+Chrome showed both original messages while flight continued. Holding F1
+produced one change. Shift+F1 and Alt+F1 left the help preference intact.
+Browser `f935dce6` first delivered the F1 control in the private Three.js Original.
+
+Browser `115c4bc7` adds F2 flight assistance and the campaign map's Save
+and Load actions. In Chrome, F2 displayed the original status messages and
+wrote the preference. After a cold launch, enabling assistance resumed the
+native carpet's idle recenter commands. Turning it off stopped those commands.
+From an earned NightSpire Results save, Chrome saved the map with NightSpire
+selected, entered Payahandra and loaded that map back from flight. Both
+unlocked missions and the player's Fireball, Possession and Castle survived.
+This browser uses its existing single save slot.
+
+Browser `9b85f182` restores the physical Space key to remc2's death-camera
+recovery. In NightSpire, pressing Space during flight kept the wizard at
+1,000 mana. Casting Fireball with the left mouse button then spent mana.
+In The Revealed Way, a saved flight reached lethal damage at tick 2111 and
+the death camera at 2112. One physical Space press restored 10,000 life in
+the same mission. The installed browser bundle and native `faff2bf937ab`
+matched the qualified copies. Evidence is in
+`research/private/generated/earned-campaign-20261124/physical-space/`.
+
+In remc2, Shift+L removes one stage of the player's Castle. In the private
+Three.js Original, one Shift+L on a paid NightSpire Castle sent command 42
+once. The stage-1 root entered its dying state and disappeared from the
+economy and HUD on the following tick. Bare L and Alt+Shift+L left it intact.
+The bundle also reads saved spell-menu, map, information, mark and
+hand-cycle keys. In Payahandra, two native preference profiles exercised
+marking Fireball and Possession, cycling between them and viewing the map's
+player information. Browser `764f1562` first delivered these controls. Unity source
+`47aa66ec` includes the corrected chord and compiled with the project's
+runtime references. Its player still requires an Editor build.
+
+### Death without a Castle and same-mission restart — November 24
+
+On a saved approach in The Revealed Way, ordinary damage killed the player
+at tick 2111. The death camera took over on the next tick. One Space press
+restarted the same mission and restored 10,000 HP. The Rust runtime admits
+recovery in the death camera, rebuilds the current mission, and preserves
+learned spells, banked experience and hand marks. A Payahandra package check
+followed a marked Fireball across retry, cold load and the next hand cycle.
+The older input rules still apply to steps recorded in older saves.
+
+Runtime `a19bd7d9` and browser `2476effd` are pushed. The private Three.js
+Original serves the matching native `4c5ef577fdc7`. After one Space press,
+the restarted Day 3 played Day music, effects and the opening objective
+speech in the same Chrome audio context. Entering Payahandra from the earned
+campaign map also started Day music, effects and speech. Night and Cave
+music, the slow Spider Cave load and saved movement controls passed in Chrome.
+When Payahandra's player dies after completing the objectives and before
+leaving, the earned spell XP now survives the restart. The real scroll in
+row 248 awarded four points. Paid Fireballs opened the required vaults.
+With player health lowered for the death check, a Skeleton killed the player.
+The source result was 0x0e and the same mission restarted with the four points
+banked once. Reload preserved them. Runtime `0092fe27` was pushed and
+first delivered in the private Three.js Original with native `faff2bf937ab`.
+The Unity runtime assembly compiled from current
+sources. Its installed player still uses `2f477f43c882`. `mc-paj.6` stays
+open. Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
+### NightSpire player information and spoken objectives — November 24
+
+NightSpire now draws its one actual player on the full map. On the same start
+save, holding Alt showed “PLAYER INFORMATION UNAVAILABLE” in the previous
+installed Original. The updated player showed PLAYER with maximum mana 1000;
+releasing Alt restored the map. The mission count limits visible rows, while
+the source keeps eight kill columns. A real-package check covers NightSpire,
+Payahandra’s two participants and an invalid in-range entity link. Chrome
+also displayed the repaired NightSpire row. Runtime `bf2a84b8` is pushed.
+The installed Original native is `2f477f43c882` and the browser native is
+`ddf6dffbd1c6`. The Unity build uses the matching existing managed ABI and
+the browser uses its campaign palette export.
+
+In the private browser, Payahandra’s opening objective selected original CD
+track 2, segment 4. A Chrome recording of both channels matched the owner
+recording. Turning Speech off survived a service restart and suppressed the cue
+through tick 35. Turning it on restored the cue on mission restart. The
+browser also presents the spell-ability improvement message when a pickup
+crosses a tier. The four-point Payahandra pickup is covered above. An earned
+tier crossing and its on-screen notice together remain unobserved.
+Browser revisions `8ae4e10d` and `629d9b84` are pushed; `629d9b84` is
+installed. Evidence is under `research/private/generated/earned-campaign-20261124`
+and `research/private/generated/night-scoreboard-unity-20261124`. Physical
+audio output and the continuous earned campaign remain open.
+
+### Flight sound and map controls in the private browser — November 24
+
+On an earned Payahandra save, casting Fireball spent 100 mana. The native
+voice journal produced the launch on tick 1 and the quieter impact on tick 22.
+Both Day-bank waveforms were present in a recording of Chrome's stereo output.
+Physical speaker output remains unverified.
+
+The map uses the saved key (Return by default) and the original two-button
+mouse gesture. Chrome opened and closed the NightSpire map with both buttons
+after taking pointer lock. The native input trace recorded no further cast
+after the map opened. A separate profile bound the map to B and Enter ceased
+to toggle it. Browser source `ab074243` is pushed and installed with native
+`678f88daff11`. The live service served the matching bundle and Night sound
+bank. Evidence is in `research/private/generated/earned-campaign-20261124/`.
+NightSpire's player-information view exposed a separate scoreboard roster
+error; the source game draws only the current mission's player slots.
+
+### Player information and the objective flash in the private browser — November 24
+
+On Payahandra's full map, holding Alt displays the player and Nyphur, their live
+mana and the kill matrix. Releasing Alt returns to the map. Chrome showed both
+rows from an earned save. Alt-click and Shift-click still cycle marked spells.
+The scoreboard uses the source font, panels and draw order.
+
+The Three.js world and HUD now use the current native palette. At Payahandra's
+opening objective, all 768 colour bytes matched the indexed renderer in each
+of 53 observed frames through the flash and recovery. Chrome pixels from both
+the world and HUD followed the fade. The private service runs browser
+`2d0ec9ce` with native `678f88daff11` from `5d1a5546`. The installed Unity
+Original retains native `52c453bf5cbd`; its 478 Rust inputs and five header
+hashes match the published source used for that build. It already consumes the
+indexed palette. Unity Editor login remains outstanding for a new Unity build.
+Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
+### Payahandra vault Meteor, Wind switches and marked spells — November 24
+
+Payahandra vault group 27 produces a third-tier Meteor. Once the player's
+spawn protection expired through 100 ordinary updates, its scheduled pulse
+took 1,600 health. The check controlled the approach and earlier vault damage.
+Both Wind switches (109 and 121) displaced the player. A real House placed in
+the wind lost 100 health on its next update. The Wind lasted 40 updates, and
+its head and eleven segments expired and were reclaimed. Old saves retain
+the earlier behavior for already-recorded operations. The previous native's
+Payahandra save replayed, advanced, saved and reopened on the installed native
+`52c453bf5cbd`. Original also loaded that save. Runtime source is published
+at `ca40bb5e` on `codex/original-ending`.
+
+The private Three.js client now marks and cycles spells independently for each
+hand. In Chrome on the earned Payahandra save, holding Shift and the left mouse
+button advanced from Fireball to Possession once. Alt and a left click restored
+Fireball. The right hand retained its selection. The check opened the spell menu
+through the native control endpoint and performed the marking and cycling in
+Chrome. Browser source is published at `b7d5591a` on `codex/browser-exit-hint`.
+The running service serves that bundle with the same native as Original.
+Evidence is in `research/private/generated/earned-campaign-20261124/`.
+
+### Campaign, credits and live map guidance in the private browser — November 24
+
+The normal Three.js launch now resolves the same 25 ordinary and five secret
+packages as Original. A fresh launch opens NightSpire and keeps later missions
+locked until earned. In Chrome, cancelling Abandon returned to flight. Confirming
+from Payahandra returned to Title and reopening the map retained NightSpire
+completion and all three carried spells. In a separate retained secret save,
+abandoning Pav Durivium returned to its Jaleen parent with 12 completions.
+
+With final victory staged, the browser consumed all 259 CUT6 frames and displayed
+all 21 credits pages. In a separate post-credits Uluth Results save, Continue
+reopened the completed campaign map. An earned final victory remains open.
+Chrome also drew the original creature guidance on the corner and full Day 3
+maps and the spell-pickup guidance on the full Payahandra map. The subject and
+its position came from the live native simulation. A focused check covers
+clearing a removed marker. Collection and hint removal together in Chrome, and
+priority against other help rows, remain unverified. The private service runs
+the published browser code at `95a6ae6d` on `codex/browser-exit-hint`.
+
+### Payahandra spell pickups, Fireball accuracy and campaign intermissions — November 24
+
+Payahandra’s authored Speed pickup now remains a held spell after the same
+simulation pass. Both player records and the world slot retain its owner.
+The Results spell count uses the authored rows remaining after initial spawns
+and refreshes on revival, as in remc2. In the actual Payahandra package,
+controlled pickup approaches gave 0% after Speed, 50% after the dormant
+Shield reward (authored row 155, spell family 6) and 0% after revival. A separate acquired-Speed check exercised
+the public cast. A paid Fireball that splashes into water leaves hit accuracy
+unchanged. Its ordinary solid impact on Day 3 still counts.
+
+The rig-built native `743ac8febd62` and all 478 Rust inputs match the
+installed Original. The launcher loaded Payahandra from a save written by
+the preceding native. Cold replay also preserved the old cast and the next
+cast recorded with the new behavior. Runtime source is pushed at `7d2dfd9d`
+on `codex/original-ending`.
+
+The Three.js client carries an earned NightSpire exit through Results and the
+map into Payahandra with Fireball, Possession and Castle. Holding O there
+displays Payahandra's actual objective text. It also presents the first
+campaign intermission using the native media owner. With the campaign return
+explicitly staged, Chrome consumed all 529 CUT1 frames, including Vissuluth’s
+subtitle and audio events, through input release. An earned T’Klom victory
+and speaker output remain unverified. Browser source is pushed at
+`df33e843` on `codex/browser-exit-hint`. The private service loaded the
+installed native and its published client bundle. Evidence for these routes
+is in `research/private/generated/earned-campaign-20261124/`.
+
+### Live exit controllers on the Original maps — November 24
+
+The map now reads the current exit controller when an authored switch creates
+it. The existing entity snapshot publishes that same slot and position. In
+T’Klom’s retained authored workspace, real flight into switch 136 activated
+group 4. At tick 301, exit controller 298 (class 11, model 31) was active
+before mission completion. It projected to (67,4) inside the full map and
+outside the corner map. Previously both map readers omitted it. The
+corrected native supplies sprite 84 and help selector 83. The public-input
+check continued through the secret exit and verified reclamation. The
+workspace changes the activation group of the portal and its controller.
+
+The installed Original now uses native `0fc9d27e2b46`. All 478 Rust inputs
+match the rig and install receipt. A separate first-visit campaign save
+cold-loaded through the public native API and reproduced the same controller,
+position and map coordinates. This save starts from a controlled campaign map
+with the first four missions marked complete. The older replay of an already
+unlocked mission did not produce that controller.
+
+The graphical launch of the first-visit save stopped while validating the
+Level 2 owner cache. Its in-process SHA-256 for `audio/SOUND.DAT` differed
+from the manifest. The on-disk file measured afterward matches the manifest.
+The cause remains open. The installed T’Klom display has not been verified.
+The prior Perilium launch on native `54a21c6f11d6` passed. The English
+exit-hint text, pointer and lifetime are pending a qualified Unity build.
+Unity Editor returned 198 before compilation because its license entitlement
+was unavailable. The candidate runtime and EditMode assemblies compiled with
+Roslyn. The live menu cache and installed managed player are still the
+previous versions. Evidence is in
+`research/private/generated/original-exit-hint-20261124/`.
+
+### Mission-triggered Tremor, Night map colours and Skeleton combat — November 24
+
+Baraghan's repeating switch 628 now supplies the authored tier-two Tremor
+payload of 800 to row 629. The first damage pulse is 24 and the lifetime
+remains 120. The port previously used the constructor default of 20,000,
+producing a pulse of 664. The shared group publisher applies the tier when
+it creates the effect. Stored level definitions retain their existing hashes.
+On the real Baraghan package, a controlled approach triggered the Tremor,
+deformed terrain and reached the damage dispatcher. Separate switch visits
+verified the repeating and one-shot Gravity Wells downstream of switch 633.
+
+On Perilium's Night map, a rival-owned effect takes its wizard's colour on
+both map sizes. The local and unowned sphere colours are preserved. The
+Magic Mine uses the source blink phase in all three environments.
+
+A Day 3 combat check closed to firing distance and followed two paid
+Fireballs through their own impacts, each dealing 250 damage to a Skeleton.
+Separate controlled fatal hits in Levels 2 and 4 verified the death burst,
+its natural hide and following-pass reclamation. Level 2 reused the original
+Skeleton's slot in the same turn. Live handles distinguished that new occupant.
+The full Day 3 horde route and continuous campaign play remain open.
+
+The initial candidate broke two retained saves by changing their stored
+definition. The installed correction leaves the definition validator intact.
+The Baraghan entry save opened and advanced a turn. Perilium's paid Beyond
+Sight save reached tick 180, where both native maps changed the rival
+effect from palette 164 to 88 while the two sphere controls stayed 170
+and 232. The canonical Original launcher loaded that save and displayed the
+full map with native `54a21c6f11d6`. All 478 Rust inputs in the install
+receipt matched the rig build. The launcher check confirms load and display;
+the native map reader verified the individual colours. Evidence is in
+`research/private/generated/original-routes-20261124/` and
+`research/private/generated/original-night-owned-20261124/`.
+
+### Perilium: paid Beyond Sight and the rival balloon — November 23
+
+The player entered Perilium from a controlled campaign carry with Possession
+and Beyond Sight. One ordinary Possession cast claimed three nearby mana
+spheres and raised capacity from 1,000 to 2,536. Beyond Sight spent 1,800.
+Both native maps published the existing rival balloon at slot 370 with help
+row 26. The row was present at tick 180 and gone by tick 184; the same
+collector still belonged to player 357. Its Castle marker remained throughout.
+
+The installed Original loaded the tick-36 paid save. Opening the full map
+showed the balloons and rival names, then the Castle markers as Sight expired.
+Other hints won the displayed popup during this run. The earlier controlled
+Unity check covers the English balloon text and pointer. The source checks
+and installed captures are in `research/private/generated/beyond-sight-balloon-20261123/`
+and `research/private/generated/perilium-paid-sight-20261123/`.
+
+### Night Castle colours on the Original maps — November 23
+
+The Night map gave every Castle sprite 58. In Perilium the rival Castle at
+slot 366 belongs to player 357, whose colour is 3. remc2 selects sprite 61.
+Both map sizes now use the existing single-player owner-colour lookup for
+Castles as well as balloons. The Perilium check reads the live Castle owner
+and checks both map sizes. The NightSpire minimap and full-map camera checks
+across four missions also pass.
+
+The paid Perilium save reproduced the change from 58 to 61 on both maps.
+At tick 180 three rival Castles had distinct sprites (59, 62, 61). After
+Beyond Sight expired, all three Castles remained and all three balloon
+markers disappeared. Reopening the real Spider Cave save preserved the
+player's Castle sprite 58. Original native `d5932a518476` is installed with
+the Castle HUD player. Evidence is in
+`research/private/generated/original-night-castles-20261123/`.
+
+### Mission-triggered Gravity Wells — November 23
+
+Baraghan's area switches and Galiphur's repeating switch can now create a
+Gravity Well through the ordinary mission group publisher. Previously the
+group rejected class 10, model 67 before creating anything. The shared
+constructor takes the authored tier's power and lifetime and links the well
+into the terrain and scheduler. Casting the spell still uses that constructor.
+
+On the installed Baraghan package, placing the player in switch 633 activated
+group 17 in order (634, 653, 655). Its tier-one well changed the terrain,
+pulled the player compared with the same turn without the field, and was
+reclaimed. The check controls player position at the switch and in the pull
+band. Galiphur's real repeating switch 412 created the tier-two well at row
+413 and retained the source row for the next activation. The existing
+spell-cast Gravity and Wind check also passed. All three ran with the final
+source. The separate branches beyond Baraghan switches 653 and 655 were
+traced in source only. Full switched-group acceptance remains open.
+
+The Original player uses native `83d27f3b7e93` with the Castle HUD build.
+The normal launcher loaded Baraghan from a previously unlocked campaign map
+and mapped the matching library. This launch check ended at mission entry.
+Evidence is in `research/private/generated/baraghan-gravity-20261123/`.
+
+### Castle and balloon status guidance — November 23
+
+Original build `build-3cqlrcw2` uses 61 English help rows and native
+`bd6d2711cd66`. Six labels point to the Castle's mana, life and size and
+the balloons' mana, number and life. The seventh, “Castle mana required”,
+uses the live objective percentage and the selected FONT1 glyph width.
+Eligibility follows the two stage lookups in remc2's
+`GetHelpPopupTextAndCoords_87CF0`. A displayed percentage by itself is
+insufficient. Only the help table changed among the 678 cache outputs.
+
+A normal Castle cast in Spider Cave spent 1,000 mana. The saved game
+reloaded with a stage-one Castle and a 40% goal. With that real tick-5
+observation held fixed, the Original help loop selected and drew all seven
+labels. The goal pointer reached (89,38) and expired after 50 draws.
+The live NightSpire Castle at tick 1740 showed a 15% goal but did not qualify
+for this label. An earlier 4,000-turn Spider Cave run selected higher-priority
+help; that run did not display the goal label. Evidence is in
+`research/private/generated/original-castle-status-20261123/`.
+
+### Marker stones on the Original maps — November 23
+
+Original build `build-8nx1869r` and native `bd6d2711cd66` keep the stone
+available for help while its dot blinks off. The corner map changes phase
+every three turns and the full map every two. The 54th English help row is
+“Marker stone”. Its arrow stays with the live stone inside the map aperture.
+
+Both native map readers retained the same stone IDs across all twelve phases
+on The Revealed Way, Cymmeria, Jaleen, and the ordinary entries to Levels 17
+and 24. The previous native lost the IDs during the dark phase and used the
+corner cadence on the full map. Four focused Rust checks passed. The final
+Unity cases used a real Day 3 full-map stone and a Jaleen corner-map stone.
+They verified the pointer through visible and hidden frames, off-map exclusion,
+and the source lifetime. Jaleen started from a previously unlocked mission on
+a retained controlled campaign map. The installed Perilium screenshot from the
+preceding build also shows “This is an enemy castle” over the actual Castle.
+Evidence is in `research/private/generated/original-marker-stone-20261122/`
+and `original-world-hints-20261122/return-map-20.png`.
+
+### Rival Castle, balloon and Dolmen map hints — November 22
+
+Original player `build-fgp79ian` reads 53 English help rows. The HUD follows
+the map subject for a rival Castle (25), a rival balloon revealed by Beyond
+Sight (26), or a healing Dolmen (22), using the original text, timing and
+dismissal behavior. All 678 menu-cache outputs were checked. Only the help
+table changed. The native library is the existing `3b77e98571bd`.
+
+On Perilium the real full-map Castle at slot 366 produced the pointer and
+text “This is an enemy castle” in the Unity presenter. Switching to the corner
+map cleared it. Seven Unity cases passed, including the established creature,
+spell-pickup and friendly Castle/balloon paths. Payahandra published three real
+Dolmens. The controlled balloon and Dolmen hints completed their 50-draw
+lifetimes. Perilium produced a real rival balloon at slot 370 after 32 neutral
+turns. A retained campaign gave the player Beyond Sight, but only 1,000 of
+the 1,800 mana required for the cast. The positive live-balloon hint remains
+unverified. Evidence is in `research/private/generated/original-world-hints-20261122/`.
+The installed Original loaded Perilium from a previously unlocked, controlled
+campaign map and opened its full map with Return. The broader HUD bead
+`mc-oi6.6` remains open.
+
+## Castle mana objective in the installed Original client — November 22
+
+Original native `3b77e98571bd` publishes the live Castle mana percentage from
+remc2's ordered objective scan. Stage initialization clears the marker and the
+successful mana check clears it in the same scan. Four focused release checks
+passed, including NightSpire at 15% and The Revealed Way at 30%, with the
+prior stages, Castle and funding controlled in the threshold check.
+
+The recorded NightSpire cast produced a Castle at tick 1740 with a 15% goal.
+The completed NightSpire save had all five objectives satisfied and a zero
+goal. Cave 4 published 40% after its first turn and restored that value from
+its saved game. The old native reported 10% in all three situations. The
+Original player loaded the retained Day 3 Castle during the Skeleton objective;
+both erroneous 10% dots disappeared from the HUD. This was a native refresh
+of the existing Unity player. Evidence is in
+`research/private/generated/original-castle-mana-20261122/`.
+
+Separate historical checks remain open. The scripted Day 3 Skeleton aim and
+burst-cleanup checks and the NightSpire Archer route stopped before the mana
+objective. The older editable-threshold setup settled at 26% against a 30%
+requirement. These results establish neither a campaign progression defect
+nor completion of those routes.
+
+The next confirmed gap is rival map guidance. The installed native publishes Perilium’s actual rival Castle at slot 366 inside the full map at (94, 155) on the opening frame. The Original help exporter and Unity row filter omit its row 25 and the foreign collector’s Beyond Sight row 26. The collector condition still needs a live subject.
+
+## Installed Original HUD and controls — November 22
+
+Original build `build-i1a2zazh` ships the 50-row English help cache and native
+`da15d844f920`. Creature and spell-pickup hints use remc2 rows 19 and 20
+(text records 307 and 308). Focused Unity checks on The Revealed Way selected
+the nearest of multiple real markers, checked the drawn pointer and English
+text, followed the creature, and cleared the pickup hint when the marker left
+the corner map. That check did not collect the pickup. The binding dialog and
+native preferences reserve O. An otherwise valid older profile that already
+assigned O keeps its other settings. In the installed player, holding O showed
+the skeleton-horde objective and releasing O dismissed it. The installation
+check and the running process matched the new native. Evidence is in
+`research/private/generated/original-minimap-objective-20261122/`.
+The broader HUD and input beads (`mc-oi6.6`, `mc-5r5.2`) stay open.
 
 ## Active Modern/Voxel Level 1 asset completion — 2026-11-09
 
@@ -971,18 +1450,1379 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Current Original mission delivery — 2026-11-14
 
-Current capability (2026-11-16): Castle/balloon status and Shift+F7/Options15 flat
-shading are implemented, verified, committed, pushed and installed. Continue
-mc-5r5.2 with bare-F7 brightness cycling and the Options brightness control,
-including canonical palette admission, startup/fade lifetime, immediate save/cold
-restore and actual world/HUD/help palette consumers. Source case6 accepts only
-paletteMod>=3/submode0; accepted endpoint clamps still request submode1. Keep
-general Playing preferences restricted; use one guarded typed source action.
-Root owns serialized integration/build/push/install; workers retain their connected
-capability through consumer failure. Do not extend a fixed ABI struct in place. The installed
-spell-menu, Default Keys and secret announcement checkpoints below are delivered;
-do not restart them. Preserve full mc-5r5.2/mc-oi6.6 acceptance and all unrelated
-Modern work. Shift+F7 is flat shading, a separate source control.
+### Extended creature observations and the NightSpire exit — 2026-11-18
+
+Canonical `127397fd`, published as `814c738d`, adds guarded actor pages
+for Bee, Dragon, Archer, Skeleton, Villager and Trader alongside Goat.
+Dragon parts keep distinct opaque identities, pose and lifetime. Health
+belongs to the root, and an authored parent must own the current body chain.
+Nine exact lifecycle checks pass, including real paid Bee and Villager
+damage, authored Dragon retirement, and converted Dragon slot reuse.
+Same-record authored reuse has no separate gameplay fixture.
+
+Native `87863f39` is installed and all 627 checked inputs match canonical,
+Rig and published source. A direct query of that installed library returns
+176 real Level5 actors in 16-entry pages, including 80 moving Dragon parts
+with stable parent identities. Repeated reads preserve the state snapshot, and
+the guard rejects stale ticks. The normal Original launcher loaded NightSpire with
+30 roles, one portal click and zero retries. The launch covers packaging;
+the guarded query and exact lifecycle checks cover the observation behavior.
+The existing `sim-cli game session` stream now discovers and reads the same
+guarded actor pages. The Rig-matched release CLI paged 61 live Payahandra
+actors against all 30 owner roles at tick 354. Reads preserved the snapshot.
+Close and restore reissued opaque lifetimes and rejected the old generation;
+invalid limit, offset and tick were also refused. The installed native adds
+direct owner-package witnesses for Day2 Villager and Level22 Trader alongside
+the Level5 families above. See `generated/actor-pages-20261118/`.
+This completes the named actor observation scope of `mc-b9s.4`. Broader
+`mc-b9s` stays open.
+
+English idle movement help is implemented and published as `cdbf29f7`.
+The exact GLCore check cold-loads Cave4, resets the idle counter through
+normal movement, checks eligibility at 100 stopped draws, and displays both
+owner prompts for 50 draws with the source successor priority. Repaints
+preserve the counter and replay. Original `build-8ojdq7uu` installs the managed
+prompts and the rehashed active menu cache. See
+`generated/idle-help-20261118.BrSDUEaV/`. Full `mc-oi6.6` stays open.
+
+Original `build-qfa6a9rf` adds the English top-bar life and spell-mana
+prompts at source rows 36/37, with the same verified native `87863f39`.
+The exact Cave4 GLCore check exercises the large-map and hidden-HUD masks,
+original selection order, both indexed two-stroke leaders, and both 50-draw
+lifetimes. The first repaint legitimately advances the separate Shift+F5
+notice once; the checked subsequent reads and repaints leave replay bytes
+unchanged. The normal Original launcher cold-loaded the real Cave4
+checkpoint with four exact roles, no input and no retry. Both prompts are
+visible in the installed capture. Only the help table and its manifest
+digest changed in the active owner cache. See
+`generated/top-bar-vitals-help-20261118.Kb2v1CJL/`.
+
+Canonical `0e279bb2`, published as `0daa1605`, adds the assigned-hand
+cast prompts at source rows 38/39. The exact Cave6 GLCore check passed in
+30.859 s using an ordinarily reacquired Fireball. It covered source priority,
+the empty right hand, ordinary right-hand assignment, both indexed leaders,
+both 50-draw lifetimes and replay purity. The active cache changed only the
+help table and manifest. Original `build-idpw2fbd` cold-loaded the retained
+Cave6 checkpoint through the normal launcher with the matching native, six
+owner roles and zero retries. The exact GLCore check supplies the prompt
+evidence. Assigned-but-unready live behavior, further help and alternate
+languages remain open under `mc-oi6.6`. See
+`generated/top-bar-cast-help-20261118.D8i2Cf6r/`.
+
+Canonical `e7abbbcb`, published as `ad48e28f`, adds English spell-search
+rows 6 and 8 from the current held-spell and Castle acquisition state.
+Five focused GLCore checks passed in 141.280 s. Cave4 displayed row 6
+at tick 284; Cave6 displayed row 8 at 323. Acquired but unassigned Castle
+suppressed both in Day3 through the real tick-2854 empty poll, after the
+recurring objective reminder and minimap prompt. Cast and vitals regressions
+also passed. Only the help table and manifest changed in the active cache.
+Original `build-fmy6_bc4` cold-loaded Cave6 via the normal launcher with
+six roles and matching native `3987657a`, without gameplay input. A prior
+explicit override passed the cache alias itself and was refused by the
+regular-directory guard; using its resolved path passed. The focused
+GLCore runs supply the prompt evidence. Full `mc-oi6.6` remains open.
+See `generated/spell-search-help-20261118.2GyLq1eO/`.
+
+Canonical `5b6cf275`, published as `faa2fcbb`, adds English Castle help
+rows 12 and 13. The three focused GLCore cases passed in 115.194 s on the
+retained Revealed Way checkpoint. They cover the full-map spell-menu cue,
+centered build cue and right-hand build pointer, with indexed pixels,
+50-draw expiry and unchanged replay bytes. An ordinary 1,000-mana paid
+Castle followed by ordinary reassignment suppresses both reminders through
+the next lower-priority poll. The three spell-search regressions also
+passed. Original `build-0q5zw5gs` cold-loaded Revealed Way with three owner
+roles, the rehashed menu cache and verified native `3987657a`, with no
+input or retry. Full `mc-oi6.6` remains open. See
+`generated/castle-help-20261118.eQq6W9MF/`.
+
+Canonical `f06063fa`, published as `b526b94f`, binds Fireball help rows
+7 and 10 to the source popup-close request and current spell/hand state.
+Six focused GLCore checks passed in 211.006 s. On the retained Revealed Way
+checkpoint, the real row82 close arms the cue. Row10 paints the left-hand
+pointer at tick 2504 and the centered cue at 2522 after ordinary Speed
+assignment; both retain indexed pixels, 50-draw expiry and replay purity.
+The full-map check consumes the masked request at the scheduled poll and
+later displays row12 without reviving Fireball. Three Castle regressions
+also pass. Original `build-ba6mvgi0` cold-loaded Revealed Way with three
+owner roles, matching native `4dbbe5fd`, no input and no retry. Row7 still
+needs a live positive witness; full `mc-oi6.6` remains open. See
+`generated/fireball-help-20261118.pHL9vpFC/`.
+
+Canonical `0bd5b24c`, published as `867241a2`, connects original building
+help row21 to the independent Possession cue. The source-distance winner
+in the Revealed Way full-map aperture is current subject50. Its indexed
+marker follows the same subject for 50 draws and closes at tick 2833.
+The actual assigned right-hand row11 paints at tick 2854 and expires
+normally. A full-map poll consumes the masked request; after closing the map
+row12 appears at tick 2924 without restoring it. All 11 scoped checks passed
+across the first run and the three timing-expectation reruns, with identical
+production code. Original `build-4vjz0mq3` cold-loaded Revealed Way with three
+roles, native `4dbbe5fd`, no input and no retry. The live unacquired variant
+and broader locale/other help acceptance remain open under `mc-oi6.6`.
+See `generated/possession-help-20261118.clbzbSVe/`.
+
+Canonical `be41e10b`, published as `fe05606e`, connects neutral mana to
+Original minimap help row 18. The Day3 checkpoint shows live sphere 259
+with its indexed leader for 50 draws, then paints the assigned right-hand
+Possession cue after dismissal. An ordinary paid Possession cast claims
+the same 500-mana sphere and drops row 18 while retaining the map dot.
+Thirteen distinct GLCore checks passed across two runs on identical
+production code, including Cave6 spell search and the Castle reminder
+refusals at their actual source-priority polls. Full `mc-oi6.6` stays open.
+Original `build-k3rzmq6w` installs native `1d235e04`. All 628 recorded
+native inputs match Rig and both Git revisions. The normal launcher
+cold-loaded Revealed Way with three roles, the verified menu cache and
+the matching mapped plugin, without input or retry. Only the help table
+and its manifest changed in the active cache. UBS C# coverage was partial;
+none of the reported critical findings fell on added lines. See
+`generated/loose-mana-help-20261118.gaDBxSF0/`.
+
+The installed Original `build-k3rzmq6w` Possession search branch is now
+verified with the genuine Cave6 checkpoint and its six owner roles. The
+recurring neutral mana marker draws from tick 603, closes after 50 draws,
+then the first eligible poll consumes its request and shows row 9 at
+tick 673. Fireball remains assigned and Possession is unacquired. The
+original English text, indexed pixels, draw lifetime and replay purity
+passed in the exact 32.76 s GLCore check. Only the existing test changed.
+See `generated/possession-search-help-20261118.0viovs0s/`.
+
+Canonical `744e27d2`, published as `85860242`, binds Castle return reminder
+row 14 to the original one-shot Fireball/Possession requests and the linked
+Castle mana predicate. Three exact GLCore checks passed in 105.05 s on
+Revealed Way. The real objective-marker close after normal hand reassignment
+shows row 14 at tick 2592. The real sphere 259 close after reassignment shows
+it at tick 2522. Both verified the owner text, centered indexed pixels,
+50 draws and replay purity. An actual paid stage-1 Castle below the current
+holder cost refused row 14 at a poll it would otherwise win. In the strict
+NightSpire continuation the affordable t1739 seed has no current owner
+link; the link appears at t1740 when the cost is already 10,000. An
+affordable linked Castle positive remains open under `mc-oi6.6`.
+
+Original `build-nyblk8x9` reuses the verified native `1d235e04`; since that
+native build the only Rust source change is the test-only Level2 regression.
+The normal launcher cold-loaded Revealed Way with three owner roles and
+the matching mapped native, without input or retry. Only the help table
+and its manifest differ in the verified active menu cache. UBS C# coverage
+was partial with no critical finding on a changed line. See
+`generated/spell-menu-reminder-20261118.YM4AfQhP/` and
+`generated/castle-recast-help-20261118.a2t5zV/native-affordability-proof.json`.
+
+The installed `build-nyblk8x9` Fireball search branch is verified in
+Ammyridia using a strict cold checkpoint reached through the campaign portal.
+The first four Wyvern marker closures lose to earlier or higher-priority
+prompts. Opening the real full map and making one short flight input resets
+the idle prompt and admits Wyvern 299. Its marker closes at tick 1242, the
+next eligible poll consumes the request, and row 7 draws at tick 1263.
+Fireball remains unacquired, Possession is assigned, and the original indexed
+text, 50 draws and replay purity pass in the exact 129.81 s GLCore check.
+Only the existing test changed. See
+`generated/fireball-search-ammyridia-20261118.dx3k373s/`.
+
+Canonical `496b8905`, published as `87d0f043`, connects the local Castle's
+remaining post-draw hit frames to help row 17. The existing Day HUD and
+compact render layouts are unchanged. The generation/tick-guarded read
+is observational and returns zero without a current linked Castle. In the
+retained Revealed Way route, the hostile hit at tick 2050 drops the real
+Castle from 20,000 to 17,400 life. At tick 2059 the panel still flashes while
+the remaining hit counter is already zero. The native check verifies that
+boundary, stale reads and replay purity. The exact GLCore test shows the
+original attack text from tick 2051 for 50 draws, with indexed pixels and
+source top-center placement. Source type 1 uses (320,80) rather than the
+authored row's stored axes. The focused pass took 29.50 s.
+
+Original `build-gvrp0e5f` installs the Rig release native `a8609040`.
+The normal launcher cold-loaded the strict pre-hit checkpoint with three
+owner roles and the matching mapped library, without input or retry.
+Only the help table and its manifest changed in the active owner cache;
+all 678 payloads were verified. UBS C# coverage was partial with no
+critical finding on a changed line. Full `mc-oi6.6` stays open. See
+`generated/castle-attack-help-20261118.YU2vndGe/` and
+`generated/castle-attack-help-native-20261118.zMzMpe/`.
+
+Canonical `87950d17`, published as `8ddc1426`, connects the live owned
+Castle and Collector minimap markers to English rows 24 and 23. The strict
+Day3 checkpoint admits both through the ordinary full-map command and
+selects Collector 258 at tick 2051 and Castle 261 at tick 2121. Each hint
+tracks its own indexed leader for 50 draws and closes without arming a
+spell cue. Repaints preserve the replay bytes. The exact GLCore check took
+31.69 s. The paid linked Castle rejection check also passes in 52.37 s;
+its decisive actual poll is the third recurring Collector hint, where
+all three refused rows 12–14 outrank the selected row in the source order.
+
+Original `build-0fgqnutb` reuses native `a8609040`. The normal launcher
+cold-loaded Revealed Way with three owner roles and the matching mapped
+library, without input or retry. The active owner cache differs only in
+the verified help table and manifest. UBS C# coverage was partial and
+reported no critical finding on changed lines. Full `mc-oi6.6` stays open.
+See `generated/owned-castle-map-help-20261118.lhliYyq3/`.
+
+Canonical `b04052f8`, published as `0150f3f7`, exposes the bound objective
+condition, authored ID and live stage in one guarded native/CLI read. Both
+consumers matched the retained ordinary NightSpire tick 168→169 boundary:
+My Beacon completed, Foot of Spire became current, and the count rose from
+zero to one. Reads preserved the prior installed state hashes, event journal
+and terrain hash, and stale guards were refused. The Day2 read returned the
+bound Nyphur target ID. All 627 input hashes match canonical, Rig and published
+source. Original `build-d6_t4mf7` installs native `a0551e64`; the ordinary
+launcher entered NightSpire with 30 roles, one portal click and no retry.
+The launch covers packaging. The focused native/CLI proof covers the
+transition. See `generated/objective-observations-20261118/`.
+Canonical `6c8d8813`, published as `7a619281`, adds guarded native and CLI
+reads of live Castles, Collectors and mana spheres with current generation-safe
+relations. The retained NightSpire input reached a paid Castle at tick 1739,
+its Collector at 1761, four ordinary 500-mana pickups and a 2,000-mana
+deposit at 2745. Native reads follow the spheres through hide and reclaim;
+the optimized CLI cold-load reaches the same deposit boundary. Paired runs
+preserve game hashes and journal, and stale, invalid and reset cases are
+checked. All 628 recorded inputs match canonical, Rig and published source.
+Original `build-idpw2fbd` installs the matching native `534882ac`. See
+`generated/economy-observations-20261118/`.
+
+Canonical `e54ac147`, published as `fc7617c8`, exposes guarded, bounded,
+nonwrapping terrain windows in Native and CLI. At the ordinary NightSpire
+Castle stamp, ticks 1743→1744, both read the same 8×8 window and report
+ground height 768→800, the collision material change and protected-height
+flag at tile (116,230). The full window records 46 height changes and 16
+material/protection changes. Read purity and stale/bounds refusals passed.
+All 628 inputs match canonical, Rig and published source, and the installed
+Original `build-fmy6_bc4` maps verified native `3987657a`. See
+`generated/semantic-terrain-20261118/`.
+
+Canonical `5675391d`, published as `4eb95f99`, adds generation-safe
+economy payloads to the existing bounded event journal. Native and CLI
+report the same real Castle construction start at tick 1740, four
+500-mana transfers and the 2,000-mana deposit at 2745. The paid root is
+visible at 1739; construction is published on the subsequent frame with
+stage 1. All four sphere identities survive reclaim in retained history,
+and a cold CLI replay reconstructs the final pickup. The 136.437 s proof
+also covers stale guards, expiration, unchanged reads and seven exact
+prior state/journal receipts. The current Cave6 sample at tick 40 returns
+ground 224 and ceiling 5568 without changing the state. All 628 inputs
+match Rig and the published revision. Original native refresh
+`build-s8mo2uez` cold-loaded NightSpire via the normal launcher with
+native `4dbbe5fd`, no input and no retry. `mc-b9s.5` is closed for its
+existing acceptance; broader session and campaign acceptance remains open.
+See `generated/semantic-economy-history-20261118/`.
+
+The earned NightSpire exit checkpoint matches 13 historical pose/exit
+boundaries and reaches the real authored exit at tick 10695. The native
+runtime completes the 187-frame exit and emits ordinary Results. The prior
+installed Original `build-lfyj29b2` fatals on the first cinematic step:
+its managed validator demands ordinary speed passes while the source exit
+intentionally retains the gameplay tick. The correction admits the bound
+cinematic clock and requires changing authoritative state. Ordinary stall and
+speed-pass guards remain active. The exact earned exit and ordinary-stall
+checks passed in the qualified JSON and canonical binary render routes.
+
+Original `build-8ojdq7uu` with native `87863f39` completed the earned exit,
+displayed Jahwl Results and opened Payahandra via the normal map in the same
+process. Night track 1 at session generation 3 and Day track 2 at generation
+4 each started once. The private software PCM matched their owner heads at
+0.999979 and 0.999994 correlation. Results and the map used their own track 4.
+Loading had 17.29 seconds of exact digital silence and the new Day output
+had no detected old-track carryover. Root viewed Results and the Payahandra
+selection. All six owned capture processes stopped. See
+`generated/night-day-music-replacement-20261118/`. Full campaign and
+remaining gameplay sound acceptance stay open under `mc-paj.1`,
+`mc-oi6.9` and `mc-oi6.8`.
+
+The retained earned NightSpire exit now has an intermediate cold-save witness
+on installed native `327b91e6`. The public runtime finished the 187-frame exit
+tail, saved its actual Results state, dismissed Results, and saved the map.
+Two fresh CLI processes loaded those saves and opened Payahandra Ruins at tick
+zero with byte-identical entry payloads. The frontier and three carried spells
+match, with persistent experience 49/9/1 for Fireball/Possession/Castle and
+Fireball still selected. A stale duplicate open leaves the live owner intact.
+The installed Original independently cold-loaded Results with all 30 roles,
+displayed its statistics, and opened the same successor through the map portal.
+The save producer here is the public runtime API. The installed Results sheet
+consumes a key as dismissal, so this runs no Results-screen quick-save check.
+Broader `mc-zdo.6` acceptance stays open. Evidence is under
+`generated/earned-results-persistence-20261118/`.
+
+### Goat lifetime pages and Cave loop timing — 2026-11-18
+
+Original `build-4zmyev0o` now installs the audio rewind and capture-tap
+fixes, the collector area-damage fix, and English large-map help. Canonical
+`64748bb7`, `f2d714d0`, and `6c67bf95` are published through `075c7f04`.
+All 626 checked native inputs agree across local, Rig, and published source.
+The current native is
+`3f3744cf7b4531c0dbcc68cb47357017338d56b332e7982d643650146c01859f`;
+`--check-installed` passes. The default menu cache now resolves to the
+validated 678-output row 4 cache. The canonical Original launcher entered
+NightSpire with all 30 roles, one portal click, zero retries and the matching
+mapped native. The launch covers the installed build and default resources.
+The installed Cave track continuity check passed below. Collector retirement
+in the installed minimap remains open. See
+`generated/collector-hostile-area-20261118/`.
+
+Canonical `63b8b0f2`, published as `ff7e2bea`, adds bounded campaign actor
+pages for `creature.goat`. The public read binds session, generation and tick;
+opaque lifetime IDs use the authoritative arena incarnation. The campaign
+profile advertises its Goat scope separately from the existing exact Unity
+capability arrays. Live Day2 paging and guard/read-purity checks passed in
+3.19s. The NightSpire paid Fireball test follows a Goat with a declared,
+published 200-life property through damage, dying, hide and reclaim in 5.51s.
+The original 600/1200-life cases remain in the same test. The extended check
+passed in 6.84s: ordinary allocation reused slot 50 at tick 9 for class 10
+model 14, changed the incarnation from 0 to 1, and kept the retired Goat out
+of the public page. This completes `mc-b9s.3`. The broader `mc-b9s` remains
+open. The older full snapshot's scoreboard contains `source_slot`;
+the untouched optimized registry test fails its existing guard too. The
+actor-page change preserves the original scoreboard consumers and guard.
+Original `build-41je7c5x` is installed with native
+`fb751cf5501717c68956502c1b8e740e95a0265f3a6509f991640edac9ebf546`.
+All 626 native inputs match canonical, Rig and published source. The optimized
+public read paged 36 distinct live Day2 Goats and repeated identically.
+The canonical launcher loaded NightSpire with all 30 resource roles, one portal
+click and zero retries. The mapped native matched. This smoke covers launch and
+load; the focused runtime checks cover Goat observation and lifetime.
+See `generated/goat-actor-pages-20261118.Lk77Lx/`.
+
+Cave track 3 repeated in both installed captures. Reanalysis of both audible
+startup anchors on `build-41je7c5x` finds the full 240.001451s transport
+period in Pulse and 240.001474s in direct PipeWire. Both saw two matching owner
+heads 35,280 source frames apart at startup and lost phase in the final 0.8s.
+The earlier 239.201451s measurement used the duplicate startup head.
+One managed start and continuous packet timing rule out a second game start
+or a gap in the capture. The qualified Unity A/B reproduced the same 35,280
+frames at the mixer before the device. Setting AudioSource.timeSamples lets
+Unity seek and prefill, then a redundant managed seek replayed the buffered
+head and displaced the tail. Removing that seek preserves the full
+176,464-frame diagnostic clip and its tail on both fresh start and restart.
+The game capture tap now keeps enable-state reads off the mixer thread.
+The short test uses controlled PCM with the production stream/source and real
+capture tap. The exact installed `build-4zmyev0o` Cave4 checkpoint then
+opened normally with four package/cache roles and one source track-3 start.
+Both private captures measured all 10,584,064 owner frames (240.001451s).
+The opening, final tail at 239.95s and repeating opening matched owner
+PCM with at least 0.986 stereo correlation in both readers. There was no
+matching duplicate at the 0.8s prefill offset, and the same gate rejected
+the older installed recording. All owned capture processes stopped.
+This verifies the first natural Cave loop. The later installed Revealed Way
+Day capture on the same build passed at 16,695,296 owner frames in Pulse
+(378.578141s), within one resampled frame in direct PipeWire. Head, final
+tail, and next head matched the owner in both readers, with no 0.8s
+duplicate. The same neutral interval produced the ordinary native
+idle/battle/idle transition and matching PCM gains. The installed Night
+checkpoint selected track 1 once and measured 19,472,384 owner frames
+(441.550658s) in both capture paths. Its final tail and next opening matched
+the owner without the duplicate prefill. All three environments now have
+installed natural-loop evidence. The later same-client mission replacement is
+recorded above. The gameplay-sound dependency remains open under `mc-oi6.9`. See
+`generated/adaptive-cave-loop-timed-20261118/installed-cave4-build-4zmyev0o/`
+`generated/adaptive-stream-loop-discriminator-20261118/` and
+`generated/adaptive-day-night-loop-20261118/`.
+
+The authored Karakir Cave switch at row 29, tile (201,204), can start Wind
+row 175 through ordinary overlap and group 4. Its owner sound 49 is Cave
+bank 2 TORNADO.WAV. No retained strict Original save reaches that encounter.
+The retained map save cold-loads with all 30 roles but rejects Karakir as
+locked. Its available Spider Cave opens normally, with the carried Whirlwind
+insufficiently funded at 1000 mana and no Castle.
+The direct role-26 package exposes the native producer,
+while installed sound 49 playback and natural release still need that route
+or an ordinary acquired and funded Cave cast. Existing Cave door and drip
+captures are separate evidence. Keep `mc-oi6.8` open.
+
+Ordinary English large-map help now binds source row 4 to record 289,
+the current indexed minimap subject state and the normal closed-map
+poll. Unavailable subject data cannot select it. Actual Cave4 cold replay
+and normal map actions verified selection, rendered text, dismissal
+cadence and replay purity. The existing Night row 2 check passed on the
+same files; the unchanged Day3 blink-hidden subject check passed in the
+first run. The default Night start itself has a source subject and cannot
+serve as the positive row 4 case. Previous verified cache receipts remain
+admitted. Evidence: `generated/large-map-help-20261118.zeY5ft6H/`.
+Other source help rows, tutorial and alternate-language acceptance remain
+open under `mc-oi6.6`.
+
+The English low-health prompt binds source row 5 to owner record 290 and
+uses the published live quarter-life threshold at ordinary help polling.
+Two exact GLCore cases passed in 84.87s. The real Day3 retreat checkpoint
+follows combat damage at low life through indexed text and the 50-draw
+lifetime. A continuation crosses 2500 to 2505 with normal regeneration
+and stays ineligible at the next open poll. Repaints leave timer and replay
+unchanged. The older four table receipts remain admitted, and only the help
+output differs in the independently rehashed 678-output cache. Canonical
+`b05676f9` is published as `c8f0e2dd` and installed in Original
+`build-lfyj29b2` with verified native `3f3744cf`. The default launcher
+loaded NightSpire with 30 roles, one portal click and zero retries. That
+smoke qualifies the installed launch and load; the injured encounter evidence
+comes from the focused GLCore tests. See
+`generated/low-health-help-20261118.bc502sO6/`.
+
+### Objective popup closure, Night music and collector retirement — 2026-11-18
+
+Canonical `c3e5cd77` is installed in Original `build-nstm28wl` with native
+`1ba74ee6`. A real NightSpire objective-text expiry emits help row 79.
+Its popup draws the owner text, closes after its 50-draw lifetime and promotes
+minimap rows 2 and 81 for subsequent polling. Reads and repaints leave the
+timer alone. Both this check and the Day3 objective-marker regression passed.
+See `generated/minimap-help-20261118.ovAjIr/objective-row79-gl.xml`.
+
+The installed NightSpire checkpoint starts track 1 at tick 10363 and reaches
+combat and idle at the same ticks as native. Owner C2GAME1 matched the captured
+stereo PCM at 0.99956 correlation. Combat was 3.256 dB above idle, and pause
+silenced the capture. Day, Night and Cave now have installed adaptive PCM
+evidence. The later exact Cave full loop is recorded above. See
+`generated/adaptive-night-music-20261118.ZsshtN/installed-night1/`.
+
+The focused paid Castle/collector check follows the actual typed minimap input
+through the collector's own lethal hit, hidden state, reclaim and same-slot
+stock refill with a new incarnation. It passed against the authored package
+in 4.20s. The damage is a declared test control. Rendering the actual death and
+reuse in the installed player remains unverified. The retained Payahandra
+checkpoint admits all 30 roles and has live rival Nyphur at tick 354, with
+zero Castle or Collector markers. Its recorded input ends at pause. The
+installed witness still needs a current checkpoint with an exposed hostile
+Collector and ordinary inputs that retire it in view. See
+`generated/collector-map-retirement-20261118/collector-focused.log`.
+
+The shared scheduled area-effect reader now includes the current typed
+class 3/model 3 collector. It uses the canonical particle/map collision
+shape and source damage mask before the stale raw-row fallback. The exact
+Level5 regression passed in 5.40s: the paid Castle produced its real
+collector, a staged friendly Fireball impact left the mailbox unchanged,
+and 41 staged hostile terminal impacts at source tier-zero power caused
+ordinary mailbox consumption, hide, and reclaim with the Castle still
+allocated. The friendly comparison advances a matched no-impact frame
+because the collector naturally regenerates one point there. Existing
+refill/slot-incarnation and Cave collector controls pass; the affected
+ordinary all-tier Meteor path passes in 8.32s. These are controlled impact
+births, with no paid rival launch or installed minimap pixel claim. Keep
+`mc-bhq.10` and `mc-oi6.5` open. See
+`generated/collector-hostile-area-20261118/`.
+
+### Objective-marker help, speech volume and Cave music — 2026-11-18
+
+Canonical `29b5ecea` and `813d8d00` shipped in qualified Original
+`build-i9hrj52v`. When the real Pav speech is active, changing one volume in
+the paused owner now updates that channel immediately and keeps the other
+channel's fade. The focused test reproduced a 5.25 mixer gain before the fix,
+then passed the real preference, pause/resume and speech/cue guards. See
+`generated/speech-slider-20261118/{baseline-paused,candidate-paused}.xml`.
+
+The objective-marker help consumer uses the current minimap aperture before
+blink filtering, source-ordered nearest subject selection and the existing
+indexed leader. The new digest-verified owner menu cache preserves admission
+of the previous two variants. The Day3 checkpoint reached the real row82
+text and anchor. Repeated reads and repaints preserved the lifetime and
+replay. Evidence: `generated/minimap-help-20261118.ovAjIr/objective-help-anchor-gl.xml`.
+Row79's close-time priority promotion and broader recursive help stay open.
+
+On the same installed player, strict cold load of the Cave4 ordinary retreat
+checkpoint and neutral input reached track3 combat then idle. Captured PCM
+matched owner C2GAME3 at 0.99543 stereo correlation and measured a 3.26 dB
+change. Pause silenced the private capture. Evidence:
+`generated/adaptive-cave-music-20261118.JvQJNs/installed-cave4/`. Night adaptive
+PCM and full-track looping remain open. No full campaign or hardware proof.
+
+Canonical `6940934c`, published as `d012ff1d`, joins Whirlwind sound49 to
+the current scheduled field actor. The ordinary source package check now
+prepares audio after field motion using the typed actor and actual updated
+listener, emits the terminal End49 before hiding the field, and follows
+natural reclaim. The first run caught the blank raw arena position; the
+corrected check passed in 14.48s. The earlier native replay test verified
+the independent optional Wind audio boundary alongside the existing Goat
+boundary. The finite-voice consumer check verifies reuse, stop, completion
+and reset. The installed refresh `build-fbtna7ng` on the same Unity player
+uses native `1ba74ee68b2cefc75e64237e9d03593f0da4d5a12a8501c17dd569dfd7b47c8a`.
+All 626 recorded inputs match the local, Rig and published source. The
+matching client opened NightSpire with all 30 roles, one portal click and
+zero retries. See `generated/wind-audio-20261118/`. The Wind chain exercised a bounded
+source scenario; actual Cave49 PCM at an admitted Wind encounter remains open.
+The retained save and input census found no earned Karakir route. The
+shortest admissible witness is a Karakir save before the row29 overlap
+at tile (201,204). The retained Phyrydia Whirlwind state has neither the
+2,000 player mana nor the 60,000 Castle mana required for the first tier.
+
+### Original audio, minimap and campaign continuity — 2026-11-18
+
+Canonical `936b3bd8`, `255f6dfc`, `000a391e`, and `3adf0176` are published on
+`codex/original-ending` through `fa5e8a56`. Current Original build `build-wnhko4t3`
+uses the same native `0c58356c8df10fffb23dac5f0627edc5531a479666505b7d32a4c59a774e62cc`
+as the initial audio/help build `build-b2f6evq_`.
+All 626 recorded Rig inputs match the published source. The normal `--menu`
+launch reached the three startup clips, Title, New Game, and NightSpire with
+one portal click and zero retries. All 30 resource roles and the mapped plugin
+were verified. Evidence is in `generated/gameplay-audio-20261118/`.
+
+Night Goat sound 46 now goes through the scheduled positional mixer. The
+unchanged released Night v9 replay cold-loads with all original receipts,
+then adds new Goat audio. Its continued save preserves the verified operation
+boundary and cold-resaves byte-for-byte. The previous reader rejects the new
+optional marker. The installed private stereo capture matched the owner
+GOAT.WAV at the actual logged playback rates and gains. The Day3 minimap now
+uses the scheduler's current creature chain. The same input that previously
+failed published all ten remaining Skeletons in source order after the dying
+member was unlinked. The Castle marker retired after combat loss and reuse.
+Its collector stayed alive, so direct collector-marker removal remains open.
+Repeating that bounded Day3 route against installed native `1d235e04`
+verified that a real hostile impact at tick 2110 damaged Collector 258
+(incarnation 21) for 500 life on the next tick, with its selector 66
+marker retained. The Castle marker retired at tick 2252 and the Collector
+was still alive at tick 2257. Its ordinary death and reuse remain open.
+See `generated/collector-map-retirement-20261118/ordinary-day3-1d235e04/`.
+
+Optimized music callbacks run during accepted gameplay steps. The selected
+owner XMIDI track changes gain from 0.55 at idle to 0.80 in combat. The first
+installed Day3 flight reached combat but its mouse steering did not reach idle.
+An exact ordinary-input checkpoint allowed a neutral-only repeat of the real
+combat-to-idle transition. Installed trace ticks 2168 and 2247 match native
+callbacks 128 and 256. Phase-matched owner PCM measured 0.7990 combat and
+0.5496 idle (+3.25 dB), with silent paused output. Evidence is in
+`generated/adaptive-music-playback-20261118.OPkPs3/`. The installed minimap help uses
+owner row 287 and the existing indexed HUD. Its real selection, anchor pixels,
+repeated-read purity, and 50-draw lifetime passed with GLCore. NightSpire's
+objective-advance and completion lines both matched the actual owner PCM in
+the preceding installed player from a retained fixed public input trace.
+Those captures do not certify hardware output or the rest of the campaign.
+
+The Keys dialog rejects new mappings of fixed gameplay controls. The first
+physical input check then found an IMGUI text-only event that incorrectly
+rejected the next capture after a valid physical key. The dialog now consumes
+those text events without changing its draft or clearing a real rejection.
+Focused checks verified direct Apply, rejected-key atomicity and cold reload.
+The installed Title check rejects L, cancels without changing profile bytes,
+and persists Q directly without the earlier Escape workaround. A fresh
+Original process loaded the same profile and genuine NightSpire save. Physical
+Q opened and closed the visible world map, while Return did not toggle it.
+The saved history contains exactly two new map-toggle operations. Evidence:
+`generated/settings-key-capture-20261118/installed-keys-no-escape/`.
+
+Pav abandon/cancel and cold parent return reopened Jaleen once with retained
+Possession, on a checkpoint with declared prior state. The final Uluth Results
+save and map restored byte-for-byte on the current native with all 30 roles
+and the real owner catalog. Dismissal preserved all 26 progression rows and
+did not replay CUT6. This starts after CUT6 and credits. Earned NightSpire
+Results and consecutive opening transitions, earned secret round trips, new
+full ending playback, and broader help/locale acceptance remain open. No bead
+acceptance or dependency is changed by these bounded results.
+
+Current capability (2026-11-16): Castle/balloon, flat shading, brightness, Speed,
+the source in-game viewport, Player Names, F4/F5/F6 speech/sound/music, F2
+flight assistance, F1 Help Mode, Shift+F1/F2/F3/F4 graphics and original Title
+Exit/cursor/idle-help/F1 are implemented, verified, committed, pushed and installed.
+Finite mc-5r5.3 remains CLOSED; do not restart its checks.
+
+Finite mc-paj.5 is now CLOSED on its original bounded Night/Day loading,
+recovery and resource-lifecycle acceptance. Canonical1fb4e497 includes
+ac574add/020a9d41; Original302965a9 includes cb53b978. Original build-5a4ygxbx
+was installed with native8c862188. The current native is now f3bf7893 after the
+semantic spell batch below; the same player is retained. All627 inputs match
+local/Rig/published source at each recorded native receipt. Spider/backend
+qualification additions were cfg(test)-only and reused their release native.
+Unrelated Modern/browser work is preserved; main was not pushed.
+
+Implemented fixes: retain the real campaign frontier on Title/NewGameMap;
+separate held IMGUI Escape from fresh source confirmation; publish every map
+scroll coordinate to drawing/hit tests; read current native MenuState through a
+pure guarded ABI query in ordinary/cold/reset/paused observations; materialize
+only the actual admitted action29 write into the existing optional banishment
+carrier; end gameplay menus/pending actions with their borrowed world before
+Title draws. Generic AI/projection setters still require qualified backing.
+MCPO/save schemas, source order and canonical refusal/admission gates stay intact.
+
+Verified: actual L1 flight/map confirm, read purity/guards and post-confirm cold
+replay/return1.075s; legacy/qualified carrier bytes0.152s; immutable released
+lighting-OFF save and signed incoming Day2 map load/exact byte resave; current
+managed menu consumer30.832s and actual confirm-to-Title GUI/borrower release
+41.289s; canonical116-source typecheck. Required native loading0.22s and managed
+visible-frame1.312s remain covered. UBS is partial/legacy; no added-line teardown
+finding. Failed installed run7 is preserved as the discovered teardown defect,
+not successful return/reopen evidence.
+
+Installed run8 passes missing-art ReturnMenu/Retry, visible Day2 source loading,
+exactly one bound/frame/open per request, confirmed Title return and same-process
+second Day2 open. Root viewed both worlds/map/Title/art; immutable incoming map
+unchanged. Actual unsteered native death clears menu13 to0 at tick805 before any
+confirm/cancel input, and settled pixels show no stale modal. A separate fresh
+canonical Night1 portal/loading/world run passes with zero retries. Owned smoke
+players/displays are stopped. Evidence: generated/loading-20261116/installed-day2-8,
+installed-night-final, abandon-death-1, source-menu-observation and menu-teardown.
+Declared incoming Day2 progress is not earned campaign proof. Human combat/FPS,
+hardware audio, full missions, general old saves and assembled Cave/secret routes
+are outside these bounded claims; full campaign parents remain OPEN.
+
+Finite mc-oi6.7 is CLOSED after fresh bounded original-acceptance review at
+canonical16f3a83d and root independent source/evidence inspection. Its current
+installed aggregate already owns the web writer;
+the old presentation_bridge refusal alone is not a current-client defect.
+Actual controlled Level4 Spider contact/damage/natural expiry/reclaim passes
+0.54s. Its emitted authoritative observations feed the matching MWEBC Cave
+aggregate GPU; source pixel, repeated-read purity, expiry/reset pass2.828s.
+Declared pose/cadence/protection and separate producer/renderer owners remain
+explicit; no unstaged live encounter or same-owner replay claim. PearlBay's
+actual admitted Day exit through native GTD2/blur/phase12 and reset history
+passes10.38s on the real Day2 owner table after the focused Rig compile.
+Canonical16f3a83d is pushed as Originala22863b5; only cfg(test) code changed,
+so that checkpoint reused native8c862188/player5a4ygxbx. No fabricated exit phase, new ABI,
+automated player or second receipt bridge. UBS's whole backend totals are legacy
+scope; none of the130 added test lines has a critical finding. No concrete
+missing producer/current-client consumer remains in that finite inspected scope.
+Prior acquired supported-status timing evidence is reused; native alive/full-map
+gates and world-history -> WEB -> minimap/HUD order were inspected. Native
+controlled-component evidence does not establish live C ABI/Unity Day exit or
+next-mission teardown by itself; the exact GPU LUT and actual installed Day2
+teardown/reopen remain separately identified evidence. These limits and the
+assembled campaign acceptance are preserved rather than claimed from a fixture.
+Finite mc-b9s.2 is CLOSED after fresh bounded independent consumer assessment and
+root inspection. Canonical1ce609de is pushed as Original08852538; nativef3bf7893
+is installed by native-only refresh build-l818_b3q into player5a4ygxbx. All627
+local/Rig/published inputs match and --check-installed passes; no Unity rebuild.
+One shared26-family mapping now uses the identical current-holder/incarnation
+predicate for observation, selection, assignment, marking and cycling. The old
+cached-slot semantic selection bypass reproduced before repair. Remembered marks,
+ordinary movement, source scan order and low-mana selection/cycling are preserved;
+no cost or activation prerequisite changed. Existing per-tier source affordability
+fields remain the actual menu's consumer, without a new generic readiness overlay.
+
+Actual controlled BeyondSight pickup -> ID/tier/cost/hand/read purity -> public
+select/cast/expiry plus stale generation guards passes0.198s; required semantic
+API0.20s; mark/cycle and2 cold replays/full snapshots0.50s; learned release/reclaim
+and next entry4.09s; progression/two-entry save1.88s; matching managed inventory/
+selection/cast/reset0.234s. The replay fixture initially omitted actual HUD-policy
+history; it now copies the real sidecar and all5 strict receipts remain. The old
+released lighting-OFF save loads/exactly resaves. Root viewed normal canonical
+Night map/loading/world with mapped f3bf native, one portal, zero retries, then
+stopped owned processes. Source scans remain legacy-scope; no added production
+finding. Evidence: generated/semantic-spells-20261116. Native pickup pose/Castle/
+mana and stale reuse are declared controls; the managed UI uses a separate owner.
+This is not one continuous unstaged physical pickup/UI route or earned campaign.
+The historical Nov10 Castle save was rejected for incompatible runtime_flow,
+remains untouched and is not positive evidence. Full parents remain OPEN.
+Finite mc-oi6.2 is CLOSED. Canonical 10aa9b48 and Original 7c49d918 contain
+the cached native frame owner check and Unity read-time output integrity check.
+Original build-wuukj1s5 is installed with native d8a7a7b6, reusing the verified
+Rig artifact because no additional Rust changes were needed. `--check-installed`
+passed. Normal map/loading/NightSpire terrain and HUD were viewed using the
+matching mapped native, one portal and zero retries. All 30 resource roles
+were present and the owned smoke processes stopped.
+
+Exact cache validation and source byte comparisons cover Night1, Day2, Cave12
+and fire-Night25, including the original palette, tables, block atlas and
+dormant16 bank. Three focused importer tests pass. Matching Unity passes the
+four named wrong-bank, changed-output, Day/Night/Cave and fire-Night material
+checks. Actual Level25 takes a source turn and renders the real boss with
+declared group/position controls; the Level25 material frame and Cave12
+wrong-owner rejection/rebind pass separately. Evidence under
+`generated/materials-20261116/` and `generated/ci-baseline-20261116/materials-batch-serial.xml`.
+The standalone smoke covers NightSpire entry; controlled editor/native checks
+cover the other material profiles. Hardware audio, Cave occlusion and full
+missions retain their separate acceptance.
+
+Shared Original animation source is committed as c8175c10 and pushed as
+a7323502. Its installation used native 22809f18 on build-wuukj1s5. The canonical
+launcher displayed the map, loaded NightSpire through one portal with zero
+retries, and rendered the terrain and HUD with the matching mapped plugin.
+The smoke did not perform creature combat or play a mission.
+
+The current campaign renderer advances one retained indexed image per
+selector after an admitted draw. A real Night1 two-Goat selector152 and
+Day2 directional Villager check reached actual composition pixels and
+verified paused frames, repeat reads and generation reset. Cold replay
+restored the same content state and re-serialized byte for byte. The real
+Level25 boss death reached the source animation finish. The creature28
+reset hook has clock-level coverage and the real Level14 transformation
+and hit test passes. Matching Unity passed the
+semantic texture identity test and the native scene/no-duplicate world
+test for missions1–4. The broader selected legacy presenter tests failed,
+including 20 failures caused by owner audio descriptor size mismatches
+before a frame was rendered. Keep mc-oi6.1 open for that verification gap.
+Evidence: generated/animation-20261117.
+
+Outdoor composition verification is pushed as 3a533792 and aaa48724.
+Real Night1 and Day2 views retain visible actor pixels and overpaint others
+with later terrain. The real Day3 water view verifies reflection, shadows and
+mode5/7/26. A real Night1 Fireball contributes indexed pixels in flight and
+disappears through impact and reclaim. The source camera and ordering ABI
+checks pass. The installed Original renderer contains the verified path.
+
+Cave source 67eca929 and verification f7e0abcf are pushed as 29cf777a and
+0a6ef850. Actual Cave12 flat mode changes floor shading while texture1 ceiling
+commands and pixels retain mode5. The real Cave4 corridor scheduler and
+reset/flight checks pass. The authored Spider600 contributes terrain-covered
+pixels at pinned normal and rolled views, and its visibility changes with
+the actual open and closed corridor206 plane data at a controlled cut.
+Original build-wuukj1s5 now maps native ddca481a from f7e0abcf. All 628
+checked source inputs match Rig. The standalone smoke displayed the map,
+loading frame, NightSpire terrain and HUD, using one portal and zero retries.
+The Spider and Cave shading checks use controlled native frames. Keep
+mc-oi6.3 and mc-oi6.4 open with their original acceptance and dependency chain.
+Tutorial/help mc-oi6.6 and speech mc-oi6.10 retain their open prerequisites;
+do not bypass them. Full mc-5r5.2/mc-oi6.5/.6 and assembled campaign acceptance
+remain OPEN. Hardware resolution switching remains the explicitly separate
+renderer option, not the source in-game viewport. Root keeps sole Cargo/RCH/
+push/install dispatch; owners remain through consumer failures.
+
+Animation follow-up: canonical bb716821 is pushed as Original 2e495072.
+Installed player build-wuukj1s5 now uses native 842fd4c1 (native refresh
+receipt build-58kn9shu). The real Level7 group5 segmented creature at a
+naturally scheduled oscillation frame6 selected TMAP64 instead of source
+base58. Direct source modes0/1/21 now ignore that entity frame; framed11/36
+and the downstream mode21 pivot/masks are unchanged. The real authored
+spawn/carried Possession regression fails before the fix and passes after it.
+Affected shared Goat/Villager pixels, ordinary Fireball/reclaim and Cave4
+Spider/corridor checks pass. The final test-only whitespace cleanup does not
+change the tested production code. A bounded independent changed-path review
+found no introduced defect. A possible signed-frame difference in11/36 has
+no demonstrated visible ordinary producer and is not counted as a new blocker.
+
+All628 checked source inputs match Rig and the returned native hash. Installed
+Unity passes actual mission1–4 native/GPU pixel equality/no duplicate sprites,
+runtime read/pause/resume/reset lifetime and semantic asset texture identity
+(three selected cases,16.56s). The lifetime fixture now uses the real installed
+resource roles and normal selected-locale/FONT1 binding; strict missing-font
+refusal is retained. The semantic qualification helper uses the current fixture
+owner and typed bind_asset operation; direct CLI/native/TypeScript/Unity checks
+pass. Its synthetic asset identity proof is separate from actual MC2 actors.
+
+The attempted legacy Level2 overlay test-cache update was reverted: matching
+resource inputs still reach a retired material-schema/fixed-slot presenter,
+rather than the current native-composed world. Those failures are preserved;
+no legacy assertion or validator was weakened. UBS remains partial/whole-file,
+with no critical added-line finding; baseline Rust formatting debt is intact.
+Root viewed normal installed map/loading/NightSpire scene/HUD with mapped
+842fd4c1, one portal and zero retries, then stopped owned processes. Evidence:
+generated/presenter-20261117. This is not a native Level7 encounter, human
+flight/combat, hardware audio, FPS or full campaign proof. Full .1/.3/.4
+acceptance remains OPEN, including the assembled Cave flight/corridor path.
+
+Renderer qualification follow-up — 2026-11-17: the existing Level14 two-form
+creature check now follows the natural action-driven group311 clear, actual
+draw admission, next source-turn SS2 transition and a later natural reset.
+Its original transformation/splash/contact assertions remain. The final exact
+check passes157.64s, including direct retained-clock equality across repeated
+reads (the gameplay hash alone does not cover those clocks). A same-state
+group-image ablation changes native pixels; that proves the group's visible
+contribution, not exclusive attribution of every changed pixel to that actor.
+The expected transition uses the production decoder and is sequencing evidence,
+not an independent decoder oracle.
+
+The existing strict incoming replay check now optionally covers actual Cave4,
+using its complete source owner before construction and the real prefix1–4
+resolver. It passes33.68s with exact restored snapshot/flow and empty completed
+history. This is a declared incoming Loading control, not earned prior missions.
+The resulting unchanged save also passes the public native loader. Root launched
+that save through the normal installed Original launcher, viewed Cave terrain,
+bounded forward/turn input and the source pause menu, and verified mapped native
+842fd4c1. The owned player/display are stopped. The first smoke checker waited
+for an obsolete marker and timed out; the corrected checker uses the existing
+SpiderCave startup event. No client/source bypass or runtime repair was needed.
+F5 while paused produced no save; no new save-key claim is made.
+
+The six old fixed-slot managed presenter checks now use the actual native-composed
+world, retaining their original semantic obligations. All six pass28.737s in the
+qualified Original cohort: exact Goat/Villager and five class5 mappings,
+same-pass hidden/current generation followed by reclaim, malformed/stale guards,
+runtime resource binding and public Fireball/Bee interaction. Actual source34
+group23 produces Fireball739; public pickup acquires it, held left input services
+its real activation delay, and declared player position/pitch tracks the moving
+Bee. The check requires payment, a live player-owned projectile, attributed
+damage and action17→18, with the same Unity surface/texture and no duplicate
+overlay. The compact public probe records projectile tick18 and damage250 at
+tick20. This is not organic secret arrival or uniquely attributed actor pixels.
+Earlier failures released the cast before activation and aimed above the moving
+Bee; source readiness or input acceptance alone was never a hit. A final C#
+conditional needed an explicit short cast in the older Original cohort.
+
+No production source changed in this follow-up; current installed native/player
+are reused and the qualified Original --check-installed passes. The canonical
+Modern checkout's separate installation is not the Original qualification target.
+UBS reports no C# warning/critical. Its two Rust whole-file scan yields three
+unchanged false-positive criticals: semantic secret-outcome equality and a
+diagnostic file-name nonce, not credentials. No added critical was identified;
+legacy formatting/whole-file warnings remain. Evidence:
+generated/render-completion-20261117, final presenter-current-6.xml.
+Bounded independent review found no new demonstrated production defect. Full
+.1/.3/.4 acceptance stays OPEN: broad admitted-family coverage, separately
+attributed final reflection pixels/Night water, and the joined installed Cave
+flight/corridor/creature route must not be inferred from representative checks.
+
+Sequential renderer batch1 — animated-sprite acceptance is now CLOSED as
+mc-oi6.1. Fresh bounded selector/lifetime review at41d28f1b found no demonstrated
+reachable mismatch. All30 currently installed owner roles match launcher roles;
+their15,120 decoded payloads match manifest size/hash, with source-bound504-entry
+group tables. A current-source Rust decoder build handles all359 distinct
+animated payloads/2,541 declared transitions, including zero-child and multi-child
+F1FA records, and rejects359 final-truncation controls without changing retained
+pixels. The all30 public reset-world DTO queries pass with6,045 rows. This covers
+actual installed stream shapes and reset admissions, not every conditional spawn,
+original pixel parity or complete missions. Existing real Goat/Villager shared
+draw/pause/replay, two-form Creature28 natural reset, boss finish and current Unity
+consumer/lifetime checks supply the connected representative runtime evidence.
+
+An old returned decoder rlib initially rejected a valid terminal zero-child frame;
+the driver was then pinned directly to current lib.rs and passed unchanged source.
+No production repair or new installation is inferred from that stale-artifact
+negative. Source mode16/particle237 has an asset preload but no demonstrated
+ordinary draw producer; it remains explicitly classified, without invented
+spawning. Actual source draw feedback is an explicit committed operation;
+read-only DTOs/repeated cached frames do not service clocks, while the next
+unpaused turn consumes each selector latch once. No arbitrary draw/no-draw history
+equivalence is claimed. Evidence: generated/animation-acceptance-20261117 plus
+the previously installed842fd4c1 lifecycle checks. Batch2 is actual outdoor
+reflection pixels and batch3 is joined Cave flight/corridor/creature; .3/.4 and
+full campaign acceptance remain OPEN. No Rust/Unity production code changed.
+
+Sequential renderer batch2 — mc-oi6.3 is now CLOSED. A test-only per-instance
+omission at the named actor's reflected raster call leaves primary/shadow calls
+and writes, source pixel-mode continuation, terrain input/commands and actual
+authority/clocks unchanged. At pinned actual Day3 actor220 and Night1 actor51
+water views, its omission removes26 and416 final palette-visible RGB pixels
+respectively. The final exact check passes3.07s; actual terrain/actor overpaint
+passes3.59s and the existing flat5/7, reflective26 and shadow option checks
+pass1.72s at the same compiled source. Root viewed both real native composed
+scenes and independently checked their RGB differences. These are controlled
+native views, not newly sampled physical-display water encounters. Prior exact
+native→Unity/no-duplicate checks and actual installed Day/Night load evidence
+remain the real client transfer evidence.
+
+Bounded independent gate review found no production defect; the two-file change
+is cfg(test) only. Installed Original native842fd4c1/player build-wuukj1s5 is
+reused and --check-installed passes. UBS's lone whole-file critical is an unchanged
+test-directory filename nonce, not a security token; no added critical found.
+Evidence: generated/outdoor-reflection-20261117. Existing projectile impact/hide/
+reclaim and source camera/order checks are reused, not repeated. Batch3 now owns
+the remaining joined installed Cave flight/corridor/creature path; mc-oi6.4 and
+the assembled campaign remain OPEN.
+
+Sequential renderer batch3 — the new same-session Cave4 native path passes9.29s.
+It uses the exact installed package/owner: source switch4/group11 constructs
+switch577/group50 and authored Spider600; source switch125/group40/command584
+opens controller206. Both live height planes and consecutive native frames
+change with the same controller/Spider incarnations. After two declared player
+approach controls,17 ordinary hover-turn commands and forward/climb/free-look
+commands show1,213 actual palette-visible Spider pixels on a step that moves the
+player, then enter the real corridor strip and cross its far east edge at
+(52798,26252,3081). Source Cave floor/ceiling checks hold throughout. Root viewed
+the native flight image and actor-omitted diagnostic comparison. The omission
+changes only a same-state clone; no live terrain, actor or camera is overwritten
+during flight. Earlier failed routes are preserved: admitted Spider rows alone
+were not visible, and northward flight missed the east-west corridor. Assertions
+were retained and the source flight controls corrected. This uses the existing
+speed-index0 native harness, not a claim of identical fixed-step commands in
+the normal GameRuntime speed schedule.
+
+This is useful connected native evidence, not a continuous installed-client
+mission route. The two initial player relocations are not GameRuntime commands
+and cannot be promoted into a strict runtime replay. Root subsequently flew
+the declared incoming Cave4 save through fixed, manually selected public input
+legs, rendering each source step and cold-replaying every emitted save without
+receipt changes. The actual tick1247 switch121/group34 publishes command574
+and Spider587; tick1241 remains an ordinary pre-trigger checkpoint. The normal
+installed Original launcher loaded it with the real first-four-role resolver.
+Ordinary UI flight produced corridor sample47, the real Spider32 attack/web and
+life loss; normal P/Save wrote tick5182 at(37846,21219,4769), and later tick5243
+at(39298,20981,4701), life7660. The latter save cold-replays to exactly the same
+snapshot; its current Spider is slot3, not a fixed/reused address assumption.
+The installed mapped native remains842fd4c1. This history has no completed prior
+missions: it is an explicitly incoming Cave checkpoint, not earned Levels1–3.
+The installed captures show actual cave flight and attack, but do not yet isolate
+the Spider's final pixels against a changing corridor; native connected evidence
+does. No teleport API, receipt rewrite or mission-completion automation was added.
+Evidence: generated/cave-runtime-flight-20261117, including the normal UI Save
+log, captures, private saves and strict cold-proof receipts. Existing installed
+Cave movement and exact Cave native→Unity transfer remain separate proofs;
+bounded consumer review found no stale-geometry/missing-consumer defect.
+
+A second bounded installed run now saves tick1611 at(37150,21439,4440), yaw621,
+life7660, and shows actual blue Spider leg pixels at the corridor edge. Ordinary
+R resets to the Cave entrance; source pause Load/confirm restores that saved
+pose/health. A subsequent normal Save preserves tick, terrain hash, effect head
+and journal. It is not byte-identical: recorded paused_frame operations advance
+source presentation state and its state hash while gameplay is paused. The
+final emitted save passes strict fresh-owner replay and exact snapshot equality.
+No save validator was changed. Music was disabled through normal F6, and a12s
+single-application PipeWire monitor capture contains non-silent output. Against
+the hash-checked actual Cave bank, first8192-sample normalized correlations are
+0.793 for DOORC2/sample47 and0.809 for DRIP3/sample67, with actual native start
+and finite EndLoop events in the same log; other overlapping drips are not
+individually certified. This is software output, not hardware listening proof.
+Both owned player/display processes were stopped. A fresh bounded review found
+that the older actor/terrain pixel overlap assertion proves visibility, not
+distinct floor/ceiling occlusion. The stronger test-only plane-omission check
+now passes8.93s. At fixed real open Cave views, later floor geometry hides14/13
+Spider RGB pixels in normal/rolled views; ceiling hides91/76. A fifth view meets
+source flight clearance and hides444 real Spider RGB pixels under later floor
+triangles whose own vertices used the source near clamp. Diagnostic provenance
+defaults off, preserves scene indices and exists only in test builds; all search
+hooks were removed. The actual depth64 actor rejection remains intact. Real
+group34/50 constructors leave living authored Spiders587/600 on opposite
+controller206 half-planes; the western one is not adjacent to the doorway.
+These controlled views are not a continuous installed two-creature encounter.
+The failed searches record gate refinement, not rendering defects. Three
+affected Cave primitive/order checks pass. The finite mc-oi6.4 acceptance is
+delivered by this connected evidence plus installed flight/reset/load and exact
+transfer checks; full missions and human play remain separate.
+
+Only test controls, diagnostics and an existing test module changed. Native
+842fd4c1/player build-wuukj1s5 is reused; the qualified Original --check-installed
+passes. Whole-file UBS includes legacy/test warnings and an unchanged test
+temporary-directory nonce falsely labeled a security token; no added critical
+finding was identified.
+Evidence: generated/cave-connected-20261117 (final traversal plus failure
+receipts), and the earlier controlled Cave normal/rolled/near/plane checks.
+No full mission, human combat, FPS or hardware-audio claim is made.
+
+### Current Original HUD and minimap — 2026-11-17
+
+The campaign map now reads the current typed Bee, Dragon, dynamic Worm,
+Archer, Castle and balloon owners. Their retired raw rows stay suppressed
+while the typed actor occupies the slot. An ordinary reuse resumes the new
+occupant's source classification. Raw-owned model22 and the existing Firefly
+projection remain on their respective paths. The C ABI is unchanged.
+
+Current-role Unity checks passed NightSpire acquired hands, tiers, indexed
+icons/bars and paid casting; Day3 paid Castle and balloon markers and matching
+indexed status after cold attach; authored class5 markers; and the real
+source34 Bee's paid Fireball hit, movement, hide and next-slot reuse. The
+source34 case controls player aim and position through public input. It
+establishes exact indexed pixels at the unoccluded Bee, later effect painter
+order on impact and the class10 replacement. The Day3 entry declares incoming
+spell carry. The earlier native Night/Day marker checks and the repaired Day
+reset/acquisition/replay test passed. Its old visibility expectation failed
+on the prior native too. The source-order, marks, and replay gates are intact.
+
+Strict rig workspace all-targets check and release build passed. Of 626
+compared rig inputs, only the later cfg(test) visibility assertion differed at
+release capture. Original native
+15b4e827fe4dc2f67b026a7a75190c7a210aaab923b3736cc529fa800a6a7145
+was installed in build-1w4ofvfa without a Unity player rebuild. The qualified
+receipt matches 476 local Rust inputs and both installed plugin copies.
+Ordinary saved NightSpire launched with the new mapped native on the first
+attempt. Exact tests and receipts are in generated/hud-minimap-20261117 and
+generated/gameplay-audio-20261117/installed-night1-audible. The C# scanner was
+partial and changed-hunk review found no critical finding on added lines.
+Full mc-oi6.5 remains open for remaining marker qualification. These checks
+do not certify full missions or playtest.
+
+The Cave6 qualification fixture now supplies the actual Level4 and Level5
+package roles required by the existing resolver. On the installed 15b4e827
+native, the fixture's real Cave6 entry cold-replays with no spells and with an
+opt-in declared incoming Fireball. The latter displays the Cave HUD and
+Fireball menu cell in the installed player. Fixed normal native commands
+create Fireballs at ticks2–3 before the authored Thief claims the sole
+spell at tick4. On the fixed-input approach the Thief drops the same holder78
+and ordinary overlap reacquires it at tick27. The live GAME snapshot restores
+the ready left-hand tier0 Fireball and its menu entry. The paused tick40 save
+cold-replays exactly with life10000 and mana440. Normal semantic menu input
+reassigns holder78 to the right hand, updates the published HUD icon and
+casts real Fireball projectiles. The installed player renders the reacquired
+spell and HUD after physical resume and cast. The tested local mana decline
+also occurs without casting while the first Thief is active, so this is not
+a separate cast-debit witness. The route declares incoming Fireball and does
+not represent earned previous-level carry or the whole Cave mission. No
+production entry rules changed.
+Receipts: `generated/hud-cave6-20261118.vrlCHd/` and
+`generated/gameplay-audio-20261118/cave6-reacquired-fireball/`.
+The live Day3 map also removes a Castle marker when its source Castle is
+removed, while its still-living collector marker remains. Collector death
+through that same map consumer still needs a direct witness.
+
+### Original gameplay audio — 2026-11-17
+
+The current installed banks now have connected software playback evidence.
+Ordinary Day3 shore flight in the qualified Original produced both wind/ocean
+crossfades, a paid Fireball and positional impact, Archer arrows and a local hit.
+Owner waveforms correlate with the isolated output; the return used a second
+manually chosen leg in the same process. On new native 15b4e827, ordinary
+NightSpire resume and cast produced Night crickets, Fireball and positional
+impact from bank1. Cave corridor flight used bank2 drips65–69 and the real
+door47 EndLoop. The full 2.214-second door sample matched the owner waveform
+at 0.9989 correlation with steady gain. Its EndLoop carries multiplier4 and
+the finite voice is ineligible for fading, as in source. The actual same
+generation and voice later played Spider32; the captured onset matches the
+owner sample, with capture ending before the rest of that sample.
+
+The new Day3 test uses a cold-valid incoming replay built by the existing Rust
+qualification case, with declared incoming spells. The managed test uses
+ordinary steering and checks both source 60 Hz fades, voice identity, duplicate
+suppression and reset release through the current Unity consumer. It passed
+on native 15b4e827. Existing native sidecar/reset, ten-voice arbitration and
+finite completion/reuse checks passed. This batch changes test sources only.
+An exact installed qualification-input mismatch from editor patch backups was
+repaired by restoring the receipt-owned backup and moving the added backups
+out of Assets. The normal qualification gate remains intact. Captures and
+bounded input records are under generated/gameplay-audio-20261117.
+
+Full mc-oi6.8 stays open. The earlier captures have no identified audible
+Night creature and use door47 as the real Cave finite witness. Software
+capture does not establish hardware listening or full mission play.
+
+Installed Cave6 now supplies the spell and impact witness. Normal resume
+and cast from the declared incoming Fireball replay generated local source9
+and positional source3 in that order on 15b4e827. Stereo channels aligned
+at the same offsets for each bank2 owner WAV despite overlap, at peak
+normalized correlations 0.351 and 0.609. The player was tied to a private
+Pulse server and had no stream on the main server. The actual source62
+creature sound also matched its owner WAV at 0.941. Evidence:
+`generated/gameplay-audio-20261118/cave6-fireball-first-ticks/`.
+The follow-up uses the cold-valid tick40 save after genuine reacquisition.
+Physical resume and cast again produced source9, source3 and source62.
+The pre-impact launch prefix matched at 0.998 on both channels and the
+positional impact matched at 0.866 on the left channel. Evidence:
+`generated/gameplay-audio-20261118/cave6-reacquired-fireball/`.
+
+The installed Night1 approach reached live audible-distance Goats. Its exact
+public replay produced three source46 Bleat dispatches without a corresponding
+audio journal entry or playback. The Goat slot callback omits the existing
+source sound preparation join. A narrow correction is prepared for review.
+Publication is pending the active simulator-file owner's handoff and matching
+build/replay verification. Earlier saves with those dispatches can have
+different journal receipts once publication is fixed. Evidence:
+`generated/gameplay-audio-20261118/night1-creature/goat-join-negative.json`.
+
+The installed Original cold-loaded the existing genuine Pav entry replay
+with native 15b4e827 and all 30 package roles on 2026-11-18. A private audio
+server captured the owned player stream. The single TRACK26 request played
+the 4999 ms owner segment, with 0.923 normalized correlation across that span.
+The initial shared-server capture was silent and supplied no playback
+evidence. Private capture and routing receipts are in
+`generated/pav-speech-private-20261118-ojqzzzjw/`. This verifies audible
+software output for the existing secret announcement and leaves ordinary
+advancement, completion and full mc-oi6.10 acceptance open.
+
+An ordinary New Game opened the installed campaign map with the same native
+and all 30 package roles. It played one TRACK01 briefing request at 9999 ms
+with no repeated request while the map remained open. In the private mix,
+the phase-matched owner voice had gain 1.002 and correlation 0.366, compared
+with 0.060 for the largest off-alignment match. Eight voiced one-second
+windows held the same alignment with fitted gain within 7% of unity.
+Capture and routing receipts: `generated/map-briefing-private-20261118-301cw4zy/`.
+
+Title checkpoint: canonicala77b8176/97a122e5 are pushed as Original82742e3e/
+dfe22e00; all5 initial and2 follow-up owned blobs match. Installed Original
+build-ky1onwev uses unchanged native58339e62 and the same627 native inputs;
+--check-installed passes. This C# batch needed no Cargo rebuild. Source Exit
+button/Escape now opens the actual x352/y26/height80/record407 scroll; only a
+confirmed, fully closed dialog emits Quit. Cancel preserves Title and preferences,
+and held/repeated keys cannot activate the next modal. Cursor39 yields to existing
+Keys110/Language37 owners and restores visibility. Original nine-row idle/hover
+help follows source100Hz clocks, unsigned199/200 boundary, one advance per source
+draw, delayed gold and blank cooldown. Source Title F1 now applies the retained
+help flag before drawing, including inside Exit, while respecting media/settings
+ownership. The actual SDL/key-buffer producer preserves scan59 with modifiers;
+Title Shift/Control F1 work without changing in-game graphics shortcuts. Existing
+four fire/incense loops remain; no extra dragon loop or New Game confirmation
+was invented.
+
+Canonical116-source typecheck and changed-path/gate reviews pass; UBS remains
+partial, with no new production warning/critical reported. Actual Title GUI,
+profile/F1/modifiers/release, source clock and Exit check passes7.239s; existing
+named-slot scroll passes13.641s; required full menu/NewGame/loading/save/load/
+Title/attract check passes29.952s. Old fixture defaults initially selected legacy
+packages/menu/media and omitted the real50ms media-release step. Only actual
+resource arguments and ordinary release servicing were corrected; guards and
+assertions remain intact. Root viewed normal installed Title, original popup,
+cursors and Exit. Physical F1/ShiftF1/ControlF1 and Exit F1 retain exact private
+profile restoration; Cancel stays usable; confirmed Exit is reaped by waitpid
+with status0 and clean shutdown. Owned display/player cleanup is complete.
+
+The first UI script wrongly used Escape during Keys capture; that edits a key
+rather than closing, and affected only an ignored private fixture profile. The
+corrected run used Keys Done unchanged and isolated profiles. Another checker
+mistook an unreaped process entry for a running player despite earlier clean
+shutdown; the final actual waitpid result replaces that inconclusive gate.
+Evidence: generated/title-dialogs-20261116 (installed-2 cursor/held-Escape captures
+and installed-3 final F1/Exit proof). This is not human combat, FPS, hardware audio,
+full missions or unavailable-language proof. Broader open acceptance stays open.
+
+Graphics checkpoint: canonical4b22ef80 is pushed as Original75d4acd4; all18
+owned blobs and627 native inputs match. Original build-ce2k54te/native
+58339e62fc0301f34fce24c5fbb1568c579f94e90f94ac45f2ed365c56db8cff is installed;
+--check-installed passes. Shift+F1/F2/F3/F4 and Options8/9/10/11 now share guarded
+GAME actions and original50-draw notices. CONFIG no longer owns the four flags;
+legacy profile Install validates/removes only their obsolete boolean keys,
+preserves duplicate/unknown-field refusal and never rewrites on read. GAME retains
+across retry, mission and same-process Title/New Game; a fresh process defaults
+ON. Pinned speed5/global sky-buffer admission remains independent of map type.
+Active lighting keeps its existing verified policy history as sole authority;
+only map packets need an optional lighting header. Old unsaved map values are
+not inferred from receiving profiles. No existing lights/projectiles are retired
+by disabling future light production.
+
+Seven focused native core checks pass, including actual Fireball light admission,
+atomic guards, notices, lifecycle/cold replay and the genuine released-writer
+lighting-OFF save with exact byte resave. Actual public-ABI old-save load/resave
+also passes; immutable receipt125cfedc is unchanged. Initial gate failures used
+the wrong package/owner roles, missing FONT1 on a raw cache owner and a sequential
+renderer at restored tick354. Corrections retain all strict guards/expectations.
+The real Nyphur view discriminates reflections35778/shadows11 pixels; the real
+NightSpire tick1 view discriminates sky33642. Every pass reverses exactly without
+camera/actor mutation or gameplay step; the combined check passes31.420s. The
+paused cache/revision check passes5.825s. Managed real keys/save/retry146.041s,
+Options32.424s and held-release barrier0.012s pass. Workspace all-targets43.00s,
+affected test typecheck42.50s, canonical116-source typecheck2.367s and strict Rig
+native build pass. Final test-only changes leave production native identical.
+UBS remains legacy/partial, with no added-line Rust critical found; the C# scan
+does not establish whole-file cleanliness. Independent changed-path/gate reviews
+found no further concrete defect in their bounded coverage.
+
+Root viewed normal canonical map/one portal/NightSpire and physical Shift+F1..F4,
+P and original-font Options all four OFF/ON with matching mapped native, zero
+retries/errors; owned smoke processes stopped. This is not human flight/combat,
+FPS, hardware audio, full missions or general historical-save certification.
+Evidence: generated/graphics-controls-20261116. RCH's first successful8m45 compile
+could not finalize during transient local disk exhaustion; the original completed
+job was recovered without replaying it. Root free space returned to18GB without
+project deletion; cause remains unconfirmed. Automatic approval review rejected
+earlier recursive old-player cleanup; those folders remain intact. Full existing
+beads/dependencies stay OPEN. Digital joystick remains an explicit unsupported
+host path, without a demonstrated current-host producer or hardware-emulation
+expansion; physical-device and distinct unavailable locale coverage stay honest.
+
+Help Mode checkpoint: canonical7cf0fb39 is pushed as Originalcb2058b5; all20
+owned blobs match. Original build-xgpo_q20/native
+f74c1c8042302a194c71048d9f65df57242de8e903e13794a639e8686922ddf9 is installed;
+--check-installed passes. Bare F1 and Options0 share guarded atomic CONFIG/help
+policy and400/401 type3/50 notice publication. Existing exact-boundary native
+help-policy history makes immediate save/cold replay strict; no fake gameplay
+step or profile overwrite during replay. ON reinitializes actual retained popup
+rows/ages/priorities and active/pending state; OFF hides it, both edges clear only
+pause hover and keep Options open. Unrelated ability notification is preserved.
+Pinned source sub_871E0 unconditionally returns1, so No Help Data is not claimed
+as an ordinary reachable producer; real missing/invalid assets retain the actual
+asset-binding failure route. No host filesystem availability guess was added.
+
+Five native focused checks pass, including atomic failure/preview/guards,
+policy+notice immediate exact cold/resave,50-draw clock and F2 replay regression.
+The first new assertion incorrectly expected public gameplay hash to include
+HELP: explicit native true->false passed while that hash stayed equal. Source
+inspection proved HELP belongs to reset/conformance domains. The corrected gate
+retains full snapshot equality except the independently checked notice and adds
+actual reset AND conformance changes, isolating policy from the notice. It passes;
+the test-only correction leaves the entire production native binary byte-identical.
+Workspace all-targets43.29s, targeted gate typecheck, strict Rig build and all627
+native input comparisons pass. Canonical116-source typecheck passes2.421s; UBS
+has no added critical Rust or managed warning/critical finding, with C# partial
+analysis/legacy totals explicitly retained. Fresh bounded source review found no
+further concrete defect in the reviewed seams.
+
+Real selected-glyph hint/popup/F1/save-load check passes128.619s, Options/cold
+32.864s and held F1 barrier0.012s. Its first Load exposed a genuine qualified-
+client rebind bug: preference preparation synchronized an OLD borrowed campaign
+projection against the NEW runtime. The qualified client now uses canonical's
+existing Load/recovery transaction without relaxing guards. The dedicated real
+paused-load/audio/old-root disposal/malformed-save guard passes23.498s. That test
+initially selected an obsolete menu cache; only its resource arguments changed
+to qualified current owner data and private profiles, retaining every assertion.
+An obsolete test expectation that F5 saves was corrected to the existing explicit
+save request; delivered physical F5 sound assertions remain intact. No v8 data
+retagging occurred: a stale label was corrected to actual current v9.
+
+Root viewed normal canonical map/one portal/NightSpire and physical F1/P,
+original Help Mode OFF/ON Options and400/401 notices; matching mapped native,
+zero retries/errors, owned processes stopped. Actual popup rendering and warm
+Load/recovery are separately established by the matching managed checks, not
+claimed as human flight/combat/FPS/hardware-audio/full-mission/historical-save
+proof. Evidence: generated/help-mode-20261116. All full existing beads stay OPEN.
+
+Flight-assistance checkpoint: canonical cdcc8498 is pushed as Original235baa78;
+all22 owned blobs match. Original build-a75ffnon/native
+f327d31480c075c2aae3086265bee96e3a93be1d934998d329a9ea2317ce4fa8 was installed;
+--check-installed passed. Real bare F2 and Options4 share the guarded atomic
+profile/398..399 type3/50 notice action. Current supported campaign is explicitly
+offline; AI rows and replay are not multiplayer admission. Suppressed states
+retain the source mouse/counter; accepted pause/resume remaps only the exact
+same input owner, rejected calls mutate nothing, actual reset starts a fresh run.
+The source queues recenter before its later handler, retaining the observed
+sample instead of manufacturing an immediately centered sample.
+
+Fresh bounded review exposed a real precision gap: at sensitivity10, actual
+sampler0/.45 values both round to physics byte0. The real-client49-turn regression
+failed35.167s with sequence1 instead of0. A validated finite exact steering
+observation now reaches Rust before quantization, is consumed before recording
+the derived gameplay command, and leaves physics bytes/fixed ABI unchanged.
+Legacy omission retains exact old command bytes; signed zero is canonical.
+Native real changing/stationary samples, rejection, profile/cold replay,
+48->pause/resume->49 recenter and real reset controls pass. Nine focused checks
+select and pass; workspace all-targets passes44.23s and strict Rig build passes.
+All627 native inputs match published source/Rig/returned/Editor/installed.
+These627 are provenance inputs, not a test target.
+
+All five real managed controls pass: key/consumer93.337s, Options/cold32.059s,
+the formerly failing precision path plus stationary positive37.670s, all encoder
+shapes/negative bits/legacy bytes0.014s, held-key barrier0.010s. Canonical116-source
+typecheck passes2.380s. The encoder gate initially mistook two XML representations
+of the identical empty JSON object for data loss; diagnostic input/encoded/XML
+evidence justifies normalizing only empty-object text, retaining all member/bit/
+legacy assertions. UBS remains partial/legacy, with no critical added Rust line
+or added managed finding; fresh bounded source review found no further concrete
+defect. Canonical compact identity refresh is source/typecheck coverage only;
+actual managed/installed coverage uses the qualified full-identity cohort.
+
+Root viewed normal canonical map/one portal/NightSpire scene/HUD, physical F2/P,
+original Options FLIGHT ASSISTANCE ON/OFF and both original notices; matching
+mapped native, zero retries/errors, owned player/display stopped. Controlled
+native/managed recenter checks are not installed human steering/FPS/hardware
+audio/full missions/historical-save proof. Evidence: generated/flight-assistance-
+20261116. No Unity art/owner data change; full existing beads remain OPEN.
+
+Audio checkpoint: canonical b8b44284 plus Loading-contract fix124f58f7 are pushed
+as Original8ef5e2b0/6ca36e0d; all22 original owned blobs and both fix blobs match
+their published commits. Original build-h_lrtfo6/native
+fee7453b25fd53d84f5fe119bf3f72a8f881b470ed74eeabca4053ee478aca1a was installed;
+--check-installed passed. Actual guarded F4/Options3 gates future speech without
+stopping current CD; F5/Options1 retires native/managed samples and CD on BOTH
+edges; F6/Options2 stops/restarts actual current-map music without a fake step or
+fade advance. Source notices390..393/469..470 type3/50 replay through the existing
+notice owner. Sound-off drains real semantic events without stale sidecar lookup,
+keeps the cursor/music path and does not replay missed SFX on enable. Enabled
+ownership checks remain strict. F5 no longer invokes replay save; named slots
+remain. Product cold flags persist; original CONFIG did not store these flags.
+
+Actual availability comes from qualified sound banks, current-map music and the
+retained validated27-clip speech owner. Music qualification is lazy at the real
+active-entry resource query; identity reads remain pure and recovery stays usable
+after an asset error. An early all30-music preflight regressed the same warm native
+bootstrap24.24s to34.04s and was removed. Three alternating old/final pairs now
+have medians24.0693/24.0884s with matching I/O scale; this is a warm native slice,
+not whole-client startup/FPS. No new cache platform or fixed ABI enlargement.
+
+Atomic preferences, real authored transport audio, actual native controls/guards/
+pool/recovery, workspace all-targets and strict Rig native build pass. All627
+source/header/upstream inputs match; these are provenance inputs, not tests.
+Actual managed paused audio/cold profile passes33.059s; physical controls, later
+real speech cues and real Day land ambience retirement/reacquisition pass120.865s.
+The Cave cannot produce that Day loop; the fixture uses the existing real returned
+Day parent and ordinary frames, without injecting a voice. Initial real-client
+checks exposed and fixed disabled-SFX sidecar and stale managed generation joins.
+
+The first installed smoke FAILED at Loading because a shared C# response DTO
+required active-entry-only audio facts. Evidence is preserved in installed-1;
+no retry. Separate strict response DTOs fix that contract. The extended actual
+Loading->Playing/audio check passes91.628s and canonical116-source typecheck
+passes2.407s. UBS is partial/legacy with no finding on these added lines, not a
+clean scan. The rebuilt matching installation then passes normal canonical
+map/one portal/NightSpire scene/HUD, physical P/F4/F5/F6 and original Options all
+off/on; root viewed captures, mapped native matches, zero retries/errors, owned
+processes stopped. Evidence: generated/audio-controls-20261116 and loading-recovery.
+No human combat, FPS, hardware audio, whole missions or historical-save proof.
+Full existing acceptance/dependencies remain open. No owner art changes.
+
+Player Names checkpoint: canonical1a83f09b is pushed as Originalb2123b87;
+all31 owned blobs match. Original build-02d3en9v/native
+2063859fda7d0a8773b6509658a19b1d33de3192eff1119eabfeecd83fcc53f0 is installed;
+--check-installed passes. Actual source case17/auxiliary byte207 drives the
+existing current class3/model0|1 A4/name/life carrier, original selected FONT1,
+normal primary painter callback and real label/health pixels. No GUI name overlay
+or asset-inferred actor was introduced. Names default visible, remain outside
+GAME/CONFIG/SLEV and gameplay hash, retain receiving process state on retry/mission/
+warm load, and cold-default only after actual saved receipts verify. The actual
+local402/403 type3/50 notice and its reset digest/history still replay exactly.
+
+Real unfiltered Level2 entry plus354 existing public flight/look commands reaches
+living Nyphur112, PlayerState1/life3085. Strict cold replay/resave and actual FONT1
+raster pass17.399s; no inventory/cast/actor-pose staging. Eleven affected native
+checks pass, including actual Day3/Cave12 viewport, label cache/missing-font
+recovery, rival cleanup, Default Keys, source glyph traversal and CABI guards.
+The source clears the surround BEFORE DrawWorld; canonical writer and streaming
+mode26 now clip terrain before writes, allowing source lowres inset labels to
+remain in the surround. Native and GPU exit history preserve current exterior
+pixels rather than resurrecting prior MAIN. Workspace all-targets and strict
+native build pass; all627 source/header/upstream inputs and Rig/returned/Editor/
+installed plugin hashes match. These627 inputs are provenance, not tests.
+
+Actual managed Options/lifetime passes106.17s; exact GPU history passes0.526s.
+Actual selected FONT1/current Nyphur GPU glyph and health check passes36.486s:
+native and GPU match243 changed pixels in [128,51..154,59], exact on/off/on
+reversal and query/replay purity. The initial new assertion compared the wrong
+hash domain; it now checks actual ResetReceipt notice digest changes and unchanged
+public gameplay hash. Initial GPU checks had an inactive presentation parent;
+the corrected host activates only the real presentation hierarchy and retains
+all glyph/health assertions. No receipt/assertion weakening or injected pixels.
+The real restored-client route now binds existing preferences/locale BEFORE first
+world composition. Canonical116-source runtime typecheck passes. UBS has no added
+critical finding; whole-file legacy and partial C#/shader analysis remain limits.
+Evidence: generated/player-names-20261116.
+
+Root viewed canonical --load-save of that genuine public-flight replay with all30
+resource roles, actual Payahandra scene/HUD and source Player Names ON/OFF Options;
+matching mapped native, no retry/error, owned player/display stopped. The pause/
+Options overlay covers most of the rival label, so full installed glyph visibility
+is not claimed separately from the exact matching managed GPU proof. This is a
+declared Level2 entry, not earned campaign progress, human combat, FPS, hardware
+audio, full missions or historical-save proof. No owner art/Unity asset import.
+
+Viewport checkpoint: canonical f0e11884 is pushed as Original81233f67; all20
+owned blobs match. Superseded Original build-_rry9xbm/native
+74ccbbf0c5260639c6be18c8079ee0281e52d46cb817889d20c9e2c04dd6e3c5 was installed;
+--check-installed passed. Source Options index7 and physical brackets drive a
+guarded GAME viewport16..40: menu clamps, '[' enlarges and ']' shrinks only above17.
+The saved size survives cold/warm load, retry, mission and Default Keys; omitted40
+preserves old save bytes. No CONFIG field, fake gameplay operation, notice or
+fixed ABI enlargement was added. Projection, sky, source sprite clipping and
+destination operations use actual viewport geometry; source palette-derived
+surround clearing precedes full-target HUD/minimap. The fixed map pane retains
+its separate view. The actual GPU exit-history compositor also clears the
+surround before applying its pointwise source LUT; odd-size vertical margins
+retain source truncation. Selected source glyph record13 now labels the enabled
+option correctly as ALTER SCREEN SIZE.
+
+Real Day3/Cave12 projection, clear surround, fixed-map override and full40 reversal
+pass0.665s; source projection/sky, all three sprite-pass clips and the preserved
+internally-clipped visibility boundary pass. GAME lifecycle passes1.19s, genuine
+old-v9 receipt migration13.58s and CABI guards51.62s. Workspace all-targets and
+strict native build pass; all626 source/header/upstream inputs and Rig/returned/
+Editor/installed native bytes match. These626 inputs are provenance, not tests.
+The actual GPU LUT/viewport check passes0.623s. The initial accumulated settings
+test exceeded its existing180s timeout; every new viewport assertion moved into
+the focused real-client SourceViewportChangesRealWorldAndKeepsFullHud, which
+passes107.38s. Its prior SourcePanels body independently matches delivered
+deacbbc5 byte-for-byte. Actual Options row/control and held-bracket checks pass
+42.20s/0.012s. No assertion/timeout gate was weakened or Rust rebuilt for that
+test-only separation. Canonical116-source runtime typecheck passes2.32s. UBS has
+no added critical Rust finding; legacy totals and partial C# analysis are limits.
+Evidence: generated/viewport-20261116.
+
+Root viewed normal canonical map/loading/NightSpire, physical P/bracket shrink,
+actual Options shrink and subsequent enlargement with full-sized HUD and original
+indexed text; matching mapped native, one portal, zero retries/runtime errors,
+owned player/display stopped. The final rapid-key capture remains inset and is
+not exact-count/full40 installed reversal proof; that reversal is established by
+the native and managed checks. This is not human combat, FPS, hardware audio,
+full missions or historical-save proof. All30 resource roles remain available;
+their mission paths were not repeated.
+
+Speed checkpoint: canonical deacbbc5 is pushed as Original7ffcf607; all23 owned
+blobs match. Superseded installed build-ozzihvaw/native4641e38e was qualified before
+the viewport installation. Real F3/Options primary and secondary select source
+0/1/2 with1/4/8 UpdateEntities passes per outer frame; PlayerEvents/presentation
+run once. Actual steering, mouse suppression,50-frame381/382/383 notices,
+recovery/reset, cold0 and warm receiving speed are connected. Speed is auxiliary,
+not GAME/CONFIG/SLEV. Ordered process assignments/actions preserve same-boundary
+save/replay; all saved receipts verify before cold/warm process adjustment.
+Native actual-player cadence/lifecycle passes1.03s, real frame admission0.40s,
+actual revival0.30s, old-v9 migration13.84s and CABI53.19s. The first warm-load
+test incorrectly called a Title-only API from Paused; fresh Title targets corrected
+the fixture without production or receipt changes. Actual8-pass managed execution
+then exposed a real pause/audio join: native retires voices at accepted pause,
+but Unity previously waited to observe Paused on a later drain. All accepted
+pause paths now synchronously use the existing audio rebind/retirement; strict
+ownership remains. SourcePanels passes176.91s after that fix; other two controls
+pass44.18s/0.012s. Native/source closure and canonical116-source compile pass.
+Root viewed installed F3 SPEED FAST and Options SPEED NORMAL/FAST, normal
+map/load/terrain/HUD, matching native, zero retries/errors; owned smoke stopped.
+Evidence: generated/speed-20261116. Human combat/FPS/hardware audio/full missions/
+historical saves were not qualified.
+
+Brightness checkpoint: canonical b5088a64 is pushed as Originalf916f016; all19
+owned blobs match. Superseded installed build-kvk4b54z/native889b4704 was qualified.
+Bare F7 cycles source0..4; Options clamps. Actual paletteMod>=3/submode0 admission,
+endpoint refade, startup/four-step signed RGB6 fade, immediate save/cold restore
+and shared world/HUD/help palette consumers are connected. Optional replay
+palette boundaries preserve the genuine old-v9 prefix; CONFIG writes remain
+atomic and generic Playing preferences restricted. Duplicate managed brightness
+transforms were removed. Focused palette/preferences/receipt/CABI checks, strict
+Rig build, all626 inputs and real managed help129.75s/Options44.70s/SourcePanels
+117.15s pass. A test-only old camera-history assumption was corrected by drawing
+the actual current generation before asserting full unchanged palette equality;
+no production guard or expectation was weakened. Root viewed installed F7 and
+Options brightness, original map/load/NightSpire/HUD, matching native, zero
+retries/errors, owned smoke stopped. Evidence: generated/brightness-20261116;
+the same human/FPS/hardware-audio/mission/historical-save limits apply.
 
 Flat-shading checkpoint: canonical a99893ec is pushed as Original49481c14;
 all26 owned code blobs match. Original build-j89o0ece/native
@@ -2271,13 +4111,68 @@ real defects or close existing finite coverage gaps without inventing missing
 behavior. A configured constructor boundary is not an earned final mission;
 recorded public inputs are fixed regression evidence, not an AI playthrough.
 
-The configured final368/374 checks passed7.388s: ordinary switch scheduling,
+The current Level9 Evirith Gor route now verifies the real repeat-entry
+switch as well. After authored group3 activates, the test controls only
+player geometry on a clone of that live session. Row119 publishes group13
+twice in order as `[120,125]`; it keeps the same controller lifetime,
+does not rearm during overlap or after nine clear visits, and rearms on
+the tenth. Both fresh emitters reach their normal action64 callbacks.
+The same exact test retains and passes all prior mission assertions
+(231.77 s, one test). No runtime code changed or player build was needed.
+Full `mc-6qf.1` stays open. See
+`generated/level9-repeat-switch-20261118/`.
+
+Cymmeria's reset-active repeat-exit switch now has a separate direct package
+check. The installed native publishes all 24 authored group1 rows in order at
+tick 1 and has no repeat through tick 19 under ordinary default input. The
+exact 5.32 s test then controls only player geometry. It verifies that staying
+outside holds the countdown, the tenth inside visit rearms it, and leaving
+again republishes the same ordered rows. The switch keeps its identity and the
+new field reaches its ordinary callback. Only the test changed. See
+`generated/level10-repeat-exit-20261118/`.
+
+Cave4's subtype22 absence switch now has an exact connected check in the
+existing Spider mission test (7.64 s). The real objective and proximity
+chain admits row119 and ten authored Skeletons. A living Skeleton and
+its fatal visit block the timer. After seventeen empty visits, sound41
+precedes ordered group2 publication, and the controller hides and reclaims.
+Ten XP scrolls and both successor switches are live; switch585 publishes
+the genuine group41 corridor command, which runs its scheduled callback.
+The check uses declared player geometry and typed damage contacts on the
+existing fixture. No production code changed. The retained installed
+Cave4 saves precede this trigger. See `generated/cave4-switch22-20261118/`.
+
+The exact Level2 group27 check now uses the actual group8 House producer:
+authored vault154 completes BUILD21 and its scheduled BUILD54 successor,
+then publishes `[156,157]` during final demolition. The zero-slot control
+publishes neither product. With one vacant address, pickup156 retains its
+new incarnation while Meteor157 is refused, both records are consumed,
+and the demolished House reclaims without a second publication. The
+unconstrained branch verifies the Meteor's first scheduled visit and
+three generation-bound Impact children, then exact reset. The check
+declares the preceding objective and damage contacts; all construction,
+allocation and reclaim execute in the real scheduler. The Rig-built
+exact test passed locally in 6.16 s with the owner package/cache.
+No production or installed player change. Full `mc-6qf.1` remains open.
+See `generated/level2-group27-partial-20261118.DyLYYw/`.
+
+In the earlier batch 4, configured final368/374 checks passed 7.388 s: ordinary switch scheduling,
 ordered group28, BUILD successor/destruction to real boss callback, and real
-row374 overlap to four authored model28 roots and following reclaim. Final392
-exit remains unqualified; no completion flag was forced. The recorded-input
+row374 overlap to four authored model28 roots and following reclaim. That batch
+did not qualify final392. The recorded-input
 combat/save/carry check was interrupted by a kernel OOM before a result receipt
-and is NOT a pass. Both new checks are uncommitted test-only work; the installed
-reward runtime above is unchanged. Preserve the current source and batch4 logs.
+and produced no acceptance result.
+
+The later candidate-10 final regression covers both remaining named rows.
+After the actual boss terminal transition, row392 publishes group31
+as `[393,394]` once and reclaims. Row394 then starts player action12 in
+the same pass, clears the visible portal flag, reclaims, and reaches
+victory Results. The connected test also verifies CUT6, credits and
+guarded Results save through cold return to the map. It uses declared
+prior resources and exit positioning. See
+`generated/shared-engine-20261111-integration/candidate-10/ending-final-regression.log`
+(661.05 s) and the installed retained continuation under
+`generated/uluth-cold-continuation-20261118/`.
 
 OOM remediation on2026-11-11: RAM-backed `/tmp` held about28GiB while swap was
 full. The current Cargo cache has been moved byte-for-byte to SSD at

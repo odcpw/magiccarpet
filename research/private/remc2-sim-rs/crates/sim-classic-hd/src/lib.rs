@@ -507,6 +507,7 @@ pub struct ClassicHdFrameIdentity {
 
 pub struct ClassicHdFrameWriter<'a> {
     profile: ClassicHdRenderProfile,
+    write_clip: Option<ClassicHdViewport>,
     indices: &'a mut [u8],
     provenance: &'a mut [u8],
     generation: u64,
@@ -517,6 +518,32 @@ pub struct ClassicHdFrameWriter<'a> {
 }
 
 impl ClassicHdFrameWriter<'_> {
+    /// Restrict terrain writes without changing the full target available to
+    /// source sprite/low-resolution UI writers through the raw plane accessors.
+    pub fn set_write_clip(&mut self, clip: Option<ClassicHdViewport>) -> Result<(), ClassicHdError> {
+        if let Some(clip) = clip {
+            if clip.width == 0 || clip.height == 0
+                || clip.x.checked_add(clip.width).is_none_or(|right| right > self.profile.width)
+                || clip.y.checked_add(clip.height).is_none_or(|bottom| bottom > self.profile.height)
+            {
+                return Err(ClassicHdError("Classic HD write clip exceeds its target".to_owned()));
+            }
+        }
+        self.write_clip = clip;
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn write_clip(&self) -> Option<ClassicHdViewport> {
+        self.write_clip
+    }
+
+    fn admits_pixel(&self, x: u32, y: u32) -> bool {
+        x < self.profile.width && y < self.profile.height
+            && self.write_clip.is_none_or(|clip| x >= clip.x && y >= clip.y
+                && x < clip.x + clip.width && y < clip.y + clip.height)
+    }
+
     #[must_use]
     pub const fn profile(&self) -> &ClassicHdRenderProfile {
         &self.profile
@@ -575,7 +602,7 @@ impl ClassicHdFrameWriter<'_> {
         let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
             return false;
         };
-        if x >= self.profile.width || y >= self.profile.height {
+        if !self.admits_pixel(x, y) {
             return false;
         }
         let offset = (y as usize) * (self.profile.stride as usize) + (x as usize);
@@ -587,7 +614,7 @@ impl ClassicHdFrameWriter<'_> {
         let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
             return false;
         };
-        if x >= self.profile.width || y >= self.profile.height {
+        if !self.admits_pixel(x, y) {
             return false;
         }
         let offset = (y as usize) * (self.profile.stride as usize) + (x as usize);
@@ -613,10 +640,11 @@ impl ClassicHdFrameWriter<'_> {
             };
         }
         let attempted_pixels = (width as u64).saturating_mul(height as u64);
-        let x0 = i64::from(x).max(0);
-        let y0 = i64::from(y).max(0);
-        let x1 = (i64::from(x) + i64::from(width)).min(i64::from(self.profile.width));
-        let y1 = (i64::from(y) + i64::from(height)).min(i64::from(self.profile.height));
+        let clip = self.write_clip.unwrap_or(ClassicHdViewport::full(self.width(), self.height()));
+        let x0 = i64::from(x).max(i64::from(clip.x));
+        let y0 = i64::from(y).max(i64::from(clip.y));
+        let x1 = (i64::from(x) + i64::from(width)).min(i64::from(clip.x + clip.width));
+        let y1 = (i64::from(y) + i64::from(height)).min(i64::from(clip.y + clip.height));
         if x0 >= x1 || y0 >= y1 {
             return ClassicHdClipResult {
                 attempted_pixels,
@@ -681,6 +709,7 @@ impl<'a> ClassicHdFrameWriter<'a> {
         }
         Ok(Self {
             profile: profile.clone(),
+            write_clip: None,
             indices,
             provenance,
             generation,
@@ -793,6 +822,7 @@ impl ClassicHdFrameBuffers {
         self.input_hash = input_hash;
         Ok(ClassicHdFrameWriter {
             profile: self.profile.clone(),
+            write_clip: None,
             indices: &mut self.indices,
             provenance: &mut self.provenance,
             generation,
@@ -981,6 +1011,48 @@ mod tests {
         assert_eq!(identity.generation, 7);
         assert_eq!(identity.tick, 0);
         assert_ne!(identity.index_hash, byte_hash(&vec![0; profile.extent()]));
+    }
+
+    #[test]
+    fn write_clip_restricts_terrain_and_keeps_full_target_ui_access() {
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let mut buffers = ClassicHdFrameBuffers::new(profile.clone(), 7).unwrap();
+        let mut writer = buffers.begin_frame(7, 0, profile.profile_revision, 0).unwrap();
+        let clip = ClassicHdViewport { x: 7, y: 9, width: 5, height: 3 };
+        writer.set_write_clip(Some(clip)).unwrap();
+        let result = writer.clip_rect(0, 0, 320, 200, 42, 9);
+        assert_eq!(result.written_pixels, 15);
+        assert!(result.was_clipped);
+        for y in 0..200 {
+            for x in 0..320 {
+                let inside = (7..12).contains(&x) && (9..12).contains(&y);
+                let offset = y * 320 + x;
+                assert_eq!(writer.indices()[offset], if inside { 42 } else { 0 });
+                assert_eq!(writer.provenance()[offset], if inside { 9 } else { 0 });
+            }
+        }
+        for (x, y) in [(6, 9), (12, 9), (7, 8), (7, 12)] {
+            assert!(!writer.set_pixel(x, y, 77, 3));
+            assert!(!writer.set_provenance(x, y, 3));
+        }
+        assert!(writer.set_pixel(7, 9, 77, 3));
+        assert!(writer.set_pixel(11, 11, 77, 3));
+        let before = (writer.indices().to_vec(), writer.provenance().to_vec());
+        for invalid in [
+            ClassicHdViewport { width: 0, ..clip },
+            ClassicHdViewport { x: 319, ..clip },
+            ClassicHdViewport { y: 199, ..clip },
+            ClassicHdViewport { x: u32::MAX, ..clip },
+        ] {
+            assert!(writer.set_write_clip(Some(invalid)).is_err());
+            assert_eq!(writer.write_clip(), Some(clip));
+            assert_eq!((writer.indices(), writer.provenance()), (before.0.as_slice(), before.1.as_slice()));
+        }
+        writer.indices_mut()[0] = 61;
+        assert_eq!(writer.indices()[0], 61, "source lowres UI retains full target access");
+        assert!(!writer.set_pixel(0, 0, 77, 3));
+        writer.set_write_clip(None).unwrap();
+        assert!(writer.set_pixel(0, 0, 77, 3));
     }
 
     #[test]

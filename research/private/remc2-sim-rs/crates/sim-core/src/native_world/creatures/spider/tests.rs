@@ -3908,4 +3908,257 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
     );
     assert_eq!(living_control.runtime().objectives[owner].is_level_end, 0);
     assert!(!has_exit(&living_control));
+    assert_cave_four_skeleton_switch(session, player);
+}
+
+fn assert_cave_four_skeleton_switch(mut session: crate::native_world::Mc2Simulation, player: u16) {
+    use crate::campaign::journal::CampaignEffect;
+    use crate::campaign::schedule::ScheduleReceipt;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+    use crate::{FlightEvent, FlightWorld, PlayerCommand};
+
+    let groups = |sim: &crate::native_world::Mc2Simulation, expected_group: u16| {
+        sim.dispatch_events().iter().find_map(|event| match event {
+            Mc2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group,
+                authored_indices,
+                ..
+            } if *group == expected_group => Some((*source_slot, authored_indices.clone())),
+            _ => None,
+        })
+    };
+    let visit = |sim: &mut crate::native_world::Mc2Simulation, label, turn| {
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+        no_dispatch_errors(sim, label, turn);
+    };
+    let place_at = |sim: &mut crate::native_world::Mc2Simulation, authored: u16| {
+        let position = sim
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.active && row.authored_index == authored)
+            .expect("switch was constructed by its real parent group")
+            .position;
+        let terrain = sim.canonical_terrain();
+        let mut pose = position;
+        pose.z = terrain.ground_height(pose).saturating_add(512);
+        if let Some(ceiling) = terrain.ceiling_height(pose) {
+            pose.z = pose.z.min(ceiling.saturating_sub(256));
+        }
+        sim.set_level2_entity_position(player, pose).unwrap();
+    };
+    let resume_position = session.state.position;
+    place_at(&mut session, 141);
+    let mut entered = false;
+    let mut wave_group = None;
+    for turn in 0..16 {
+        visit(
+            &mut session,
+            "ordinary row141 group7 and row145 objective gate",
+            turn,
+        );
+        if let Some((_, rows)) = groups(&session, 7) {
+            assert_eq!(rows.as_ref(), &[142, 143, 145]);
+            entered = true;
+        }
+        wave_group = groups(&session, 9);
+        if wave_group.is_some() {
+            break;
+        }
+    }
+    assert!(entered);
+    let expected_wave: Vec<_> = [119_u16]
+        .into_iter()
+        .chain(146..=155)
+        .chain(168..=171)
+        .collect();
+    assert_eq!(
+        wave_group
+            .expect("row145 produces the actual Skeleton wave")
+            .1
+            .as_ref(),
+        expected_wave
+    );
+    session
+        .set_level2_entity_position(player, resume_position)
+        .unwrap();
+
+    let switch = |sim: &crate::native_world::Mc2Simulation| {
+        *sim.economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.active && row.authored_index == 119)
+            .expect("actual group9 model22 controller")
+    };
+    let controller = switch(&session);
+    assert_eq!(
+        (controller.model, controller.action, controller.stage_tag),
+        (22, 22, 2)
+    );
+    let handle = session
+        .source_arena()
+        .handle(controller.source_entity_index)
+        .unwrap();
+    let frozen = controller.dword_0x10;
+    assert!(
+        matches!(frozen, 0 | 16),
+        "only its own birth pass can have armed it"
+    );
+    let wave: Vec<_> = session
+        .creature_runtime_census()
+        .roots_of_kind(crate::level_definition::CreatureKind::Skeleton)
+        .filter_map(|actor| match actor.origin {
+            CreatureRootOrigin::AuthoredRecord {
+                authored_record: 146..=155,
+            } if actor.living => Some(actor.handle),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(wave.len(), 10);
+    let (&last, others) = wave.split_last().unwrap();
+    let hit = |sim: &mut crate::native_world::Mc2Simulation, target: SourceEntityHandle| {
+        assert_eq!(sim.source_arena().handle(target.source_slot), Some(target));
+        let life = sim.entities()[usize::from(target.source_slot)].life;
+        area_damage::contact(
+            sim.source_arena_mut(),
+            None,
+            target.source_slot,
+            u16::try_from(life + 1).unwrap(),
+            player,
+        )
+        .unwrap();
+    };
+    for target in others {
+        hit(&mut session, *target);
+    }
+    for turn in 0..32 {
+        if session.source_arena().rebuilt_class5_model_slots()[9] == [last.source_slot] {
+            break;
+        }
+        visit(
+            &mut session,
+            "live Skeleton membership blocks the countdown",
+            turn,
+        );
+        assert_eq!(switch(&session).dword_0x10, frozen);
+        assert!(groups(&session, 2).is_none());
+    }
+    assert_eq!(
+        session.source_arena().rebuilt_class5_model_slots()[9],
+        [last.source_slot]
+    );
+    for turn in 0..17 {
+        visit(&mut session, "one surviving authored Skeleton", turn);
+        assert_eq!(
+            session.source_arena().rebuilt_class5_model_slots()[9],
+            [last.source_slot]
+        );
+        assert_eq!(switch(&session).dword_0x10, frozen);
+        assert!(groups(&session, 2).is_none());
+    }
+    hit(&mut session, last);
+    for turn in 0..32 {
+        if session.source_arena().rebuilt_class5_model_slots()[9].is_empty() {
+            break;
+        }
+        visit(
+            &mut session,
+            "final Skeleton fatal pass stays blocked by frozen membership",
+            turn,
+        );
+        assert_eq!(switch(&session).dword_0x10, frozen);
+        assert!(groups(&session, 2).is_none());
+    }
+    assert!(session.source_arena().rebuilt_class5_model_slots()[9].is_empty());
+
+    let mut timer = frozen;
+    let clear_visits = if frozen == 0 { 17 } else { 16 };
+    for turn in 1..clear_visits {
+        visit(&mut session, "ordinary source-empty countdown visit", turn);
+        timer = if timer == 0 { 16 } else { timer - 1 };
+        assert_eq!(switch(&session).dword_0x10, timer);
+        assert!(groups(&session, 2).is_none());
+    }
+    assert_eq!(timer, 1);
+    let cursor = session.effect_journal().cursor(0).next_sequence;
+    visit(
+        &mut session,
+        "consume the actual ordered group2",
+        clear_visits,
+    );
+    let (producer, rows) = groups(&session, 2).expect("real model22 must publish group2 once");
+    assert_eq!(producer, controller.source_entity_index);
+    let scrolls = [120, 121, 122, 123, 560, 561, 562, 563, 564, 565];
+    assert_eq!(
+        rows.as_ref(),
+        scrolls.into_iter().chain([566, 585]).collect::<Vec<_>>()
+    );
+    let records = session.effect_journal().records();
+    let sound = records
+        .iter()
+        .find(|record| {
+            record.sequence >= cursor
+                && matches!(record.effect,
+        CampaignEffect::Flight(FlightEvent::PrepareSound { entity_index, sound_id: 41, .. })
+            if entity_index == producer)
+        })
+        .expect("model22 sound41 precedes activation");
+    let publication = records.iter().find(|record| record.sequence >= cursor && matches!(record.effect,
+        CampaignEffect::Dispatch(Mc2DispatchEvent::AuthoredGroupActivated { group: 2, source_slot, .. })
+            if source_slot == producer)).unwrap();
+    assert!(sound.sequence < publication.sequence);
+    let disabled = switch(&session);
+    assert!(disabled.fired && !disabled.drawing_enabled);
+    assert_eq!(session.source_arena().handle(producer), Some(handle));
+    let actual_scrolls: Vec<_> = session
+        .economy()
+        .authored_class14()
+        .iter()
+        .filter(|row| row.active && row.activation_group == 2 && row.model == 5 && row.action == 10)
+        .map(|row| row.authored_index)
+        .collect();
+    assert_eq!(actual_scrolls, scrolls);
+    for (index, group) in [(566, 33), (585, 41)] {
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|row| row.active && row.authored_index == index && row.stage_tag == group)
+        );
+    }
+    visit(&mut session, "following source reclaim", 0);
+    assert!(session.source_arena().resolve(handle).is_none());
+    assert!(groups(&session, 2).is_none());
+
+    place_at(&mut session, 585);
+    for turn in 0..8 {
+        visit(&mut session, "real group2 corridor-control successor", turn);
+        if let Some((_, rows)) = groups(&session, 41) {
+            assert_eq!(rows.as_ref(), &[586]);
+            let command = *session
+                .economy()
+                .terrain_strip_close_triggers()
+                .iter()
+                .find(|row| row.authored_index == 586)
+                .expect("ordinary Cave corridor close command");
+            assert_eq!((command.class, command.model, command.action), (10, 63, 68));
+            let visited = |sim: &crate::native_world::Mc2Simulation| {
+                sim.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+                    ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == command.source_entity_index))
+            };
+            if !visited(&session) {
+                visit(
+                    &mut session,
+                    "scheduled Cave corridor close command",
+                    turn + 1,
+                );
+                assert!(visited(&session));
+            }
+            return;
+        }
+    }
+    panic!("actual switch585 did not publish its class10/63 corridor command");
 }

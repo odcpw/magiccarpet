@@ -13,7 +13,7 @@ use crate::{
     native_world::{Level2SharedSpellEvent, Mc2DispatchEvent},
 };
 
-use super::state::CanonicalDigest;
+use super::{source_arena::SourceEntityHandle, state::CanonicalDigest};
 
 const MAX_RETAINED_EFFECTS: usize = 16_384;
 
@@ -26,6 +26,31 @@ pub enum CampaignEffect {
     ObjectivePresentation(super::objective_speech::ObjectivePresentationActions),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EconomyEffect {
+    CastleConstructionStarted {
+        castle: SourceEntityHandle,
+        owner_slot: u16,
+        stage: u8,
+    },
+    ManaSphereCollected {
+        collector: SourceEntityHandle,
+        sphere: SourceEntityHandle,
+        mana: i32,
+    },
+    ManaDeposited {
+        collector: SourceEntityHandle,
+        castle: SourceEntityHandle,
+        mana: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TimedEconomyEffect {
+    pub tick: u64,
+    pub effect: EconomyEffect,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectRecord {
     pub sequence: u64,
@@ -34,6 +59,26 @@ pub struct EffectRecord {
     /// PrepareEventSound inputs are resolved at the producer boundary, before
     /// the source slot can move, be reclaimed, or be reused by another entity.
     pub audio: Option<crate::PreparedEventSoundCommand>,
+    /// Resolved alongside the source callback, before any referenced slot can
+    /// be reclaimed. Replay reconstructs it without changing the v1 receipt.
+    pub(super) economy: Option<Box<TimedEconomyEffect>>,
+}
+
+impl EffectRecord {
+    pub fn new(
+        sequence: u64,
+        turn: u32,
+        effect: CampaignEffect,
+        audio: Option<crate::PreparedEventSoundCommand>,
+    ) -> Self {
+        Self {
+            sequence,
+            turn,
+            effect,
+            audio,
+            economy: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +192,35 @@ impl EffectJournal {
         self.append(turn, CampaignEffect::Dispatch(event));
     }
 
+    pub(crate) fn append_economy_dispatch(
+        &mut self,
+        turn: u32,
+        event: Mc2DispatchEvent,
+        tick: u64,
+        economy: Option<EconomyEffect>,
+    ) {
+        self.append_dispatch(turn, event);
+        if let Some(economy) = economy
+            && let Some(record) = self.records.last_mut()
+        {
+            record.economy = Some(Box::new(TimedEconomyEffect { tick, effect: economy }));
+        }
+    }
+
+    /// Bind the outer frame's new events to the tick at which that frame
+    /// becomes observable. The v1 receipt remains the source dispatch digest.
+    pub(crate) fn publish_economy_tick(&mut self, first_sequence: u64, tick: u64) {
+        let count = usize::try_from(self.next_sequence.wrapping_sub(first_sequence))
+            .unwrap_or(usize::MAX)
+            .min(self.records().len());
+        let start = self.records.len() - count;
+        for record in &mut self.records[start..] {
+            if let Some(economy) = &mut record.economy {
+                economy.tick = tick;
+            }
+        }
+    }
+
     pub(crate) fn append_shared_spell(&mut self, turn: u32, event: Level2SharedSpellEvent) {
         self.append(turn, CampaignEffect::SharedSpell(event));
     }
@@ -194,12 +268,8 @@ impl EffectJournal {
             self.records
                 .reserve_exact(MAX_RETAINED_EFFECTS * 2 - self.records.len());
         }
-        self.records.push(EffectRecord {
-            sequence: self.next_sequence,
-            turn,
-            effect,
-            audio: None,
-        });
+        self.records
+            .push(EffectRecord::new(self.next_sequence, turn, effect, None));
         self.next_sequence = self.next_sequence.wrapping_add(1);
         if self.records().len() > MAX_RETAINED_EFFECTS {
             // Release boxed event payloads at logical expiry, as before. This
@@ -207,6 +277,7 @@ impl EffectJournal {
             let retired = &mut self.records[self.retained_start];
             retired.effect = CampaignEffect::SceneChange { scene: 0 };
             retired.audio = None;
+            retired.economy = None;
             self.retained_start += 1;
             self.first_sequence = self.records[self.retained_start].sequence;
         }
@@ -617,12 +688,7 @@ mod tests {
                 }
                 _ => unreachable!("three test producers"),
             }
-            eager.push_back(EffectRecord {
-                sequence: u64::from(turn),
-                turn,
-                effect,
-                audio: prepared,
-            });
+            eager.push_back(EffectRecord::new(u64::from(turn), turn, effect, prepared));
             if eager.len() > MAX_RETAINED_EFFECTS {
                 eager.pop_front();
             }

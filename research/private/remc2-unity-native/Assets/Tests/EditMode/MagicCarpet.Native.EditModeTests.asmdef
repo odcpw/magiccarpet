@@ -3,7 +3,6 @@
   "rootNamespace": "MagicCarpet.Native.Tests",
   "references": [
     "MagicCarpet.Native.Runtime",
-    "Unity.RenderPipelines.Core.Runtime",
     "Unity.RenderPipelines.Universal.Runtime"
   ],
   "includePlatforms": [

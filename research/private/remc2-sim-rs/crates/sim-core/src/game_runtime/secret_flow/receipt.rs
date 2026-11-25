@@ -390,6 +390,7 @@ mod tests {
         });
         RuntimeIdentity {
             source_speed_index: 0,
+            source_player_names_visible: true,
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: 42,
             generation: runtime_generation,
@@ -405,6 +406,9 @@ mod tests {
                 locale_binding: None,
                 language_status: "not_installed".to_owned(),
                 source_brightness_admitted: None,
+                source_audio_admitted: None,
+                source_flight_assistance_admitted: None,
+                source_help_mode_admitted: None,
             },
             presentation: RuntimePresentationCue {
                 cue_id: SemanticPresentationCueId::parse("presentation.receipt.current").unwrap(),

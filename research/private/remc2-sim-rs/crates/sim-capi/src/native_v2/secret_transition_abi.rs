@@ -11,6 +11,7 @@ use sim_core::game_runtime::{CompletionTransitionReceipt, SecretTransitionReceip
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum BoundaryTransitionReceipt {
+    MissionRetry,
     OrdinaryCompletion {
         ordinary_completion: CompletionTransitionReceipt,
     },
@@ -25,13 +26,13 @@ impl BoundaryTransitionReceipt {
             Self::OrdinaryCompletion {
                 ordinary_completion,
             } => Some(ordinary_completion),
-            Self::SecretTransition { .. } => None,
+            Self::SecretTransition { .. } | Self::MissionRetry => None,
         }
     }
 
     pub(super) fn secret_transition(&self) -> Option<&SecretTransitionReceipt> {
         match self {
-            Self::OrdinaryCompletion { .. } => None,
+            Self::OrdinaryCompletion { .. } | Self::MissionRetry => None,
             Self::SecretTransition { secret_transition } => Some(secret_transition),
         }
     }

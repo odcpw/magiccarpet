@@ -18,6 +18,26 @@ pub(crate) enum PlayerLifeNoticeKind {
     GameSpeedNormal,
     GameSpeedFast,
     GameSpeedSuperFast,
+    PlayerNamesOn,
+    PlayerNamesOff,
+    SoundOn,
+    SoundOff,
+    MusicOn,
+    MusicOff,
+    SpeechOn,
+    SpeechOff,
+    FlightAssistanceOn,
+    FlightAssistanceOff,
+    HelpModeOn,
+    HelpModeOff,
+    ReflectionsOn,
+    ReflectionsOff,
+    ShadowsOn,
+    ShadowsOff,
+    SkyOn,
+    SkyOff,
+    DynamicLightingOn,
+    DynamicLightingOff,
 }
 
 impl PlayerLifeNoticeKind {
@@ -34,6 +54,26 @@ impl PlayerLifeNoticeKind {
             Self::GameSpeedNormal => "participant.game_speed_normal",
             Self::GameSpeedFast => "participant.game_speed_fast",
             Self::GameSpeedSuperFast => "participant.game_speed_super_fast",
+            Self::PlayerNamesOn => "participant.player_names_on",
+            Self::PlayerNamesOff => "participant.player_names_off",
+            Self::SoundOn => "participant.sound_on",
+            Self::SoundOff => "participant.sound_off",
+            Self::MusicOn => "participant.music_on",
+            Self::MusicOff => "participant.music_off",
+            Self::SpeechOn => "participant.speech_on",
+            Self::SpeechOff => "participant.speech_off",
+            Self::FlightAssistanceOn => "participant.flight_assistance_on",
+            Self::FlightAssistanceOff => "participant.flight_assistance_off",
+            Self::HelpModeOn => "participant.help_mode_on",
+            Self::HelpModeOff => "participant.help_mode_off",
+            Self::ReflectionsOn=>"participant.reflections_on",
+            Self::ReflectionsOff=>"participant.reflections_off",
+            Self::ShadowsOn=>"participant.shadows_on",
+            Self::ShadowsOff=>"participant.shadows_off",
+            Self::SkyOn=>"participant.sky_on",
+            Self::SkyOff=>"participant.sky_off",
+            Self::DynamicLightingOn=>"participant.dynamic_lighting_on",
+            Self::DynamicLightingOff=>"participant.dynamic_lighting_off",
         }
     }
 }
@@ -83,7 +123,17 @@ impl PlayerLifecycleNotifications {
                     | PlayerLifeNoticeKind::PanelTransparencyOn | PlayerLifeNoticeKind::PanelTransparencyOff
                     | PlayerLifeNoticeKind::FlatShadingOn | PlayerLifeNoticeKind::FlatShadingOff
                     | PlayerLifeNoticeKind::GameSpeedNormal | PlayerLifeNoticeKind::GameSpeedFast
-                    | PlayerLifeNoticeKind::GameSpeedSuperFast => 3,
+                    | PlayerLifeNoticeKind::GameSpeedSuperFast
+                    | PlayerLifeNoticeKind::PlayerNamesOn | PlayerLifeNoticeKind::PlayerNamesOff
+                    | PlayerLifeNoticeKind::SoundOn | PlayerLifeNoticeKind::SoundOff
+                    | PlayerLifeNoticeKind::MusicOn | PlayerLifeNoticeKind::MusicOff
+                    | PlayerLifeNoticeKind::SpeechOn | PlayerLifeNoticeKind::SpeechOff
+                    | PlayerLifeNoticeKind::FlightAssistanceOn | PlayerLifeNoticeKind::FlightAssistanceOff
+                    | PlayerLifeNoticeKind::HelpModeOn | PlayerLifeNoticeKind::HelpModeOff
+                    | PlayerLifeNoticeKind::ReflectionsOn | PlayerLifeNoticeKind::ReflectionsOff
+                    | PlayerLifeNoticeKind::ShadowsOn | PlayerLifeNoticeKind::ShadowsOff
+                    | PlayerLifeNoticeKind::SkyOn | PlayerLifeNoticeKind::SkyOff
+                    | PlayerLifeNoticeKind::DynamicLightingOn | PlayerLifeNoticeKind::DynamicLightingOff => 3,
                 _ => 1,
             },
             remaining_frames: frames,
@@ -143,6 +193,26 @@ impl PlayerLifecycleNotifications {
                 Some(PlayerLifeNoticeKind::GameSpeedNormal) => 9,
                 Some(PlayerLifeNoticeKind::GameSpeedFast) => 10,
                 Some(PlayerLifeNoticeKind::GameSpeedSuperFast) => 11,
+                Some(PlayerLifeNoticeKind::PlayerNamesOn) => 12,
+                Some(PlayerLifeNoticeKind::PlayerNamesOff) => 13,
+                Some(PlayerLifeNoticeKind::SoundOn) => 14,
+                Some(PlayerLifeNoticeKind::SoundOff) => 15,
+                Some(PlayerLifeNoticeKind::MusicOn) => 16,
+                Some(PlayerLifeNoticeKind::MusicOff) => 17,
+                Some(PlayerLifeNoticeKind::SpeechOn) => 18,
+                Some(PlayerLifeNoticeKind::SpeechOff) => 19,
+                Some(PlayerLifeNoticeKind::FlightAssistanceOn) => 20,
+                Some(PlayerLifeNoticeKind::FlightAssistanceOff) => 21,
+                Some(PlayerLifeNoticeKind::HelpModeOn) => 22,
+                Some(PlayerLifeNoticeKind::HelpModeOff) => 23,
+                Some(PlayerLifeNoticeKind::ReflectionsOn)=>24,
+                Some(PlayerLifeNoticeKind::ReflectionsOff)=>25,
+                Some(PlayerLifeNoticeKind::ShadowsOn)=>26,
+                Some(PlayerLifeNoticeKind::ShadowsOff)=>27,
+                Some(PlayerLifeNoticeKind::SkyOn)=>28,
+                Some(PlayerLifeNoticeKind::SkyOff)=>29,
+                Some(PlayerLifeNoticeKind::DynamicLightingOn)=>30,
+                Some(PlayerLifeNoticeKind::DynamicLightingOff)=>31,
             }]);
             hash.update(entry.source_owner.to_le_bytes());
             hash.update(entry.state.to_le_bytes());
@@ -177,7 +247,17 @@ mod tests {
         notices.publish(0, 111, PlayerLifeNoticeKind::IconsMapVisible, 50).unwrap();
         assert_eq!(notices.entries()[0].kind.unwrap().semantic_name(), "participant.icons_map_visible");
         assert_eq!((notices.entries()[0].state, notices.entries()[0].remaining_frames), (3, 50));
-        for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff] {
+        for kind in [PlayerLifeNoticeKind::PanelTransparencyOn, PlayerLifeNoticeKind::PanelTransparencyOff,
+            PlayerLifeNoticeKind::PlayerNamesOn, PlayerLifeNoticeKind::PlayerNamesOff,
+            PlayerLifeNoticeKind::SoundOn, PlayerLifeNoticeKind::SoundOff,
+            PlayerLifeNoticeKind::MusicOn, PlayerLifeNoticeKind::MusicOff,
+            PlayerLifeNoticeKind::SpeechOn, PlayerLifeNoticeKind::SpeechOff,
+            PlayerLifeNoticeKind::FlightAssistanceOn, PlayerLifeNoticeKind::FlightAssistanceOff,
+            PlayerLifeNoticeKind::HelpModeOn, PlayerLifeNoticeKind::HelpModeOff,
+            PlayerLifeNoticeKind::ReflectionsOn,PlayerLifeNoticeKind::ReflectionsOff,
+            PlayerLifeNoticeKind::ShadowsOn,PlayerLifeNoticeKind::ShadowsOff,
+            PlayerLifeNoticeKind::SkyOn,PlayerLifeNoticeKind::SkyOff,
+            PlayerLifeNoticeKind::DynamicLightingOn,PlayerLifeNoticeKind::DynamicLightingOff] {
             notices.publish(0, 111, kind, 50).unwrap();
             assert_eq!(notices.entries()[0].kind, Some(kind));
             assert_eq!(notices.entries()[0].state, 3);

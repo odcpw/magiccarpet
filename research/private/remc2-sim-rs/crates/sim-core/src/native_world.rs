@@ -797,6 +797,15 @@ impl Level2EconomyState {
 /// relation and the qualified package presentation table. Presentation
 /// clients copy this projection; they never infer a selector from class/model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CampaignPlayerLabel {
+    pub player_color_index: u8,
+    pub name_bytes: [u8; 32],
+    pub name_len: u8,
+    pub life: i32,
+    pub max_life: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CampaignEntityPresentation {
     pub entity_index: u16,
     pub source_id: u16,
@@ -818,6 +827,8 @@ pub struct CampaignEntityPresentation {
     pub draw_order: u32,
     pub control_flags: u32,
     pub primary_depth_adjustment: i16,
+    /// Actual current class3/model0|1 A4/roster relation, independent of art.
+    pub player_label: Option<CampaignPlayerLabel>,
 }
 
 /// Level 2's shared spell/economy reset projection. The two active authored
@@ -3055,6 +3066,9 @@ pub struct Mc2LiveState {
     pub(crate) nyphur_dispatcher: RivalWizardRoster,
     pub(crate) player_visibility: player_visibility::PlayerVisibility,
     pub(crate) source_animations: crate::source_animation::SourceAnimationResidency,
+    pub(crate) source_animation_payloads: std::sync::Arc<[Box<[u8]>]>,
+    pub(crate) source_animation_owner: Option<std::sync::Arc<str>>,
+    pub(crate) source_animation_clocks: crate::source_animation::SourceAnimationClocks,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,
@@ -3074,6 +3088,9 @@ pub struct Mc2LiveState {
     /// Source A4 word0x159, absent from the compact exported player record.
     pub(crate) player_protection_ticks: u16,
     pub(crate) elapsed_centiseconds: u32,
+    /// Last `sub_574A0` spell census when a player was revived. `None` is
+    /// the census deterministically derived from this mission's entry state.
+    pub(crate) source_spell_census_override: Option<([bool; 26], bool)>,
     pub(crate) player_life: i32,
     /// Source per-player `MenuState_0x3DF`, distinct from the spell-fire
     /// holder's `spell_menu_stage` byte.

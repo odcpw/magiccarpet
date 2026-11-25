@@ -38,22 +38,21 @@ namespace MagicCarpet.Native.Voxels
         internal int ActiveCount => active.Count;
         internal int PoolCount => pool.Count;
 
-        internal VoxelManaSpheres(Transform parent, OwnerAssetCache cache, Func<float,float,float> terrainHeight, bool voxel = true)
-            : this(parent, ReadColors(cache), terrainHeight, voxel) { }
+        internal VoxelManaSpheres(Transform parent, OwnerAssetCache cache, Func<float,float,float> terrainHeight)
+            : this(parent, ReadColors(cache), terrainHeight) { }
 
         // This overload permits deterministic rendering/lifecycle checks without an owner package.
-        internal VoxelManaSpheres(Transform parent, Dictionary<int, Color> sourceColors, Func<float,float,float> terrainHeight, bool voxel = true)
+        internal VoxelManaSpheres(Transform parent, Dictionary<int, Color> sourceColors, Func<float,float,float> terrainHeight)
         {
             colors = sourceColors ?? throw new ArgumentNullException(nameof(sourceColors));
             this.terrainHeight = terrainHeight ?? throw new ArgumentNullException(nameof(terrainHeight));
-            var shaderName = voxel ? "VoxelSurface" : "ManaOrb";
-            var shader = Resources.Load<Shader>(shaderName);
-            if (shader == null) throw new InvalidOperationException($"Missing {shaderName} shader");
-            root = new GameObject(voxel ? "Native voxel mana spheres" : "Native modern mana spheres");
+            var shader = Resources.Load<Shader>("VoxelSurface");
+            if (shader == null) throw new InvalidOperationException("Missing VoxelSurface shader");
+            root = new GameObject("Native voxel mana spheres");
             root.transform.SetParent(parent, false);
-            mesh = voxel ? BuildSphereMesh() : BuildSmoothSphereMesh();
-            material = new Material(shader) { name = voxel ? "Native voxel mana" : "Native modern mana" };
-            if (voxel) material.SetFloat("_Emission", .85f);
+            mesh = BuildSphereMesh();
+            material = new Material(shader) { name = "Native voxel mana" };
+            material.SetFloat("_Emission", .85f);
         }
 
         internal void Present(NativeSim.ManaSphereSnapshot[] spheres,
@@ -223,55 +222,6 @@ namespace MagicCarpet.Native.Voxels
             var mesh = new Mesh { name = "Shared 16-cell voxel mana sphere" };
             mesh.SetVertices(vertices); mesh.SetNormals(normals); mesh.SetColors(colors); mesh.SetTriangles(triangles, 0);
             mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        // A single shared, smooth unit-diameter orb. The soft upper highlight and
-        // darker lower hemisphere echo the source sprites without moving the orb
-        // or adding lights, transparent shells, or per-instance materials.
-        internal static Mesh BuildSmoothSphereMesh()
-        {
-            const int segments = 24, latitudes = 12;
-            var vertices = new List<Vector3>(); var normals = new List<Vector3>();
-            var uv = new List<Vector2>(); var colors = new List<Color32>(); var triangles = new List<int>();
-            void AddVertex(Vector3 normal, Vector2 texcoord)
-            {
-                vertices.Add(normal * .5f); normals.Add(normal); uv.Add(texcoord);
-                var highlight = Mathf.Pow(Mathf.Clamp01(Vector3.Dot(normal, new Vector3(-.42f, .82f, -.39f).normalized)), 8f);
-                var shade = Mathf.Clamp01(.58f + .22f * (normal.y * .5f + .5f) + .20f * highlight);
-                var value = (byte)Mathf.RoundToInt(shade * 255f);
-                colors.Add(new Color32(value, value, value, 255));
-            }
-            for (var lat = 1; lat < latitudes; lat++)
-            {
-                var phi = Mathf.PI * lat / latitudes;
-                for (var lon = 0; lon <= segments; lon++)
-                {
-                    var theta = 2f * Mathf.PI * lon / segments;
-                    AddVertex(new Vector3(Mathf.Sin(phi) * Mathf.Cos(theta), Mathf.Cos(phi), Mathf.Sin(phi) * Mathf.Sin(theta)),
-                        new Vector2((float)lon / segments, 1f - (float)lat / latitudes));
-                }
-            }
-            var top = vertices.Count;
-            for (var lon = 0; lon < segments; lon++) AddVertex(Vector3.up, new Vector2((lon + .5f) / segments, 1));
-            var bottom = vertices.Count;
-            for (var lon = 0; lon < segments; lon++) AddVertex(Vector3.down, new Vector2((lon + .5f) / segments, 0));
-            for (var lon = 0; lon < segments; lon++)
-            {
-                triangles.Add(top + lon); triangles.Add(lon + 1); triangles.Add(lon);
-                for (var lat = 0; lat < latitudes - 2; lat++)
-                {
-                    var a = lat * (segments + 1) + lon; var b = a + 1;
-                    var c = a + segments + 1; var d = c + 1;
-                    triangles.Add(a); triangles.Add(b); triangles.Add(c);
-                    triangles.Add(b); triangles.Add(d); triangles.Add(c);
-                }
-                var last = (latitudes - 2) * (segments + 1) + lon;
-                triangles.Add(last); triangles.Add(last + 1); triangles.Add(bottom + lon);
-            }
-            var mesh = new Mesh { name = "Shared smooth mana sphere" };
-            mesh.SetVertices(vertices); mesh.SetNormals(normals); mesh.SetUVs(0, uv);
-            mesh.SetColors(colors); mesh.SetTriangles(triangles, 0); mesh.RecalculateBounds();
             return mesh;
         }
 

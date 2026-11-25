@@ -2246,9 +2246,10 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         ),
         MC_STATUS_OK
     );
-    // sub_63570 admits the opponent without a Beyond Sight holder;
-    // the separate active-spell map gate still suppresses its player dot.
-    assert_eq!(initial_state.visibility_flags, 3);
+    // The source reset clears the opponent's visibility mode. sub_63570
+    // admits the visible opponent, while the separate active-spell gate
+    // suppresses the player dot until Beyond Sight is cast.
+    assert_eq!(initial_state.visibility_flags, 0b00001);
     assert!(initial_state.entity_count > 0);
     // Approved native arrow contract: one objective outline plus seven vertices.
     assert_eq!(initial_state.mark_count, 8);
@@ -2341,7 +2342,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         !initial_entities
             .iter()
             .any(|row| row.subject_entity_index == 112),
-        "Invisible Nyphur does not reach the minimap entity stream"
+        "Nyphur's player dot requires active Beyond Sight"
     );
 
     let mut initial_marks =
@@ -2534,7 +2535,9 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         ),
         MC_STATUS_OK
     );
-    assert_eq!(acquired_state.visibility_flags, 6);
+    // Ordinary acquisition adds a tier-zero holder. It leaves the opponent
+    // admitted by sub_63570 and the active-spell map gate closed.
+    assert_eq!(acquired_state.visibility_flags, 0b00101);
     assert_eq!(acquired_state.mark_count, 8);
     let mut acquired_entities =
         vec![McCampaignMinimapEntityV2::default(); acquired_state.entity_count as usize];
@@ -2565,6 +2568,12 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         !acquired_entities
             .iter()
             .any(|row| row.subject_entity_index == 112)
+    );
+    assert!(
+        !acquired_entities
+            .iter()
+            .any(|row| row.subject_entity_index == 38),
+        "the collected Beyond Sight pickup no longer owns a minimap dot"
     );
     let acquired_subject_108 = acquired_entities
         .iter()

@@ -58,8 +58,42 @@ namespace MagicCarpet.Native
             Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
             byte lineHighlight, int anchorX, int anchorY)
         {
-            if ((anchorX != 540 && anchorX != 600) || anchorY != 48)
-                throw new ArgumentException("source hint 41 anchor is invalid");
+            var spellAnchor = (anchorX == 540 || anchorX == 600) && anchorY is 32 or 48;
+            var minimapAnchor = (anchorX == 64 && anchorY == 66) || (anchorX == 190 && anchorY == 202);
+            var vitalsAnchor = anchorX == 470 && anchorY is 16 or 32;
+            // E2A74 kind 3 uses the same type-2 pointer as the existing
+            // HUD hints. Rows 29-34 have fixed source axes; row 35 follows
+            // the live Castle goal and FONT1[40] width on the 640-wide HUD.
+            var castleStatusAnchor = (anchorX, anchorY) is (214, 32) or (214, 16) or (130, 16) or
+                (320, 32) or (260, 16) or (320, 16) ||
+                (anchorY == 38 && anchorX >= 0 && anchorX < 639);
+            if (!spellAnchor && !minimapAnchor && !vitalsAnchor && !castleStatusAnchor)
+                throw new ArgumentException("source gameplay hint anchor is invalid");
+            return BuildSourcePointerHintForeground(text, glyphs, glyphMasks, corner, side,
+                horizontal, textColor, lineColor, lineHighlight, anchorX, anchorY);
+        }
+
+        internal static Raster BuildSourceObjectiveMarkHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
+            byte lineHighlight, int anchorX, int anchorY, bool fullMap, bool entityAnchor = false)
+        {
+            var width = fullMap ? 191 : 64;
+            var height = fullMap ? 200 : 64;
+            // Only the objective rectangle requires a three-pixel margin.
+            // Both source leaders double their admitted VGA coordinates.
+            var margin = entityAnchor ? 0 : 3;
+            if (((anchorX | anchorY) & 1) != 0 ||
+                anchorX < margin * 2 || anchorX >= (width - margin) * 2 ||
+                anchorY < margin * 2 || anchorY >= (height - margin) * 2)
+                throw new ArgumentException("source objective mark hint anchor is invalid");
+            return BuildSourcePointerHintForeground(text, glyphs, glyphMasks, corner, side,
+                horizontal, textColor, lineColor, lineHighlight, anchorX, anchorY);
+        }
+
+        private static Raster BuildSourcePointerHintForeground(byte[] text, Glyph[] glyphs, byte[] glyphMasks,
+            Sprite corner, Sprite side, Sprite horizontal, byte textColor, byte lineColor,
+            byte lineHighlight, int anchorX, int anchorY)
+        {
             var centerX = 600 < anchorX + 135 ? anchorX - 135 : anchorX + 25;
             var centerY = anchorY - 94 + 28 < 80 ? anchorY + 66 : anchorY - 94;
             return BuildSourceForeground(text, glyphs, glyphMasks, corner, side, horizontal,

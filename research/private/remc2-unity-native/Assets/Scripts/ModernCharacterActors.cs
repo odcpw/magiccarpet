@@ -173,16 +173,16 @@ namespace MagicCarpet.Native
                 return true;
             }
             var position = Interpolated(actor);
-            if (actor.Firefly == null && actor.Worm == null) position.y = terrain.SampleVisualHeight(position.x, position.z);
+            if (actor.Firefly == null && actor.Worm == null) position.y = terrain.SampleHeight(position.x, position.z);
             var heading = InterpolatedYaw(actor);
             // Fit the actual terrain-oriented root, including the first frame.
             // Fitting its spawn-upright bounds cropped the later tilted pose.
             Place(actor, position, heading, camera);
             var sampled = actor.RenderedFrame == Time.frameCount;
             actor.Render(Time.deltaTime);
-            actor.Villager?.GroundCorpseToTerrain(terrain.SampleVisualHeight, terrain.Revision);
+            actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
             if (!sampled && actor.Goat != null)
-                actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleVisualHeight);
+                actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
             // Fit this frame's pose. A previously hidden nocking arrow can
             // extend beyond the preceding frame's body/prop bounds.
             var offset = Quaternion.Euler(0, heading + followYaw, 0) * new Vector3(0, actor.Goat != null ? 1.4f : 1.8f, actor.Goat != null ? 6.5f : 9);
@@ -204,7 +204,7 @@ namespace MagicCarpet.Native
                 }
                 distance = Mathf.Max(distance, required * 1.25f + .15f);
                 cameraPosition = bounds.center - rotation * Vector3.forward * distance;
-                var floor = terrain.SampleVisualHeight(cameraPosition.x, cameraPosition.z) + .8f;
+                var floor = terrain.SampleHeight(cameraPosition.x, cameraPosition.z) + .8f;
                 if (cameraPosition.y >= floor) break;
                 cameraPosition.y = floor;
                 rotation = Quaternion.LookRotation(bounds.center - cameraPosition);
@@ -212,7 +212,7 @@ namespace MagicCarpet.Native
             }
             reviewDistance = Mathf.Max(distance, Mathf.Lerp(reviewDistance, distance, 1 - Mathf.Exp(-Time.deltaTime * 8)));
             cameraPosition = bounds.center - rotation * Vector3.forward * reviewDistance;
-            cameraPosition.y = Mathf.Max(cameraPosition.y, terrain.SampleVisualHeight(cameraPosition.x, cameraPosition.z) + .8f);
+            cameraPosition.y = Mathf.Max(cameraPosition.y, terrain.SampleHeight(cameraPosition.x, cameraPosition.z) + .8f);
             camera.transform.SetPositionAndRotation(cameraPosition, Quaternion.LookRotation(bounds.center - cameraPosition));
             lastReviewPosition = camera.transform.position; lastReviewRotation = camera.transform.rotation; reviewPositioned = true;
             return true;
@@ -387,7 +387,7 @@ namespace MagicCarpet.Native
                     }
                     actors.Add(state.entityIndex, actor);
                     actor.Root.transform.SetPositionAndRotation(
-                        new Vector3(position.x, actor.Firefly != null ? position.y : terrain.SampleVisualHeight(position.x, position.z), position.z),
+                        new Vector3(position.x, actor.Firefly != null ? position.y : terrain.SampleHeight(position.x, position.z), position.z),
                         actor.Firefly != null ? Rotation(state) : Quaternion.Euler(0, yaw, 0));
                 }
                 else
@@ -545,9 +545,9 @@ namespace MagicCarpet.Native
                     Voxels.VoxelModernWorld.Requested);
                 if (actor.Worm != null) actor.SetVisible(actor.Root.activeSelf);
                 actor.Render(dt);
-                actor.Villager?.GroundCorpseToTerrain(terrain.SampleVisualHeight, terrain.Revision);
+                actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 if (!sampled && actor.Goat != null && actor.Root.activeSelf)
-                    actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleVisualHeight);
+                    actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
                 FractureIfDead(actor);
             }
             for (var i = dying.Count - 1; i >= 0; i--)
@@ -569,7 +569,7 @@ namespace MagicCarpet.Native
                     continue;
                 }
                 actor.SetVisible((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
-                actor.Villager?.GroundCorpseToTerrain(terrain.SampleVisualHeight, terrain.Revision);
+                actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 FractureIfDead(actor);
                 if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
             }
@@ -680,7 +680,7 @@ namespace MagicCarpet.Native
                 actor.Root.transform.SetPositionAndRotation(Wrap(position, camera.transform.position), InterpolatedRotation(actor));
                 return;
             }
-            position.y = terrain.SampleVisualHeight(position.x, position.z);
+            position.y = terrain.SampleHeight(position.x, position.z);
             var e = .65f;
             var normal = new Vector3(terrain.SampleHeight(position.x - e, position.z) - terrain.SampleHeight(position.x + e, position.z),
                 2 * e, terrain.SampleHeight(position.x, position.z - e) - terrain.SampleHeight(position.x, position.z + e)).normalized;
@@ -776,13 +776,13 @@ namespace MagicCarpet.Native
                 source=Position(a.State), rendered=a.Root.transform.position,
                 nativePresent=actors.TryGetValue(a.State.entityIndex, out var occupant) && occupant == a,
                 visible=a.Root.activeSelf, up=a.Root.transform.up,
-                hoofClearances=a.Goat != null && a == Followed() ? a.Goat.HoofClearances(terrain.SampleVisualHeight) : null,
+                hoofClearances=a.Goat != null && a == Followed() ? a.Goat.HoofClearances(terrain.SampleHeight) : null,
                 hoofStanceMask=a.Goat != null && a == Followed() ? a.Goat.HoofStanceMask() : 0,
                 terrainContactComplete=a.TerrainContactComplete,
                 terrainSlope=a.TerrainSlope,
                 surfaceClearanceChecked=capture != null && a == Followed() && a.Villager != null && Time.frameCount % 15 == 0,
                 surfaceGroundClearance=capture != null && a == Followed() && a.Villager != null && Time.frameCount % 15 == 0
-                    ? a.Villager.SurfaceGroundClearance(terrain.SampleVisualHeight) : 0,
+                    ? a.Villager.SurfaceGroundClearance(terrain.SampleHeight) : 0,
                 movingHit=a.Goat != null ? a.Goat.MovingHitActive : a.Villager != null && a.Villager.MovingHit,
                 contactBoundMask=a.Goat != null && a == Followed() ? a.Goat.ContactBoundMask : 0,
                 contactReachMask=a.Goat != null && a == Followed() ? a.Goat.ContactReachMask : 0,

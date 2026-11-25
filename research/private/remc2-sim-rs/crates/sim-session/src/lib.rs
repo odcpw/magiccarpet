@@ -7,6 +7,7 @@
 //! reopen operation may advance that session's generation.
 
 use serde::{Deserialize, Serialize};
+use sim_definition::level_definition::{LevelObjectiveId, ObjectiveCondition};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
@@ -275,6 +276,31 @@ pub struct ObjectiveProgress {
     pub all_objectives_satisfied: bool,
 }
 
+pub const MAX_OBJECTIVE_STAGES: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectiveStageStatus {
+    Inactive,
+    Active,
+    Completed,
+}
+
+/// The effective, definition-bound condition and its current stage state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ObjectiveStageObservation {
+    pub id: LevelObjectiveId,
+    pub condition: ObjectiveCondition,
+    pub status: ObjectiveStageStatus,
+}
+
+/// An atomic read of the bounded local objective stages, in authored order.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ObjectiveObservation {
+    pub progress: ObjectiveProgress,
+    pub stages: Vec<ObjectiveStageObservation>,
+}
+
 /// Package-neutral pose for one live presentation entity. Coordinates use
 /// the same deterministic world units as [`PlayerPose`]; adapter-private
 /// source slots and render selectors never cross this projection.
@@ -474,6 +500,42 @@ pub struct SourceMenuAdmission {
     pub tick: u64,
 }
 
+/// Exact pre-quantization steering sample. Private, finite IEEE754 values in
+/// the same -128..127 range as the steering adapter; canonical zero makes bit
+/// equality numerical equality without NaN or signed-zero exceptions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "[u32; 2]", into = "[u32; 2]")]
+pub struct SteeringObservation([u32; 2]);
+
+impl SteeringObservation {
+    #[must_use]
+    pub fn from_axes(roll: i8, pitch: i8) -> Self {
+        Self([f32::from(roll).to_bits(), f32::from(pitch).to_bits()])
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> [u32; 2] { self.0 }
+}
+
+impl TryFrom<[u32; 2]> for SteeringObservation {
+    type Error = &'static str;
+
+    fn try_from(mut bits: [u32; 2]) -> Result<Self, Self::Error> {
+        for axis in &mut bits {
+            let value = f32::from_bits(*axis);
+            if !value.is_finite() || !(-128.0..=127.0).contains(&value) {
+                return Err("steering observation requires finite axes in -128..127");
+            }
+            if value == 0.0 { *axis = 0; }
+        }
+        Ok(Self(bits))
+    }
+}
+
+impl From<SteeringObservation> for [u32; 2] {
+    fn from(value: SteeringObservation) -> Self { value.0 }
+}
+
 /// Portable player commands. Game adapters own their admission and rules;
 /// no remc2 opcode or bitfield crosses this boundary.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -483,6 +545,10 @@ pub struct GameCommand {
     pub lateral: LateralControl,
     pub roll_axis: i8,
     pub pitch_axis: i8,
+    /// Operational input observation consumed by runtime assistance before
+    /// recording the derived gameplay command. Omission retains legacy axes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steering_observation: Option<SteeringObservation>,
     pub cast_left: bool,
     pub cast_right: bool,
     pub cast_selected: bool,
@@ -490,6 +556,9 @@ pub struct GameCommand {
     /// when the source player has a surviving linked Castle.
     #[serde(skip_serializing_if = "is_false")]
     pub recover_player: bool,
+    /// Request the source's direct local-player surrender input.
+    #[serde(skip_serializing_if = "is_false")]
+    pub surrender_player: bool,
     /// Remove one stage of the player's linked Castle through its ordinary
     /// lifecycle. The game adapter owns admission and the source command.
     #[serde(skip_serializing_if = "is_false")]
@@ -540,6 +609,173 @@ pub struct RuntimeActorId(
     pub u64,
 );
 
+pub const MAX_ACTOR_PAGE_SIZE: u32 = 1024;
+
+/// A cursor is an offset in the stable ordering of one guarded observation.
+/// Carry its session generation and tick when requesting a subsequent page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActorPageRequest {
+    offset: u32,
+    limit: u32,
+}
+
+impl ActorPageRequest {
+    #[must_use]
+    pub const fn new(offset: u32, limit: u32) -> Option<Self> {
+        if limit == 0 || limit > MAX_ACTOR_PAGE_SIZE || offset.checked_add(limit).is_none() {
+            return None;
+        }
+        Some(Self { offset, limit })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorLifecycle {
+    Alive,
+    Dying,
+    Hidden,
+}
+
+/// Current observation of one allocated actor. After reclaim the lifetime
+/// is absent, even if its former address has acquired a different actor.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ActorObservation {
+    pub actor: RuntimeActorId,
+    pub kind: SemanticId,
+    pub entity_id: Option<sim_definition::level_definition::LevelEntityId>,
+    pub pose: PresentationPose,
+    pub roll: i16,
+    /// Multipart children have pose and lifetime, with health owned by the root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub life: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_life: Option<i32>,
+    pub target: Option<RuntimeActorId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<RuntimeActorId>,
+    pub lifecycle: ActorLifecycle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ActorPage {
+    pub actors: Vec<ActorObservation>,
+    pub next_offset: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyPosition {
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CastleStatus {
+    Constructing,
+    Standing,
+    Destroying,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EconomyAsset {
+    Castle {
+        stage: u8,
+        status: CastleStatus,
+        life: i32,
+        max_life: i32,
+        mana: i32,
+        mana_capacity: i32,
+    },
+    Collector {
+        castle: Option<RuntimeActorId>,
+        /// Zero-based position in the current Castle's ordered stock.
+        castle_order: Option<u8>,
+        target: Option<RuntimeActorId>,
+        life: i32,
+        max_life: i32,
+        mana: i32,
+        mana_capacity: i32,
+    },
+    ManaSphere {
+        mana: i32,
+        assigned_collector: Option<RuntimeActorId>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyObservation {
+    pub actor: RuntimeActorId,
+    pub owner: Option<RuntimeParticipantId>,
+    pub position: EconomyPosition,
+    pub lifecycle: ActorLifecycle,
+    #[serde(flatten)]
+    pub asset: EconomyAsset,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EconomyPage {
+    pub assets: Vec<EconomyObservation>,
+    pub next_offset: Option<u32>,
+}
+
+pub const TERRAIN_GRID_SIDE: u16 = 256;
+pub const MAX_TERRAIN_WINDOW_SIDE: u16 = 16;
+
+/// Nonwrapping rectangle on the canonical terrain grid, in tile coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainWindowRequest {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
+impl TerrainWindowRequest {
+    #[must_use]
+    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Option<Self> {
+        if !(1..=MAX_TERRAIN_WINDOW_SIDE).contains(&width)
+            || !(1..=MAX_TERRAIN_WINDOW_SIDE).contains(&height)
+            || x.checked_add(width)? > TERRAIN_GRID_SIDE
+            || y.checked_add(height)? > TERRAIN_GRID_SIDE
+        {
+            return None;
+        }
+        Some(Self {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    /// Iterate row-major with x increasing within each row.
+    pub fn tiles(self) -> impl Iterator<Item = (u8, u8)> {
+        (self.y..self.y + self.height)
+            .flat_map(move |y| (self.x..self.x + self.width).map(move |x| (x as u8, y as u8)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainSample {
+    /// Current authoritative height at the tile origin, in world Z units.
+    pub ground_height: i16,
+    pub ceiling_height: Option<i16>,
+    /// The gameplay collision material at the sample, independent of art.
+    pub material_mask: u32,
+    /// Whether the current topology protects this cell from guarded height edits.
+    pub height_edit_protected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TerrainWindow {
+    #[serde(flatten)]
+    pub rectangle: TerrainWindowRequest,
+    pub samples: Vec<TerrainSample>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
 
@@ -547,6 +783,52 @@ pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal"
 pub struct GameAssetReference {
     pub id: String,
     pub content_address: String,
+}
+
+const CASTLE_CONSTRUCTION_STARTED: &str = "economy.castle_construction_started";
+const MANA_SPHERE_COLLECTED: &str = "economy.mana_sphere_collected";
+const MANA_DEPOSITED: &str = "economy.mana_deposited";
+pub const ECONOMY_EVENT_IDS: [&str; 3] = [
+    CASTLE_CONSTRUCTION_STARTED,
+    MANA_SPHERE_COLLECTED,
+    MANA_DEPOSITED,
+];
+
+/// Economy facts captured at the authoritative simulation turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EconomyEventPayload {
+    CastleConstructionStarted {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        castle: RuntimeActorId,
+        owner: RuntimeParticipantId,
+        stage: u8,
+    },
+    ManaSphereCollected {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        collector: RuntimeActorId,
+        sphere: RuntimeActorId,
+        mana: i32,
+    },
+    ManaDeposited {
+        #[serde(serialize_with = "serialize_u64_decimal")]
+        tick: u64,
+        collector: RuntimeActorId,
+        castle: RuntimeActorId,
+        mana: i32,
+    },
+}
+
+impl EconomyEventPayload {
+    pub const fn event_id(self) -> &'static str {
+        match self {
+            Self::CastleConstructionStarted { .. } => CASTLE_CONSTRUCTION_STARTED,
+            Self::ManaSphereCollected { .. } => MANA_SPHERE_COLLECTED,
+            Self::ManaDeposited { .. } => MANA_DEPOSITED,
+        }
+    }
 }
 
 /// One ordered semantic event. Adapter-private numeric kinds, payload slots,
@@ -564,6 +846,8 @@ pub struct GameEvent {
     pub actor: Option<RuntimeActorId>,
     pub participant: Option<RuntimeParticipantId>,
     pub asset: Option<GameAssetReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub economy: Option<EconomyEventPayload>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -772,6 +1056,30 @@ pub trait GameSessionBackend {
     fn tick(&self) -> u64;
     fn completion_status(&self) -> GameCompletionStatus;
     fn snapshot(&self) -> Self::Snapshot;
+    fn observe_objectives(&self) -> ObjectiveObservation {
+        ObjectiveObservation::default()
+    }
+    /// Project up to `count` actors from the requested offset in a stable
+    /// backend order. The session validates identity before asking for rows.
+    fn observe_actors(
+        &self,
+        _guard: SessionGuard,
+        _offset: usize,
+        _count: usize,
+    ) -> Vec<ActorObservation> {
+        Vec::new()
+    }
+    fn observe_economy(
+        &self,
+        _guard: SessionGuard,
+        _offset: usize,
+        _count: usize,
+    ) -> Vec<EconomyObservation> {
+        Vec::new()
+    }
+    fn observe_terrain_window(&self, _request: TerrainWindowRequest) -> Vec<TerrainSample> {
+        Vec::new()
+    }
     /// Whether the authoritative game menu excludes idle flight assistance.
     fn flight_assistance_menu_open(&self) -> bool {
         false
@@ -781,7 +1089,12 @@ pub trait GameSessionBackend {
     fn source_speed_index(&self) -> u8 {
         0
     }
-    fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
+    fn events_after(
+        &self,
+        guard: SessionGuard,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     /// Prepare the runtime owner's TopBar value for one guarded frame. This
     /// is a frame argument, not another persisted preference; implementations
@@ -954,6 +1267,79 @@ impl<B: GameSessionBackend> GameSession<B> {
         }
     }
 
+    /// Read one bounded actor page without advancing gameplay or retaining
+    /// a second registry. An extra row determines whether another page exists.
+    pub fn actors(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> Result<SessionObservation<ActorPage>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        let limit = request.limit as usize;
+        let mut actors = self
+            .backend
+            .observe_actors(guard, request.offset as usize, limit + 1);
+        let next_offset = (actors.len() > limit).then_some(request.offset + request.limit);
+        actors.truncate(limit);
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: ActorPage {
+                actors,
+                next_offset,
+            },
+        })
+    }
+
+    /// Read an identity-bound page of existing world economy assets.
+    pub fn economy(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> Result<SessionObservation<EconomyPage>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        let limit = request.limit as usize;
+        let mut assets = self
+            .backend
+            .observe_economy(guard, request.offset as usize, limit + 1);
+        let next_offset = (assets.len() > limit).then_some(request.offset + request.limit);
+        assets.truncate(limit);
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: EconomyPage {
+                assets,
+                next_offset,
+            },
+        })
+    }
+
+    /// Read one coherent terrain window at the exact session generation and tick.
+    pub fn terrain_window(
+        &self,
+        guard: SessionGuard,
+        request: TerrainWindowRequest,
+    ) -> Result<SessionObservation<TerrainWindow>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: TerrainWindow {
+                rectangle: request,
+                samples: self.backend.observe_terrain_window(request),
+            },
+        })
+    }
+
+    /// Read the complete bounded objective state at the exact session tick.
+    pub fn objectives(
+        &self,
+        guard: SessionGuard,
+    ) -> Result<SessionObservation<ObjectiveObservation>, SessionGuardError> {
+        self.validate_guard(guard)?;
+        Ok(SessionObservation {
+            identity: self.identity(),
+            value: self.backend.observe_objectives(),
+        })
+    }
+
     /// Observe authoritative gameplay completion without advancing the
     /// session or consuming its event journal.
     pub fn completion_status(
@@ -978,7 +1364,7 @@ impl<B: GameSessionBackend> GameSession<B> {
             .map_err(GameSessionError::Guard)?;
         let page = self
             .backend
-            .events_after(cursor, limit)
+            .events_after(guard, cursor, limit)
             .map_err(GameSessionError::Backend)?;
         Ok(SessionObservation {
             identity: self.identity(),
@@ -1214,6 +1600,21 @@ mod tests {
     };
     use std::{cell::Cell, convert::Infallible, path::PathBuf};
 
+    #[test]
+    fn steering_observation_admits_only_canonical_finite_sampler_values() {
+        assert_eq!(SteeringObservation::try_from([0, (-0.0_f32).to_bits()]).unwrap(),
+            SteeringObservation::default());
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -128.00002, 127.00001] {
+            assert!(SteeringObservation::try_from([value.to_bits(), 0]).is_err());
+            assert!(SteeringObservation::try_from([0, value.to_bits()]).is_err());
+        }
+        let precise = SteeringObservation::try_from([0.45_f32.to_bits(), (-0.45_f32).to_bits()]).unwrap();
+        assert_eq!(precise.bits(), [0.45_f32.to_bits(), (-0.45_f32).to_bits()]);
+        assert_ne!(precise, SteeringObservation::from_axes(0, 0));
+        assert_eq!(SteeringObservation::try_from([(-128.0_f32).to_bits(), 127.0_f32.to_bits()]).unwrap(),
+            SteeringObservation::from_axes(-128, 127));
+    }
+
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct ProbeSnapshot {
         tick: u64,
@@ -1254,7 +1655,12 @@ mod tests {
             }
         }
 
-        fn events_after(&self, cursor: u64, _limit: usize) -> Result<EventPage, Self::Error> {
+        fn events_after(
+            &self,
+            _guard: SessionGuard,
+            cursor: u64,
+            _limit: usize,
+        ) -> Result<EventPage, Self::Error> {
             Ok(EventPage {
                 requested_cursor: cursor,
                 next_cursor: cursor,

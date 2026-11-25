@@ -13,12 +13,13 @@ use sim_core::game_runtime::{
     RuntimeGuard, RuntimeMode, RuntimeTransitionError,
 };
 use sim_core::game_session::{
-    CampaignSnapshot, GAME_SESSION_CONTRACT, GameCommand, GameSession, GameSessionError,
-    SessionGuard, SessionObservation,
+    ActorPageRequest, CampaignSnapshot, ECONOMY_EVENT_IDS, GAME_SESSION_CONTRACT, GameCommand,
+    GameSession, GameSessionError, MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, SessionGuard,
+    SessionObservation, TERRAIN_GRID_SIDE, TerrainWindowRequest,
 };
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const CONTRACT: &str = "carpet-flight-command-stream/v1";
@@ -26,6 +27,18 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PAGE: usize = 100;
 const MAX_PACKAGES: usize = 64;
+
+fn publish_replay(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut staging = tempfile::NamedTempFile::with_prefix_in(".campaign-save-", directory)?;
+    staging.write_all(bytes)?;
+    staging.as_file().sync_all()?;
+    staging.persist_noclobber(path)?;
+    Ok(())
+}
 
 pub(crate) fn capabilities() -> Value {
     json!({
@@ -123,6 +136,26 @@ enum Command {
         cursor: Option<String>,
         limit: Option<usize>,
     },
+    Actors {
+        session_guard: SessionGuardInput,
+        offset: Option<u32>,
+        limit: Option<usize>,
+    },
+    Objectives {
+        session_guard: SessionGuardInput,
+    },
+    Economy {
+        session_guard: SessionGuardInput,
+        offset: Option<u32>,
+        limit: Option<usize>,
+    },
+    TerrainWindow {
+        session_guard: SessionGuardInput,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    },
     Describe {
         cursor: Option<String>,
         limit: Option<usize>,
@@ -160,7 +193,7 @@ enum Command {
     },
     Save {
         guard: RuntimeGuardInput,
-        session_guard: SessionGuardInput,
+        session_guard: Option<SessionGuardInput>,
         path: PathBuf,
     },
     Load {
@@ -356,15 +389,33 @@ impl Stream {
                     "open_pending": {"guard": "runtime_guard", "result": "Playing; resolver selects the pending semantic level"},
                     "snapshot": {"session_guard": "session_guard", "limit": "1..100, default 100", "cursor": "optional returned next_cursor",
                         "result": "authoritative player pose/motion/vitals, objectives, acquired spell IDs/tiers/costs/readiness and paged presentation entities"},
+                    "actors": {"session_guard": "session_guard", "limit": "1..100, default 100",
+                        "offset": "start at 0; continue with value.next_offset and the same session guard",
+                        "kinds": Mc2CampaignBackend::actor_page_kinds().collect::<Vec<_>>(),
+                        "result": "guarded page of current semantic actor lifetimes"},
+                    "objectives": {"session_guard": "session_guard", "maximum_stages": MAX_OBJECTIVE_STAGES,
+                        "result": "guarded campaign objective progress and definition-bound conditions and statuses"},
+                    "economy": {"session_guard": "session_guard", "limit": "1..100, default 100",
+                        "offset": "start at 0; continue with value.next_offset and the same session guard",
+                        "kinds": ["castle", "collector", "mana_sphere"],
+                        "result": "guarded page of current economy lifetimes"},
+                    "terrain_window": {"session_guard": "session_guard",
+                        "x": "origin tile column", "y": "origin tile row",
+                        "width": "tile count", "height": "tile count",
+                        "grid_side": TERRAIN_GRID_SIDE, "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,
+                        "wraps": false, "result": "guarded row-major terrain samples"},
                     "describe": {"limit": "1..100, default 100", "cursor": "optional returned next_cursor", "result": "semantic catalog descriptors; effective values when a session is bound"},
-                    "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0", "limit": "1..100"},
+                    "events": {"session_guard": "session_guard", "cursor": "decimal string, initially 0",
+                        "limit": "1..100", "economy_event_payloads": ECONOMY_EVENT_IDS},
                     "step": {"guard": "runtime_guard", "session_guard": "session_guard", "input": GameCommand::default(), "ticks": 1},
                     "pause": {"guard": "runtime_guard"}, "resume": {"guard": "runtime_guard"},
                     "paused_frame": {"guard": "runtime_guard", "session_guard": "session_guard"},
                     "completion": {"session_guard": "session_guard"},
                     "accept_transition": {"guard": "runtime_guard", "session_guard": "session_guard"},
                     "campaign_menu": {"guard": "runtime_guard", "input": {"action": "dismiss_results | select_mission | start_mission | return_title", "level_id": "select_mission only: semantic ID from campaign_menu.available_levels"}},
-                    "save": {"guard": "runtime_guard", "session_guard": "session_guard", "path": "new replay file; existing files refused"},
+                    "save": {"guard": "runtime_guard",
+                        "session_guard": "required in Playing or Paused; omit for a campaign map, results or retained Title",
+                        "path": "new replay file; existing files refused"},
                     "load": {"guard": "runtime_guard", "path": "existing replay file", "packages": "required only in a fresh process; same schema as open"},
                     "close": {"guard": "runtime_guard", "session_guard": "session_guard", "result": "Title; drops active gameplay and retains immutable package resolver"},
                     "shutdown": {"guard": "runtime_guard", "result": "drops runtime/resolver and exits; EOF also releases ownership"}
@@ -424,6 +475,56 @@ impl Stream {
                 let limit = page_limit(limit)?;
                 let observation = self.session(session_guard)?.snapshot();
                 snapshot_page(observation, cursor.as_deref(), limit)
+            }
+            Command::Actors {
+                session_guard,
+                offset,
+                limit,
+            } => {
+                let request = lifetime_page_request("actor", offset, limit)?;
+                let page = self
+                    .session(session_guard)?
+                    .actors(session_guard.into(), request)
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(page))
+            }
+            Command::Objectives { session_guard } => {
+                let observation = self
+                    .session(session_guard)?
+                    .objectives(session_guard.into())
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(observation))
+            }
+            Command::Economy {
+                session_guard,
+                offset,
+                limit,
+            } => {
+                let request = lifetime_page_request("economy", offset, limit)?;
+                let observation = self
+                    .session(session_guard)?
+                    .economy(session_guard.into(), request)
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(observation))
+            }
+            Command::TerrainWindow {
+                session_guard,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let request = TerrainWindowRequest::new(x, y, width, height).ok_or_else(|| {
+                    StreamError::new(
+                        "INVALID_TERRAIN_WINDOW",
+                        format!("use a nonwrapping {TERRAIN_GRID_SIDE}-tile grid and sides of 1..={MAX_TERRAIN_WINDOW_SIDE} tiles"),
+                    )
+                })?;
+                let observation = self
+                    .session(session_guard)?
+                    .terrain_window(session_guard.into(), request)
+                    .map_err(|error| StreamError::new(error.code.as_str(), error))?;
+                Ok(json!(observation))
             }
             Command::Describe { cursor, limit } => {
                 let limit = page_limit(limit)?;
@@ -530,15 +631,30 @@ impl Stream {
                 path,
             } => {
                 self.validate_runtime(guard)?;
-                self.session(session_guard)?;
+                match self.runtime.presentation_identity().2 {
+                    RuntimeMode::Playing | RuntimeMode::Paused => {
+                        let session_guard = session_guard.ok_or_else(|| {
+                            StreamError::new("MISSING_SESSION_GUARD", "live save requires session_guard")
+                        })?;
+                        self.session(session_guard)?;
+                    }
+                    RuntimeMode::Campaign | RuntimeMode::Title => {
+                        if session_guard.is_some() {
+                            return Err(StreamError::new(
+                                "INVALID_CAMPAIGN_SAVE_GUARD",
+                                "campaign save requires no session_guard",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(StreamError::new(
+                            "INVALID_RUNTIME_MODE",
+                            "save requires Playing, Paused, Campaign or retained Title",
+                        ));
+                    }
+                }
                 let bytes = self.resolver()?.save_replay(&self.runtime)?;
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(|error| StreamError::new("SAVE_IO_ERROR", error))?;
-                file.write_all(&bytes)
-                    .and_then(|()| file.sync_all())
+                publish_replay(&path, &bytes)
                     .map_err(|error| StreamError::new("SAVE_IO_ERROR", error))?;
                 Ok(
                     json!({"path": path, "bytes": bytes.len(), "persistence": "authoritative_operation_replay"}),
@@ -653,6 +769,20 @@ fn page_limit(limit: Option<usize>) -> Result<usize> {
             "limit must be 1..100",
         ))
     }
+}
+
+fn lifetime_page_request(
+    kind: &str,
+    offset: Option<u32>,
+    limit: Option<usize>,
+) -> Result<ActorPageRequest> {
+    let limit = page_limit(limit)?;
+    ActorPageRequest::new(offset.unwrap_or(0), limit as u32).ok_or_else(|| {
+        StreamError::new(
+            "INVALID_CURSOR",
+            format!("{kind} page offset exceeds the bounded range; start a new page"),
+        )
+    })
 }
 
 fn page_offset(cursor: Option<&str>, prefix: &str) -> Result<usize> {

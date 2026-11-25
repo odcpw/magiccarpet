@@ -8,6 +8,7 @@ Shader "MagicCarpet/CampaignIndexedHistory"
         _SceneHistory ("Previous composed world indices", 2D) = "black" {}
         _BlendLut ("Exact source indexed blend table", 2D) = "black" {}
         _BlendHistory ("Apply source mode2 history", Float) = 0
+        _SourceViewport ("Source viewport bounds", Vector) = (0,0,1,1)
     }
     SubShader
     {
@@ -24,10 +25,14 @@ Shader "MagicCarpet/CampaignIndexedHistory"
             sampler2D _SceneHistory;
             sampler2D _BlendLut;
             float _BlendHistory;
+            float4 _SourceViewport;
 
             fixed4 compose(v2f_img input) : SV_Target
             {
                 float current = floor(tex2D(_MainTex, input.uv).r * 255.0 + 0.5);
+                if (input.uv.x < _SourceViewport.x || input.uv.y < _SourceViewport.y ||
+                    input.uv.x >= _SourceViewport.z || input.uv.y >= _SourceViewport.w)
+                    return fixed4(current / 255.0, 0.0, 0.0, 1.0);
                 if (_BlendHistory > 0.5)
                 {
                     float prior = floor(tex2D(_SceneHistory, input.uv).r * 255.0 + 0.5);

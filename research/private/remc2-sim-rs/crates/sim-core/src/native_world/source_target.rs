@@ -5,13 +5,266 @@
 //! between two reads made by the same callback.
 
 use crate::Position;
-use crate::campaign::source_arena::SourceArena;
+use crate::campaign::source_arena::{
+    CreatureRootOrigin, CreatureRuntimeIdentity, CreatureRuntimeRole, SourceArena,
+    SourceEntityHandle, SourceEntityView,
+};
 use crate::combat::area::{Actor, Shape};
+use crate::game_session::{ActorLifecycle, PresentationPose};
 use crate::goat::GoatFamily;
 use crate::house::HouseFamily;
+use crate::level_definition::CreatureKind;
 use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
+
+pub(crate) const PAGED_CREATURES: [CreatureKind; 7] = [
+    CreatureKind::Goat,
+    CreatureKind::Bee,
+    CreatureKind::Dragon,
+    CreatureKind::Archer,
+    CreatureKind::Skeleton,
+    CreatureKind::Villager,
+    CreatureKind::Trader,
+];
+
+pub(crate) struct CreaturePageSource {
+    pub(crate) identity: CreatureRuntimeIdentity,
+    pub(crate) pose: PresentationPose,
+    pub(crate) roll: i16,
+    pub(crate) health: Option<(i32, i32)>,
+    pub(crate) target: Option<SourceEntityHandle>,
+    pub(crate) parent: Option<SourceEntityHandle>,
+    pub(crate) lifecycle: ActorLifecycle,
+}
+
+impl super::Mc2Simulation {
+    pub(crate) fn creature_page_sources(&self) -> impl Iterator<Item = CreaturePageSource> + '_ {
+        let arena = self.source_arena();
+        arena
+            .creature_observation_slots(self.session.definition.initial_creature_bindings())
+            .into_iter()
+            .filter_map(|slot| {
+                let identity = self.creature_identity_for_source_slot(slot)?;
+                PAGED_CREATURES.contains(&identity.kind).then_some(identity)
+            })
+            .filter_map(|identity| self.creature_page_source(identity))
+    }
+
+    pub(crate) fn creature_page_source(
+        &self,
+        identity: CreatureRuntimeIdentity,
+    ) -> Option<CreaturePageSource> {
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let slot = identity.handle.source_slot;
+        let current = arena.resolve(identity.handle)?;
+        if identity.origin == CreatureRootOrigin::InitialPackage && identity.handle.generation != 0
+        {
+            return None;
+        }
+        if identity.kind == CreatureKind::Goat && identity.role == CreatureRuntimeRole::Root {
+            let goat = live
+                .goats
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == slot)?;
+            return Some(CreaturePageSource {
+                identity,
+                pose: PresentationPose {
+                    x: goat.position.x,
+                    y: goat.position.y,
+                    z: goat.position.z,
+                    yaw: goat.yaw,
+                    pitch: goat.pitch,
+                },
+                roll: goat.roll,
+                health: Some((goat.life, goat.max_life)),
+                target: goat.target_entity_index.and_then(|slot| arena.handle(slot)),
+                parent: None,
+                lifecycle: goat.observation_lifecycle()?,
+            });
+        }
+        let context = Context::from_ordinary(&live.goats, &live.ordinary);
+        let view = read(arena, context, slot).ok()??;
+        if (!view.active && !view.drawing_disabled()) || view.class != 5 {
+            return None;
+        }
+
+        let part = identity.role == CreatureRuntimeRole::MultipartPart;
+        let (pitch, max_life, orientation, action) =
+            creature_page_owned_pose_and_capacity(current, context, arena, identity)?;
+        let (yaw, roll) =
+            orientation.unwrap_or_else(|| (view.yaw.unwrap_or(0), view.roll.unwrap_or(0)));
+        let dragon_death = identity.kind == CreatureKind::Dragon
+            && matches!(
+                action,
+                super::level2_class5::dragon::DRAGON_PRE_KILL_ACTION
+                    | super::level2_class5::dragon::DRAGON_KILL_ACTION
+            );
+        let lifecycle = if view.drawing_disabled() {
+            ActorLifecycle::Hidden
+        } else if view.life < 0 || dragon_death || (!part && !identity.living) {
+            ActorLifecycle::Dying
+        } else {
+            ActorLifecycle::Alive
+        };
+        let parent = if part {
+            self.creature_identity_for_source_slot(identity.root_slot)
+                .and_then(|parent| arena.dragon_observation_parent(identity, parent))
+        } else {
+            None
+        };
+        Some(CreaturePageSource {
+            identity,
+            pose: PresentationPose {
+                x: view.position.x,
+                y: view.position.y,
+                z: view.position.z,
+                yaw,
+                pitch,
+            },
+            roll,
+            health: (!part).then_some((view.life, max_life)),
+            target: view
+                .relations
+                .target
+                .filter(|&slot| slot != 0)
+                .and_then(|slot| arena.handle(slot)),
+            parent,
+            lifecycle,
+        })
+    }
+    /// Objective rectangles and arrows follow the current UpdateEntities
+    /// model head and its source next links, including same-pass lifetime.
+    pub fn campaign_creature_objective_targets(
+        &self,
+        model: u32,
+    ) -> Result<Vec<(u16, Position)>, String> {
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let context = Context {
+            spells: Some(&live.shared_spells),
+            particles: Some(&self.session.definition.presentation.particles),
+            map_type: Some(live.terrain.map_type()),
+            ..Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        arena
+            .objective_creature_slots(model)?
+            .into_iter()
+            .map(|slot| {
+                read(arena, context, slot)?
+                    .map(|view| (slot, view.position))
+                    .ok_or_else(|| format!("creature objective source slot {slot} has no position"))
+            })
+            .collect()
+    }
+
+    /// Current typed actors consumed by both campaign map projections.
+    /// Retain hidden owners in this result so callers suppress their obsolete
+    /// raw packet until the following source reclaim. The specialized
+    /// Firefly path and other raw/current families keep their existing owners.
+    pub fn campaign_minimap_owned_inputs(
+        &self,
+    ) -> Result<Vec<crate::level1_mission::Level1MinimapEntityInput>, String> {
+        use crate::level1_mission::Level1MinimapEntityInput;
+
+        let live = &self.session.state.live;
+        let arena = &live.economy;
+        let context = Context::from_ordinary(&live.goats, &live.ordinary);
+        let local = self.state.entity_index;
+        let is_player = |index: u16| {
+            self.entities().iter().any(|row| row.index == index && row.active && row.class == 3)
+        };
+        let mut result = Vec::new();
+        for (slot, kind) in arena.economy.live_arena_slots() {
+            let (phase, word_32, parent_id, stage_var_2) = match kind {
+                Kind::BeeCreature => {
+                    let row = arena.economy.bee_creatures.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current Bee {slot} lost its minimap owner"))?;
+                    (row.source_byte_3e, row.linked_peer_entity_index,
+                        row.parent_entity_index, row.stage_var2 as i8)
+                }
+                Kind::AuthoredClass5 => {
+                    let row = arena.economy.authored_class5.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current class5 {slot} lost its minimap owner"))?;
+                    // Model19 retains its specialized Firefly path. Model22
+                    // has additional word94/A4 semantics; it must not inherit
+                    // another family's sidecar or a cold raw packet here.
+                    let (word, parent, stage) = match row.model {
+                        0 => arena.economy.authored_dragons.iter().find(|state|
+                            state.source_entity_index == slot).map(|state|
+                                (state.linked_entity_index, state.parent_entity_index, state.stage_var2)),
+                        3 => arena.economy.authored_class5_model3.iter().find(|state|
+                            state.source_entity_index == slot).map(|state|
+                                (state.word_0x32, state.parent_entity_index, state.stage_var2)),
+                        4 => arena.economy.authored_class5_archer.iter().find(|state|
+                            state.source_entity_index == slot && state.slot_generation == arena.slot_generation(slot))
+                            .map(|state| (state.word_0x32, state.stage.parent, state.stage.mode)),
+                        _ => continue,
+                    }.ok_or_else(|| format!("current class5 {slot} lost its model {} minimap sidecar", row.model))?;
+                    (row.phase, word, parent, stage as i8)
+                }
+                Kind::CastleRoot => {
+                    let row = current_castle_entry(arena, slot)
+                        .filter(|row| row.active)
+                        .ok_or_else(|| format!("current Castle {slot} lost its minimap owner"))?;
+                    // Class3's source map classifier reads neither word32 nor
+                    // parent/stage; its player relation is supplied below.
+                    (row.phase, 0, 0, 0)
+                }
+                Kind::CastleDefender => {
+                    let row = arena.economy.castle_children.iter().find(|row|
+                        row.active && row.source_entity_index == slot && row.model == 3)
+                        .ok_or_else(|| format!("current balloon {slot} lost its minimap owner"))?;
+                    (row.source_byte_3e, row.chain_previous_slot, row.parent_entity_index, 0)
+                }
+                Kind::ManaSphere => {
+                    let sphere = arena
+                        .economy
+                        .spheres
+                        .iter()
+                        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+                        .ok_or_else(|| format!("current mana sphere {slot} lost its minimap owner"))?;
+                    // Model 39 uses the current source player link below to
+                    // distinguish loose mana from a player-owned marker.
+                    (sphere.phase, 0, 0, 0)
+                }
+                Kind::AuthoredSwitchProducer => {
+                    let row = arena.economy.authored_switch_producers.iter().find(|row|
+                        row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| format!("current switch {slot} lost its minimap owner"))?;
+                    if !matches!(row.model, 12 | 31) {
+                        continue;
+                    }
+                    (row.phase, 0, 0, 0)
+                }
+                _ => continue,
+            };
+            let view = read(arena, context, slot)?
+                .ok_or_else(|| format!("current class5 {slot} lost its source view"))?;
+            let (class, action) = arena.economy.live_arena_class_action(slot, kind)
+                .ok_or_else(|| format!("current class5 {slot} lost its source action"))?;
+            if view.class != class || !matches!((class, view.model), (5, 0 | 2 | 3 | 4) | (3, 2 | 3) | (10, 39) | (11, 12 | 31)) {
+                return Err(format!("current owner {slot} changed class/model during minimap projection"));
+            }
+            let player_link = rival_target_relation(arena, context, slot, kind);
+            result.push(Level1MinimapEntityInput {
+                source_slot: slot, class, model: view.model, action, phase,
+                control_flags: view.control_flags, source_id: view.source_id,
+                source_id_is_player: is_player(view.source_id),
+                source_id_is_local_player: view.source_id == local,
+                player_link, player_link_is_player: is_player(player_link),
+                player_link_is_local_player: player_link == local,
+                parent_id, stage_var_2, word_32, position: view.position,
+                active: view.active && !view.drawing_disabled(),
+            });
+        }
+        Ok(result)
+    }
+}
 
 /// The allocated current Castle carrier, including its terminal retained
 /// state. A different live kind, reclaim, or NewEvent generation ends it.
@@ -3280,6 +3533,134 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         // yaw/roll fields are array_0x52 collision axes, not pose angles.
         Kind::AuthoredTree => (Some(0), Some(0)),
         _ => (None, None),
+    }
+}
+
+pub(crate) fn authored_dragon_chain_contains(
+    arena: &SourceArena,
+    root: u16,
+    record: u16,
+    child: u16,
+) -> bool {
+    use super::level2_class5::dragon::{
+        DRAGON_KILL_ACTION, DRAGON_MODEL, DRAGON_PART_COUNT,
+    };
+
+    let Some(runtime) = arena
+        .economy
+        .authored_class5_runtime()
+        .iter()
+        .find(|row| row.source_entity_index == root)
+    else {
+        return false;
+    };
+    let mut previous = root;
+    let mut next = runtime.linked_head;
+    for _ in 0..DRAGON_PART_COUNT {
+        if next == 0 {
+            break;
+        }
+        let slot = next;
+        if let Some(part) = arena
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.active && part.source_entity_index == slot)
+        {
+            if part.entity_id != root
+                || part.root_authored_index != record
+                || part.previous_entity_index != previous
+            {
+                break;
+            }
+            if slot == child {
+                return true;
+            }
+            next = part.next_entity_index;
+        } else {
+            // The retirement prologue retains two chain words after
+            // freeing a hidden segment. Stop if that address was reused.
+            let Some(retired) = arena.entities.get(usize::from(slot)).filter(|row| {
+                arena.handle(slot).is_none()
+                    && row.class == 0
+                    && row.model == DRAGON_MODEL
+                    && row.action == DRAGON_KILL_ACTION
+                    && row.source_id == root
+                    && row.word_32() == previous
+            }) else {
+                break;
+            };
+            next = retired.word_34();
+        }
+        previous = slot;
+    }
+    false
+}
+
+/// Pitch and capacity come from the same current carrier as the target
+/// view. In particular a dynamic birth cannot use that slot's reset packet.
+fn creature_page_owned_pose_and_capacity(
+    current: SourceEntityView<'_>,
+    context: Context<'_>,
+    arena: &SourceArena,
+    identity: CreatureRuntimeIdentity,
+) -> Option<(i16, i32, Option<(i16, i16)>, u8)> {
+    let slot = identity.handle.source_slot;
+    match current {
+        SourceEntityView::Dynamic(Kind::BeeCreature) if identity.kind == CreatureKind::Bee => arena
+            .bee_creatures()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| (row.pitch, row.max_life, None, row.action)),
+        SourceEntityView::Dynamic(Kind::AuthoredDragonPart)
+            if identity.kind == CreatureKind::Dragon =>
+        {
+            arena
+                .authored_dragon_parts()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.pitch, row.max_life, None, row.action))
+        }
+        SourceEntityView::Dynamic(Kind::AuthoredClass5) => arena
+            .authored_class5()
+            .iter()
+            .find(|row| {
+                row.active
+                    && row.source_entity_index == slot
+                    && identity.raw_model == Some(row.model)
+            })
+            .map(|row| (row.pitch, row.max_life, None, row.action)),
+        SourceEntityView::Dynamic(Kind::HouseResident) => arena
+            .house_residents()
+            .iter()
+            .find(|row| {
+                row.active && row.source_entity_index == slot && row.semantic_kind == identity.kind
+            })
+            .map(|row| {
+                (
+                    0,
+                    row.max_life,
+                    Some((row.yaw, row.desired_heading)),
+                    row.action,
+                )
+            }),
+        SourceEntityView::Imported(row) if identity.kind == CreatureKind::Villager => context
+            .villagers?
+            .villagers()
+            .iter()
+            .find(|state| {
+                state.source_retained() && state.entity_index == slot && state.model == row.model
+            })
+            .map(|state| (state.pitch, state.max_life, None, state.action)),
+        SourceEntityView::Imported(row)
+            if matches!(
+                identity.kind,
+                CreatureKind::Dragon | CreatureKind::Archer | CreatureKind::Skeleton
+            ) =>
+        {
+            Some((row.pitch, row.max_life, None, row.action))
+        }
+        _ => None,
     }
 }
 

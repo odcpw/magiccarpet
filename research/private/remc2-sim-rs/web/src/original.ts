@@ -12,10 +12,13 @@ import { OriginalMediaPlayer, type MediaReply } from './original-media';
 import { OriginalGameplayAudio, type GameplayVoice } from './original-audio';
 import { OriginalSpeech, type ObjectiveSpeechCue } from './original-speech';
 import { OriginalCampaignMusic, type CampaignMusicState } from './original-music';
+import { createLocalGameClient } from './original-local-client';
 
 const API = '/original-api';
+const localRuntime = new URLSearchParams(location.search).get('runtime') === 'wasm';
+const gameRequest = localRuntime ? createLocalGameClient() : fetch;
 const worldStateDecoder = new TextDecoder('utf-8', { fatal: true });
-const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
+const modernRequested = !localRuntime && new URLSearchParams(location.search).get('visual') === 'modern';
 const DISPLAY_WIDTH = 640, DISPLAY_HEIGHT = 480;
 const element = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -246,7 +249,8 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 async function readStatus(): Promise<BridgeStatus> {
-  return responseJson<BridgeStatus>(await fetch(API + '/status', { cache: 'no-store', signal: AbortSignal.timeout(10000) }));
+  return responseJson<BridgeStatus>(await gameRequest(API + '/status', { cache: 'no-store',
+    signal: AbortSignal.timeout(localRuntime ? 180000 : 10000) }));
 }
 
 function showCampaign(status: BridgeStatus): boolean {
@@ -312,7 +316,7 @@ function showCampaign(status: BridgeStatus): boolean {
     }
   }
   const continueButton = element<HTMLButtonElement>('campaign-continue');
-  continueButton.hidden = !results && phase !== 'title';
+  continueButton.hidden = localRuntime || (!results && phase !== 'title');
   continueButton.textContent = results ? 'Continue' : 'Campaign map';
   element('campaign-picker').hidden = !select;
   const enter = element<HTMLButtonElement>('campaign-enter');
@@ -378,7 +382,7 @@ function post(path: string, fields: Record<string, unknown>): Promise<Record<str
     // admission/deduplication; it must never execute a repeated cast twice.
     for (let attempt = 0; attempt < 2; attempt++) {
       let response: Response;
-      try { response = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      try { response = await gameRequest(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
         signal: AbortSignal.timeout(fields.action === 'start_mission' || fields.action === 'refresh_assets' || fields.action === 'load' ? 180000 : 8000) }); }
       catch (error) { networkError = error; continue; }
       const value = await responseJson<Record<string, unknown>>(response);
@@ -402,8 +406,8 @@ function showSpeechPreference(enabled: unknown, available: unknown): void {
 function showMenu(text: string): void {
   message.textContent = text; curtain.hidden = false;
   playButton.hidden = started; pauseButton.hidden = !started;
-  for (const id of ['save', 'load', 'reset', 'abandon']) element(id).hidden = !started;
-  speechButton.hidden = !connected;
+  for (const id of ['save', 'load', 'reset', 'abandon']) element(id).hidden = !started || (localRuntime && id !== 'reset');
+  speechButton.hidden = !connected || localRuntime;
   menuButton.hidden = !started;
   element('touch').hidden = true;
   element('look-hint').hidden = true;
@@ -501,7 +505,7 @@ const intervals: number[] = [];
 async function pollFrame(): Promise<void> {
   const version = controlVersion;
   const before = performance.now();
-  let pollInterval = 1000 / 30;
+  let pollInterval = localRuntime && playing ? 8 : 1000 / 30;
   try {
     // A lifecycle request may be queued behind an input POST. Do not start a
     // read in that window: it can return the previous paused publication after
@@ -511,7 +515,7 @@ async function pollFrame(): Promise<void> {
     const bundled = display instanceof OriginalWorldRenderer;
     const endpoint = bundled ? '/world-packet' + (lastFrame ? `?after=${lastFrame.sequence}&generation=${lastFrame.runtimeGeneration}` : '')
       : geometry ? '/world-frame' : '/frame';
-    const response = await fetch(API + endpoint, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    const response = await gameRequest(API + endpoint, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (response.status === 204) {
       if (bundled && response.headers.get('X-Scene-Pending') === '1') {
         // The draw acknowledgment can release a new scene just after this
@@ -660,7 +664,7 @@ async function pollFrame(): Promise<void> {
       const worldFrame = frame as WorldFrame;
       const epoch = `${frame.runtimeGeneration}:${frame.sessionGeneration}:${worldFrame.terrainRevision}`;
       if (epoch !== terrainIdentity) {
-        const terrainResponse = await fetch(API + '/terrain' + query, { signal: AbortSignal.timeout(10000) });
+      const terrainResponse = await gameRequest(API + '/terrain' + query, { signal: AbortSignal.timeout(10000) });
         if (terrainResponse.status === 410) return;
         if (!terrainResponse.ok) { await responseJson(terrainResponse); return; }
         const terrain = decodeTerrain(await terrainResponse.arrayBuffer());
@@ -709,7 +713,7 @@ async function pollFrame(): Promise<void> {
     const now = performance.now(); if (lastArrival) { intervals.push(now - lastArrival); if (intervals.length > 600) intervals.shift(); }
     lastArrival = now; packetCount++; bytesReceived += publication?.frame.byteLength ?? data.byteLength;
     const sorted = [...intervals].sort((a,b) => a-b);
-    Object.assign(window, { originalMetrics: { gpu: display.gpu, render_tick: frame.tick.toString(),
+    Object.assign(window, { originalMetrics: { gpu: display.gpu, runtime: localRuntime ? 'wasm' : 'server', render_tick: frame.tick.toString(),
       runtime_generation: frame.runtimeGeneration.toString(), session_generation: frame.sessionGeneration.toString(),
       sequence: frame.sequence.toString(), scene_revision: ('sceneRevision' in frame ? frame.sceneRevision : frame.terrainRevision).toString(), packets: packetCount,
       received_hz: intervals.length ? intervals.length * 1000 / intervals.reduce((a,b) => a+b, 0) : 0,
@@ -979,11 +983,11 @@ async function boot(): Promise<void> {
     if (!modernRequested) element('cast-keys').textContent = 'Mouse buttons cast · Space recovers after defeat';
     if (!modernRequested && status.preference_keys?.length)
       element('flight-keys').textContent = `${status.preference_keys.slice(0, 4).join(' / ')} move · Mouse steers`;
-    speechButton.hidden = false;
+    speechButton.hidden = localRuntime;
     loadedAssetRevision = status.asset_revision;
     loadedLevelId = status.level_id ?? null;
     currentLevelName = levelName(status.level_id);
-    const presentationName = modernRequested ? 'Modern' : 'Original';
+    const presentationName = localRuntime ? 'Original WASM' : modernRequested ? 'Modern' : 'Original';
     document.title = `Magic Carpet II · ${presentationName} ${currentLevelName}`;
     document.querySelector('h2')!.textContent = `${presentationName} · ${currentLevelName}`;
     playButton.textContent = `Play ${currentLevelName}`;

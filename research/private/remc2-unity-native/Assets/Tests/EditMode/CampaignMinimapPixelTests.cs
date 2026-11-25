@@ -1,6 +1,9 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Serialization.Json;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -8,6 +11,362 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class CampaignMinimapPixelTests
     {
+        private sealed class ObjectiveHelpWindow : UnityEditor.EditorWindow
+        {
+            internal Action RepaintRuntime;
+            private void OnGUI() => RepaintRuntime?.Invoke();
+        }
+
+        private static string[] DayHelpArguments(string replayPath)
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var locale = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE");
+            Assert.That(locale, Is.Not.Empty.And.Not.Null);
+            Assert.That(replayPath, Is.Not.Empty.And.Not.Null);
+            var arguments = new List<string> {
+                "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "-mc-runtime-menu-cache", locale, "-mc-runtime-replay-load", replayPath
+            };
+            var resourcesPath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(generated, "continuity-20261115/installed-full-resources.json");
+            using (var input = File.OpenRead(resourcesPath))
+            {
+                var serializer = new DataContractJsonSerializer(typeof(GameRuntimeTransport.InstalledPackageResource[]));
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])serializer.ReadObject(input);
+                Assert.That(resources.Length, Is.GreaterThanOrEqualTo(3));
+                foreach (var package in resources.Take(3))
+                    arguments.AddRange(new[] { "-mc-runtime-package", package.package_dir,
+                        "-mc-runtime-owner-cache", package.owner_cache_path,
+                        "-mc-runtime-presentation-cache", package.presentation_cache_path });
+            }
+            return arguments.ToArray();
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public void ProductionLowHealthHelpUsesLiveDayVitalsAndIndexedLifetime(bool injured)
+        {
+            var replayPath = Environment.GetEnvironmentVariable(injured ? "MC_LOW_HEALTH_DAY_REPLAY" : "MC_RECOVERED_HEALTH_DAY_REPLAY");
+            var arguments = DayHelpArguments(replayPath);
+            var root = new GameObject("Day source low-life help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var activeBefore = NativeSession.ActiveSessionCount;
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, fields).GetValue(runtime);
+            var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+            var lifetime = hintType.GetField("remaining", fields);
+            var pollDelay = hintType.GetField("pollDelay", fields);
+            ObjectiveHelpWindow window = null;
+            RenderTexture target = null;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var binding = menu.GameplayHelpForRow(5);
+                Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X, binding.Y, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((290, 50, 0x0220, 470, 16, 600, 2)));
+                const string reminder = "Your life is low, retreat for a while";
+                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(reminder));
+                var initialVitals = transport.GameRuntimeCampaignSnapshot().value.player_vitals;
+                Assert.That((native.Tick, initialVitals.life, initialVitals.max_life),
+                    Is.EqualTo(injured ? (2089UL, 795, 10000) : (2431UL, 2505, 10000)));
+                var drawnRows = new HashSet<int>();
+                for (var frame = 0; frame < 260; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var vitals = transport.GameRuntimeCampaignSnapshot().value.player_vitals;
+                    Assert.That(vitals.life, Is.Positive, "ordinary play keeps the wounded player alive");
+                    Assert.That(vitals.life <= (vitals.max_life >> 2), Is.EqualTo(injured));
+                    drawnRows.Add(hint.VisibleRow);
+                    if (injured && hint.VisibleRow == 5) break;
+                    if (injured) continue;
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(5));
+                    // A negative delay follows a poll with no winner. Once the
+                    // two earlier equal-priority rows have drawn, the already
+                    // overdue row 5 would win that poll if health admitted it.
+                    if ((int)pollDelay.GetValue(hint) < 0 && drawnRows.Contains(1) && drawnRows.Contains(2))
+                        return;
+                }
+                Assert.That(injured, Is.True, "the recovered player reached a real eligible poll with no row 5");
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((5, 470, 16)));
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                target = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                    .OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = target;
+                    camera.Render();
+                }
+                window = ScriptableObject.CreateInstance<ObjectiveHelpWindow>();
+                window.RepaintRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", fields).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", fields).GetValue(presenter), Is.EqualTo(reminder));
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", fields).GetValue(presenter);
+                var output = (RenderTexture)presenterType.GetField("output", fields).GetValue(presenter);
+                var readback = new Texture2D(output.width, output.height, TextureFormat.RGBA32, false, true);
+                var previousTarget = RenderTexture.active;
+                try
+                {
+                    RenderTexture.active = output;
+                    readback.ReadPixels(new Rect(0, 0, output.width, output.height), 0, 0);
+                    readback.Apply();
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = readback.GetPixels32();
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var anchor = (raster.Height - 1 - (16 - raster.Y)) * raster.Width + 470 - raster.X;
+                    Assert.That(pixels[anchor], Is.EqualTo(Colour(artwork.BlendSelector)),
+                        "source pointer reaches the life bar anchor");
+                }
+                finally
+                {
+                    RenderTexture.active = previousTarget;
+                    UnityEngine.Object.DestroyImmediate(readback);
+                }
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                Assert.That(native.Tick, Is.EqualTo(tick));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That(hint.VisibleRow, Is.EqualTo(5), "the fiftieth draw still displays the reminder");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.Zero, "the next source frame clears the expired reminder");
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.RepaintRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (target != null) { target.Release(); UnityEngine.Object.DestroyImmediate(target); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionObjectiveHelpReadsLiveDayMarksAcrossBlinkWithoutRepaintAdvancing()
+        {
+            var arguments = DayHelpArguments(Environment.GetEnvironmentVariable("MC_OBJECTIVE_HELP_DAY_REPLAY"));
+            var root = new GameObject("Day objective mark help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<ObjectiveHelpWindow>();
+            var target = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, fields).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                Assert.That(native.Tick, Is.EqualTo(2025));
+                Assert.That(hint.HasObjectiveMarkHelp, Is.True);
+                Assert.That(menu.GameplayHelpForRow(81).TextRecord, Is.EqualTo(343));
+                var binding = menu.GameplayHelpForRow(82);
+                Assert.That((binding.TextRecord, binding.Duration, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((344, 50, 160, 5)));
+                var marks = native.MinimapMarks(native.Tick, native.MinimapState(native.Tick));
+                Assert.That(marks.Where(row => row.helpSelector == 82).All(row => row.visible == 0), Is.True);
+                Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject != 0), Is.True,
+                    "ordinary authored rectangles offer help before the next visible blink");
+                if (hint.HasLargeMapHelp)
+                {
+                    Assert.That(surface.LiveMinimapReady && surface.HasObjectiveHelpSubject, Is.True);
+                    var mapHint = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasLargeMapHelp: true);
+                    for (var frame = 0; frame < 3; frame++)
+                        mapHint.Advance(false, false, true, false, false,
+                            hasObjectiveHelpSubject: surface.HasObjectiveHelpSubject);
+                    Assert.That(mapHint.VisibleRow, Is.EqualTo(1),
+                        "the real blink-hidden Day rectangle suppresses row 4 before priority selection");
+                }
+                for (var frame = 0; frame < 80 && hint.VisibleRow != 82; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(82));
+                var subjectField = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("objectiveHelpSubject", fields);
+                var subject = (ushort)subjectField.GetValue(hint);
+                var current = surface.ObjectiveHelpMarks.Single(mark => mark.Row == 82 && mark.Subject == subject);
+                Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((current.X, current.Y)));
+
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                    .OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = target;
+                    camera.Render();
+                }
+                window.RepaintRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", fields).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var lifetime = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", fields);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var sourceText = menu.GameplayLanguageText(344);
+                Assert.That(sourceText, Is.Not.Empty);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", fields).GetValue(presenter),
+                    Is.EqualTo(sourceText));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", fields).GetValue(presenter);
+                Assert.That(raster, Is.Not.Null);
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                Assert.That(native.Tick, Is.EqualTo(tick));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(48), "only the next ordinary frame advances help");
+            }
+            finally
+            {
+                window.RepaintRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionObjectiveExpiryPromotesMinimapHelpOnlyAfterContextCloses()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var locale = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE");
+            var replayPath = Environment.GetEnvironmentVariable("MC_OBJECTIVE_HELP_NIGHT_REPLAY");
+            Assert.That(locale, Is.Not.Empty.And.Not.Null);
+            Assert.That(replayPath, Is.Not.Empty.And.Not.Null);
+            var arguments = new List<string> {
+                "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "-mc-runtime-menu-cache", locale, "-mc-runtime-replay-load", replayPath
+            };
+            var resourcesPath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(generated, "continuity-20261115/installed-full-resources.json");
+            using (var input = File.OpenRead(resourcesPath))
+            {
+                var serializer = new DataContractJsonSerializer(typeof(GameRuntimeTransport.InstalledPackageResource[]));
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])serializer.ReadObject(input);
+                Assert.That(resources.Length, Is.EqualTo(30));
+                foreach (var package in resources)
+                    arguments.AddRange(new[] { "-mc-runtime-package", package.package_dir,
+                        "-mc-runtime-owner-cache", package.owner_cache_path,
+                        "-mc-runtime-presentation-cache", package.presentation_cache_path });
+            }
+            var root = new GameObject("Night objective expiry help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<ObjectiveHelpWindow>();
+            var target = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, fields).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var session = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("gameRuntimeNightSurface"));
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                Assert.That(native.Tick, Is.EqualTo(169));
+                Assert.That(hint.HasObjectiveMarkHelp, Is.True);
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", fields);
+                var rows = ((Array)hintType.GetField("rows", fields).GetValue(hint)).Cast<object>()
+                    .ToDictionary(row => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                        row.GetType().GetField("Binding", fields).GetValue(row)).Row);
+                int Priority(int row) => (int)rows[row].GetType().GetField("Priority", fields).GetValue(rows[row]);
+
+                // Hold O at the real NightSpire stage checkpoint, then let the
+                // client release it and dispatch the subsequent native expiry.
+                session.GameRuntimeCampaignStep(0, 0, 0, 0, 0, showObjective: true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(native.Tick, Is.EqualTo(171));
+                for (var frame = 0; frame < 9 && hint.VisibleRow != 79; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(79));
+                Assert.That((Priority(2), Priority(79), Priority(81), Priority(82)), Is.EqualTo((2, 6, 5, 5)));
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                    .OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = target;
+                    camera.Render();
+                }
+                window.RepaintRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", fields).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(menu.GameplayHelpForRow(79).TextRecord, Is.EqualTo(341));
+                var sourceText = menu.GameplayLanguageText(341);
+                Assert.That(sourceText, Is.Not.Empty);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", fields).GetValue(presenter),
+                    Is.EqualTo(sourceText));
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("raster", fields).GetValue(presenter),
+                    Is.InstanceOf<ObjectiveTextboxCompositor.Raster>());
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                Assert.That((Priority(2), Priority(81)), Is.EqualTo((2, 5)));
+                Assert.That(native.Tick, Is.EqualTo(tick));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                runtime.QualificationDriveGameRuntimeFrames(48);
+                Assert.That(hint.VisibleRow, Is.EqualTo(79));
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(1));
+                Assert.That((Priority(2), Priority(81)), Is.EqualTo((2, 5)));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(lifetime.GetValue(hint), Is.Zero);
+                Assert.That((Priority(2), Priority(79), Priority(81), Priority(82)), Is.EqualTo((6, 3, 6, 5)));
+                runtime.QualificationDriveGameRuntimeFrames(20);
+                Assert.That(hint.VisibleRow, Is.Zero);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(2), "the next source poll gives the promoted minimap row its turn");
+            }
+            finally
+            {
+                window.RepaintRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
         [Test]
         public void IndexedMinimapComposesSourceTerrainAndOrderedWritesBeforeHud()
         {
@@ -257,6 +616,33 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void EnvironmentOutputChangedAfterOpenIsRejected()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var source = Path.Combine(generated, "mc-oi62-environment-level1-v2");
+            var package = Path.Combine(generated, "mc-bhq8-level1-collision-v5-night");
+            var copy = Path.Combine(Path.GetTempPath(), "mc-environment-read-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                foreach (var directory in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+                    Directory.CreateDirectory(Path.Combine(copy, Path.GetRelativePath(source, directory)));
+                foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+                    File.Copy(file, Path.Combine(copy, Path.GetRelativePath(source, file)));
+                var cache = OwnerAssetCache.OpenAndValidateEnvironment(copy, package);
+                var relative = cache.EnvironmentMaterials.tables.path;
+                var bytes = cache.ReadOutput(relative);
+                bytes[0] ^= 1;
+                File.WriteAllBytes(Path.Combine(copy, relative), bytes);
+                Assert.Throws<InvalidDataException>(() => cache.ReadOutput(relative));
+                Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidateEnvironment(copy, package));
+            }
+            finally
+            {
+                if (Directory.Exists(copy)) Directory.Delete(copy, true);
+            }
+        }
+
+        [Test]
         public void PackageEnvironmentMaterialsReachRealNightAndDaySurfaces()
         {
             var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
@@ -285,6 +671,37 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(surface.FrameHash, Is.EqualTo(first));
                     Assert.That(surface.WorldReady, Is.True, "wrong environment preserves current visible scene");
                 }
+            }
+        }
+
+        [Test]
+        public void AdmittedFireNightMaterialsReachNativeAndUnitySurface()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var package = Path.Combine(generated, "mc-bhq10-owner-v3-level25-20261029");
+            var cachePath = Path.Combine(generated, "dragon-bee-20261105-integration/current-level25-environment");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            var profile = cache.EnvironmentMaterials.profile;
+            Assert.That(profile.terrain_graphics_flags & 2, Is.EqualTo(2));
+            Assert.That(profile.palette, Is.EqualTo("PALF-0"));
+            Assert.That(profile.blocks, Is.EqualTo("BL32F0-0"));
+            Assert.That(profile.dormant_blocks16, Is.EqualTo("BL16F0-0"));
+            Assert.That(profile.tables, Is.EqualTo("TABLESN"));
+            Assert.That(profile.texture_size, Is.EqualTo(32));
+            using (var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(25, 24, 1), cachePath))
+            using (var surface = new CampaignPresentationSurface())
+            {
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                Assert.That(surface.CacheContentHash, Is.EqualTo(cache.ContentHash));
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                CollectionAssert.AreEqual(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path),
+                    session.DayIndexedFramePalette, "native frame uses the selected PALF palette");
+                CollectionAssert.AreEqual(session.DayIndexedFramePalette, surface.FramePaletteRgb8,
+                    "Unity consumes the native indexed palette");
+                CollectionAssert.AreEqual(session.SceneFrameIndices, surface.WorldIndices.GetRawTextureData<byte>().ToArray(),
+                    "Unity receives the native indexed scene pixels");
             }
         }
 

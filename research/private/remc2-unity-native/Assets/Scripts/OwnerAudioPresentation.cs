@@ -20,6 +20,8 @@ namespace MagicCarpet.Native
         private const uint MusicAssetRef = 108;
         private const int MusicIdleMode = 1;
         private const int MusicCombatMode = 2;
+        private const float MusicIdleGain = 0.55f;
+        private const float CampaignMusicCombatGain = 0.80f;
         private static readonly int[] ExactSoundOrder =
         {
             1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31,
@@ -422,7 +424,13 @@ namespace MagicCarpet.Native
 
         private void ApplyMix()
         {
-            musicSource.volume = 0.55f * preferenceMusicGain * speechMusicGain * campaignMusicGain;
+            // The default remc2 XMIDI path loops the selected track. Its channel
+            // voice callback is empty and its danger layer belongs to optional OGG.
+            // Apply the source fade to the selected owner PCM as a whole-track gain.
+            var musicGain = campaignMusicDriven
+                ? Mathf.Lerp(MusicIdleGain, CampaignMusicCombatGain, musicCurrentUnits / 127f)
+                : MusicIdleGain;
+            musicSource.volume = musicGain * preferenceMusicGain * speechMusicGain * campaignMusicGain;
             foreach (var voice in positionalVoices) voice.Source.volume = SoundGain;
             foreach (var state in loops.Values)
                 state.Source.volume = state.CurrentUnits / 127f * SoundGain;
@@ -513,7 +521,7 @@ namespace MagicCarpet.Native
                     stream.Read,
                     stream.Seek);
                 musicSource.clip = musicClip;
-                musicSource.volume = 0.55f;
+                musicSource.volume = MusicIdleGain;
 
                 presentation = new OwnerAudioPresentation(
                     root, musicSource, musicClip, stream, voiceCompleted,
@@ -671,7 +679,7 @@ namespace MagicCarpet.Native
                     stream.Read,
                     stream.Seek);
                 musicSource.clip = musicClip;
-                musicSource.volume = 0.55f;
+                musicSource.volume = MusicIdleGain;
 
                 presentation = new OwnerAudioPresentation(
                     root,
@@ -912,13 +920,20 @@ namespace MagicCarpet.Native
             fadeAccumulator = 0f;
         }
 
-        internal void ApplyCampaignMusic(NativeSim.CampaignDayMusicSnapshot state)
+        internal void ValidateCampaignMusicState(NativeSim.CampaignDayMusicSnapshot state)
         {
             Require(state.abiVersion == NativeSim.AbiVersion && state.structSize == 80 &&
                 state.volume <= 127 && state.currentUnits <= 127 &&
                 (state.playing == 0 || (state.initialized != 0 && state.loaded != 0 &&
                     state.active != 0 && state.track == campaignMusicTrack)),
                 "authoritative campaign music state");
+        }
+
+        internal void ApplyCampaignMusic(NativeSim.CampaignDayMusicSnapshot state)
+        {
+            ValidateCampaignMusicState(state);
+            var changedTarget = musicTargetMode != state.targetMode;
+            var retiredFade = musicTimerActive && state.timerActive == 0;
             campaignMusicDriven = true;
             musicUpdatesEnabled = state.updatesEnabled != 0;
             musicTimerActive = state.timerActive != 0;
@@ -931,19 +946,22 @@ namespace MagicCarpet.Native
                 campaignMusicStartCount != state.startCount;
             campaignMusicGeneration = state.generation;
             campaignMusicStartCount = state.startCount;
+            ApplyMix();
             if (state.playing == 0)
                 musicSource.Stop();
             else if (restarted)
             {
                 musicSource.Stop();
                 musicSource.timeSamples = 0;
-                musicStream.Seek(0);
                 musicSource.Play();
                 musicStartCount++;
                 Debug.Log($"MC_MUSIC_START generation={state.generation} tick={state.tick} " +
                     $"logicalTrack={state.track} startCount={state.startCount}");
             }
-            ApplyMix();
+            else if (changedTarget || retiredFade)
+                Debug.Log($"MC_MUSIC_FADE generation={state.generation} tick={state.tick} " +
+                    $"logicalTrack={state.track} mode={state.targetMode} units={state.currentUnits} " +
+                    $"gain={musicSource.volume:F3} callbacks={state.fadeCallbackCount}");
         }
 
         internal static bool EventPreparesSound(uint kind)

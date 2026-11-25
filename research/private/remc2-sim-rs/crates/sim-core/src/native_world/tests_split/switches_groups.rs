@@ -607,69 +607,673 @@ fn level_nine_switch_publishes_ordered_group_and_binds_live_type_two_target() {
 }
 
 #[test]
+fn baraghan_root_switch_produces_tier_one_gravity_field_and_terrain_consequence() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/campaign-original-environments/level19");
+    let campaign = CampaignSession::open_with_owner_cache(
+        package.join("level19"), owner_cache, CampaignSelection::ordinary(19).unwrap(),
+    ).expect("real Baraghan package and installed owner cache");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = features.iter().find(|f| f.index == 633).copied().unwrap();
+    let field = features.iter().find(|f| f.index == 634).copied().unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 0, 0, 17));
+    assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, 17, 1));
+    let player = session.state.entity_index;
+    let position = switch.world_position(0);
+    session.set_level2_entity_position(player, position).unwrap();
+    let before = session.canonical_terrain().clone();
+    let mut root = None;
+    let mut terrain_changed = false;
+    let mut reclaimed = false;
+    let mut actor_pulled = false;
+    for _ in 0..100 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "switch dispatch errors: {:?}", session.dispatch_events());
+        if root.is_none() && session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 17, authored_indices, .. } if authored_indices.as_ref() == [634, 653, 655])) {
+            let source = session.entities().iter().find(|e| {
+                e.active && e.class == 10 && e.model == 67
+                    && e.position.x == field.world_position(0).x
+                    && e.position.y == field.world_position(0).y
+            }).expect("group17 constructs the actual Gravity Well");
+            assert_eq!(source.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[1].power);
+            assert!(source.life <= i32::from(crate::level_definition::GRAVITY_WELL_TIERS[1].effect_parameter));
+            assert_eq!((source.position.x, source.position.y), (field.world_position(0).x, field.world_position(0).y));
+            root = Some((source.index, session.economy().slot_generation(source.index)));
+        }
+        if root.is_some() && !terrain_changed {
+            let center = field.world_position(0);
+            for y in -15..15_i16 {
+                for x in -15..15_i16 {
+                    let p = Position { x: center.x.wrapping_add_signed(x * 256), y: center.y.wrapping_add_signed(y * 256), z: 0 };
+                    terrain_changed |= before.ground_height(p) != session.canonical_terrain().ground_height(p);
+                }
+            }
+        }
+        if let Some((slot, generation)) = root {
+            let entity = &session.entities()[usize::from(slot)];
+            if !entity.active || session.economy().slot_generation(slot) != generation { reclaimed = true; break; }
+            if !actor_pulled && crate::world::fields::gravity::pull_is_active(entity) {
+                let p = Position {
+                    x: entity.position.x.wrapping_add(768),
+                    y: entity.position.y,
+                    z: entity.source_word_2c().wrapping_add(256),
+                };
+                session.set_level2_entity_position(player, p).unwrap();
+                let mut control = session.clone();
+                control.session.state.live.economy.entities[usize::from(slot)].disable_drawing();
+                control.step_outer_turn(PlayerCommand::default(), 0);
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                actor_pulled = session.state.position != control.state.position;
+            }
+        }
+    }
+    assert!(root.is_some(), "ordinary authored switch must publish its field");
+    assert!(terrain_changed, "the real field must produce a terrain consequence");
+    assert!(actor_pulled, "the real field must pull the player compared with the same turn without the field");
+    assert!(reclaimed, "the real field must be reclaimed after its source lifetime");
+}
+
+#[test]
+fn baraghan_downstream_switches_publish_their_real_gravity_wells() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let cache = std::env::var_os("MC_LEVEL19_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/campaign-original-environments/level19"));
+    let campaign = CampaignSession::open_with_owner_cache(package.join("level19"), cache, CampaignSelection::ordinary(19).unwrap())
+        .expect("real Baraghan package");
+    for (switch_index, field_index, group, model, repeats) in
+        [(653, 654, 27, 2, true), (655, 656, 28, 0, false)]
+    {
+        let mut session = campaign.simulation().clone();
+        let features = session.mission().authored_features();
+        let root = *features.iter().find(|f| f.index == 633).unwrap();
+        let switch = *features.iter().find(|f| f.index == switch_index).unwrap();
+        let field = *features.iter().find(|f| f.index == field_index).unwrap();
+        assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, model, 17, group));
+        assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, group, 1));
+        let player = session.state.entity_index;
+        let mut root_published = false;
+        for _ in 0..16 {
+            session.set_level2_entity_position(player, root.world_position(0)).unwrap();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })));
+            if session.dispatch_events().iter().any(|e| matches!(e,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 17, authored_indices, .. }
+                if authored_indices.as_ref() == [634, 653, 655])) {
+                root_published = true;
+                break;
+            }
+        }
+        assert!(root_published, "root switch must construct the downstream controllers");
+        let mut publications = 0;
+        for phase in 0..3 {
+            for _ in 0..24 {
+                let position = if phase == 1 { root.world_position(0) } else { switch.world_position(0) };
+                session.set_level2_entity_position(player, position).unwrap();
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+                if session.dispatch_events().iter().any(|e| matches!(e,
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: actual, authored_indices, .. }
+                    if *actual == group as u16 && authored_indices.as_ref() == [field_index])) {
+                    publications += 1;
+                    let well = session.entities().iter().find(|e| e.active && e.class == 10 && e.model == 67
+                        && e.position.x == field.world_position(0).x && e.position.y == field.world_position(0).y)
+                        .expect("the published authored row constructs its real Gravity Well");
+                    assert_eq!(well.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[1].power);
+                }
+            }
+            assert_eq!(publications, if phase == 2 && repeats { 2 } else { 1 },
+                "switch {switch_index}, phase {phase}");
+        }
+    }
+}
+
+#[test]
+fn baraghan_repeating_switch_publishes_tier_two_tremor_into_terrain_and_damage() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::level_definition::{TREMOR_PROPERTIES, TerrainDisasterKind};
+    use crate::native_world::area_damage;
+
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let cache = std::env::var_os("MC_LEVEL19_OWNER_CACHE").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/campaign-original-environments/level19"));
+    let campaign = CampaignSession::open_with_owner_cache(package.join("level19"), cache, CampaignSelection::ordinary(19).unwrap())
+        .expect("real Baraghan package");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = *features.iter().find(|f| f.index == 628).unwrap();
+    let tremor = *features.iter().find(|f| f.index == 629).unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 2, 0, 15));
+    assert_eq!((tremor.kind, tremor.subtype, tremor.activation_group, tremor.parameter_1), (10, 71, 15, 2));
+    let initial = sim_definition::adapter::mc2_authored_terrain_disaster_definition(TerrainDisasterKind::Tremor, 2).unwrap();
+    assert_eq!((initial.lifetime(), initial.damage()), (120, 20_000), "startup retains constructor defaults");
+    let rule = TREMOR_PROPERTIES.tiers[2];
+    let player = session.state.entity_index;
+    let terrain_before = session.canonical_terrain().clone();
+    area_damage::start_effect_damage_trace(player);
+    let mut source_slot = None;
+    let mut terrain_changed = false;
+    for _ in 0..48 {
+        session.set_level2_entity_position(player, switch.world_position(0)).unwrap();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        if source_slot.is_none() && session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 15, authored_indices, .. }
+            if authored_indices.as_ref() == [629])) {
+            let source = session.entities().iter().find(|e| e.active && (e.class, e.model, e.action) == (10, 71, 78)
+                && e.position.x == tremor.world_position(0).x && e.position.y == tremor.world_position(0).y)
+                .expect("switch 628 constructs authored Tremor 629");
+            assert_eq!(source.max_life, 120);
+            assert!(source.life <= i32::from(rule.impact_parameter));
+            assert_eq!(source.subspell_index, if source.record[74] == 0 { rule.damage } else { 4 * (rule.damage / 120) });
+            source_slot = Some(source.index);
+        }
+        if source_slot.is_some() {
+            for y in -4..=4_i16 {
+                for x in -4..=4_i16 {
+                    let center = tremor.world_position(0);
+                    let p = Position { x: center.x.wrapping_add_signed(x * 256), y: center.y.wrapping_add_signed(y * 256), z: 0 };
+                    terrain_changed |= terrain_before.ground_height(p) != session.canonical_terrain().ground_height(p);
+                }
+            }
+        }
+    }
+    let receipts = area_damage::take_effect_damage_trace();
+    source_slot.expect("real repeating switch must publish group 15");
+    assert!(terrain_changed, "the authored Tremor must deform actual terrain");
+    assert!(receipts.iter().any(|receipt| receipt.pulse.position.x == tremor.world_position(0).x
+        && receipt.pulse.position.y == tremor.world_position(0).y
+        && receipt.pulse.payload == 4 * (rule.damage / 120)),
+        "the real damage boundary must receive tier-two payload: {receipts:?}");
+}
+
+#[test]
+fn galiphur_repeating_switch_constructs_tier_two_gravity_well() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL13").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/volcano-quake-20261104-integration/current-owner-package/level13"),
+        PathBuf::from,
+    );
+    let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/campaign-original-environments/level13");
+    let campaign = CampaignSession::open_with_owner_cache(
+        package, owner_cache, CampaignSelection::ordinary(13).unwrap(),
+    ).expect("real Galiphur package and installed owner cache");
+    let mut session = campaign.simulation().clone();
+    let features = session.mission().authored_features();
+    let switch = features.iter().find(|f| f.index == 412).copied().unwrap();
+    let field = features.iter().find(|f| f.index == 413).copied().unwrap();
+    assert_eq!((switch.kind, switch.subtype, switch.activation_group, switch.stage_tag), (11, 2, 0, 13));
+    assert_eq!((field.kind, field.subtype, field.activation_group, field.parameter_1), (10, 67, 13, 2));
+    let player = session.state.entity_index;
+    let inside = switch.world_position(0);
+    session.set_level2_entity_position(player, inside).unwrap();
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|e| matches!(e, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        if session.dispatch_events().iter().any(|e| matches!(e,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 13, authored_indices, .. } if authored_indices.as_ref() == [413])) {
+            let source = session.entities().iter().find(|e| {
+                e.active && e.class == 10 && e.model == 67
+                    && e.position.x == field.world_position(0).x && e.position.y == field.world_position(0).y
+            }).expect("group13 constructs its real Gravity Well");
+            assert_eq!(source.subspell_index, crate::level_definition::GRAVITY_WELL_TIERS[2].power);
+            assert!(source.life <= i32::from(crate::level_definition::GRAVITY_WELL_TIERS[2].effect_parameter));
+            assert!(!session.session.state.live.authored_features_consumed.contains(&413), "repeat publisher retains its authored source row");
+            return;
+        }
+    }
+    panic!("real Galiphur switch did not construct its tier-two field");
+}
+
+#[test]
 fn level_two_group27_model17_companion_activates_from_objective_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-27 model-17 session");
-    let baseline_hash = session.campaign_state_hash();
-    let authored_features = session.mission().authored_features().to_vec();
-    let feature_position = |index: u16| {
-        authored_features
-            .iter()
-            .copied()
-            .find(|feature| feature.index == index)
-            .expect("authored group-27 feature")
-            .world_position(0)
+    use crate::campaign::source_arena::SourceEntityView;
+    use crate::house::{
+        HOUSE_LIVE_ACTION, HOUSE_REMOVE_ACTION, HOUSE_TERRAIN_TO_LIVE_ACTION, HouseState,
+        HouseStepEvent,
     };
+    use crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+
+    fn step(session: &mut Mc2Simulation) {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+    }
+
+    fn standing_original_vault(session: &mut Mc2Simulation) -> HouseState {
+        for _ in 0..32 {
+            if let Some(house) = session.ordinary().houses().iter().find(|house| {
+                house.active
+                    && house.xtype == 27
+                    && house.building_index == 21
+                    && house.action == HOUSE_LIVE_ACTION
+            }) {
+                return *house;
+            }
+            step(session);
+        }
+        panic!("authored group27 vault never reached standing BUILD21");
+    }
+
+    fn demolish(session: &mut Mc2Simulation, vault_slot: u16) {
+        step(session);
+        let groups: Vec<_> = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    group: 27,
+                    source_slot,
+                    authored_indices,
+                    ..
+                } => Some((*source_slot, authored_indices.as_ref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups, [(vault_slot, &[156_u16, 157][..])]);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::House { source_slot, events, .. }
+                if *source_slot == vault_slot && events.iter().any(|event| matches!(
+                    event,
+                    HouseStepEvent::RemoveFootprint {
+                        entity_index, building_index: 54, xtype: 27, ..
+                    } if *entity_index == vault_slot
+                ))
+        )));
+        let live = &session.session.state.live;
+        assert!(
+            [156, 157]
+                .iter()
+                .all(|row| live.authored_features_consumed.contains(row))
+        );
+        let producer = &live.economy.entities[usize::from(vault_slot)];
+        assert!(producer.active && producer.drawing_disabled());
+    }
+
+    fn pressure(session: &mut Mc2Simulation, slot: Option<u16>) {
+        // Start the turn with no live free slots. The ordinary group
+        // allocator rebuild can recover only the deliberately reserved
+        // reset address and any slot actually retired by this source pass.
+        std::sync::Arc::make_mut(&mut session.session.baseline)
+            .economy
+            .economy
+            .free_slots = slot.into_iter().collect();
+        let arena = &mut session.session.state.live.economy;
+        arena.economy.free_slots.clear();
+
+        // Disable the source fallback on this fixture so exhausting the
+        // free stack tests a real null NewEvent return.
+        for row in &mut arena.entities {
+            row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        macro_rules! clear_replaceable {
+            ($($rows:ident),+ $(,)?) => {
+                $(
+                    for row in &mut arena.economy.$rows {
+                        row.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+                    }
+                )+
+            };
+        }
+        clear_replaceable!(
+            castle_defenders,
+            spheres,
+            authored_trees,
+            fireball_projectiles,
+            castle_projectiles,
+            death_bursts,
+            authored_model1,
+            model59_smoke_children,
+            authored_model5_water_splashes,
+            authored_model13,
+            authored_model6,
+            model13_spawned_children,
+            model17_spawned_children,
+            model76_tail_spawns,
+        );
+        arena
+            .economy
+            .for_each_live_replaceable_arena_row(|slot, kind| {
+                panic!("unexpected replacement candidate {slot}: {kind:?}");
+            });
+    }
+
+    fn pickup_slot(session: &Mc2Simulation) -> Option<u16> {
+        session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.authored_index == 156 && row.active)
+            .map(|row| row.source_entity_index)
+    }
+
+    fn companion(session: &Mc2Simulation) -> Option<Level2AuthoredModel17Source> {
+        session
+            .economy()
+            .authored_model17()
+            .iter()
+            .find(|row| row.authored_index == 157)
+            .copied()
+    }
+
+    let owner_cache = std::env::var_os("MC_LEVEL2_OWNER_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-b9s2-cursor-level2-vault-20261029")
+        });
+    let mut session = level_two_campaign_session_with_owner_cache(&owner_cache);
+    let baseline_hash = session.campaign_state_hash();
+    let player = session.state.entity_index;
+    let meteor_position = session
+        .mission()
+        .authored_features()
+        .iter()
+        .find(|row| row.index == 157)
+        .expect("authored group27 Meteor row")
+        .world_position(0);
+
+    // The source grants the newly constructed player 100 protected visits.
+    // Hold an explicit safe flight pose over its ordinary spawn until those
+    // real player visits expire; do not change life or the protection state.
+    let safe = Position { z: 12_000, ..session.state.position };
+    for _ in 0..100 {
+        if session.session.state.live.player_protection_ticks == 0 { break; }
+        session.set_level2_entity_position(player, safe).unwrap();
+        step(&mut session);
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0,
+        "ordinary player visits must expire the source spawn protection");
+    assert!(session.canonical_player_life_for_test() >= 0);
+    assert_eq!(session.entities()[usize::from(player)].action, 0);
+
+    // Declare the preceding objective and two lethal House damage contacts.
+    // The real group-8 switch, both BUILD lifecycles and final demolition
+    // still run through their normal scheduled visits.
     session
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel");
+    step(&mut session);
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 32, group: 8, authored_indices, .. }
+            if authored_indices.as_ref() == [153, 154]
+    )));
+    let original_slot = session.economy().authored_house_source_slot(154).unwrap();
+    let original = standing_original_vault(&mut session);
+    assert_eq!(original.entity_index, original_slot);
+    assert_eq!(
+        (original.life, original.parameter.destruction_successor),
+        (6000, 54)
+    );
+    assert!(
+        session
+            .session
+            .state
+            .live
+            .ordinary
+            .houses
+            .submit_source_damage(original_slot, 6001, player)
+    );
 
-    // The real row-154 model-45 source selects group 27 during the
-    // same source pass that materializes group 8. The group-27 spell row
-    // remains the first event payload item; row 157 is its model-17
-    // companion and must be allocated transactionally beside it.
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session.dispatch_events().iter().any(|event| {
-        matches!(
-            event,
-            Mc2DispatchEvent::AuthoredGroupActivated {
-                group,
-                authored_indices,
-                ..
-            } if *group == 27 && authored_indices.as_ref() == [156, 157]
-        )
-    }));
-    let meteor = session
-        .economy()
-        .authored_model17()
+    step(&mut session);
+    let original_removal = session
+        .ordinary()
+        .houses()
         .iter()
-        .find(|source| source.authored_index == 157)
+        .find(|house| house.entity_index == original_slot && house.active)
+        .expect("lethal House contact keeps BUILD21 for its next removal visit");
+    assert_eq!(
+        (original_removal.action, original_removal.life),
+        (HOUSE_REMOVE_ACTION, -1)
+    );
+    step(&mut session);
+    let birth = session
+        .ordinary()
+        .houses()
+        .iter()
+        .find(|house| {
+            house.active
+                && house.building_index == 54
+                && (house.position.x, house.position.y)
+                    == (original.position.x, original.position.y)
+        })
         .copied()
-        .expect("group-27 model-17 companion");
+        .expect("the scheduled BUILD21 removal constructs BUILD54 at the same site");
+    assert_eq!(birth.xtype, 27);
+    assert_eq!(
+        (birth.action, birth.max_life),
+        (HOUSE_TERRAIN_TO_LIVE_ACTION, 30)
+    );
+    assert!(matches!(birth.life, 29 | 30));
+    assert_ne!(birth.entity_index, original_slot);
+    if birth.entity_index < original_slot {
+        assert_eq!(
+            birth.life, 30,
+            "a lower slot begins construction on the next pass"
+        );
+    }
+    let vault_slot = birth.entity_index;
+    let successor_at_slot = |session: &Mc2Simulation| {
+        session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == vault_slot && house.active)
+            .copied()
+            .expect("the current BUILD54 successor remains live")
+    };
+    for remaining in (1..birth.life).rev() {
+        step(&mut session);
+        let building = successor_at_slot(&session);
+        assert_eq!(
+            (building.action, building.life),
+            (HOUSE_TERRAIN_TO_LIVE_ACTION, remaining)
+        );
+    }
+    step(&mut session);
+    let successor = successor_at_slot(&session);
     assert_eq!(
         (
-            meteor.source_class,
-            meteor.model,
-            meteor.action,
-            meteor.subspell_index,
-            meteor.max_life,
+            successor.action,
+            successor.life,
+            successor.parameter.destruction_successor
         ),
-        (10, 17, 17, 3000, 10)
+        (HOUSE_LIVE_ACTION, 8000, 0)
     );
-    let meteor_position = feature_position(157);
+    assert!(!successor.parameter.produces_villagers());
+    let successor_handle = session
+        .session
+        .state
+        .live
+        .economy
+        .handle(vault_slot)
+        .unwrap();
+    assert!(
+        session
+            .session
+            .state
+            .live
+            .ordinary
+            .houses
+            .submit_source_damage(vault_slot, 8001, player)
+    );
+    step(&mut session);
+    let pending = session
+        .ordinary()
+        .houses()
+        .iter()
+        .find(|house| house.entity_index == vault_slot && house.active)
+        .expect("BUILD54 retains its next scheduled removal");
+    assert_eq!(pending.action, HOUSE_REMOVE_ACTION);
+    assert!(pickup_slot(&session).is_none() && companion(&session).is_none());
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 27, .. }
+    )));
+
+    // Use an address which is genuinely free and has never been constructed.
+    // The zero-address branch detects extra addresses freed before the scan.
+    let reserved = session
+        .economy()
+        .free_slots
+        .iter()
+        .rev()
+        .copied()
+        .find(|slot| {
+            session.economy().slot_generation(*slot) == 0
+                && session
+                    .session
+                    .baseline
+                    .economy
+                    .economy
+                    .free_slots
+                    .contains(slot)
+        })
+        .expect("an ordinary never-allocated address in the source arena");
+    let mut empty = session.clone();
+    let mut partial = session.clone();
+    pressure(&mut empty, None);
+    pressure(&mut partial, Some(reserved));
+    demolish(&mut empty, vault_slot);
+    assert!(pickup_slot(&empty).is_none() && companion(&empty).is_none());
+    demolish(&mut partial, vault_slot);
+    assert_eq!(pickup_slot(&partial), Some(reserved));
+    assert_eq!(partial.economy().slot_generation(reserved), 1);
+    assert!(
+        companion(&partial).is_none(),
+        "row157 must see exhausted NewEvent"
+    );
+    for (branch, expected_pickup) in [(&mut empty, None), (&mut partial, Some(reserved))] {
+        step(branch);
+        assert!(
+            branch
+                .session
+                .state
+                .live
+                .economy
+                .resolve(successor_handle)
+                .is_none()
+        );
+        assert_eq!(pickup_slot(branch), expected_pickup);
+        assert!(companion(branch).is_none());
+        assert!(!branch.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 27, .. }
+        )));
+    }
+
+    // The real group27 Meteor lands at the vault. Hold the real player in
+    // its first damage aperture and compare the historical replay policy
+    // against the source tier, with no forged effect or damage packet.
+    let mut contact = meteor_position;
+    contact.z = session.canonical_terrain().ground_height(meteor_position);
+    session.set_level2_entity_position(player, contact).unwrap();
+    let mut historical = session.clone();
+    historical.set_replay_legacy_authored_effect_tiers(true);
+    crate::native_world::area_damage::start_effect_damage_trace(player);
+    demolish(&mut historical, vault_slot);
+    let old_meteor = companion(&historical).expect("historical group27 Meteor");
+    assert_eq!((old_meteor.subspell_index, old_meteor.max_life), (3000, 10));
+    if old_meteor.life == 10 { step(&mut historical); }
+    let old_receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert!(old_receipts.iter().any(|receipt| receipt.source_slot == Some(old_meteor.source_entity_index)
+        && receipt.pulse.payload == 300), "historical contact retains its original pulse");
+
+    session.start_creature17_trace();
+    crate::native_world::area_damage::start_effect_damage_trace(player);
+    demolish(&mut session, vault_slot);
+    assert!(pickup_slot(&session).is_some());
+    let birth = companion(&session).expect("normal allocation produces the group27 companion");
+    let parent = session
+        .session
+        .state
+        .live
+        .economy
+        .handle(birth.source_entity_index)
+        .unwrap();
     assert_eq!(
-        (meteor.position.x, meteor.position.y),
+        (
+            birth.source_class,
+            birth.model,
+            birth.action,
+            birth.subspell_index,
+            birth.max_life
+        ),
+        (10, 17, 17, 16000, 10)
+    );
+    assert_eq!(
+        (birth.position.x, birth.position.y),
         (meteor_position.x, meteor_position.y)
     );
     assert_eq!(
-        meteor.position.z,
+        birth.position.z,
         session.canonical_terrain().ground_height(meteor_position)
     );
+    assert!(pickup_slot(&session).unwrap() < birth.source_entity_index);
+
+    // A reused lower address receives its first callback on the next pass.
+    // A higher address can receive it in the publication pass.
+    if birth.life == 10 {
+        step(&mut session);
+    }
+    let meteor = companion(&session).expect("the first scheduled Meteor visit retains the parent");
     assert_eq!(meteor.life, 9);
-    assert_eq!(session.economy().model17_spawned_children().len(), 3);
+    let receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert!(receipts.iter().any(|receipt| receipt.source_slot == Some(meteor.source_entity_index)
+        && receipt.pulse.payload == 1600),
+        "first actual Meteor callback must use tier-two damage: {receipts:?}");
+    let arena = &session.session.state.live.economy;
+    assert_eq!(arena.handle(meteor.source_entity_index), Some(parent));
+    // The shared world effect callback produces ordinary Impact rows. Its
+    // allocation receipt keeps the exact parent incarnation and child packet.
+    let children: Vec<_> = session
+        .take_creature17_trace()
+        .meteor_children
+        .into_iter()
+        .filter(|(source, _, _)| *source == parent)
+        .collect();
+    assert_eq!(children.len(), 3);
+    let mut child_slots = BTreeSet::new();
+    for (_, child, packet) in &children {
+        assert!(child_slots.insert(child.source_slot));
+        assert_eq!(
+            (
+                packet.index,
+                packet.source_id,
+                packet.class,
+                packet.model,
+                packet.action
+            ),
+            (child.source_slot, meteor.entity_id, 10, 0, 0)
+        );
+        assert!(matches!(
+            arena.resolve(*child),
+            Some(SourceEntityView::Imported(row)) if (row.class, row.model, row.action) == (10, 0, 0)
+        ));
+    }
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Mc2DispatchEvent::DynamicArena {
@@ -679,7 +1283,48 @@ fn level_two_group27_model17_companion_activates_from_objective_production_route
         } if *source_slot == meteor.source_entity_index
     )));
 
+    // At its first zero-width visit the source rounds the search center to
+    // the neighboring tile. The next visit expands to 384, so it can hit the
+    // player at the actual center of the source row.
+    session.set_level2_entity_position(player, contact).unwrap();
+    let player_handle = session.source_arena().handle(player).unwrap();
+    crate::native_world::area_damage::start_player_damage_trace(player_handle);
+    crate::native_world::area_damage::start_effect_damage_trace(player);
+    step(&mut session);
+    let receipts = crate::native_world::area_damage::take_effect_damage_trace();
+    assert_eq!(companion(&session).unwrap().life, 8);
+    let hit = receipts.iter().find(|receipt| receipt.source_slot == Some(meteor.source_entity_index)
+        && receipt.pulse.payload == 1600 && receipt.hit_count.is_some_and(|hits| hits > 0)
+        && receipt.mailbox_before != receipt.mailbox_after)
+        .unwrap_or_else(|| panic!("second actual Meteor visit must damage the nearby player: {receipts:?}"));
+    assert_eq!(hit.mailbox_after, Some((1600, meteor.entity_id)));
+    let writer_sequence = hit.writer_sequence.expect("Meteor is the actual player mailbox writer");
+    let mut consumptions = crate::native_world::area_damage::take_player_damage_consumptions();
+    if !consumptions.iter().any(|visit| visit.writer.is_some_and(|writer| writer.sequence == writer_sequence)) {
+        // If the player slot precedes the Meteor, the next player visit owns
+        // the still-pending hit; otherwise it was consumed in this same pass.
+        step(&mut session);
+        consumptions.extend(crate::native_world::area_damage::take_player_damage_consumptions());
+    }
+    let consumed = consumptions.iter().find(|visit| visit.target == player_handle
+        && visit.mailbox == (1600, meteor.entity_id)
+        && visit.writer.is_some_and(|writer| writer.sequence == writer_sequence
+            && writer.source == crate::native_world::area_damage::PlayerMailboxSource::Effect(parent)))
+        .unwrap_or_else(|| panic!("ordinary player visit must consume this Meteor's mailbox: visits={consumptions:?} player={:?} life={} protection={}",
+            session.entities()[usize::from(player)], session.canonical_player_life_for_test(),
+            session.session.state.live.player_protection_ticks));
+    assert_eq!(consumed.life_after, consumed.life_before - 1600,
+        "the actual unshielded source visit subtracts the Meteor pulse");
+    assert_eq!(session.canonical_player_life_for_test(), consumed.life_after);
+
     session.reset();
+    let arena = &session.session.state.live.economy;
+    assert!(arena.resolve(parent).is_none());
+    assert!(
+        children
+            .iter()
+            .all(|(_, child, _)| arena.resolve(*child).is_none())
+    );
     assert!(session.economy().authored_model17().is_empty());
     assert!(session.economy().model17_spawned_children().is_empty());
     assert!(session.economy().spell_pickups().is_empty());
@@ -1219,6 +1864,22 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .set_level2_entity_position(session.state.entity_index, root.position)
         .expect("fixture player position updates the authoritative row and map link");
 
+    let mut historical = session.clone();
+    historical.set_replay_legacy_authored_effect_tiers(true);
+    for _ in 0..16 {
+        historical.step_outer_turn(PlayerCommand::default(), 0);
+        if historical.economy().authored_model22().iter().any(|source| source.authored_index == 110) {
+            break;
+        }
+    }
+    let old = *historical.economy().authored_model22().iter()
+        .find(|source| source.authored_index == 110).expect("historical row-110 Wind");
+    assert_eq!((old.max_life, old.subspell_index), (500, 1000));
+    historical.set_replay_legacy_authored_effect_tiers(false);
+    assert_eq!(historical.economy().authored_model22().iter()
+        .find(|source| source.authored_index == 110), Some(&old),
+        "crossing the replay boundary does not rewrite an existing Wind");
+
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         if session
@@ -1238,6 +1899,7 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .find(|source| source.authored_index == 110)
         .copied()
         .expect("rooted group-9 switch materializes row 110 wind");
+    assert_eq!((wind.max_life, wind.subspell_index), (40, 100));
     assert_eq!(session.economy().model22_spawned_children().len(), 11);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,

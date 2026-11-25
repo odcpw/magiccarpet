@@ -14,6 +14,7 @@ mod render_observation;
 #[path = "building_observation.rs"]
 mod building_observation;
 use serde::Deserialize;
+use std::cell::Cell;
 use sim_core::{
     campaign::backend::{
         MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES, MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT, Mc2CampaignBackend,
@@ -54,6 +55,7 @@ struct InstalledCampaignInput {
     campaign: Mc2CampaignInputs,
     presentation_cache: Option<std::path::PathBuf>,
     sound_bank: Option<super::campaign_sound_bank::CampaignSoundBank>,
+    music_available: Cell<Option<bool>>,
 }
 
 fn preflight_sound_banks(
@@ -77,26 +79,29 @@ fn preflight_sound_banks(
                         "sound bank has no exact installed source identity",
                     )
                 })?;
+            let mut bank = None;
             for root in input
                 .campaign
                 .owner_cache
                 .iter()
                 .chain(input.presentation_cache.iter())
             {
-                if let Some(bank) = super::campaign_sound_bank::CampaignSoundBank::load_if_present(
+                if let Some(candidate) = super::campaign_sound_bank::CampaignSoundBank::load_if_present(
                     root,
                     selection,
                     owner_hash,
                     campaign_hash,
                 )? {
-                    return Ok(Some(bank));
+                    bank = Some(candidate);
+                    break;
                 }
             }
-            Ok(None)
+            Ok(bank)
         })
         .collect::<AbiResult<Vec<_>>>()?;
     for (input, bank) in inputs.iter_mut().zip(banks) {
         input.sound_bank = bank;
+        input.music_available.set(None);
     }
     Ok(())
 }
@@ -125,6 +130,87 @@ struct CampaignPreferenceRollback {
 }
 
 impl RuntimeRecord {
+    fn source_audio_input(&self) -> Option<&InstalledCampaignInput> {
+        let session = self.runtime.session()?;
+        let package = &session.backend().campaign_presentation_source().definition().package_root;
+        self.installed_inputs.iter().find(|input| &input.campaign.package_root == package)
+    }
+
+    fn source_music_available(&self) -> AbiResult<bool> {
+        let Some(input) = self.source_audio_input() else { return Ok(false); };
+        if let Some(available) = input.music_available.get() { return Ok(available); }
+        let campaign = self.session()?.backend().campaign_presentation_source();
+        let available = super::campaign_audio::load_campaign_music(
+            input.presentation_cache.as_deref().or(input.campaign.owner_cache.as_deref()),
+            campaign.definition().identity, campaign.inspection().package_sha256(),
+            &campaign.definition().package_sha256,
+        )?.is_some();
+        // Resource memo only: the outer RuntimeRecord mutex serializes this
+        // read, and neither gameplay nor the retained music clock is touched.
+        // Failed validation is never cached as an absent device.
+        input.music_available.set(Some(available));
+        Ok(available)
+    }
+
+    fn source_audio_capabilities(&self) -> AbiResult<(bool, bool)> {
+        let sound = self.source_audio_input().is_some_and(|input| input.sound_bank.is_some());
+        Ok((sound, self.source_music_available()?))
+    }
+
+    fn cached_source_audio_capabilities(&self) -> Option<(bool, bool)> {
+        let input = self.source_audio_input()?;
+        Some((input.sound_bank.is_some(), input.music_available.get()?))
+    }
+
+    fn source_audio_command(&mut self, handle: u64, generation: u64,
+        session_guard: SessionGuard, action: sim_core::game_runtime::preferences::SourceAudioAction,
+        speech_available: Option<bool>,
+    ) -> AbiResult<()> {
+        use sim_core::game_runtime::preferences::SourceAudioAction;
+        let mode = self.runtime.identity().mode;
+        self.validate_transition(handle, generation, mode)?;
+        if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+            return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing, actual: mode,
+            }));
+        }
+        self.session()?.completion_status(session_guard).map_err(|error|
+            map_transition_error(RuntimeTransitionError::SessionGuard(Box::new(error))))?;
+        let available = match action {
+            SourceAudioAction::Sound => self.source_audio_input().is_some_and(|input| input.sound_bank.is_some()),
+            SourceAudioAction::Music => self.source_music_available()?,
+            SourceAudioAction::Speech => speech_available == Some(true),
+        };
+        // Prepare the existing music owner before CONFIG publication, without
+        // advancing its timer/fade. Resource failures cannot commit a toggle.
+        if action == SourceAudioAction::Music && available {
+            let presentation = self.take_campaign_presentation_record()?;
+            self.retain_campaign_presentation_record(presentation);
+        }
+        let result = self.runtime.source_audio_preferences(
+            RuntimeGuard { runtime_id: handle, generation }, session_guard, action, available,
+        ).map_err(map_transition_error)?;
+        match result.source_audio_admitted {
+            Some(false) => return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                "source audio is unavailable or owned by an active dialog preview")),
+            Some(true) => {},
+            None => return Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                "source audio returned no admission result")),
+        }
+        match action {
+            SourceAudioAction::Sound => self.reset_audio()?,
+            SourceAudioAction::Music => {
+                if let Some(music) = self.campaign_presentation.as_mut().and_then(|record| record.day_music.as_mut()) {
+                    if result.preferences.music_enabled { music.restart(); } else { music.stop(); }
+                }
+            }
+            // Source Speech changes later admission, never the current CD.
+            SourceAudioAction::Speech => {},
+        }
+        self.campaign_presentation_dirty = true;
+        Ok(())
+    }
+
     fn title(runtime_id: u64) -> AbiResult<Self> {
         let runtime = GameRuntime::title(runtime_id).map_err(map_transition_error)?;
         Ok(Self {
@@ -249,7 +335,6 @@ impl RuntimeRecord {
     ) -> AbiResult<()> {
         self.ensure_open()?;
         if self.runtime.identity().mode != RuntimeMode::Playing {
-            self.runtime.reset_preference_input();
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "INVALID_RUNTIME_MODE: preferences step requires playing",
@@ -287,6 +372,7 @@ impl RuntimeRecord {
             )
         })?;
         let preferences = self.runtime.identity().player_preferences.preferences;
+        let dynamic_lighting=self.runtime.identity().display_settings.dynamic_lighting;
         let show_foreign_text = self.runtime.show_foreign_objective_text();
         let backend = self.session_mut()?.backend_mut();
         let previous = CampaignPreferenceRollback {
@@ -300,7 +386,7 @@ impl RuntimeRecord {
         };
         backend
             .set_objective_presentation_preferences(preferences.speech_enabled, show_foreign_text);
-        backend.set_dynamic_lighting_enabled(preferences.dynamic_lighting);
+        backend.set_dynamic_lighting_enabled(dynamic_lighting);
         backend.set_help_enabled(preferences.show_help);
         Ok(previous)
     }
@@ -354,6 +440,7 @@ impl RuntimeRecord {
             session.backend().campaign_presentation_source(),
             session.identity().generation,
             paused,
+            self.runtime.identity().player_preferences.preferences.sound_enabled,
         )?;
         if let Some(music) = self
             .campaign_presentation
@@ -656,11 +743,15 @@ impl RuntimeRecord {
     ) -> AbiResult<super::campaign_abi::CampaignSessionRecord> {
         let identity = self.runtime.identity();
         let preferences = &identity.player_preferences.preferences;
+        let player_names_visible = identity.source_player_names_visible;
+        let player_label_locale = self.runtime.selected_locale_binding();
+        let player_label_name = preferences.player_name.clone();
         let render_options = sim_core::day_indexed_frame::WorldRenderOptions {
-            reflections: preferences.reflections,
-            sky: preferences.sky,
-            shadows: preferences.shadows,
+            reflections: identity.display_settings.reflections,
+            sky: identity.display_settings.sky,
+            shadows: identity.display_settings.shadows,
             flat_shading: identity.display_settings.flat_shading,
+            viewport_size: identity.display_settings.viewport_size,
         };
         let generation = self.session()?.identity().generation;
         if !self.campaign_presentation_dirty
@@ -675,6 +766,12 @@ impl RuntimeRecord {
             } = &mut record.kind
             {
                 day_frame_state.set_render_options(render_options);
+                if let Err(error) = day_frame_state.bind_player_names(
+                    player_names_visible, player_label_locale.clone(), &player_label_name,
+                ) {
+                    self.campaign_presentation = Some(record);
+                    return Err(AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()));
+                }
             }
             return Ok(record);
         }
@@ -746,6 +843,8 @@ impl RuntimeRecord {
             ),
         };
         state.set_render_options(render_options);
+        state.bind_player_names(player_names_visible, player_label_locale, &player_label_name)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
         if initializing
             && (self.runtime.identity().mode == RuntimeMode::Paused
                 || !self
@@ -960,6 +1059,7 @@ impl RuntimeRecord {
             ordinary_completion: receipt,
         });
         self.campaign_presentation = None;
+        self.reset_audio()?;
         Ok(())
     }
 
@@ -1018,6 +1118,16 @@ impl RuntimeRecord {
         expected_tick: u64,
     ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        if self.session()?.backend().mission_retry_requested() {
+            self.runtime.retry_mission_if_ready(
+                RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+                SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+            ).map_err(map_transition_error)?;
+            self.completion_transition_receipt = Some(BoundaryTransitionReceipt::MissionRetry);
+            self.campaign_presentation = None;
+            self.reset_audio()?;
+            return Ok(());
+        }
         let resolver = self.resolver.as_ref().ok_or_else(|| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
@@ -1148,6 +1258,8 @@ impl RuntimeRecord {
             )
             .map_err(map_transition_error)?;
         self.completion_transition_receipt = None;
+        self.campaign_presentation = None;
+        self.reset_audio()?;
         Ok(())
     }
 
@@ -1441,6 +1553,7 @@ fn installed_package_set_inputs(
             Ok(InstalledCampaignInput {
                 campaign,
                 sound_bank: None,
+                music_available: Cell::new(None),
                 presentation_cache: location
                     .presentation_cache_path
                     .filter(|path| !path.is_empty())
@@ -1601,6 +1714,11 @@ pub extern "C" fn mc_game_runtime_identity_json_v1(
         with_runtime(handle, |runtime| {
             let mut identity = serde_json::to_value(runtime.runtime.identity())
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            if let Some((sound_available, music_available)) = runtime.cached_source_audio_capabilities() {
+                identity["source_audio_capabilities"] = serde_json::json!({
+                    "sound_available": sound_available, "music_available": music_available,
+                });
+            }
             if let Some(speech) = runtime
                 .resolver
                 .as_ref()
@@ -1982,8 +2100,13 @@ pub extern "C" fn mc_game_runtime_active_entry_presentation_json_v1(
                     },
                 )
                 .map_err(map_transition_error)?;
-            let observation =
-                serde_json::json!({"identity": record.runtime.identity(), "value": value});
+            let (sound_available, music_available) = record.source_audio_capabilities()?;
+            let observation = serde_json::json!({
+                "identity": record.runtime.identity(), "value": value,
+                "source_audio_capabilities": {
+                    "sound_available": sound_available, "music_available": music_available,
+                },
+            });
             super::game_session_abi::write_json(&observation, buffer, capacity, out_length)
         })
     })
@@ -2030,6 +2153,77 @@ pub extern "C" fn mc_game_runtime_paused_frame_v1(
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32 {
     boundary(|| with_runtime_mut(handle, |runtime| runtime.resume(handle, generation)))
+}
+
+fn validate_tmap_guard(record: &RuntimeRecord, runtime_generation: u64, session_generation: u64, tick: u64) -> AbiResult<()> {
+    record.ensure_open()?;
+    if record.runtime.identity().generation != runtime_generation {
+        return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale TMAP runtime generation"));
+    }
+    let identity = record.session()?.identity();
+    if identity.generation != session_generation {
+        return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "stale TMAP session generation"));
+    }
+    if identity.tick != tick {
+        return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "stale TMAP tick"));
+    }
+    Ok(())
+}
+
+/// Pure snapshot of the current source-owned selector images. The binary
+/// format is u16 count followed by sorted (u16 selector, u32 length, bytes).
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_tmap_pixels_copy_v1(
+    handle: u64, runtime_generation: u64, session_generation: u64, tick: u64,
+    buffer: *mut u8, capacity: u32, out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_length, "TMAP pixel length")?;
+        with_runtime(handle, |record| {
+            validate_tmap_guard(record, runtime_generation, session_generation, tick)?;
+            let images = record.session()?.backend().campaign_presentation_source().simulation().source_tmap_images();
+            let count = u16::try_from(images.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "too many TMAP images"))?;
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&count.to_le_bytes());
+            for (selector, pixels) in images {
+                let length = u32::try_from(pixels.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "TMAP image too large"))?;
+                bytes.extend_from_slice(&selector.to_le_bytes());
+                bytes.extend_from_slice(&length.to_le_bytes());
+                bytes.extend_from_slice(&pixels);
+            }
+            let length = u32::try_from(bytes.len()).map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "TMAP snapshot too large"))?;
+            write_output(out_length, length);
+            if capacity < length { return Err(AbiError::new(MC_STATUS_BOUNDS, "TMAP pixel buffer too small")); }
+            if buffer.is_null() { return Err(AbiError::new(MC_STATUS_NULL_POINTER, "TMAP pixel buffer is null")); }
+            // SAFETY: the caller provided a non-null buffer of the validated capacity.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len()) };
+            Ok(())
+        })
+    })
+}
+
+/// Acknowledge only geometry-submitted source selectors at their exact turn.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_tmap_draw_v1(
+    handle: u64, runtime_generation: u64, session_generation: u64, tick: u64, yaw: i16,
+    selectors: *const u16, count: u32,
+) -> i32 {
+    boundary(|| {
+        if count > 504 { return Err(AbiError::new(MC_STATUS_BOUNDS, "too many TMAP selectors")); }
+        if count > 0 && selectors.is_null() { return Err(AbiError::new(MC_STATUS_NULL_POINTER, "TMAP selectors are null")); }
+        if count > 0 && !selectors.is_aligned() { return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "TMAP selectors are unaligned")); }
+        let selectors = if count == 0 { &[][..] } else {
+            // SAFETY: non-null selector array with caller-declared bounded extent.
+            unsafe { std::slice::from_raw_parts(selectors, count as usize) }
+        };
+        with_runtime_mut(handle, |record| {
+            validate_tmap_guard(record, runtime_generation, session_generation, tick)?;
+            record.runtime.acknowledge_tmap_draw(session_generation, tick, yaw, selectors)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            record.campaign_presentation_dirty = true;
+            Ok(())
+        })
+    })
 }
 
 /// Advance one visible/hidden presentation frame without a gameplay callback.
@@ -2158,6 +2352,73 @@ pub extern "C" fn mc_game_runtime_source_speed_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_source_viewport_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    action: u8,
+) -> i32 {
+    boundary(|| {
+        use sim_core::game_runtime::SourceViewportAction;
+        let action = match action {
+            0 => SourceViewportAction::MenuDecrease,
+            1 => SourceViewportAction::MenuIncrease,
+            2 => SourceViewportAction::KeyboardEnlarge,
+            3 => SourceViewportAction::KeyboardShrink,
+            _ => return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "source viewport action must be 0..3")),
+        };
+        let entry = runtime_arc(handle)?;
+        let mut guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned")
+        })?;
+        let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+            return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+        };
+        record.ensure_open()?;
+        let before = record.runtime.identity().display_settings.viewport_size;
+        let admitted = record.runtime.source_viewport(
+            RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+            SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+            action,
+        ).map_err(map_transition_error)?;
+        if !admitted {
+            return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED, "source viewport is blocked by game state"));
+        }
+        record.campaign_presentation_dirty |= before != record.runtime.identity().display_settings.viewport_size;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_toggle_player_names_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        let entry = runtime_arc(handle)?;
+        let mut guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned")
+        })?;
+        let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+            return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+        };
+        record.ensure_open()?;
+        let admitted = record.runtime.toggle_player_names(
+            RuntimeGuard { runtime_id: handle, generation: runtime_generation },
+            SessionGuard { session_id: handle, generation: session_generation, expected_tick },
+        ).map_err(map_transition_error)?;
+        if !admitted {
+            return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED, "source player names are blocked by game state"));
+        }
+        record.campaign_presentation_dirty = true;
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     handle: u64,
     runtime_generation: u64,
@@ -2272,6 +2533,67 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         let command = match command {
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceGraphics {session_guard,action}=>{
+                let entry=runtime_arc(handle)?;
+                let mut guard=entry.lock().map_err(|_|AbiError::new(MC_STATUS_LOCK_FAILED,"game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record)=&mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE,"handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                if record.runtime.source_graphics(RuntimeGuard {runtime_id:handle,generation},session_guard,action).map_err(map_transition_error)? {
+                    record.campaign_presentation_dirty=true;return Ok(());
+                }
+                return Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,"source graphics action is unavailable"));
+            }
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceHelpMode { session_guard } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                let result = record.runtime.source_help_mode_preferences(
+                    RuntimeGuard { runtime_id: handle, generation }, session_guard,
+                ).map_err(map_transition_error)?;
+                return match result.source_help_mode_admitted {
+                    Some(true) => { record.campaign_presentation_dirty = true; Ok(()) }
+                    Some(false) => Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                        "source help mode is blocked by the current settings dialog")),
+                    None => Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                        "source help mode returned no admission result")),
+                };
+            }
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceFlightAssistance { session_guard } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                record.ensure_open()?;
+                let result = record.runtime.source_flight_assistance_preferences(
+                    RuntimeGuard { runtime_id: handle, generation }, session_guard,
+                ).map_err(map_transition_error)?;
+                return match result.source_flight_assistance_admitted {
+                    Some(true) => { record.campaign_presentation_dirty = true; Ok(()) }
+                    Some(false) => Err(AbiError::new(MC_STATUS_SOURCE_ACTION_BLOCKED,
+                        "source flight assistance is blocked by the current settings dialog")),
+                    None => Err(AbiError::new(MC_STATUS_VALIDATION_FAILED,
+                        "source flight assistance returned no admission result")),
+                };
+            }
+            sim_core::game_runtime::preferences::PreferencesCommand::SourceAudio {
+                session_guard, action, speech_available,
+            } => {
+                let entry = runtime_arc(handle)?;
+                let mut guard = entry.lock().map_err(|_| AbiError::new(
+                    MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+                let super::game_session_abi::NeutralSession::Runtime(record) = &mut *guard else {
+                    return Err(AbiError::new(MC_STATUS_UNKNOWN_HANDLE, "handle is not a game runtime"));
+                };
+                return record.source_audio_command(handle, generation, session_guard, action, speech_available);
+            }
             sim_core::game_runtime::preferences::PreferencesCommand::SourceBrightness {
                 session_guard, action,
             } => {
@@ -2318,13 +2640,6 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                     command,
                 )
                 .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))?;
-            record
-                .runtime
-                .apply_current_dynamic_lighting_preference(RuntimeGuard {
-                    runtime_id: handle,
-                    generation,
-                })
-                .map_err(map_transition_error)?;
             let after = record.runtime.identity().player_preferences.preferences;
             if initial_profile && record.runtime.identity().mode == RuntimeMode::Playing {
                 record.session_mut()?.backend_mut().hydrate_fresh_help_preference(after.show_help);
@@ -2403,6 +2718,40 @@ pub extern "C" fn mc_game_runtime_campaign_menu_command_json_v1(
         let request = utf8_input(request, request_len, "campaign action JSON")?;
         with_runtime_mut(handle, |runtime| {
             runtime.campaign_menu_command(handle, generation, &request)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_player_menu_state_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    out_menu_state: *mut u8,
+) -> i32 {
+    boundary(|| {
+        require_output(out_menu_state, "current source player menu state")?;
+        with_runtime(handle, |record| {
+            let mode = record.runtime.identity().mode;
+            record.validate_transition(handle, runtime_generation, mode)?;
+            if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+                return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Playing, actual: mode,
+                }));
+            }
+            let session = record.session()?;
+            session.completion_status(SessionGuard {
+                session_id: handle,
+                generation: session_generation,
+                expected_tick,
+            }).map_err(|error| {
+                map_transition_error(RuntimeTransitionError::SessionGuard(Box::new(error)))
+            })?;
+            let menu_state = session.backend().campaign_presentation_source()
+                .simulation().level2_player_menu_state();
+            write_output(out_menu_state, menu_state);
+            Ok(())
         })
     })
 }
@@ -4003,6 +4352,606 @@ mod tests {
     }
 
     #[test]
+    fn source_audio_controls_use_real_capabilities_notices_and_same_generation_pool() {
+        let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from).join("generated");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir":level_one_package(),"owner_cache_path":generated.join("mc-oi68-level1-fullbank-v2-20261029")},
+                {"package_dir":level_two_package(),"owner_cache_path":null},
+                {"package_dir":level_three_package(),"owner_cache_path":null}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let profile = std::env::temp_dir().join(format!("mc-source-audio-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 1, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let send = |owner, outer, id: &Value, action: &str, capability: Option<bool>| {
+            let mut request = serde_json::json!({"operation":"source_audio","action":action,
+                "session_guard":{"session_id":id["session"]["session_id"],
+                    "generation":id["session"]["generation"],"expected_tick":id["session"]["tick"]}});
+            if let Some(value) = capability { request["speech_available"] = value.into(); }
+            let bytes = serde_json::to_vec(&request).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner, outer, bytes.as_ptr(), bytes.len() as u32)
+        };
+        let read_save = |owner, outer, nested, tick| read_bytes(|buffer, capacity, length|
+            mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length));
+        let notice = |owner| read_json(|buffer, capacity, length|
+            mc_game_runtime_participant_notifications_json_v1(owner, buffer, capacity, length));
+        let unobserved = with_runtime(handle, |record| {
+            assert!(record.installed_inputs.iter().all(|input| input.music_available.get().is_none()),
+                "bootstrap/open do not load all installed music banks");
+            Ok(serde_json::to_value(record.runtime.identity()).unwrap())
+        }).unwrap();
+        let initial_save = read_save(handle, 3, 1, 0);
+        assert_eq!(send(handle, 2, &unobserved, "music", None), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(send(handle, 3, &unobserved, "speech", None), MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(read_save(handle, 3, 1, 0), initial_save);
+        for _ in 0..2 {
+            assert_eq!(send(handle, 3, &unobserved, "sound", None), MC_STATUS_OK);
+            with_runtime(handle, |record| {
+                assert!(record.installed_inputs.iter().all(|input| input.music_available.get().is_none()),
+                    "Sound and blocked/stale actions do not require unrelated music");
+                Ok(())
+            }).unwrap();
+        }
+        assert!(identity(handle).get("source_audio_capabilities").is_none(), "guard metadata never qualifies pending resources");
+        let entry = read_json(|buffer, capacity, length|
+            mc_game_runtime_active_entry_presentation_json_v1(handle, 3, buffer, capacity, length));
+        assert_eq!(entry["source_audio_capabilities"], serde_json::json!({"sound_available":true,"music_available":true}));
+        let opened = identity(handle);
+        assert_eq!(opened["source_audio_capabilities"], serde_json::json!({"sound_available":true,"music_available":true}));
+        with_runtime(handle, |record| {
+            assert_eq!(record.source_audio_input().unwrap().music_available.get(), Some(true));
+            assert_eq!(record.installed_inputs.iter().filter(|input| input.music_available.get().is_some()).count(), 1,
+                "only the actual active binding is validated by a full capability observation");
+            let dirty = record.campaign_presentation_dirty;
+            assert_eq!(record.source_audio_capabilities()?, (true, true));
+            assert_eq!(record.campaign_presentation_dirty, dirty, "resource reads never invalidate world frames");
+            Ok(())
+        }).unwrap();
+        for tick in 0..10 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            assert!(record.audio.commands.values().any(|command|
+                command.sound_id == 41 && command.action == MC_AUDIO_ACTION_START), "real phase7 current source sound");
+            assert!(record.audio.voices.iter().any(Option::is_some));
+            Ok(())
+        }).unwrap();
+        let before = identity(handle);
+        let before_save = read_save(handle, 3, 1, 10);
+        for (outer, nested, tick, expected) in [
+            (2, "1", "10", MC_STATUS_GENERATION_MISMATCH),
+            (3, "2", "10", MC_STATUS_GENERATION_MISMATCH),
+            (3, "1", "11", MC_STATUS_INVALID_ARGUMENT),
+        ] {
+            let mut stale = before.clone();
+            stale["session"]["generation"] = nested.into(); stale["session"]["tick"] = tick.into();
+            assert_eq!(send(handle, outer, &stale, "sound", None), expected);
+            assert_eq!(identity(handle), before);
+            assert_eq!(read_save(handle, 3, 1, 10), before_save);
+        }
+        for capability in [None, Some(false)] {
+            assert_eq!(send(handle, 3, &before, "speech", capability), MC_STATUS_SOURCE_ACTION_BLOCKED);
+            assert_eq!(identity(handle), before);
+            assert_eq!(read_save(handle, 3, 1, 10), before_save);
+        }
+        // The true value is the explicitly declared host CD capability here;
+        // the actual validated27-track host is exercised by the managed test.
+        assert_eq!(send(handle, 3, &before, "speech", Some(true)), MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["speech_enabled"], false);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.speech_off");
+        assert_eq!(notice(handle)["value"][0]["remaining_frames"], 50);
+        with_runtime(handle, |record| {
+            assert!(!record.session()?.backend().speech_enabled());
+            assert!(record.audio.voices.iter().any(Option::is_some), "Speech does not EndSample");
+            Ok(())
+        }).unwrap();
+        let immediate = read_save(handle, 3, 1, 10);
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold, 1, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32,
+            immediate.as_ptr(), immediate.len() as u32), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cold_id = identity(cold);
+        let outer = cold_id["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(read_save(cold, outer, nested, 10), immediate, "immediate action history cold-replays exactly");
+        assert_eq!(notice(cold)["value"], notice(handle)["value"]);
+        assert_eq!(identity(cold)["player_preferences"]["preferences"]["speech_enabled"], false, "cold CONFIG owner retains accepted audio flag");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(send(handle, 3, &identity(handle), "sound", None), MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["sound_enabled"], false);
+        assert_eq!(identity(handle)["session"], before["session"]);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.sound_off");
+        with_runtime(handle, |record| {
+            assert!(record.audio.voices.iter().all(Option::is_none));
+            assert!(record.audio.commands.is_empty()); Ok(())
+        }).unwrap();
+        assert_eq!(send(handle, 3, &identity(handle), "music", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.music_off");
+        with_runtime(handle, |record| { assert!(!record.campaign_presentation.as_ref().unwrap().day_music.unwrap().playing); Ok(()) }).unwrap();
+        assert_eq!(send(handle, 3, &identity(handle), "music", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.music_on");
+        with_runtime(handle, |record| { assert!(record.campaign_presentation.as_ref().unwrap().day_music.unwrap().playing); Ok(()) }).unwrap();
+        let accelerate = br#"{"longitudinal":"accelerate"}"#;
+        for tick in 10..18 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, accelerate.as_ptr(), accelerate.len() as u32), MC_STATUS_OK);
+            with_runtime(handle, |record| {
+                assert!(record.audio.voices.iter().all(Option::is_none));
+                assert!(record.audio.commands.is_empty());
+                Ok(())
+            }).unwrap();
+        }
+        assert_eq!(send(handle, 3, &identity(handle), "sound", None), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.sound_on");
+        with_runtime(handle, |record| { assert!(record.audio.commands.is_empty(), "no old disabled burst"); Ok(()) }).unwrap();
+        for tick in 18..26 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, accelerate.as_ptr(), accelerate.len() as u32), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            assert!(record.audio.commands.values().any(|row| row.action == MC_AUDIO_ACTION_START), "real current flight starts audio after re-enable");
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(send(handle, 4, &identity(handle), "speech", Some(true)), MC_STATUS_OK);
+        assert_eq!(notice(handle)["value"][0]["kind"], "participant.speech_on");
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["speech_enabled"], true);
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let resumed = identity(handle);
+        let generation = resumed["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_reset_v1(handle, generation, 26), MC_STATUS_OK);
+        let reset = identity(handle);
+        assert_eq!(reset["player_preferences"]["preferences"], resumed["player_preferences"]["preferences"]);
+        assert_eq!(notice(handle)["value"], serde_json::json!([]), "LevelInit clears source notices, retaining CONFIG flags");
+        let generation = reset["session"]["generation"].as_str().unwrap().parse().unwrap();
+        for tick in 0..10 {
+            assert_eq!(mc_game_session_step_json_v1(handle, generation, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        }
+        with_runtime(handle, |record| {
+            let campaign = record.session()?.backend().campaign_presentation_source();
+            let page = campaign.effects_after(sim_core::campaign::journal::EffectCursor {
+                generation: campaign.generation(), next_sequence: 0,
+            }, 16_384).unwrap();
+            assert!(page.records.iter().any(|row| matches!(&row.effect,
+                sim_core::campaign::journal::CampaignEffect::ObjectivePresentation(actions)
+                    if actions.speech.is_some())), "next real ordinary objective uses re-enabled speech");
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+        let absent_packages = installed_package_set_json(&[
+            level_one_package(), level_two_package(), level_three_package(),
+        ]);
+        let mut absent = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut absent), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(absent, 1,
+            absent_packages.as_ptr(), absent_packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(absent, 2), MC_STATUS_OK);
+        assert!(identity(absent).get("source_audio_capabilities").is_none());
+        let absent_entry = read_json(|buffer, capacity, length|
+            mc_game_runtime_active_entry_presentation_json_v1(absent, 3, buffer, capacity, length));
+        assert_eq!(absent_entry["source_audio_capabilities"], serde_json::json!({"sound_available":false,"music_available":false}));
+        let id = identity(absent);
+        assert_eq!(id["source_audio_capabilities"], serde_json::json!({"sound_available":false,"music_available":false}));
+        let absent_save = read_save(absent, 3, 1, 0);
+        for action in ["sound", "music", "speech"] {
+            assert_eq!(send(absent, 3, &id, action, None), MC_STATUS_SOURCE_ACTION_BLOCKED);
+            assert_eq!(read_save(absent, 3, 1, 0), absent_save);
+        }
+        with_runtime(absent, |record| {
+            assert_eq!(record.source_audio_input().unwrap().music_available.get(), Some(false));
+            Ok(())
+        }).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(absent), MC_STATUS_OK);
+        let mut wrong_resources: Value = serde_json::from_slice(&packages).unwrap();
+        wrong_resources["packages"][0]["presentation_cache_path"] = serde_json::to_value(
+            generated.join("level3-day-spell-owner-cache-audio-v4")).unwrap();
+        let wrong_resources = serde_json::to_vec(&wrong_resources).unwrap();
+        let mut invalid = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut invalid), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(invalid, 1,
+            wrong_resources.as_ptr(), wrong_resources.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(invalid, 2), MC_STATUS_OK);
+        let invalid_before = identity(invalid);
+        assert!(invalid_before.get("source_audio_capabilities").is_none());
+        let invalid_save = read_save(invalid, 3, 1, 0);
+        for _ in 0..2 {
+            let mut length = 0;
+            assert_eq!(identity(invalid), invalid_before, "resource failure cannot hide current guard metadata");
+            assert_eq!(mc_game_runtime_active_entry_presentation_json_v1(invalid, 3, std::ptr::null_mut(), 0, &raw mut length),
+                MC_STATUS_IO_ERROR, "the Day cache lacks the required Night descriptor");
+            assert!(LAST_ERROR.with(|value| value.borrow().contains("audio/music-channel-0-f.json")));
+            assert_eq!(send(invalid, 3, &invalid_before, "music", None), MC_STATUS_IO_ERROR);
+            with_runtime(invalid, |record| {
+                assert_eq!(record.source_audio_input().unwrap().music_available.get(), None,
+                    "failed validation is not cached as false");
+                assert_eq!(serde_json::to_value(record.runtime.identity()).unwrap(), invalid_before);
+                Ok(())
+            }).unwrap();
+            assert_eq!(read_save(invalid, 3, 1, 0), invalid_save);
+        }
+        assert_eq!(mc_game_runtime_close_v1(invalid, 3, 1, 0), MC_STATUS_OK,
+            "the failed active-resource binding can return through normal guarded recovery");
+        assert_eq!(identity(invalid)["mode"], "title");
+        assert_eq!(mc_game_runtime_destroy_v1(invalid), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn current_source_menu_read_is_guarded_pure_and_restores_real_menu_state() {
+        let packages = installed_package_set_json(&[level_one_package(), level_two_package(), level_three_package()]);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let mut output = 0xa5;
+        assert_eq!(mc_game_runtime_player_menu_state_v1(handle, 1, 0, 0, &raw mut output), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(output, 0xa5);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let banishment_state = |owner| with_runtime(owner, |record| {
+            let simulation = record.session()?.backend().campaign_presentation_source().simulation();
+            Ok(simulation.players()[usize::from(simulation.runtime().local_player_slot)].banishment_state_0x006)
+        }).unwrap();
+        assert_eq!(banishment_state(handle), None,
+            "the real Level1 compact record's omitted initial value stays unknown");
+        let counters = |owner| {
+            let value = identity(owner);
+            (value["generation"].as_str().unwrap().parse::<u64>().unwrap(),
+             value["session"]["generation"].as_str().unwrap().parse::<u64>().unwrap(),
+             value["session"]["tick"].as_str().unwrap().parse::<u64>().unwrap())
+        };
+        let read = |owner, expected| {
+            let (outer, nested, tick) = counters(owner);
+            let before = identity(owner);
+            let saved = read_bytes(|buffer, capacity, length|
+                mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length));
+            for _ in 0..3 {
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, &raw mut value), MC_STATUS_OK);
+                assert_eq!(value, expected);
+            }
+            for (outer, nested, tick, status) in [
+                (outer + 1, nested, tick, MC_STATUS_GENERATION_MISMATCH),
+                (outer, nested + 1, tick, MC_STATUS_GENERATION_MISMATCH),
+                (outer, nested, tick + 1, MC_STATUS_INVALID_ARGUMENT),
+            ] {
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, &raw mut value), status);
+                assert_eq!(value, 0xa5, "refused reads never write the output byte");
+            }
+            assert_eq!(mc_game_runtime_player_menu_state_v1(owner, outer, nested, tick, std::ptr::null_mut()), MC_STATUS_NULL_POINTER);
+            assert_eq!(identity(owner), before);
+            assert_eq!(read_bytes(|buffer, capacity, length|
+                mc_game_runtime_save_replay_json_v1(owner, outer, nested, tick, buffer, capacity, length)), saved);
+            saved
+        };
+        read(handle, 0);
+        let (_, nested, tick) = counters(handle);
+        let open = br#"{"abandon_action":"open_abandon_confirmation"}"#;
+        assert_eq!(mc_game_session_step_json_v1(handle, nested, tick, open.as_ptr(), open.len() as u32), MC_STATUS_OK);
+        read(handle, 13);
+        let (_, nested, tick) = counters(handle);
+        assert_eq!(mc_game_session_step_json_v1(handle, nested, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert!(with_runtime(handle, |record| Ok(record.session()?.snapshot().value.source_menu_admission.is_none())).unwrap(),
+            "ordinary current state is independent of the optional command receipt");
+        read(handle, 13);
+        let (outer, _, _) = counters(handle);
+        assert_eq!(mc_game_runtime_pause_v1(handle, outer), MC_STATUS_OK);
+        let saved = read(handle, 13);
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32,
+            saved.as_ptr(), saved.len() as u32), MC_STATUS_OK);
+        read(cold, 13);
+        let (outer, _, _) = counters(cold);
+        assert_eq!(mc_game_runtime_resume_v1(cold, outer), MC_STATUS_OK);
+        let (_, nested, tick) = counters(cold);
+        let cancel = br#"{"abandon_action":"cancel_abandon_confirmation"}"#;
+        assert_eq!(mc_game_session_step_json_v1(cold, nested, tick, cancel.as_ptr(), cancel.len() as u32), MC_STATUS_OK);
+        read(cold, 0);
+        for action in ["toggle_gameplay_map", "open_abandon_confirmation"] {
+            let (_, nested, tick) = counters(cold);
+            let command = serde_json::to_vec(&serde_json::json!({"abandon_action": action})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(cold, nested, tick, command.as_ptr(), command.len() as u32), MC_STATUS_OK);
+        }
+        for (owner, menu) in [(handle, 13), (cold, 14)] {
+            if identity(owner)["mode"] == "paused" {
+                let (outer, _, _) = counters(owner);
+                assert_eq!(mc_game_runtime_resume_v1(owner, outer), MC_STATUS_OK);
+            }
+            read(owner, menu);
+            let (_, nested, tick) = counters(owner);
+            let confirm = br#"{"abandon_action":"confirm_abandon"}"#;
+            assert_eq!(mc_game_session_step_json_v1(owner, nested, tick, confirm.as_ptr(), confirm.len() as u32), MC_STATUS_OK,
+                "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+            assert_eq!(banishment_state(owner), Some(0), "actual action29 establishes the source-written value");
+            assert!(with_runtime(owner, |record| Ok(record.session()?.snapshot().value.return_to_title_requested)).unwrap());
+            // Action29 changes the result word, not MenuState_0x3DF. Its
+            // confirmation state remains readable until the outer return.
+            let saved = read(owner, menu);
+            let mut replayed = 0;
+            assert_eq!(mc_game_runtime_create_v1(&raw mut replayed), MC_STATUS_OK);
+            assert_eq!(mc_game_runtime_load_replay_json_v1(replayed, 1, packages.as_ptr(), packages.len() as u32,
+                saved.as_ptr(), saved.len() as u32), MC_STATUS_OK,
+                "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+            assert_eq!(banishment_state(replayed), Some(0));
+            assert!(with_runtime(replayed, |record| Ok(record.session()?.snapshot().value.return_to_title_requested)).unwrap());
+            read(replayed, menu);
+            for returning in [owner, replayed] {
+                let (outer, nested, tick) = counters(returning);
+                assert_eq!(mc_game_runtime_close_v1(returning, outer, nested, tick), MC_STATUS_OK);
+                assert_eq!(identity(returning)["mode"], "title");
+                let mut value = 0xa5;
+                assert_eq!(mc_game_runtime_player_menu_state_v1(returning, outer + 1, nested + 1, tick, &raw mut value), MC_STATUS_INVALID_ARGUMENT);
+                assert_eq!(value, 0xa5);
+            }
+            assert_eq!(mc_game_runtime_destroy_v1(replayed), MC_STATUS_OK);
+        }
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn source_help_mode_controls_policy_notices_and_cold_replay() {
+        let packages=installed_package_set_json(&[level_one_package(),level_two_package(),level_three_package()]);
+        let profile=std::env::temp_dir().join(format!("mc-help-mode-abi-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install=serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        let mut handle=0; assert_eq!(mc_game_runtime_create_v1(&raw mut handle),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        let send=|owner:u64,outer:u64,nested:u64,tick:u64| {
+            let request=serde_json::to_vec(&serde_json::json!({"operation":"source_help_mode","session_guard":
+                {"session_id":owner.to_string(),"generation":nested.to_string(),"expected_tick":tick.to_string()}})).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner,outer,request.as_ptr(),request.len() as u32)
+        };
+        let title=identity(handle); assert_eq!(send(handle,1,1,0),MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle),title);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle,1,packages.as_ptr(),packages.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle,2),MC_STATUS_OK);
+        let save=|owner,outer,nested|read_bytes(|buffer,capacity,length|
+            mc_game_runtime_save_replay_json_v1(owner,outer,nested,0,buffer,capacity,length));
+        let notices=|owner|read_json(|buffer,capacity,length|
+            mc_game_runtime_participant_notifications_json_v1(owner,buffer,capacity,length));
+        let before=identity(handle); let original=save(handle,3,1);
+        for (outer,nested,tick,status) in [(2,1,0,MC_STATUS_GENERATION_MISMATCH),
+            (3,2,0,MC_STATUS_GENERATION_MISMATCH),(3,1,1,MC_STATUS_INVALID_ARGUMENT)] {
+            assert_eq!(send(handle,outer,nested,tick),status); assert_eq!(identity(handle),before);
+            assert_eq!(save(handle,3,1),original);
+        }
+        assert_eq!(send(handle,3,1,0),MC_STATUS_OK);
+        let disabled=identity(handle);
+        assert_eq!(disabled["session"],before["session"]); assert_eq!(disabled["generation"],before["generation"]);
+        assert_eq!(disabled["display_settings"],before["display_settings"]);
+        assert_eq!(disabled["player_preferences"]["preferences"]["show_help"],false);
+        with_runtime(handle,|record|{assert!(!record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.help_mode_off");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        let saved=save(handle,3,1); let mut cold=0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold,1,packages.as_ptr(),packages.len() as u32,
+            saved.as_ptr(),saved.len() as u32),MC_STATUS_OK,"{}",LAST_ERROR.with(|value|value.borrow().clone()));
+        assert_eq!(identity(cold)["player_preferences"]["preferences"]["show_help"],false);
+        assert_eq!(notices(cold)["value"],notices(handle)["value"]);
+        with_runtime(cold,|record|{assert!(!record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        let id=identity(cold); let outer=id["generation"].as_str().unwrap().parse().unwrap();
+        let nested=id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(save(cold,outer,nested),saved);
+        assert_eq!(mc_game_runtime_pause_v1(handle,3),MC_STATUS_OK);
+        let preview=br#"{"operation":"preview_audio","sound_enabled":false,"music_enabled":false,"speech_enabled":false,"sound_volume":0,"music_volume":0}"#;
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,4,preview.as_ptr(),preview.len() as u32),MC_STATUS_OK);
+        let before=identity(handle); let bytes=save(handle,4,2);
+        assert_eq!(send(handle,4,2,0),MC_STATUS_SOURCE_ACTION_BLOCKED);
+        assert_eq!(identity(handle),before); assert_eq!(save(handle,4,2),bytes);
+        let cancel=br#"{"operation":"cancel"}"#;
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,4,cancel.as_ptr(),cancel.len() as u32),MC_STATUS_OK);
+        assert_eq!(send(handle,4,2,0),MC_STATUS_OK);
+        assert_eq!(identity(handle)["player_preferences"]["preferences"]["show_help"],true);
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.help_mode_on");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        with_runtime(handle,|record|{assert!(record.session()?.backend().help_enabled());Ok(())}).unwrap();
+        assert_eq!(mc_game_runtime_destroy_v1(cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle),MC_STATUS_OK); std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn source_flight_assistance_controls_recenter_and_cold_replay() {
+        let packages = installed_package_set_json(&[
+            level_one_package(), level_two_package(), level_three_package(),
+        ]);
+        let profile = std::env::temp_dir().join(format!("mc-flight-assist-abi-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({"operation":"install","profile_dir":profile})).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        let send = |owner: u64, outer: u64, nested: u64, tick: u64| {
+            let request = serde_json::to_vec(&serde_json::json!({"operation":"source_flight_assistance",
+                "session_guard":{"session_id":owner.to_string(),"generation":nested.to_string(),"expected_tick":tick.to_string()}})).unwrap();
+            mc_game_runtime_preferences_command_json_v1(owner,outer,request.as_ptr(),request.len() as u32)
+        };
+        assert_eq!(send(handle,1,1_u64,0_u64), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle,1,packages.as_ptr(),packages.len() as u32),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle,2),MC_STATUS_OK);
+        let before = identity(handle);
+        let save = |owner,outer,nested,tick| read_bytes(|buffer,capacity,length|
+            mc_game_runtime_save_replay_json_v1(owner,outer,nested,tick,buffer,capacity,length));
+        let original = save(handle,3,1,0);
+        for (outer,nested,tick,expected) in [(2,1,0,MC_STATUS_GENERATION_MISMATCH),
+            (3,2,0,MC_STATUS_GENERATION_MISMATCH),(3,1,1,MC_STATUS_INVALID_ARGUMENT)] {
+            assert_eq!(send(handle,outer,nested,tick),expected);
+            assert_eq!(identity(handle),before);
+            assert_eq!(save(handle,3,1,0),original);
+        }
+        assert_eq!(send(handle,3,1,0),MC_STATUS_OK);
+        let enabled = identity(handle);
+        assert_eq!(enabled["player_preferences"]["preferences"]["flight_assistance"],true);
+        assert_eq!(enabled["generation"],before["generation"]);
+        assert_eq!(enabled["session"],before["session"]);
+        assert_eq!(enabled["display_settings"],before["display_settings"]);
+        let notices = |owner| read_json(|buffer,capacity,length|
+            mc_game_runtime_participant_notifications_json_v1(owner,buffer,capacity,length));
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.flight_assistance_on");
+        assert_eq!(notices(handle)["value"][0]["remaining_frames"],50);
+        let enabled_save = save(handle,3,1,0);
+        for bits in [[f32::NAN.to_bits(),0],[f32::INFINITY.to_bits(),0],
+            [(-128.00002_f32).to_bits(),0],[0,127.00001_f32.to_bits()]] {
+            let bad = serde_json::to_vec(&serde_json::json!({"steering_observation":bits})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle,1,0,bad.as_ptr(),bad.len() as u32),MC_STATUS_INVALID_ARGUMENT);
+            assert_eq!(identity(handle),enabled);
+            assert_eq!(save(handle,3,1,0),enabled_save);
+        }
+        let precise = serde_json::to_vec(&serde_json::json!({"steering_observation":[0.45_f32.to_bits(),0]})).unwrap();
+        assert_eq!(mc_game_session_step_json_v1(handle,2,0,precise.as_ptr(),precise.len() as u32),MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(identity(handle),enabled);
+        assert_eq!(save(handle,3,1,0),enabled_save);
+        for tick in 0..49 {
+            assert_eq!(mc_game_session_step_json_v1(handle,1,tick,b"{}".as_ptr(),2),MC_STATUS_OK);
+            let id = identity(handle);
+            assert_eq!(id["player_preferences"]["assistance_sequence"],if tick==48 {1} else {0},
+                "the real producer emits only on its49th admitted unchanged observation");
+        }
+        for index in 0..100 {
+            let bits = if index % 2 == 0 { [0,0] } else { [0.45_f32.to_bits(),0] };
+            let input = serde_json::to_vec(&serde_json::json!({"steering_observation":bits})).unwrap();
+            assert_eq!(mc_game_session_step_json_v1(handle,1,49+index,input.as_ptr(),input.len() as u32),MC_STATUS_OK);
+            assert_eq!(identity(handle)["player_preferences"]["assistance_sequence"],1,
+                "exact activity below rounded-axis resolution never produces false recenter");
+        }
+        for index in 0..49 {
+            assert_eq!(mc_game_session_step_json_v1(handle,1,149+index,precise.as_ptr(),precise.len() as u32),MC_STATUS_OK);
+            assert_eq!(identity(handle)["player_preferences"]["assistance_sequence"],if index==48 {2} else {1});
+        }
+        assert_eq!(mc_game_runtime_pause_v1(handle,3),MC_STATUS_OK);
+        assert_eq!(send(handle,4,2,198),MC_STATUS_OK);
+        assert_eq!(notices(handle)["value"][0]["kind"],"participant.flight_assistance_off");
+        assert_eq!(send(handle,4,2,198),MC_STATUS_OK);
+        let saved_notice = notices(handle);
+        let saved = save(handle,4,2,198);
+        let packet: Value = serde_json::from_slice(&saved).unwrap();
+        assert!(!String::from_utf8(saved.clone()).unwrap().contains("steering_observation"),
+            "operational samples are consumed before recording the derived gameplay command");
+        assert_eq!(packet["operations"].as_array().unwrap().iter().filter(|operation|
+            operation["command"]["recenter"]==true).count(),2);
+        let profile_bytes = std::fs::read(profile.join("player-preferences.json")).unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(cold,1,install.as_ptr(),install.len() as u32),MC_STATUS_OK);
+        assert!(identity(cold)["player_preferences"]["preferences"]["flight_assistance"].as_bool().unwrap());
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold,1,packages.as_ptr(),packages.len() as u32,
+            saved.as_ptr(),saved.len() as u32),MC_STATUS_OK,"{}",LAST_ERROR.with(|value|value.borrow().clone()));
+        let cold_id = identity(cold);
+        assert_eq!(cold_id["mode"],"paused");
+        assert_eq!(cold_id["player_preferences"]["preferences"]["flight_assistance"],true);
+        assert_eq!(cold_id["player_preferences"]["assistance_sequence"],0,"cold restores no unrecorded input timer");
+        assert_eq!(notices(cold)["value"],saved_notice["value"]);
+        let outer = cold_id["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_id["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(save(cold,outer,nested,198),saved);
+        assert_eq!(std::fs::read(profile.join("player-preferences.json")).unwrap(),profile_bytes);
+        assert_eq!(mc_game_runtime_destroy_v1(cold),MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle),MC_STATUS_OK);
+        std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn runtime_player_names_toggle_guards_and_cold_replays_notice_only() {
+        let packages = installed_package_set_json(&[
+            level_three_package(), level_one_package(), level_two_package(),
+        ]);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let title = identity(handle);
+        assert_eq!(title["source_player_names_visible"], true);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle), title);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
+            handle, 1, packages.as_ptr(), packages.len() as u32,
+        ), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let before = identity(handle);
+        assert_eq!(before["source_player_names_visible"], true);
+        let notices = |owner| read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(owner, buffer, capacity, length)
+        });
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 3, 1, 0), MC_STATUS_OK);
+        let hidden = identity(handle);
+        assert_eq!(hidden["source_player_names_visible"], false);
+        assert_eq!(hidden["session"], before["session"]);
+        assert_eq!(hidden["generation"], before["generation"]);
+        assert_eq!(hidden["display_settings"], before["display_settings"]);
+        assert_eq!(hidden["player_preferences"], before["player_preferences"]);
+        let hidden_notice = notices(handle);
+        assert_eq!(hidden_notice["value"].as_array().unwrap().len(), 1);
+        assert_eq!(hidden_notice["value"][0]["kind"], "participant.player_names_off");
+        assert_eq!(hidden_notice["value"][0]["is_local"], true);
+        assert_eq!(hidden_notice["value"][0]["remaining_frames"], 50);
+        let hidden_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let hidden_save = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+        });
+        for (outer, nested, tick, expected) in [
+            (2, 1, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 2, 0, MC_STATUS_GENERATION_MISMATCH),
+            (3, 1, 1, MC_STATUS_INVALID_ARGUMENT),
+        ] {
+            assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, outer, nested, tick), expected);
+            assert_eq!(identity(handle), hidden);
+            assert_eq!(notices(handle), hidden_notice);
+            assert_eq!(read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            }), hidden_snapshot);
+            assert_eq!(read_bytes(|buffer, capacity, length| {
+                mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+            }), hidden_save);
+        }
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_player_names_visible"], true);
+        let visible_notice = notices(handle);
+        assert_eq!(visible_notice["value"].as_array().unwrap().len(), 1);
+        assert_eq!(visible_notice["value"][0]["kind"], "participant.player_names_on");
+        assert_eq!(visible_notice["value"][0]["is_local"], true);
+        assert_eq!(visible_notice["value"][0]["remaining_frames"], 50);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 4, 2, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["source_player_names_visible"], false);
+        let saved_notice = notices(handle);
+        assert_eq!(saved_notice["value"][0]["kind"], "participant.player_names_off");
+        let saved_snapshot = read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+        });
+        let saved = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 4, 2, 0, buffer, capacity, length)
+        });
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(
+            cold, 1, packages.as_ptr(), packages.len() as u32, saved.as_ptr(), saved.len() as u32,
+        ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        let cold_identity = identity(cold);
+        assert_eq!(cold_identity["mode"], "paused");
+        assert_eq!(cold_identity["source_player_names_visible"], true,
+            "cold restores the real notice history but byte207 defaults visible");
+        assert_eq!(notices(cold)["value"], saved_notice["value"]);
+        assert_eq!(read_json(|buffer, capacity, length| {
+            mc_game_session_snapshot_json_v1(cold, buffer, capacity, length)
+        })["value"], saved_snapshot["value"]);
+        let outer = cold_identity["generation"].as_str().unwrap().parse().unwrap();
+        let nested = cold_identity["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(cold, outer, nested, 0, buffer, capacity, length)
+        }), saved, "the auxiliary cold default changes no stored receipt or notice bytes");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn runtime_display_toggle_guards_both_owners_and_cold_restores_type_three_notice() {
         let packages = installed_package_set_json(&[
             level_three_package(), level_one_package(), level_two_package(),
@@ -4015,10 +4964,12 @@ mod tests {
         assert_eq!(title["display_settings"]["panels_opaque"], false);
         assert_eq!(title["display_settings"]["flat_shading"], false);
         assert_eq!(title["source_speed_index"], 0);
+        assert_eq!(title["display_settings"]["viewport_size"], 40);
         assert_eq!(mc_game_runtime_toggle_icons_map_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(mc_game_runtime_toggle_flat_shading_v1(handle, 1, 1, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(mc_game_runtime_source_speed_v1(handle, 1, 1, 0, 0), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 1, 1, 0, 0), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(identity(handle), title);
         assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(
             handle, 1, packages.as_ptr(), packages.len() as u32,
@@ -4045,6 +4996,7 @@ mod tests {
             assert_eq!(mc_game_runtime_toggle_panel_transparency_v1(handle, outer, nested, tick), expected);
             assert_eq!(mc_game_runtime_toggle_flat_shading_v1(handle, outer, nested, tick), expected);
             assert_eq!(mc_game_runtime_source_speed_v1(handle, outer, nested, tick, 0), expected);
+            assert_eq!(mc_game_runtime_source_viewport_v1(handle, outer, nested, tick, 0), expected);
             assert_eq!(identity(handle), before);
             assert_eq!(read_json(|buffer, capacity, length| {
                 mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
@@ -4053,6 +5005,33 @@ mod tests {
                 mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
             }), before_save);
         }
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 4), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(identity(handle), before);
+        let viewport_notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 0), MC_STATUS_OK);
+        assert_eq!(identity(handle)["display_settings"]["viewport_size"], 39);
+        assert_eq!(identity(handle)["session"], before["session"]);
+        assert_eq!(identity(handle)["player_preferences"], before["player_preferences"]);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 2), MC_STATUS_OK);
+        assert_eq!(identity(handle), before);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 2), MC_STATUS_OK);
+        assert_eq!(read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(handle, 3, 1, 0, buffer, capacity, length)
+        }), before_save, "a full-size endpoint changes no save/receipt bytes");
+        for _ in 0..25 { assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 0), MC_STATUS_OK); }
+        assert_eq!(identity(handle)["display_settings"]["viewport_size"], 16);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 3), MC_STATUS_OK);
+        assert_eq!(identity(handle)["display_settings"]["viewport_size"], 16);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 1), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 3), MC_STATUS_OK);
+        assert_eq!(identity(handle)["display_settings"]["viewport_size"], 17, "source ']' stops at17");
+        for _ in 0..23 { assert_eq!(mc_game_runtime_source_viewport_v1(handle, 3, 1, 0, 1), MC_STATUS_OK); }
+        assert_eq!(identity(handle), before);
+        assert_eq!(read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(handle, buffer, capacity, length)
+        }), viewport_notices, "case8 emits no source notice");
         assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 2), MC_STATUS_INVALID_ARGUMENT);
         assert_eq!(identity(handle), before);
         assert_eq!(mc_game_runtime_source_speed_v1(handle, 3, 1, 0, 0), MC_STATUS_OK);
@@ -5373,6 +6352,76 @@ mod tests {
     }
 
     #[test]
+    fn tmap_draw_receipt_advances_real_goat_pixels_and_survives_cold_replay() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir": generated.join("mc-bhq8-level1-collision-v5-night"), "owner_cache_path": generated.join("mc-oi62-environment-level1-v2")},
+                {"package_dir": generated.join("mc-level2-vault-successor-closure-20261025"), "owner_cache_path": generated.join("mc-oi68-level2-fullbank-v2-20261029")},
+                {"package_dir": generated.join("level3-day-block32-campaign-recipe-v2"), "owner_cache_path": generated.join("mc-oi68-level3-fullbank-v2-20261029")}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let goats = with_runtime(handle, |record| {
+            let rows = record.session()?.backend().campaign_presentation_source().simulation()
+                .campaign_entity_presentations(0).unwrap();
+            Ok(rows.iter().filter(|row| row.selected_tmap == 152 && row.draw_order != u32::MAX).count())
+        }).unwrap();
+        assert!(goats >= 2, "the real NightSpire package presents two shared-selector actors");
+        let pixels = |owner, runtime, session, tick| {
+            read_bytes(|buffer, capacity, length| mc_game_runtime_tmap_pixels_copy_v1(
+                owner, runtime, session, tick, buffer, capacity, length))
+        };
+        let image = |bytes: &[u8], wanted: u16| {
+            let count = u16::from_le_bytes(bytes[0..2].try_into().unwrap());
+            let mut offset = 2;
+            for _ in 0..count {
+                let selector = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
+                let length = u32::from_le_bytes(bytes[offset + 2..offset + 6].try_into().unwrap()) as usize;
+                offset += 6;
+                if selector == wanted { return Some(bytes[offset..offset + length].to_vec()); }
+                offset += length;
+            }
+            None
+        };
+        let selector = [152_u16];
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        let initial = image(&pixels(handle, 3, 1, 0), 152).unwrap();
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        assert_eq!(image(&pixels(handle, 3, 1, 0), 152).unwrap(), initial, "repeated same-turn receipt does not advance");
+        assert_eq!(mc_game_session_step_json_v1(handle, 1, 0, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        let advanced = image(&pixels(handle, 3, 1, 1), 152).unwrap();
+        assert_ne!(advanced, initial, "a demanded source image advances on the next turn");
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 3, 1, 0, 0, selector.as_ptr(), 1), MC_STATUS_INVALID_ARGUMENT);
+        assert_eq!(mc_game_session_step_json_v1(handle, 1, 1, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert_eq!(image(&pixels(handle, 3, 1, 2), 152).unwrap(), advanced, "no draw means no clock advance");
+        let save = with_runtime(handle, |record| record.save_replay(handle, 3, 1, 2)).unwrap();
+        let mut cold = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_load_replay_json_v1(cold, 1, packages.as_ptr(), packages.len() as u32, save.as_ptr(), save.len() as u32), MC_STATUS_OK,
+            "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+        assert_eq!(image(&pixels(cold, 2, 1, 2), 152).unwrap(), advanced, "cold replay reconstructs source pixels");
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused = identity(handle);
+        let generation = paused["session"]["generation"].as_str().unwrap().parse().unwrap();
+        let frozen = pixels(handle, 4, generation, 2);
+        assert_eq!(mc_game_runtime_tmap_draw_v1(handle, 4, generation, 2, 0, selector.as_ptr(), 1), MC_STATUS_OK);
+        assert_eq!(pixels(handle, 4, generation, 2), frozen, "paused reads do not advance");
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        let resumed = identity(handle);
+        let session_generation = resumed["session"]["generation"].as_str().unwrap().parse().unwrap();
+        assert_eq!(mc_game_session_step_json_v1(handle, session_generation, 2, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        assert_ne!(image(&pixels(handle, 5, session_generation, 3), 152).unwrap(), advanced,
+            "a paused draw advances only after resume and a gameplay turn");
+        assert_eq!(mc_game_runtime_destroy_v1(cold), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn paused_runtime_presentation_reads_and_fresh_frame_preserve_visibility_history() {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let packages = serde_json::to_vec(&serde_json::json!({
@@ -5388,6 +6437,13 @@ mod tests {
         assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
 
+        // This raw cache owner intentionally excludes locale/glyph setup.
+        // Use the actual Names action before composing its first world frame;
+        // ordinary clients bind selected FONT1 before composing visible names.
+        let opened = identity(handle);
+        assert_eq!(mc_game_runtime_toggle_player_names_v1(handle, 3,
+            opened["session"]["generation"].as_str().unwrap().parse().unwrap(),
+            opened["session"]["tick"].as_str().unwrap().parse().unwrap()), MC_STATUS_OK);
         let make_query = || {
             let state = identity(handle);
             let generation = state["session"]["generation"].as_str().unwrap().parse().unwrap();
@@ -5439,9 +6495,8 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let install = serde_json::to_vec(&serde_json::json!({"operation": "install", "profile_dir": profile})).unwrap();
         assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
-        let mut prefs = with_runtime(handle, |record| Ok(record.runtime.identity().player_preferences.preferences)).unwrap();
-        prefs.reflections = !prefs.reflections;
-        let apply = serde_json::to_vec(&serde_json::json!({"operation": "apply", "preferences": prefs})).unwrap();
+        let apply = serde_json::to_vec(&serde_json::json!({"operation":"source_graphics","action":"reflections",
+            "session_guard":{"session_id":handle.to_string(),"generation":query.generation.to_string(),"expected_tick":query.tick.to_string()}})).unwrap();
         assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, apply.as_ptr(), apply.len() as u32), MC_STATUS_OK);
         let previous_revision = with_runtime(handle, |record| {
             let super::super::campaign_abi::CampaignSessionKind::Campaign { day_frame_state, .. } = &record.campaign_presentation.as_ref().unwrap().kind else { unreachable!() };

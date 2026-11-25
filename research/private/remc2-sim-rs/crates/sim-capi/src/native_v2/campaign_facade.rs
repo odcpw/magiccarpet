@@ -19,7 +19,7 @@ use sim_core::{
 use sim_session::{
     AudioAction, CompatibilityReceipt, EventPage, GameAdapter, GameAssetReference,
     GameAudioCommand, GameCommand, GameCompletionStatus, GameEvent, GameSessionBackend,
-    LateralControl, LongitudinalControl, RuntimeActorId, RuntimeParticipantId,
+    LateralControl, LongitudinalControl, RuntimeActorId, RuntimeParticipantId, SessionGuard,
 };
 
 use super::{
@@ -453,7 +453,12 @@ impl GameSessionBackend for SealedLevel1Backend {
         self.session.game_snapshot()
     }
 
-    fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error> {
+    fn events_after(
+        &self,
+        _guard: SessionGuard,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<EventPage, Self::Error> {
         if cursor > self.session.event_head {
             return Err(AbiError::new(
                 super::MC_STATUS_BOUNDS,
@@ -816,6 +821,7 @@ impl SealedLevel1Backend {
                 ),
             )),
             asset: self.asset_reference(event.asset_ref_index)?,
+            economy: None,
         })
     }
 }
@@ -892,8 +898,12 @@ mod tests {
 
     #[test]
     fn help_close_projects_as_distinct_campaign_flight_effect() {
-        let record = EffectRecord { sequence: 4, turn: 8,
-            effect: CampaignEffect::Flight(FlightEvent::CloseHelpPopup), audio: None };
+        let record = EffectRecord::new(
+            4,
+            8,
+            CampaignEffect::Flight(FlightEvent::CloseHelpPopup),
+            None,
+        );
         let event = campaign_effect_snapshot(2, 7, &record);
         assert_eq!((event.kind, event.code, event.sequence), (MC_CAMPAIGN_EFFECT_FLIGHT, 6, 5));
         assert_eq!(event.asset_ref_index, MC_ASSET_REF_NONE);
@@ -911,10 +921,12 @@ mod tests {
             lateral: LateralControl::Positive,
             roll_axis: -32,
             pitch_axis: 24,
+            steering_observation: None,
             cast_left: true,
             cast_right: false,
             cast_selected: true,
             recover_player: false,
+            surrender_player: false,
             remove_castle_stage: false,
             elapsed_centiseconds: 0,
             select_spell: None,
@@ -992,7 +1004,12 @@ mod tests {
             backend.opaque_runtime_handle(b"actor", 1),
             backend.opaque_runtime_handle(b"participant", 1)
         );
-        let error = backend.events_after(0, 16).unwrap_err();
+        let guard = SessionGuard {
+            session_id: 1,
+            generation: backend.session.generation,
+            expected_tick: backend.tick(),
+        };
+        let error = backend.events_after(guard, 0, 16).unwrap_err();
         assert_eq!(error.status, super::super::MC_STATUS_CURSOR_EXPIRED);
         assert_eq!(backend.session.events, before);
         assert_eq!(backend.session.event_head, 4);

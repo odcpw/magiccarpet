@@ -104,6 +104,13 @@ pub(crate) enum ReplayOperation<C> {
     ToggleIconsMap,
     TogglePanelTransparency,
     ToggleFlatShading,
+    /// Reconstruct the actual local source notice, never the process flag.
+    PlayerNamesNotice { visible: bool },
+    /// Only the local notice is GAME history; audio flags remain CONFIG.
+    SourceAudioNotice { action: preferences::SourceAudioAction, enabled: bool },
+    FlightAssistanceNotice { enabled: bool },
+    HelpModeNotice { enabled: bool },
+    GraphicsNotice { action: SourceGraphicsAction, enabled: bool },
     Step {
         command: C,
     },
@@ -177,18 +184,53 @@ pub struct RuntimeGuard {
 
 /// Source GAME settings, distinct from CONFIG/profile preferences. Both
 /// icon/map bytes survive mission/retry; LevelInit resets panel opacity.
+/// The four graphics flags also retain across same-process Title/New Game;
+/// only process startup applies their default values.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DisplaySettings {
+    pub reflections: bool,
+    pub shadows: bool,
+    pub sky: bool,
+    pub dynamic_lighting: bool,
     pub minimap: bool,
     pub top_bar: bool,
     pub panels_opaque: bool,
     /// Source GAME byte 15; process default off, retained across LevelInit.
     pub flat_shading: bool,
+    /// Source GAME byte 3: in-game world viewport, independent of resolution.
+    pub viewport_size: u8,
 }
 
 impl Default for DisplaySettings {
-    fn default() -> Self { Self { minimap: true, top_bar: true, panels_opaque: false, flat_shading: false } }
+    fn default() -> Self { Self { reflections:true,shadows:true,sky:true,dynamic_lighting:true,
+        minimap: true, top_bar: true, panels_opaque: false, flat_shading: false, viewport_size: 40 } }
+}
+
+#[derive(Clone,Copy,Debug,Deserialize,Eq,PartialEq,Serialize)]
+#[serde(rename_all="snake_case")]
+pub enum SourceGraphicsAction { Reflections, Shadows, Sky, DynamicLighting }
+
+/// Source case8 menu controls and the two ordinary bracket-key branches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum SourceViewportAction {
+    MenuDecrease = 0,
+    MenuIncrease = 1,
+    KeyboardEnlarge = 2,
+    KeyboardShrink = 3,
+}
+
+impl SourceViewportAction {
+    fn apply(self, size: u8) -> u8 {
+        match self {
+            Self::MenuDecrease => size.saturating_sub(1).max(16),
+            Self::MenuIncrease => size.saturating_add(1).min(40),
+            Self::KeyboardEnlarge if size < 40 => size + 1,
+            Self::KeyboardShrink if size > 17 => size - 1,
+            Self::KeyboardEnlarge | Self::KeyboardShrink => size,
+        }
+    }
 }
 
 impl DisplaySettings {
@@ -202,12 +244,18 @@ pub(crate) enum DisplayNotice {
     IconsMap(bool),
     PanelTransparency(bool),
     FlatShading(bool),
+    PlayerNames(bool),
+    SourceAudio(preferences::SourceAudioAction, bool),
+    FlightAssistance(bool),
+    HelpMode(bool),
+    Graphics(SourceGraphicsAction,bool),
 }
 
 /// Canonical observation of the outer runtime and its current binding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RuntimeIdentity {
     pub source_speed_index: u8,
+    pub source_player_names_visible: bool,
     pub runtime_contract: &'static str,
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub runtime_id: u64,
@@ -511,6 +559,8 @@ pub struct GameRuntime<B> {
     frontend_media: media::FrontendMedia,
     player_preferences: preferences::PreferenceStore,
     display_settings: DisplaySettings,
+    /// Auxiliary byte207 is outside GAME/SLEV/CONFIG and is never hashed.
+    source_player_names_visible: bool,
     secret_flow: secret_flow::SecretFlowState,
     retained_campaign: Option<CampaignSaveState>,
 }
@@ -534,6 +584,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
+            source_player_names_visible: true,
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             state: RuntimeState::Title {
@@ -616,6 +667,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             };
         RuntimeIdentity {
             source_speed_index: self.session().map_or(0, |session| session.backend().source_speed_index()),
+            source_player_names_visible: self.source_player_names_visible,
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: self.runtime_id,
             generation: self.generation,
@@ -738,7 +790,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     where
         F: FnOnce(
             &GameSession<B>,
-        ) -> Result<(SemanticLevelId, GameSession<B>), RuntimeTransitionError>,
+        ) -> Result<(SemanticLevelId, GameSession<B>, bool), RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -770,7 +822,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         })?;
         let next_generation = self.next_generation()?;
         let source_identity = session.identity();
-        let (secret_id, candidate) = prepare(session)?;
+        let (secret_id, candidate, panels_opaque) = prepare(session)?;
         let candidate_identity = candidate.identity();
         if candidate_identity.session_id != source_identity.session_id
             || source_identity.generation.checked_add(1) != Some(candidate_identity.generation)
@@ -811,6 +863,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         );
         let previous_secret_flow = std::mem::replace(&mut self.secret_flow, secret_flow);
         let previous_generation = self.generation;
+        let previous_display = self.display_settings;
+        self.display_settings.panels_opaque = panels_opaque;
         self.generation = next_generation;
         match SecretTransitionReceipt::new(
             SecretTransitionKind::Entry,
@@ -825,6 +879,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.state = previous_state;
                 self.secret_flow = previous_secret_flow;
                 self.generation = previous_generation;
+                self.display_settings = previous_display;
                 Err(RuntimeTransitionError::InvalidRuntimeFlow {
                     message: error.to_string(),
                 })
@@ -1356,6 +1411,26 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 ReplayOperation::ToggleFlatShading => {
                     display_settings.flat_shading = !display_settings.flat_shading;
                     display_notice(&mut candidate, DisplayNotice::FlatShading(display_settings.flat_shading))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::PlayerNamesNotice { visible } => {
+                    display_notice(&mut candidate, DisplayNotice::PlayerNames(visible))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::SourceAudioNotice { action, enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::SourceAudio(action, enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::FlightAssistanceNotice { enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::FlightAssistance(enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::HelpModeNotice { enabled } => {
+                    display_notice(&mut candidate, DisplayNotice::HelpMode(enabled))
+                        .map_err(RestorePlayingError::Transition)?;
+                }
+                ReplayOperation::GraphicsNotice { action, enabled } => {
+                    display_notice(&mut candidate,DisplayNotice::Graphics(action,enabled))
                         .map_err(RestorePlayingError::Transition)?;
                 }
                 ReplayOperation::SpeechPreference {
@@ -1898,6 +1973,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         if next_paused {
             session.backend_mut().enter_pause();
         }
+        self.player_preferences.carry_input_generation(
+            (self.generation, session_guard.generation),
+            (next_runtime_generation, session.identity().generation),
+        );
         *paused = next_paused;
         self.generation = next_runtime_generation;
         Ok(self.identity())
@@ -1995,6 +2074,213 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    #[cfg(test)]
+    pub(crate) fn check_retry_after_lethal_encounter(
+        session: GameSession<crate::campaign::backend::Mc2CampaignBackend>,
+    ) -> Self {
+        let before_session = session.identity();
+        assert!(session.backend().mission_retry_requested());
+        let mut runtime = Self::title(before_session.session_id).unwrap();
+        runtime.state = RuntimeState::Playing { session, paused: false };
+        let before = runtime.identity();
+        let progress = runtime.completed_levels().to_vec();
+        let guard = before_session.guard();
+        assert!(runtime.retry_mission_if_ready(before.guard(), SessionGuard {
+            expected_tick: guard.expected_tick + 1, ..guard
+        }).is_err());
+        assert_eq!(before, runtime.identity());
+        assert!(runtime.retry_mission_if_ready(before.guard(), guard).unwrap());
+        let after = runtime.identity();
+        let rebuilt = runtime.session().unwrap();
+        assert_eq!(after.mode, RuntimeMode::Playing);
+        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.active_runtime_flow, before.active_runtime_flow);
+        assert_eq!(rebuilt.identity().generation, before_session.generation + 1);
+        assert_eq!(rebuilt.identity().definition_hash, before_session.definition_hash);
+        assert_eq!(rebuilt.identity().tick, 0);
+        assert_eq!(rebuilt.backend().campaign_presentation_source().simulation().source_exit_result_byte(), 4);
+        assert_eq!(runtime.completed_levels(), progress);
+        let next_guard = rebuilt.identity().guard();
+        assert!(!runtime.retry_mission_if_ready(after.guard(), next_guard).unwrap());
+        assert_eq!(runtime.identity(), after);
+        runtime
+    }
+
+    /// Accept a pending source retry at the outer loop boundary. The nested
+    /// session rebuilds its original mission, including the entry spell carry.
+    /// The campaign frontier and an active secret's parent stay in this owner.
+    pub fn retry_mission_if_ready(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let next_generation = self.next_generation()?;
+        let Some(session) = self.session_mut() else {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing, actual: self.identity().mode,
+            });
+        };
+        session.completion_status(session_guard).map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        if !session.backend().mission_retry_requested() {
+            return Ok(false);
+        }
+        session.reset(session_guard).map_err(|error| RuntimeTransitionError::InvalidNextDefinition {
+            message: format!("cannot restart the current mission: {error}"),
+        })?;
+        session.backend_mut().mark_mission_retry_entry();
+        self.reset_panel_transparency_to_level_default();
+        self.reset_preference_input();
+        self.generation = next_generation;
+        Ok(true)
+    }
+
+    /// Source cases9..12. Startup speed5 admits all four capabilities and
+    /// the source sky buffer is process-global, independent of map assets.
+    pub fn source_graphics(&mut self,guard:RuntimeGuard,session_guard:SessionGuard,action:SourceGraphicsAction)
+        -> Result<bool,RuntimeTransitionError>
+    {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual=self.identity().mode;
+        let RuntimeState::Playing {session,..}=&mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode {expected:RuntimeMode::Playing,actual});
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let mut next=self.display_settings;
+        let field=match action {SourceGraphicsAction::Reflections=>&mut next.reflections,
+            SourceGraphicsAction::Shadows=>&mut next.shadows,SourceGraphicsAction::Sky=>&mut next.sky,
+            SourceGraphicsAction::DynamicLighting=>&mut next.dynamic_lighting};
+        *field=!*field; let enabled=*field;
+        let notice=session.backend().prepare_graphics_notice(action,enabled)?;
+        if action==SourceGraphicsAction::DynamicLighting {session.backend_mut().set_dynamic_lighting_enabled(enabled);}
+        session.backend_mut().commit_graphics_notice(action,enabled,notice);
+        self.display_settings=next;
+        Ok(true)
+    }
+
+    /// SwitchHelpMode_18AA0: source Help data is unconditionally admitted by
+    /// sub_871E0. The presentation owner clears its selector and reinitializes
+    /// row ages on ON only after this complete transaction succeeds.
+    pub fn source_help_mode_preferences(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let enabled = !self.player_preferences.snapshot().preferences.show_help;
+        let notice = session.backend().prepare_help_mode_notice(enabled)?;
+        let accepted = self.player_preferences.source_help_mode_toggle()
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            // The existing policy sidecar records this exact boundary even
+            // when the user saves immediately without another source frame.
+            session.backend_mut().set_help_enabled(enabled);
+            session.backend_mut().commit_help_mode_notice(enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_help_mode_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
+    /// Source ChangeSettings case5 in the supported offline campaign. AI
+    /// participant rows and replay recording are not multiplayer admission.
+    /// Prepare the complete local notice before the atomic profile write.
+    pub fn source_flight_assistance_preferences(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let enabled = !self.player_preferences.snapshot().preferences.flight_assistance;
+        let notice = session.backend().prepare_flight_assistance_notice(enabled)?;
+        let accepted = self.player_preferences.source_flight_assistance_toggle()
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            session.backend_mut().commit_flight_assistance_notice(enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_flight_assistance_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
+    /// Source cases2/3/4: admit against the actual host/resource capability,
+    /// then atomically publish CONFIG and the prepared type3/50 local notice.
+    pub fn source_audio_preferences(&mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+        action: preferences::SourceAudioAction, available: bool,
+    ) -> Result<preferences::PreferencesSnapshot, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let show_foreign_text = self.show_foreign_objective_text();
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        if !available {
+            let mut snapshot = self.player_preferences.snapshot();
+            snapshot.source_audio_admitted = Some(false);
+            return Ok(snapshot);
+        }
+        let current = self.player_preferences.snapshot().preferences;
+        let enabled = match action {
+            preferences::SourceAudioAction::Sound => !current.sound_enabled,
+            preferences::SourceAudioAction::Music => !current.music_enabled,
+            preferences::SourceAudioAction::Speech => !current.speech_enabled,
+        };
+        let notice = session.backend().prepare_source_audio_notice(action, enabled)?;
+        let accepted = self.player_preferences.source_audio_toggle(action, available)
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+        if let Some(enabled) = accepted {
+            if action == preferences::SourceAudioAction::Speech {
+                session.backend_mut().set_objective_presentation_preferences(enabled, show_foreign_text);
+            }
+            session.backend_mut().commit_source_audio_notice(action, enabled, notice);
+        }
+        let mut snapshot = self.player_preferences.snapshot();
+        snapshot.source_audio_admitted = Some(accepted.is_some());
+        Ok(snapshot)
+    }
+
+    /// ChangeSettings case17: auxiliary process visibility and the existing
+    /// local source notice have distinct lifetimes. Publish before committing.
+    pub fn toggle_player_names(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        let visible = !self.source_player_names_visible;
+        session.backend_mut().publish_player_names_notice(visible)?;
+        self.source_player_names_visible = visible;
+        Ok(true)
+    }
+
+    pub(crate) fn restore_player_names_visibility(&mut self, visible: bool) {
+        self.source_player_names_visible = visible;
+    }
+
+    /// ChangeSettings case8 on the supported ordinary screen mode. The source
+    /// emits no notice; unchanged endpoint requests leave GAME/replay untouched.
+    pub fn source_viewport(
+        &mut self, guard: RuntimeGuard, session_guard: SessionGuard, action: SourceViewportAction,
+    ) -> Result<bool, RuntimeTransitionError> {
+        self.validate_guard(guard).map_err(Box::new).map_err(RuntimeTransitionError::Guard)?;
+        let actual = self.identity().mode;
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            return Err(RuntimeTransitionError::InvalidMode { expected: RuntimeMode::Playing, actual });
+        };
+        session.completion_status(session_guard).map_err(Box::new).map_err(RuntimeTransitionError::SessionGuard)?;
+        self.display_settings.viewport_size = action.apply(self.display_settings.viewport_size);
+        Ok(true)
+    }
+
     /// Source default case7 (the alternative renderer CLI cycle is not enabled).
     /// This runtime supplies single-player ordinary sessions, not source demo
     /// playback. The engine's replay journal is not a source movie flag.
@@ -2077,26 +2363,6 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         self.display_settings = settings;
     }
 
-    /// Apply a successfully committed source-global preference without exposing
-    /// paused gameplay mutation. The backend records its exact replay boundary.
-    pub fn apply_current_dynamic_lighting_preference(
-        &mut self,
-        guard: RuntimeGuard,
-    ) -> Result<(), RuntimeTransitionError> {
-        self.validate_guard(guard)
-            .map_err(Box::new)
-            .map_err(RuntimeTransitionError::Guard)?;
-        let enabled = self
-            .identity()
-            .player_preferences
-            .preferences
-            .dynamic_lighting;
-        if let RuntimeState::Playing { session, .. } = &mut self.state {
-            session.backend_mut().set_dynamic_lighting_enabled(enabled);
-        }
-        Ok(())
-    }
-
     /// Apply current source options at the same guarded pre-gate boundary
     /// as a paused frame, without exposing paused gameplay mutation.
     pub fn paused_campaign_frame(
@@ -2141,8 +2407,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         let show_foreign_text = self.show_foreign_objective_text();
         let dynamic_lighting = self
             .identity()
-            .player_preferences
-            .preferences
+            .display_settings
             .dynamic_lighting;
         let RuntimeState::Playing {
             session,
@@ -2660,6 +2925,7 @@ mod tests {
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
             secret_flow: secret_flow::SecretFlowState::default(),
+            source_player_names_visible: true,
             retained_campaign: None,
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
             level_statistics: Vec::new(),
@@ -2701,6 +2967,7 @@ mod tests {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             display_settings: DisplaySettings::default(),
+            source_player_names_visible: true,
             completed_levels: resolver
                 .flow()
                 .entries()
@@ -3309,8 +3576,13 @@ mod tests {
         else {
             panic!("real L1 open must reject a reordered semantic flow")
         };
-        assert_eq!(error.code, DefinitionErrorCode::HashMismatch);
-        assert_eq!(error.path_or_id, "definition.runtime_flow");
+        // Canonical source-order validation rejects the flow before hashes.
+        assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
+        assert_eq!(error.path_or_id, "mc2_campaign.runtime_flow");
+        assert_eq!(
+            error.message,
+            "definition does not match its canonical source-selected catalog"
+        );
         assert_eq!(tampered_runtime.identity(), tampered_loading);
         assert!(tampered_runtime.session().is_none());
 
@@ -3352,8 +3624,14 @@ mod tests {
         else {
             panic!("L1 definition paired with L2 package must fail semantic identity validation")
         };
-        assert_eq!(error.code, DefinitionErrorCode::HashMismatch);
-        assert_eq!(error.path_or_id, "definition.package_graph_hash");
+        // The package's L2 selection cannot admit an L1-bound source catalog;
+        // this validation precedes the package-graph comparison as well.
+        assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
+        assert_eq!(error.path_or_id, "mc2_campaign.runtime_flow");
+        assert_eq!(
+            error.message,
+            "definition does not match its canonical source-selected catalog"
+        );
         assert_eq!(runtime.identity(), before_mismatch);
         assert!(runtime.session().is_none());
 
@@ -3959,30 +4237,72 @@ mod tests {
         let generated = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT").map_or_else(
             || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."), PathBuf::from,
         ).join("generated");
-        for (external, relative) in [
+        let mut cases = vec![
             (2, "level2-day-block32-campaign-v2"),
             (3, "level3-day-block32-campaign-recipe-v2"),
-        ] {
-            let package = generated.join(relative);
+        ];
+        if std::env::var_os("MC_CORRECTED_CAVE_SOURCE_OWNER").is_some() {
+            cases.push((4, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"));
+        }
+        for (external, relative) in cases {
+            let package = if external == 3 || external == 4 {
+                std::env::var_os(if external == 3 {
+                    "MC_CORRECTED_DAY_PACKAGE"
+                } else {
+                    "MC_CORRECTED_CAVE_PACKAGE"
+                })
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| generated.join(relative))
+            } else {
+                generated.join(relative)
+            };
             // Opt-in actual source role, bound before construction. A full
             // environment owns the source animation catalog; adding it only
             // at cold load would correctly refuse a no-owner state receipt.
-            let source_owner = (external == 3)
-                .then(|| std::env::var_os("MC_CORRECTED_DAY_SOURCE_OWNER").map(PathBuf::from))
-                .flatten();
-            let resolver = Mc2RuntimePackageResolver::load([
+            let source_owner = match external {
+                3 => std::env::var_os("MC_CORRECTED_DAY_SOURCE_OWNER").map(PathBuf::from),
+                4 => std::env::var_os("MC_CORRECTED_CAVE_SOURCE_OWNER").map(PathBuf::from),
+                _ => None,
+            };
+            let mut cave_inputs = Vec::new();
+            let mut cave6_fireball = false;
+            if external == 4 {
+                let selection =
+                    crate::campaign::spec::CampaignDefinition::declared_selection(&package).unwrap();
+                if selection.external_level == 6 {
+                    cave6_fireball = std::env::var_os("MC_CORRECTED_CAVE6_INCOMING_FIREBALL").is_some();
+                    // The production resolver requires the ordinary prefix
+                    // even when the fixture starts at a later Loading boundary.
+                    cave_inputs.extend([
+                        Mc2CampaignInputs::with_owner_cache(
+                            generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                            generated.join("mc-b9s2-cursor-level4-20261029"),
+                        ),
+                        Mc2CampaignInputs::with_owner_cache(
+                            generated.join("dragon-bee-20261105-integration/level5-owner-current/level5"),
+                            generated.join("secret-lifecycle-20261111-source4-environment"),
+                        ),
+                    ]);
+                }
+                cave_inputs.push(Mc2CampaignInputs::with_owner_cache(
+                    &package,
+                    source_owner.as_ref().unwrap(),
+                ));
+            }
+            let mut inputs = vec![
                 Mc2CampaignInputs::new(if external == 2 {
                     package.clone()
                 } else {
                     level_two_package()
                 }),
-                source_owner.as_ref().map_or_else(
+                source_owner.as_ref().filter(|_| external == 3).map_or_else(
                     || Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
                     |owner| Mc2CampaignInputs::with_owner_cache(&package, owner),
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
-            ])
-            .unwrap();
+            ];
+            inputs.extend(cave_inputs.iter().cloned());
+            let resolver = Mc2RuntimePackageResolver::load(inputs).unwrap();
             let definition = Arc::new(match &source_owner {
                 Some(owner) => crate::campaign::backend::load_mc2_campaign_with_owner_cache(
                     &package, owner, &default_catalog().unwrap(),
@@ -3996,6 +4316,7 @@ mod tests {
                 frontend_media: media::FrontendMedia::default(),
                 player_preferences: preferences::PreferenceStore::default(),
                 display_settings: DisplaySettings::default(),
+                source_player_names_visible: true,
                 secret_flow: secret_flow::SecretFlowState::default(),
                 retained_campaign: None,
                 generation: 6,
@@ -4011,25 +4332,27 @@ mod tests {
             resolver.open_pending(&mut source, guard, 523).unwrap();
             if source_owner.is_some() {
                 assert!(source.session().unwrap().backend().campaign_presentation_source()
-                    .simulation().source_animations.is_bound(), "initial Level3 constructor has the actual source catalog");
+                    .simulation().source_animations.is_bound(), "initial constructor has the actual source catalog");
             }
-            if external == 3 {
-                // Independent owner-level play needs the earlier spells for
-                // combat, sphere claims, Castle building and movement. This
-                // entry does not claim preceding campaign completion.
+            if external == 3 || cave6_fireball {
+                // Cave 6's authored spell room follows the first Thief
+                // objective. Its controlled entry declares only the earlier
+                // Fireball so the objective and new pickups play normally.
+                let acquired = if cave6_fireball {
+                    vec![SpellKind::Fireball]
+                } else {
+                    vec![
+                        SpellKind::Fireball,
+                        SpellKind::Possession,
+                        SpellKind::Castle,
+                        SpellKind::Speed,
+                    ]
+                };
                 source
                     .session_mut()
                     .unwrap()
                     .backend_mut()
-                    .install_semantic_spell_carry_for_test(
-                        vec![
-                            SpellKind::Fireball,
-                            SpellKind::Possession,
-                            SpellKind::Castle,
-                            SpellKind::Speed,
-                        ],
-                        Some(SpellKind::Fireball),
-                    )
+                    .install_semantic_spell_carry_for_test(acquired, Some(SpellKind::Fireball))
                     .unwrap();
             }
             let guard = source.session().unwrap().identity().guard();
@@ -4039,18 +4362,20 @@ mod tests {
                 .step(guard, GameCommand::default())
                 .unwrap();
             let save = resolver.save_replay(&source).unwrap();
-            if external == 3 {
+            if external == 3 || cave6_fireball {
                 let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
-                assert_eq!(
-                    save_json["semantic_spell_carry"]["acquired"],
-                    serde_json::json!(["fireball", "possession", "castle", "speed"]),
-                );
+                let expected = if cave6_fireball {
+                    serde_json::json!(["fireball"])
+                } else {
+                    serde_json::json!(["fireball", "possession", "castle", "speed"])
+                };
+                assert_eq!(save_json["semantic_spell_carry"]["acquired"], expected);
                 assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
             }
             // The default check still admits the legacy terrain-only adapter
             // without changing authority. The opt-in full role must remain
             // identical to the source role installed before construction.
-            let cached_resolver = Mc2RuntimePackageResolver::load([
+            let mut cached_inputs = vec![
                 if external == 2 {
                     Mc2CampaignInputs::with_owner_cache(
                         &package,
@@ -4060,13 +4385,16 @@ mod tests {
                     Mc2CampaignInputs::new(level_two_package())
                 },
                 Mc2CampaignInputs::with_owner_cache(
-                    generated.join("level3-day-block32-campaign-recipe-v2"),
-                    source_owner.clone().unwrap_or_else(||
+                    if external == 3 { package.clone() } else {
+                        generated.join("level3-day-block32-campaign-recipe-v2")
+                    },
+                    source_owner.clone().filter(|_| external == 3).unwrap_or_else(||
                         generated.join("level3-day-minimap-owner-cache-v3/components/material")),
                 ),
                 Mc2CampaignInputs::new(level_one_package()),
-            ])
-            .unwrap();
+            ];
+            cached_inputs.extend(cave_inputs);
+            let cached_resolver = Mc2RuntimePackageResolver::load(cached_inputs).unwrap();
             let mut restored = GameRuntime::<Mc2CampaignBackend>::title(524).unwrap();
             let guard = restored.identity().guard();
             cached_resolver
@@ -4080,11 +4408,15 @@ mod tests {
                 restored.identity().active_runtime_flow,
                 source.identity().active_runtime_flow
             );
+            assert!(source.completed_levels.is_empty());
+            assert!(restored.completed_levels.is_empty());
             // Optional fresh owner-local diagnostic output, never an updated golden.
             let output_variable = if external == 2 {
                 "MC_CORRECTED_LEVEL2_REPLAY_OUTPUT"
-            } else {
+            } else if external == 3 {
                 "MC_CORRECTED_DAY_REPLAY_OUTPUT"
+            } else {
+                "MC_CORRECTED_CAVE_REPLAY_OUTPUT"
             };
             if let Some(path) = std::env::var_os(output_variable) {
                 use std::io::Write;
@@ -4120,6 +4452,7 @@ mod tests {
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             generation: 6,
+            source_player_names_visible: true,
             completed_levels: Vec::new(),
             level_statistics: Vec::new(),
             state: RuntimeState::Loading {
@@ -4455,6 +4788,7 @@ mod tests {
                 session.backend().semantic_spell_state_for_test().unwrap().1,
                 Some(SpellKind::Castle)
             );
+
         }
 
         for _ in 0..8 {
@@ -4825,64 +5159,99 @@ mod tests {
 
     #[test]
     fn runtime_completed_real_level_one_returns_to_map_before_loading_level_two_once() {
+        use crate::game_session::{MarkedSpellCycle, SpellAssignmentHand, SpellCycleDirection,
+            SpellHand, SpellMark, SpellMarkHand};
         let catalog = default_catalog().unwrap();
-        let level_one = level_one_package();
         let level_two = level_two_package();
         let level_three = level_three_package();
         let level_two_definition = Arc::new(load_mc2_campaign(&level_two, &catalog).unwrap());
         let level_three_definition = Arc::new(load_mc2_campaign(&level_three, &catalog).unwrap());
-        let resolver = Mc2RuntimePackageResolver::load([
-            Mc2CampaignInputs::new(&level_three),
-            Mc2CampaignInputs::new(&level_one),
-            Mc2CampaignInputs::new(&level_two),
-        ])
-        .unwrap();
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resources = std::env::var_os("MC_INSTALLED_CAMPAIGN_RESOURCES").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("campaign-original-environments/installed-campaign-resources.json"));
+        let resources: Vec<std::collections::BTreeMap<String, String>> =
+            serde_json::from_slice(&std::fs::read(resources).unwrap()).unwrap();
+        assert_eq!(resources.len(), 30, "the earned save binds the complete installed campaign");
+        let resolver = Mc2RuntimePackageResolver::load(resources.iter().map(|row|
+            Mc2CampaignInputs::with_owner_cache(&row["package"], &row["owner"]))).unwrap();
         assert_eq!(
             resolver.flow().bound_level_id(),
             resolver.flow().entry_level_id()
         );
-        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(111).unwrap();
-        let title = runtime.identity();
-        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
-        let stale_open = resolver.open_pending(&mut runtime, title.guard(), 111);
+        let mut guard_runtime = GameRuntime::<Mc2CampaignBackend>::title(110).unwrap();
+        let title = guard_runtime.identity();
+        let loading = resolver.new_game(&mut guard_runtime, title.guard()).unwrap();
+        let stale_open = resolver.open_pending(&mut guard_runtime, title.guard(), 110);
         assert!(matches!(
             stale_open,
             Err(OpenLevelError::Transition(RuntimeTransitionError::Guard(error)))
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
-        assert_eq!(runtime.identity(), loading);
-        let playing = resolver
-            .open_pending(&mut runtime, loading.guard(), 111)
-            .unwrap();
-        let stale_level_one_tick_zero_guard = playing.session.as_ref().unwrap().guard();
-
-        // Replay only the retained public inputs in this fresh Level 1
-        // session. The old save's state and receipts are not loaded or trusted.
+        assert_eq!(guard_runtime.identity(), loading);
+        resolver.open_pending(&mut guard_runtime, loading.guard(), 110).unwrap();
+        drop(guard_runtime);
+        // Admit the unmodified earned checkpoint with its own verified replay
+        // receipt and matching installed 25+5 definition.
         let input_path = std::env::var_os("MC_NIGHT_SPIRE_INPUT_TRACE")
-            .expect("set MC_NIGHT_SPIRE_INPUT_TRACE to the retained Level 1 public input history");
-        let input: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(input_path).expect("retained Level 1 input history is readable"),
-        )
-        .expect("retained Level 1 input history is JSON");
-        let operations = input["operations"]
-            .as_array()
-            .expect("retained input history has operations");
-        assert!(!operations.is_empty());
+            .expect("set MC_NIGHT_SPIRE_INPUT_TRACE to the retained objective-5 checkpoint");
+        let checkpoint = std::fs::read(input_path).expect("retained Level 1 checkpoint is readable");
+        let input: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
+        let exit_path = std::env::var_os("MC_NIGHT_SPIRE_EXIT_TRACE")
+            .expect("set MC_NIGHT_SPIRE_EXIT_TRACE to the retained earned exit recording");
+        let exit_input: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(exit_path).expect("retained earned exit recording is readable"),
+        ).unwrap();
+        let prefix = input["operations"].as_array().unwrap();
+        let recorded = exit_input["operations"].as_array().unwrap();
+        assert!(recorded.len() > prefix.len());
+        assert_eq!(&recorded[..prefix.len()], prefix.as_slice(),
+            "the exit recording continues the exact earned checkpoint inputs");
+        let commands: Vec<GameCommand> = recorded[prefix.len()..].iter().map(|operation| {
+            assert_eq!(operation["operation"], "step");
+            serde_json::from_value(operation["command"].clone()).unwrap()
+        }).collect();
+        assert_eq!(commands[0], GameCommand::default(), "the recorded first approach step is neutral");
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(111).unwrap();
+        let title = runtime.identity();
+        let loaded = resolver.load_replay(&mut runtime, title.guard(), 111, &checkpoint)
+            .expect("the earned checkpoint must pass its real definition and replay receipt");
+        let stale_checkpoint_guard = loaded.session.as_ref().unwrap().guard();
         {
             let session = runtime.session_mut().unwrap();
-            for operation in operations {
-                let operation: ReplayOperation<GameCommand> = serde_json::from_value(operation.clone())
-                    .expect("valid public input operation");
-                let ReplayOperation::Step { command } = operation else {
-                    panic!("Level 1 retained history must contain only gameplay steps");
-                };
-                session.advance(session.identity().guard(), command).unwrap();
-            }
-            let progress = session.snapshot().value.objective_progress;
+            let snapshot = session.snapshot();
+            assert_eq!(snapshot.identity.tick, input["expected_tick"].as_u64().unwrap());
+            assert_eq!(snapshot.identity.definition_hash,
+                input["definition"]["definition_hash"].as_str().unwrap());
+            let pose = &snapshot.value.player_pose;
+            assert_eq!((pose.x, pose.y, pose.z, pose.yaw, pose.display_pitch,
+                pose.effective_pitch, pose.roll), (44740, 62941, 256, 1734, 3, 3, 34),
+                "the retained objective-5 input must reach its observed live player pose");
+            let progress = snapshot.value.objective_progress;
             assert_eq!(progress.completed_count, 5);
             assert!(progress.all_objectives_satisfied);
         }
+        // The retained public inputs already acquired the real Castle. Mark it
+        // before the ordinary exit; marking must preserve its current hand.
+        {
+            let session = runtime.session_mut().unwrap();
+            let before_mark = session.snapshot().value.player_spells.iter()
+                .find(|spell| spell.id.as_str() == "spell.castle").unwrap().hand;
+            let guard = session.identity().guard();
+            let marked = session.step(guard, GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: SemanticId::parse("spell.castle").unwrap(),
+                    hand: SpellMarkHand::Left,
+                    holder_actor: None,
+                }),
+                ..commands[0].clone()
+            }).unwrap();
+            let castle = marked.value.player_spells.iter()
+                .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+            assert_eq!(castle.marked_hand, SpellMarkHand::Left);
+            assert_eq!(castle.hand, before_mark, "marking preserves the actual pickup's hand");
+        }
         // The final objective admits the source exit group on a later pass.
+        let mut next_command = 1;
         for _ in 0..8 {
             let session = runtime.session_mut().unwrap();
             if session
@@ -4897,9 +5266,14 @@ mod tests {
                 break;
             }
             session
-                .step(session.identity().guard(), GameCommand::default())
+                .step(session.identity().guard(), commands[next_command].clone())
                 .unwrap();
+            next_command += 1;
         }
+        // Retain the actual first-visit state immediately before the exit
+        // approach for the controlled repeat-visit check below.
+        let repeat_pre_exit = runtime.session().unwrap().backend()
+            .compatibility_campaign().clone();
         {
             let session = runtime.session_mut().unwrap();
             let compatibility = session.backend().compatibility_campaign().simulation();
@@ -4911,7 +5285,21 @@ mod tests {
                 .copied()
                 .expect("the ordinary final objective materializes the real L1 exit trigger");
             assert_eq!((trigger.model, trigger.action), (12, 12));
-            fly_to_real_exit_trigger(session, 137);
+            for command in &commands[next_command..] {
+                session.advance(session.identity().guard(), command.clone()).unwrap();
+                if session.backend().compatibility_campaign().simulation().level_exit_sequence().active {
+                    break;
+                }
+            }
+            let exit = session.backend().compatibility_campaign().simulation().level_exit_sequence();
+            assert!(exit.active, "the recorded earned approach must enter row 137");
+            assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+            let reached = session.snapshot();
+            let pose = &reached.value.player_pose;
+            assert_eq!(reached.identity.tick, exit_input["expected_tick"].as_u64().unwrap());
+            assert_eq!((pose.x, pose.y, pose.z, pose.yaw, pose.display_pitch,
+                pose.effective_pitch, pose.roll), (19958, 56011, 4865, 1599, 3, 3, -9),
+                "the marked route reaches the observed native exit-entry pose");
         }
 
         let before_start = runtime.identity();
@@ -4973,7 +5361,7 @@ mod tests {
         let stale_session_rejection = resolver.accept_transition(
             &mut runtime,
             started_identity.guard(),
-            stale_level_one_tick_zero_guard,
+            stale_checkpoint_guard,
         );
         assert!(matches!(
             stale_session_rejection,
@@ -5197,6 +5585,168 @@ mod tests {
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
 
+        // Cold-open the genuine Results and its normal map/next-mission path.
+        // The already earned Castle is marked but not automatically assigned.
+        let results_save = resolver.save_replay(&runtime).unwrap();
+        let results_json: serde_json::Value = serde_json::from_slice(&results_save).unwrap();
+        assert_eq!(results_json["semantic_spell_carry"]["hand_marks"][2], 1);
+        // Start a real repeat from the earned map, then restore the declared
+        // pre-exit checkpoint from this same encounter to avoid a second
+        // playthrough. The mark command and exit happen after that boundary.
+        let mut repeated = GameRuntime::<Mc2CampaignBackend>::title(116).unwrap();
+        let title = repeated.identity();
+        resolver.load_replay(&mut repeated, title.guard(), 116, &results_save).unwrap();
+        let results = repeated.identity();
+        let map = resolver.campaign_menu_command(&mut repeated, results.guard(),
+            CampaignMenuCommand::DismissResults).unwrap();
+        let map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::SelectMission { level_id: resolver.flow().entries()[0].level_id().clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut repeated, loading.guard(), 116).unwrap();
+        {
+            let session = repeated.session_mut().unwrap();
+            assert_eq!(session.backend().compatibility_campaign().simulation().mission_rewards(),
+                crate::campaign::rewards::MissionRewards::Suppressed);
+            *session.backend_mut().compatibility_campaign_mut_for_test() = repeat_pre_exit;
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .shared_spells_mut().set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
+            let marked = session.step(session.identity().guard(), GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: SemanticId::parse("spell.castle").unwrap(),
+                    hand: SpellMarkHand::Right,
+                    holder_actor: None,
+                }),
+                ..GameCommand::default()
+            }).unwrap();
+            assert_eq!(marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.castle")
+                .unwrap().marked_hand, SpellMarkHand::Right);
+            assert!(!marked.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.speed")
+                .unwrap().acquired, "the first visit left authored Speed uncollected");
+            // Control the group-11 publication and approach to authored
+            // row100; the ordinary overlap performs the real acquisition.
+            let (player, pickup) = {
+                let sim = session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
+                if !sim.economy().spell_pickups().iter().any(|row| row.authored_index == 100) {
+                    sim.activate_authored_group_prerequisite_for_test(11).unwrap();
+                }
+                let pickup = *sim.economy().spell_pickups().iter()
+                    .find(|row| row.authored_index == 100).expect("authored NightSpire Speed");
+                (sim.state.entity_index, pickup)
+            };
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .set_level2_entity_position(player, pickup.position).unwrap();
+            for _ in 0..8 {
+                if session.snapshot().value.player_spells.iter()
+                    .any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired) { break; }
+                session.step(session.identity().guard(), GameCommand::default()).unwrap();
+            }
+            assert!(session.snapshot().value.player_spells.iter()
+                .any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired));
+            // The controlled pickup displaced the player. Put the live human
+            // at the live authored exit's centre and let its ordinary XY
+            // overlap and eight-phase visit start the actual exit sequence.
+            let (player, trigger) = {
+                let sim = session.backend().compatibility_campaign().simulation();
+                let trigger = *sim.economy().authored_switch_producers().iter()
+                    .find(|row| row.authored_index == 137 && row.active)
+                    .expect("the earned final objective published the repeat exit");
+                assert_eq!((trigger.model, trigger.action), (12, 12));
+                (sim.state.entity_index, trigger)
+            };
+            session.backend_mut().compatibility_campaign_mut_for_test().simulation_mut()
+                .set_level2_entity_position(player, trigger.position).unwrap();
+            for _ in 0..8 {
+                session.advance(session.identity().guard(), GameCommand::default()).unwrap();
+                if session.backend().compatibility_campaign().simulation().level_exit_sequence().active { break; }
+            }
+            let exit = session.backend().compatibility_campaign().simulation().level_exit_sequence();
+            assert!(exit.active, "the actual repeat exit switch must observe the player");
+            assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+            for _ in 0..700 {
+                if matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }) { break; }
+                session.step(session.identity().guard(), GameCommand::default()).unwrap();
+            }
+            assert!(matches!(session.backend().completion_status(), GameCompletionStatus::Completed { .. }));
+            assert_eq!(session.backend().compatibility_campaign().simulation().level_exit_sequence().result_code, 0x0a);
+        }
+        let repeat_identity = repeated.identity();
+        let repeat_stats = match repeated.session().unwrap().backend().completion_status() {
+            GameCompletionStatus::Completed { completion } => completion.statistics.unwrap(),
+            other => panic!("repeat must complete before Results: {other:?}"),
+        };
+        let repeat_receipt = resolver.accept_transition(&mut repeated, repeat_identity.guard(),
+            repeat_identity.session.as_ref().unwrap().guard()).unwrap();
+        assert_eq!(repeat_receipt.disposition, CompletionDisposition::Results);
+        let repeat_view = repeated.identity().campaign_menu.unwrap();
+        assert_eq!(repeat_view.phase, CampaignMenuPhase::Results);
+        assert_eq!(repeat_view.completion_statistics, Some(repeat_stats.clone()));
+        assert!(repeat_view.level_statistics.iter().any(|row| row.level_id.as_str() == "level.magic_carpet_2.night_spire"
+            && row.statistics == repeat_stats));
+        let repeat_save = resolver.save_replay(&repeated).unwrap();
+        let repeat_json: serde_json::Value = serde_json::from_slice(&repeat_save).unwrap();
+        assert_eq!(repeat_json["semantic_spell_carry"]["hand_marks"][2], 2);
+        let mut original_carry = results_json["semantic_spell_carry"].clone();
+        let mut repeat_carry = repeat_json["semantic_spell_carry"].clone();
+        original_carry["hand_marks"] = serde_json::Value::Null;
+        repeat_carry["hand_marks"] = serde_json::Value::Null;
+        let original_acquired = original_carry["acquired"].as_array().unwrap().clone();
+        let repeated_acquired = repeat_carry["acquired"].as_array().unwrap().clone();
+        assert!(!original_acquired.contains(&serde_json::json!("speed")));
+        assert!(repeated_acquired.contains(&serde_json::json!("speed")));
+        original_carry["acquired"] = serde_json::Value::Null;
+        repeat_carry["acquired"] = serde_json::Value::Null;
+        assert_eq!(repeat_carry, original_carry, "repeat retains banked XP while keeping the newly learned spell");
+        let mut cold_results = GameRuntime::<Mc2CampaignBackend>::title(117).unwrap();
+        let title = cold_results.identity();
+        resolver.load_replay(&mut cold_results, title.guard(), 117, &repeat_save).unwrap();
+        assert_eq!(cold_results.identity().campaign_menu.unwrap().completion_statistics, Some(repeat_stats));
+        let mut map = repeated.identity();
+        if map.campaign_menu.as_ref().unwrap().phase == CampaignMenuPhase::Results {
+            map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+                CampaignMenuCommand::DismissResults).unwrap();
+        }
+        assert_eq!(map.campaign_menu.as_ref().unwrap().selected_level_id.as_ref().unwrap().as_str(),
+            "level.magic_carpet_2.payahandra_ruins", "latest completion focuses the frontier after Results");
+        let map = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::SelectMission { level_id: resolver.flow().entries()[1].level_id().clone() }).unwrap();
+        let loading = resolver.campaign_menu_command(&mut repeated, map.guard(),
+            CampaignMenuCommand::StartMission).unwrap();
+        resolver.open_pending(&mut repeated, loading.guard(), 116).unwrap();
+        let entry = repeated.session().unwrap().snapshot();
+        let castle = entry.value.player_spells.iter().find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert!(castle.acquired);
+        assert_eq!(castle.marked_hand, SpellMarkHand::Right);
+        assert!(entry.value.player_spells.iter().any(|spell| spell.id.as_str() == "spell.speed" && spell.acquired),
+            "the spell learned during the replay reaches the next mission");
+        let mut marked_cold = GameRuntime::<Mc2CampaignBackend>::title(114).unwrap();
+        let title = marked_cold.identity();
+        resolver.load_replay(&mut marked_cold, title.guard(), 114, &results_save).unwrap();
+        let loading = start_selected_campaign_mission(&resolver, &mut marked_cold);
+        resolver.open_pending(&mut marked_cold, loading.guard(), 114).unwrap();
+        let entry = marked_cold.session().unwrap().snapshot();
+        let castle = entry.value.player_spells.iter()
+            .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert!(castle.acquired);
+        assert_eq!(castle.marked_hand, SpellMarkHand::Left);
+        assert_eq!(castle.hand, SpellHand::None, "entry reselects source default hands");
+        let entry_save = resolver.save_replay(&marked_cold).unwrap();
+        let mut entry_cold = GameRuntime::<Mc2CampaignBackend>::title(115).unwrap();
+        let title = entry_cold.identity();
+        resolver.load_replay(&mut entry_cold, title.guard(), 115, &entry_save).unwrap();
+        assert_eq!(entry_cold.session().unwrap().snapshot().value, entry.value);
+        let session = entry_cold.session_mut().unwrap();
+        let guard = session.identity().guard();
+        let cycled = session.step(guard, GameCommand {
+            cycle_marked_spell: Some(MarkedSpellCycle {
+                hand: SpellAssignmentHand::Left,
+                direction: SpellCycleDirection::Next,
+            }),
+            ..GameCommand::default()
+        }).unwrap();
+        let castle = cycled.value.player_spells.iter()
+            .find(|spell| spell.id.as_str() == "spell.castle").unwrap();
+        assert_eq!((castle.marked_hand, castle.hand), (SpellMarkHand::Left, SpellHand::Left));
         let pending_level_two = start_selected_campaign_mission(&resolver, &mut runtime);
         let level_two_playing = resolver
             .open_pending(&mut runtime, pending_level_two.guard(), 111)
@@ -5211,7 +5761,8 @@ mod tests {
         assert_eq!(pending_level_two.runtime_id, 111);
         assert_eq!(level_two_playing.runtime_id, pending_level_two.runtime_id);
         assert_eq!(level_two_playing.session.as_ref().unwrap().session_id, 111);
-        assert_eq!(level_two_playing.session.as_ref().unwrap().generation, 2);
+        assert_eq!(level_two_playing.session.as_ref().unwrap().generation,
+            completed_identity.session.as_ref().unwrap().generation + 1);
         assert_eq!(
             level_two_playing
                 .session
@@ -5277,20 +5828,20 @@ mod tests {
         let stale_level_one = runtime
             .session_mut()
             .unwrap()
-            .step(stale_level_one_tick_zero_guard, GameCommand::default());
+            .step(stale_checkpoint_guard, GameCommand::default());
         assert!(matches!(
             stale_level_one,
             Err(GameSessionError::Guard(error))
                 if error.code == SessionGuardErrorCode::GenerationMismatch
         ));
 
-        // This uses a fresh execution of retained public inputs and a closed
+        // This admits the receipt-verified retained checkpoint and a closed
         // unordered installed set. It proves authoritative phase-12
         // capture, the declared L1->L2 edge without a caller level or path,
         // one guarded Loading transition, exact pending-definition-to-real-L2
         // same-handle open, and cross-level ABA rejection. It does not prove
         // package installation/discovery, L2 completion, L3->Title,
-        // native/Unity transition exposure, results UI, or save/load.
+        // native/Unity transition exposure or results UI.
     }
 
     #[test]
@@ -5420,6 +5971,7 @@ mod tests {
             secret_flow: secret_flow::SecretFlowState::default(),
             retained_campaign: None,
             runtime_id: 223,
+            source_player_names_visible: true,
             generation: 4,
             completed_levels: Vec::new(),
             level_statistics: Vec::new(),

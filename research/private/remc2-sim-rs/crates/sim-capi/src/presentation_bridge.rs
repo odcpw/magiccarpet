@@ -18,6 +18,7 @@ use sim_core::{
         LEVEL1_MINIMAP_ANCHOR_BOTTOM_LEFT, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_COMMAND_DOT, LEVEL1_MINIMAP_COMMAND_SPRITE, Level1MinimapEntityCommand,
         Level1MinimapEntityInput, Level1MinimapMarks, level1_minimap_entity_command,
+        level1_minimap_entity_command_with_visibility,
         level1_minimap_project, minimap_objective_arrow, minimap_objective_distance,
     },
     native_world::{
@@ -368,7 +369,9 @@ fn level2_day_palette_for_entity(
         5 => player_colour(true)?,
         9 => player_colour(false)?,
         10 if input.model == 78 => {
-            level2_day_player_colour(session, session.state.entity_index, !phase_3, palette)?
+            // Both GameUI entity passes index the local color pair directly
+            // by colorIndex[3], unlike the reversed selection for 39/57.
+            level2_day_player_colour(session, session.state.entity_index, phase_3, palette)?
         }
         10 => player_colour(false)?,
         _ => return None,
@@ -426,7 +429,8 @@ fn level2_day_minimap_command(
     family12_enabled: bool,
     parameter_record_index: u8,
     palette: &CampaignMinimapPalette,
-) -> Option<Level1MinimapEntityCommand> {
+    full_map: bool,
+) -> Option<(Level1MinimapEntityCommand, bool)> {
     // DrawMinimapEntities_B_61A00 excludes class-3/model-1 Nyphur.  A
     // separate active objective carrier would be required to represent that
     // participant through DrawMinimapMarks_644F0; this entity adapter does not
@@ -445,7 +449,7 @@ fn level2_day_minimap_command(
         )?;
         let (x, y) =
             level1_minimap_project(&session.state, input.position, LEVEL2_MINIMAP_SIDE, 256);
-        return Some(Level1MinimapEntityCommand {
+        return Some((Level1MinimapEntityCommand {
             source_slot: input.source_slot,
             x,
             y,
@@ -455,9 +459,10 @@ fn level2_day_minimap_command(
             size: 1,
             anchor: LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER,
             help_selector: level2_day_minimap_help_selector(input, 23),
-        });
+        }, true));
     }
-    let mut command = level1_minimap_entity_command(&session.state, classified_input)?;
+    let (mut command, visible) =
+        level1_minimap_entity_command_with_visibility(&session.state, classified_input, full_map)?;
     if input.class == 3 {
         let source_player = if input.source_id_is_player {
             input.source_id
@@ -482,7 +487,35 @@ fn level2_day_minimap_command(
                 level2_day_model45_help_selector(session, input, parameter_record_index)?;
         }
     }
-    Some(command)
+    Some((command, visible))
+}
+
+fn level2_night_minimap_command(
+    session: &Mc2Simulation,
+    input: Level1MinimapEntityInput,
+    full_map: bool,
+) -> Option<(Level1MinimapEntityCommand, bool)> {
+    let (mut command, visible) =
+        level1_minimap_entity_command_with_visibility(&session.state, input, full_map)?;
+    // The opening Night classifier already owns admission, fixed colors and
+    // blink visibility. Its player colors, however, are the local wizard's
+    // constants; GameUI uses the actual source or linked wizard's color.
+    let uses_player_color = match input.class {
+        5 => input.source_id != input.source_slot && input.source_id_is_player,
+        9 => input.source_id_is_player,
+        10 => match input.model {
+            39 | 57 => input.player_link_is_player,
+            45 => input.player_link_is_player || input.source_id_is_player,
+            78 => true,
+            _ => input.source_id_is_player,
+        },
+        _ => false,
+    };
+    if uses_player_color {
+        command.palette_index =
+            level2_day_palette_for_entity(session, input, &NIGHT_MINIMAP_PALETTE)?;
+    }
+    Some((command, visible))
 }
 
 /// Builds the bounded Level 2 minimap projection from the live authoritative
@@ -565,8 +598,16 @@ fn campaign_map_plan(
     // GameUI's v83 is holder.word_2E, not possession of a family-12 holder.
     let family12_enabled = visibility.beyond_sight_active;
 
+    let typed_owners = session.campaign_minimap_owned_inputs()?;
+    let typed_slots = typed_owners.iter().map(|row| row.source_slot)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut inputs = Vec::new();
     for entity in session.entities() {
+        // A hidden typed owner still suppresses its obsolete raw packet until
+        // the next source reclaim makes the address available to NewEvent.
+        if typed_slots.contains(&entity.index) {
+            continue;
+        }
         if !entity.active || entity.drawing_disabled() {
             continue;
         }
@@ -588,6 +629,8 @@ fn campaign_map_plan(
             })?;
         inputs.push((input, parameter_record_index));
     }
+
+    inputs.extend(typed_owners.into_iter().filter(|row| row.active).map(|row| (row, 0)));
 
     // Imported and newly spawned Fireflies are scheduled through the typed
     // class-5 carrier. Adoption retires the raw row, so observing only the raw
@@ -659,10 +702,9 @@ fn campaign_map_plan(
 
     let mut entities = Vec::new();
     for (input, parameter_record_index) in inputs {
-        let command = if selection.map_type_id == 1 && !(input.class == 3 && input.model == 3) {
-            // Preserve the qualified Night classifier. Mines use the shared
-            // source owner/active-Beyond gate and actual player-colour selector.
-            level1_minimap_entity_command(&session.state, input)
+        let full_map = geometry == MapGeometry::FULL_MAP;
+        let command = if selection.map_type_id == 1 && input.class != 3 {
+            level2_night_minimap_command(session, input, full_map)
         } else {
             level2_day_minimap_command(
                 session,
@@ -670,9 +712,10 @@ fn campaign_map_plan(
                 family12_enabled,
                 parameter_record_index,
                 palette,
+                full_map,
             )
         };
-        let Some(mut command) = command else {
+        let Some((mut command, visible)) = command else {
             continue;
         };
         (command.x, command.y) = geometry.project(map_view, input.position);
@@ -687,7 +730,7 @@ fn campaign_map_plan(
             size: command.size,
             anchor: command.anchor,
             help_selector: command.help_selector,
-            visible: 1,
+            visible: u8::from(visible),
         });
     }
 
@@ -792,47 +835,13 @@ fn campaign_map_plan(
         let RuntimeRelation::Scalar(model) = stage.relation else {
             return Err("creature objective has no source model selector".to_owned());
         };
-        // GameUI's bytearray_38403x[model] is a source-linked class-5 list.
-        // Reconstruct its head from the actual next links, never pool order.
-        let candidates = session
-            .entities()
-            .iter()
-            .filter(|entity| {
-                entity.index != 0
-                    && entity.active
-                    && entity.class == 5
-                    && u32::from(entity.model) == model
-            })
-            .map(|entity| (entity.index, entity))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let linked = candidates
-            .values()
-            .filter_map(|entity| entity.next_relation)
-            .collect::<std::collections::BTreeSet<_>>();
-        let heads = candidates
-            .keys()
-            .copied()
-            .filter(|index| !linked.contains(index))
-            .collect::<Vec<_>>();
-        if !candidates.is_empty() && heads.len() != 1 {
-            return Err("creature objective source chain has no unique head".to_owned());
-        }
-        let mut current = heads.first().copied().unwrap_or(0);
-        let mut visited = std::collections::BTreeSet::new();
         let mut nearest = None;
         let mut nearest_distance = 0x1000000;
-        while current != 0 {
-            if !visited.insert(current) {
-                return Err("creature objective source chain is cyclic".to_owned());
-            }
-            let entity = candidates
-                .get(&current)
-                .ok_or_else(|| "creature objective source link leaves its model list".to_owned())?;
-            current = entity.next_relation.unwrap_or(0);
-            let (x, y) = geometry.project(map_view, entity.position);
+        for (slot, position) in session.campaign_creature_objective_targets(model)? {
+            let (x, y) = geometry.project(map_view, position);
             marks.push(Level2MinimapMark {
                 source_order: marks.len() as u16,
-                subject_entity_index: entity.index,
+                subject_entity_index: slot,
                 x,
                 y,
                 palette_index: palette.spells,
@@ -840,10 +849,10 @@ fn campaign_map_plan(
                 help_selector: 0x52,
                 visible: u8::from(session.state.tick & 3 == 0),
             });
-            let distance = minimap_objective_distance(view.position, entity.position);
+            let distance = minimap_objective_distance(view.position, position);
             if distance < nearest_distance {
                 nearest_distance = distance;
-                nearest = Some(entity.position);
+                nearest = Some(position);
             }
         }
         if let Some(target) = nearest {
@@ -926,6 +935,29 @@ fn append_objective_arrow(
             visible: u8::from(player.tick & 0x40 != 0 && (player.tick / 6) & 1 != 0),
             ..Level2MinimapMark::default()
         });
+    }
+}
+
+#[test]
+fn real_day3_marker_stone_publishes_help_when_its_map_dot_blinks_off() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level3");
+    let mut campaign = sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL3)
+        .expect("real Day3 package opens");
+    let session = campaign.simulation_mut();
+    let marker = session.entities().iter().find(|row|
+        row.active && (row.class, row.model) == (2, 1))
+        .expect("Day3 has a real initial marker stone").index;
+    for tick in 0..12 {
+        session.state.tick = tick;
+        let camera = session.world_map_camera();
+        let corner = campaign_minimap_plan(session, CampaignSelection::LEVEL3).unwrap();
+        let full = campaign_world_map_plan(session, CampaignSelection::LEVEL3, camera).unwrap();
+        for (plan, visible) in [(&corner, tick / 3 & 1 != 0), (&full, tick / 2 & 1 != 0)] {
+            let row = plan.entities.iter().find(|row| row.subject_entity_index == marker)
+                .expect("marker remains a help subject in both blink phases");
+            assert_eq!((row.help_selector, row.visible), (27, u8::from(visible)));
+        }
     }
 }
 
@@ -1035,6 +1067,106 @@ fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors()
     let live = campaign_minimap_plan(campaign.simulation(), CampaignSelection::LEVEL1).unwrap();
     assert!(!live.entities.is_empty());
     assert_eq!(campaign.state_hash(), after);
+}
+
+#[test]
+fn perilium_night_castle_uses_its_owner_colour_on_both_maps() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-current/level7");
+    let selection = CampaignSelection::ordinary(7).unwrap();
+    let campaign = sim_core::campaign::CampaignSession::open(package, selection)
+        .expect("real Perilium package opens");
+    let session = campaign.simulation();
+    let owner = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index == 357)
+        .expect("Perilium Castle owner");
+    assert_eq!(owner.player_color_index(), 3);
+    let castle_source = session
+        .campaign_minimap_owned_inputs()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.source_slot == 366)
+        .expect("live Castle owner input");
+    assert_eq!(
+        (castle_source.class, castle_source.model, castle_source.source_id),
+        (3, 2, 357)
+    );
+    for geometry in [MapGeometry::MINIMAP, MapGeometry::FULL_MAP] {
+        let plan = campaign_map_plan(session, selection, &session.state, geometry).unwrap();
+        let castle = plan
+            .entities
+            .iter()
+            .find(|row| row.subject_entity_index == 366)
+            .expect("Perilium rival Castle marker");
+        assert_eq!(
+            (castle.selector, castle.help_selector, castle.visible),
+            (61, 25, 1)
+        );
+    }
+}
+
+#[test]
+fn perilium_night_owned_actors_use_their_wizards_colours() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-current/level7");
+    let selection = CampaignSelection::ordinary(7).unwrap();
+    let mut campaign = sim_core::campaign::CampaignSession::open(package, selection)
+        .expect("real Perilium package opens");
+    let session = campaign.simulation();
+    assert_eq!(session.players().iter().find(|player|
+        player.entity_index == session.state.entity_index).unwrap().player_color_index(), 0);
+    assert_eq!(session.players().iter().find(|player| player.entity_index == 357)
+        .expect("Perilium rival").player_color_index(), 3);
+    // Slot, model and owner are from the real paid-Sight Perilium tick-180
+    // marker; this isolates the same classifier using the installed package.
+    let input = Level1MinimapEntityInput {
+        source_slot: 55,
+        class: 10,
+        model: 0,
+        source_id: 357,
+        source_id_is_player: true,
+        active: true,
+        ..Level1MinimapEntityInput::default()
+    };
+    let local = Level1MinimapEntityInput { source_id: session.state.entity_index, ..input };
+    let unowned = Level1MinimapEntityInput { source_id: 55, source_id_is_player: false, ..input };
+    let creature = Level1MinimapEntityInput { class: 5, model: 20, ..input };
+    let sphere = Level1MinimapEntityInput {
+        model: 39,
+        source_id: 55,
+        source_id_is_player: false,
+        player_link: 357,
+        player_link_is_player: true,
+        ..input
+    };
+    let local_beacon = Level1MinimapEntityInput {
+        model: 78, word_32: session.state.entity_index, ..unowned
+    };
+    for phase in 0..2 {
+        let session = campaign.simulation();
+        for full_map in [false, true] {
+            for (subject, expected) in [
+                (input, 0x58), (local, 0xa4), (unowned, 215), (creature, 0x5d),
+                (sphere, [0x5d, 0x58][phase]), (local_beacon, [0xa4, 0xaa][phase]),
+            ] {
+                let (command, visible) = level2_night_minimap_command(session, subject, full_map).unwrap();
+                assert!(visible);
+                assert_eq!(command.palette_index, expected);
+            }
+            for palette in [&DAY_MINIMAP_PALETTE, &CAVE_MINIMAP_PALETTE] {
+                let expected = campaign_hud_palette_indices(0, palette.map_type).unwrap()[phase];
+                let (command, _) = level2_day_minimap_command(session, local_beacon, false, 0, palette, full_map).unwrap();
+                assert_eq!(command.palette_index, expected);
+            }
+        }
+        if phase == 0 {
+            for _ in 0..3 {
+                campaign.step(sim_core::PlayerCommand::default(), 0);
+            }
+        }
+    }
 }
 
 #[test]

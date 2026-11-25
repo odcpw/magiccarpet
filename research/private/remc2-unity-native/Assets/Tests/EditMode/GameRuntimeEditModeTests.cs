@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Json;
 using System.Text;
@@ -35,6 +36,13 @@ namespace MagicCarpet.Native.Tests
         private sealed class WallHelpReceipt
         {
             public WallHelpFrame contact, dry, reset;
+        }
+
+        [Serializable]
+        private sealed class SpiderWebReceipt
+        {
+            public string controlled_encounter, package;
+            public EngineSessionTransport.CampaignRenderValue initial, contact, expired, reset;
         }
 
         private const string SecretOriginLevel = "level.magic_carpet_2.t_klom";
@@ -277,8 +285,7 @@ namespace MagicCarpet.Native.Tests
                 assistance_sequence = ulong.MaxValue,
                 preferences = new PlayerPreferences {
                     player_name = "Oliver 🌙 \"\\\n\t ä",
-                    brightness = new[] { int.MinValue, 0, int.MaxValue },
-                    reflections = false, sky = false, shadows = false, dynamic_lighting = false
+                    brightness = new[] { int.MinValue, 0, int.MaxValue }
                 }
             };
             var json = Encoding.UTF8.GetBytes(JObject.Parse(SerializeDataContractJson(value)).ToString(Formatting.None));
@@ -315,13 +322,13 @@ namespace MagicCarpet.Native.Tests
                 Compare(name, Encoding.UTF8.GetBytes(json.ToString(Formatting.None)));
             }
             Mutate("required string", json => json.Remove("mode"));
-            Mutate("required boolean", json => ((JObject)json["player_preferences"]["preferences"]).Remove("reflections"));
+            Mutate("required boolean", json => ((JObject)json["display_settings"]).Remove("reflections"));
             Mutate("required numeric", json => ((JObject)json["player_preferences"]["preferences"]).Remove("mouse_sensitivity"));
             Mutate("wrong case", json => { json["MODE"] = json["mode"]; json.Remove("mode"); });
             Mutate("optional wrong case", json => json["FRONTEND_MEDIA"] = new JObject { ["active"] = true });
-            Mutate("null boolean", json => json["player_preferences"]["preferences"]["reflections"] = null);
+            Mutate("null boolean", json => json["display_settings"]["reflections"] = null);
             Mutate("null numeric", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = null);
-            Mutate("legacy boolean coercion", json => json["player_preferences"]["preferences"]["reflections"] = "1");
+            Mutate("legacy boolean coercion", json => json["display_settings"]["reflections"] = "1");
             Mutate("legacy numeric coercion", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = 100.0);
             Mutate("ignored metadata", json => json["$ref"] = "missing");
             Mutate("DCS metadata", json => json["__type"] = "unknown");
@@ -383,24 +390,46 @@ namespace MagicCarpet.Native.Tests
                 SerializeBoundaryEnvelope(envelope), 1024 * 1024);
         }
 
-        private static string[] InstalledOpeningArguments()
+        private static string[] InstalledOpeningArguments(int packageCount = 4)
         {
             var generated = Path.Combine(PrivateRoot, "generated");
-            return new[] {
+            var arguments = new System.Collections.Generic.List<string> {
                 "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level1-v2"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-level2-vault-successor-closure-20261025"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level2-vault-successor-environment-20261025"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-vault-successor-owner-cache-20261025"),
-                "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level3-environment-exit-20261025"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4"),
-                "-mc-runtime-package", Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
-                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
-                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3")
+                "-mc-runtime-menu-cache", CampaignMenuCache,
+                "-mc-runtime-speech-cache", CampaignSpeechCache,
+                "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded")
             };
+            AppendInstalledPackageArguments(arguments, ReadInstalledCampaignResources(packageCount));
+            return arguments.ToArray();
+        }
+
+        private static GameRuntimeTransport.InstalledPackageResource[] ReadInstalledCampaignResources(int count)
+        {
+            using var input = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(PrivateRoot, "generated/continuity-20261115/installed-full-resources.json"));
+            var resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(input);
+            Assert.That(resources.Length, Is.GreaterThanOrEqualTo(count));
+            var selected = resources.Take(count).ToArray();
+            foreach (var resource in selected)
+            {
+                Assert.That(resource.package_dir, Is.Not.Null.And.Not.Empty);
+                Assert.That(resource.owner_cache_path, Is.Not.Null.And.Not.Empty);
+                Assert.That(resource.presentation_cache_path, Is.Not.Null.And.Not.Empty);
+            }
+            return selected;
+        }
+
+        private static void AppendInstalledPackageArguments(
+            System.Collections.Generic.List<string> arguments,
+            GameRuntimeTransport.InstalledPackageResource[] resources)
+        {
+            foreach (var resource in resources)
+            {
+                arguments.Add("-mc-runtime-package"); arguments.Add(resource.package_dir);
+                arguments.Add("-mc-runtime-owner-cache"); arguments.Add(resource.owner_cache_path);
+                arguments.Add("-mc-runtime-presentation-cache"); arguments.Add(resource.presentation_cache_path);
+            }
         }
 
         [Test]
@@ -473,12 +502,16 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
-        [Test]
-        public void InstalledOpeningAssignsSpellHandsAndRejectsLockedTierBeforeCasting()
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator InstalledOpeningAssignsSpellHandsAndRejectsLockedTierBeforeCasting()
         {
             var root = new GameObject("installed spell hand and tier producer");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            Texture2D pixels = null;
+            var previousTarget = RenderTexture.active;
             try
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
@@ -516,17 +549,124 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").tier, Is.Zero, "a locked choice never mutates its source holder");
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var hud = native.DayHudState(native.Tick);
+                Assert.That((hud.generation, hud.tick), Is.EqualTo((native.Generation, native.Tick)));
+                Assert.That((hud.left.model, hud.left.tier, hud.left.drawAdmitted),
+                    Is.EqualTo(((byte)1, (sbyte)0, (byte)1)), "the actual left holder reaches the source HUD");
+                Assert.That((hud.right.model, hud.right.tier, hud.right.drawAdmitted),
+                    Is.EqualTo(((byte)0, (sbyte)0, (byte)1)), "the actual right holder reaches the source HUD");
+                Assert.That(hud.left.holderEntityIndex, Is.Not.EqualTo(0));
+                Assert.That(hud.right.holderEntityIndex, Is.Not.EqualTo(0));
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeNightSurface");
+                Assert.That(surface, Is.Not.Null);
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                try
+                {
+                    Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in cameras) { camera.targetTexture = display; camera.Render(); }
+                    gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("DrawGameRuntimeIndexedHud", flags)
+                        .Invoke(runtime, new object[] { native.DayHudState(native.Tick), false });
+                    gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                    yield return null;
+                    gui.SendEvent(new Event { type = EventType.Layout });
+                    gui.SendEvent(new Event { type = EventType.Repaint });
+                    var output = (RenderTexture)Field("gameRuntimeHudIndices");
+                    Assert.That(output, Is.Not.Null, "the live source HUD reaches the indexed Unity target");
+                    pixels = new Texture2D(output.width, output.height, TextureFormat.RGBA32, false, true);
+                    RenderTexture.active = output;
+                    pixels.ReadPixels(new Rect(0, 0, output.width, output.height), 0, 0); pixels.Apply();
+                    var raw = pixels.GetPixels32();
+                    var descriptors = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                    var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                    var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                    void AssertIcon(NativeSim.CampaignDayHudSpellSlot slot, int x)
+                    {
+                        var row = descriptors[(int)slot.iconSelector];
+                        int Extent(string name) => (int)row.GetType().GetField(name).GetValue(row);
+                        var sw = Extent("stored_width"); var sh = Extent("stored_height");
+                        var rw = Extent("runtime_width"); var rh = Extent("runtime_height");
+                        var compared = 0;
+                        for (var dy = 16; dy < Math.Min(rh, 36); dy++)
+                        for (var dx = 0; dx < rw; dx++)
+                        {
+                            var source = dy * sh / rh * sw + dx * sw / rw;
+                            if (masks[slot.iconSelector][source] == 0) continue;
+                            Assert.That(raw[(output.height - 1 - (2 + dy)) * output.width + x + dx].r,
+                                Is.EqualTo(indices[slot.iconSelector][source]), "the current source hand icon reaches the indexed target");
+                            compared++;
+                        }
+                        Assert.That(compared, Is.GreaterThan(0), "the source hand icon supplies visible checked pixels");
+                    }
+                    AssertIcon(hud.left, 510);
+                    AssertIcon(hud.right, 574);
+                    var tiers = (System.Collections.IDictionary)Field("level2DayHudTierRows");
+                    var tierTextures = (System.Collections.Generic.Dictionary<int, Texture2D>)Field("ownerSpellTierTextures");
+                    var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                    void AssertTier(NativeSim.CampaignDayHudSpellSlot slot, int x)
+                    {
+                        var frame = descriptors[(int)slot.frameSelector];
+                        var tier = tiers[(int)slot.levelTextSelector];
+                        int Extent(object row, string name) => (int)row.GetType().GetField(name).GetValue(row);
+                        var width = Extent(tier, "runtime_width");
+                        var height = Extent(tier, "runtime_height");
+                        var tierX = x + Extent(frame, "runtime_width") - width - 2;
+                        var texture = tierTextures[slot.levelTextSelector];
+                        var mask = texture.GetPixels32();
+                        var checkedPixels = 0;
+                        for (var dy = 0; dy < height; dy++)
+                        for (var dx = 0; dx < width; dx++)
+                        {
+                            var sx = dx * texture.width / width;
+                            var sy = dy * texture.height / height;
+                            if (mask[(texture.height - 1 - sy) * texture.width + sx].a == 0) continue;
+                            Assert.That(raw[(output.height - 1 - (2 + dy)) * output.width + tierX + dx].r,
+                                Is.EqualTo(menu.ObjectiveForProfile("night").BlendSelector),
+                                "the selected source tier glyph reaches the indexed target");
+                            checkedPixels++;
+                        }
+                        Assert.That(checkedPixels, Is.GreaterThan(0));
+                    }
+                    AssertTier(hud.left, 510);
+                    AssertTier(hud.right, 574);
+                    int PanelWidth(int selector) => (int)descriptors[selector].GetType()
+                        .GetField("runtime_width").GetValue(descriptors[selector]);
+                    var playerX = 2 + PanelWidth(hud.minimapPanelSelector) +
+                        PanelWidth(hud.castlePanelSelector) + PanelWidth(hud.balloonPanelSelector);
+                    var widthMethod = typeof(MagicCarpetRuntime).GetMethod("SourceHudWidth", flags |
+                        System.Reflection.BindingFlags.Static);
+                    Assert.That((int)widthMethod.Invoke(null, new object[] { hud.localPlayerLife, hud.localPlayerMaxLife }), Is.GreaterThan(0));
+                    Assert.That((int)widthMethod.Invoke(null, new object[] { hud.localPlayerMana, hud.globalManaDenominator }), Is.GreaterThan(0));
+                    Assert.That(raw[(output.height - 1 - 10) * output.width + playerX + 58].r,
+                        Is.EqualTo(hud.lifePaletteIndex), "current life reaches the source indexed bar");
+                    Assert.That(raw[(output.height - 1 - 28) * output.width + playerX + 58].r,
+                        Is.EqualTo(hud.manaPaletteIndex), "current mana reaches the source indexed bar");
+                }
+                finally
+                {
+                    foreach (var camera in cameras) camera.targetTexture = null;
+                    display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                }
                 runtime.ApplyGameRuntimeHeldSpellInput(true, false);
                 runtime.QualificationDriveGameRuntimeFrames(2);
                 runtime.ApplyGameRuntimeHeldSpellInput(false, false);
-                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
                 Assert.That(Array.Exists(native.Entities(), row => row.active != 0 &&
                     (row.classId == 9 && row.model == 1 || row.classId == 10 && row.model == 12)), Is.True,
                     "the assigned left hand reaches the actual Possession projectile/effect producer");
+                var afterCast = native.DayHudState(native.Tick);
+                Assert.That(afterCast.localPlayerMana, Is.LessThan(hud.localPlayerMana),
+                    "the real cast's source mana debit reaches the current HUD");
             }
             finally
             {
+                RenderTexture.active = previousTarget;
+                if (pixels != null) UnityEngine.Object.DestroyImmediate(pixels);
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
                 runtime.QualificationDisposeGameRuntimeProduction();
                 UnityEngine.Object.DestroyImmediate(root);
             }
@@ -817,6 +957,2777 @@ namespace MagicCarpet.Native.Tests
             var reset = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow);
             reset.Advance(false, false, true, false, false);
             Assert.That(reset.Visible, Is.False, "a fresh owner has no retained popup");
+        }
+
+        [Test]
+        public void ProductionMinimapHelpUsesSourceRowAndDrawLifetime() =>
+            CheckProductionMapHelp(largeMapHint: false);
+
+        [Test]
+        public void ProductionLargeMapHintRequiresClosedMapAndCurrentSubjectAbsence() =>
+            CheckProductionMapHelp(largeMapHint: true);
+
+        [Test]
+        public void ProductionIdleMovementHelpUsesActualSpeedAndClosePromotion()
+        {
+            var caveReplay = Environment.GetEnvironmentVariable("MC_LARGE_MAP_HELP_CAVE_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/render-completion-20261117/incoming-cave4.mcs");
+            var arguments = InstalledOpeningArguments().Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+            var root = new GameObject("ordinary Cave idle movement help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                Assert.That(native.Tick, Is.EqualTo(1));
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                Assert.That(surface.LiveMinimapReady && !surface.HasObjectiveHelpSubject, Is.True);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                const string move = "Use cursor keys to move";
+                const string steer = "Use mouse to steer";
+                foreach (var (row, record, text) in new[] { (15, 300, move), (16, 301, steer) })
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority), Is.EqualTo((record, 50, 4, 320, 80, 600, 4)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                }
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var carrier = hintType.GetField("currentRow", flags);
+                var idle = hintType.GetField("idleDraws", flags);
+                var lifetime = hintType.GetField("remaining", flags);
+                var rows = ((Array)hintType.GetField("rows", flags).GetValue(hint)).Cast<object>().ToArray();
+                int Row(object state) => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                    state.GetType().GetField("Binding", flags).GetValue(state)).Row;
+                var steerRow = rows.Single(state => Row(state) == 16);
+                int SteerPriority() => (int)steerRow.GetType().GetField("Priority", flags).GetValue(steerRow);
+                short Speed() => transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed;
+
+                for (var frame = 0; frame < 12 && hint.VisibleRow != 4; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((4, (object)49)));
+                runtime.QualificationDriveGameRuntimeFrames(38);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(11));
+                Assert.That(Speed(), Is.Zero);
+                Assert.That((int)idle.GetValue(hint), Is.Positive);
+
+                transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0); // Ordinary forward speed key.
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Speed(), Is.Positive);
+                Assert.That(idle.GetValue(hint), Is.Zero, "actual movement resets the stopped-draw count");
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(10));
+                transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                for (var draw = 1; draw <= 100; draw++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(15).And.Not.EqualTo(16));
+                }
+                Assert.That(Speed(), Is.Zero);
+                Assert.That(idle.GetValue(hint), Is.EqualTo(100));
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(50), "frame 100 is a real selection poll");
+                Assert.That(Row(carrier.GetValue(hint)), Is.EqualTo(2), "the higher-priority idle rows require more than 100 stopped draws");
+                Assert.That(SteerPriority(), Is.EqualTo(4));
+
+                runtime.QualificationDriveGameRuntimeFrames(71);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((15, (object)49)),
+                    "the equal-priority movement rows retain source row order");
+                void AssertPaint(string text)
+                {
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var counter = idle.GetValue(hint);
+                    var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    var pixels = ReadObjectivePixels(output);
+                    var palette = surface.FramePaletteRgb8;
+                    var colour = menu.ObjectiveForProfile("cave").HelpTextColor * 3;
+                    Assert.That(pixels, Does.Contain(new Color32(palette[colour], palette[colour + 1], palette[colour + 2], 255)));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, idle.GetValue(hint), lifetime.GetValue(hint)), Is.EqualTo((tick, counter, (object)49)));
+                    CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                }
+                AssertPaint(move);
+                runtime.QualificationDriveGameRuntimeFrames(48);
+                Assert.That(lifetime.GetValue(hint), Is.EqualTo(1));
+                Assert.That(SteerPriority(), Is.EqualTo(4), "painting or entering the last draw does not promote the second row");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, SteerPriority()), Is.EqualTo((15, 6)));
+                runtime.QualificationDriveGameRuntimeFrames(20);
+                Assert.That(hint.VisibleRow, Is.Zero);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((16, (object)49)));
+                AssertPaint(steer);
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That(hint.VisibleRow, Is.EqualTo(16));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.Zero);
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionVitalsHelpUsesVisibleHudAndSourcePollOrder()
+        {
+            var caveReplay = Environment.GetEnvironmentVariable("MC_LARGE_MAP_HELP_CAVE_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/render-completion-20261117/incoming-cave4.mcs");
+            var arguments = InstalledOpeningArguments().Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+            var root = new GameObject("ordinary Cave vitals help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var transport = (NativeSession)Field("session");
+                Assert.That(native.Tick, Is.EqualTo(1));
+                Assert.That(surface.LiveMinimapReady && !surface.HasObjectiveHelpSubject, Is.True);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                var preceding = new System.Collections.Generic.HashSet<int>();
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void ToggleHud(bool expected)
+                {
+                    typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
+                        new object[] { true, true, true, false });
+                    var settings = runtime.GameRuntimeProductionIdentity.display_settings;
+                    Assert.That((settings.minimap, settings.top_bar), Is.EqualTo((expected, expected)));
+                }
+
+                ToggleMap(true);
+                var searchHelp = menu.LocaleCache.HasSpellSearchHelp;
+                var expectedMapRows = searchHelp ? new[] { 1, 2, 6, 15, 16 } : new[] { 1, 2, 15, 16 };
+                bool ReachedEmptyPoll() => (int)pollDelay.GetValue(hint) < 0 && preceding.IsSupersetOf(expectedMapRows);
+                // Row 6 draws on the full map, consuming 50 draws and one
+                // 20-pass gap before the first no-winner poll.
+                for (var frame = 0; frame < (searchHelp ? 300 + 50 + 20 : 300) && !ReachedEmptyPoll(); frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(36).And.Not.EqualTo(37));
+                    preceding.Add(hint.VisibleRow);
+                }
+                Assert.That(ReachedEmptyPoll(), Is.True, "the large map excludes the overdue vitals rows after earlier rows draw");
+                ToggleHud(false);
+                ToggleMap(false);
+                for (var frame = 0; frame < 21; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+                Assert.That((int)pollDelay.GetValue(hint), Is.Negative,
+                    "the closed map still excludes the vitals rows while icons and top bar are hidden");
+                ToggleHud(true);
+                for (var frame = 0; frame < 4 && hint.VisibleRow == 0; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(4), "the earlier source large-map prompt retains priority when the HUD returns");
+
+                const string lifeText = "This is your life";
+                const string manaText = "This is your spells mana";
+                foreach (var (row, record, y, text) in new[] { (36, 324, 16, lifeText), (37, 325, 32, manaText) })
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority), Is.EqualTo((record, 50, 0x220, 470, y, 800, 2)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    for (var frame = 0; frame < 72 && hint.VisibleRow != row; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((row, 470, y)));
+                    Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    var tick = native.Tick;
+                    var beforeDraw = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    short HudNoticeFrames() => transport.GameRuntimeParticipantNotifications().value
+                        .Single(notice => notice.is_local && notice.kind == "participant.icons_map_visible").remaining_frames;
+                    var beforeNotice = HudNoticeFrames();
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var beforeLayout = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    CollectionAssert.AreEqual(beforeLayout, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    if (row == 36)
+                    {
+                        // The actual Shift+F5 notice owns one source repaint
+                        // transaction, independently of the managed help clock.
+                        Assert.That((beforeNotice, HudNoticeFrames()), Is.EqualTo(((short)50, (short)49)));
+                        var prior = ReadReplayDocument(beforeDraw);
+                        var painted = ReadReplayDocument(replay);
+                        var priorOperations = prior.SelectNodes("/root/operations/item");
+                        var paintedOperations = painted.SelectNodes("/root/operations/item");
+                        Assert.That(paintedOperations.Count, Is.EqualTo(priorOperations.Count + 1));
+                        var operation = paintedOperations[paintedOperations.Count - 1];
+                        Assert.That((operation.SelectSingleNode("operation").InnerText,
+                            operation.SelectSingleNode("notifications_visible").InnerText),
+                            Is.EqualTo(("presentation_frame", "true")));
+                        operation.ParentNode.RemoveChild(operation);
+                        var paintedReceipt = painted.SelectSingleNode("/root/receipt_sha256");
+                        var priorReceipt = prior.SelectSingleNode("/root/receipt_sha256").InnerText;
+                        Assert.That(paintedReceipt.InnerText, Is.Not.EqualTo(priorReceipt));
+                        paintedReceipt.InnerText = priorReceipt;
+                        Assert.That(painted.OuterXml, Is.EqualTo(prior.OuterXml),
+                            "the guarded notice repaint is the only replay payload change");
+                    }
+                    else
+                    {
+                        Assert.That(HudNoticeFrames(), Is.EqualTo(beforeNotice));
+                        CollectionAssert.AreEqual(beforeDraw, replay);
+                    }
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var hud = (Texture)Field("gameRuntimeHudIndices");
+                    Assert.That(hud, Is.Not.Null, "the ordinary top bar reaches the indexed HUD");
+                    var material = (Material)presenterType.GetField("material", flags).GetValue(presenter);
+                    Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(hud), "help blends over the current indexed HUD");
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    var pixels = ReadObjectivePixels(output);
+                    var palette = surface.FramePaletteRgb8;
+                    var artwork = menu.ObjectiveForProfile("cave");
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    Assert.That((output.width, output.height), Is.EqualTo((raster.Width, raster.Height)));
+                    // The longer mana text makes the leader shallow and
+                    // leftward. Its second stroke writes (471,32) and then
+                    // (470,32), overwriting the first stroke at that anchor.
+                    var leaderX = row == 36 ? 470 : 469;
+                    var leader = row == 36
+                        ? new[] { artwork.BlendSelector, artwork.TextColor }
+                        : new[] { artwork.BlendSelector, artwork.TextColor, artwork.TextColor };
+                    var sourceAnchor = (y - raster.Y) * raster.Width + leaderX - raster.X;
+                    var count = raster.Width * raster.Height;
+                    var source = raster.IndicesThenMask;
+                    CollectionAssert.AreEqual(leader, source.Skip(sourceAnchor).Take(leader.Length));
+                    Assert.That(source.Skip(count + sourceAnchor).Take(leader.Length), Is.All.EqualTo(1));
+                    var anchor = (raster.Height - 1 - (y - raster.Y)) * raster.Width + leaderX - raster.X;
+                    CollectionAssert.AreEqual(leader.Select(index => Colour(index)),
+                        pixels.Skip(anchor).Take(leader.Length),
+                        $"source row {row} leader reaches the selected bar with exact opaque strokes");
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That(HudNoticeFrames(), Is.EqualTo(49));
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    runtime.QualificationDriveGameRuntimeFrames(49);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(row), "the fiftieth draw still displays its source text");
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero, "the following frame clears the popup");
+                }
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionCastHelpUsesOrdinarilyAssignedHandsAndSourceDrawClocks()
+        {
+            var caveReplay = Environment.GetEnvironmentVariable("MC_CAST_HELP_CAVE_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs");
+            var arguments = InstalledOpeningArguments(6).Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+            var root = new GameObject("ordinary Cave cast help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                void CheckHands(short rightSelector, ushort rightHolder)
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    Assert.That(snapshot.spell_menu_has_any_spell, Is.True);
+                    Assert.That(snapshot.player_spells.Single(spell => spell.id == "spell.fireball").acquired, Is.True);
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((hud.left.rawSpellSelector, hud.left.holderEntityIndex), Is.EqualTo(((short)0, (ushort)78)));
+                    Assert.That((hud.right.rawSpellSelector, hud.right.holderEntityIndex), Is.EqualTo((rightSelector, rightHolder)));
+                }
+
+                Assert.That(native.Tick, Is.EqualTo(40));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                CheckHands(-1, 0);
+                Assert.That(runtime.QualificationResumeGameRuntimeProduction().mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var draw = 0;
+                void DrawFrame()
+                {
+                    // Brief ordinary speed-key pulses keep the stationary
+                    // movement reminder from preempting the cast-help poll.
+                    draw++;
+                    if (draw % 80 == 79) transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                    if (draw % 80 == 1 && draw > 80) transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                }
+
+                var preceding = new System.Collections.Generic.List<int>();
+                foreach (var (row, record, x, text) in new[] {
+                    (38, 326, 540, "Click on LMB to cast this spell"),
+                    (39, 327, 600, "Click on RMB to cast this spell")
+                })
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority), Is.EqualTo((record, 50, 0x620, x, 32, 800, 2)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    for (var frame = 0; frame < (row == 38 ? 540 : 110) && hint.VisibleRow != row; frame++)
+                    {
+                        DrawFrame();
+                        if (row == 38)
+                        {
+                            Assert.That(hint.VisibleRow, Is.Not.EqualTo(39));
+                            if (hint.VisibleRow > 0 && !preceding.Contains(hint.VisibleRow))
+                                preceding.Add(hint.VisibleRow);
+                        }
+                    }
+                    Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((row, x, 32)),
+                        $"draw {draw}, native tick {native.Tick}");
+                    Assert.That(lifetime.GetValue(hint), Is.EqualTo(49));
+                    if (row == 38)
+                    {
+                        var searchHelp = menu.LocaleCache.HasSpellSearchHelp;
+                        CollectionAssert.AreEqual(searchHelp ? new[] { 8, 36, 37, 38 } : new[] { 36, 37, 38 },
+                            preceding.Where(value => value == 8 || value >= 36));
+                        CheckHands(-1, 0);
+                    }
+                    else CheckHands(0, 78);
+
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>()
+                        .OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var indexedHud = (Texture)Field("gameRuntimeHudIndices");
+                    Assert.That(indexedHud, Is.Not.Null);
+                    var material = (Material)presenterType.GetField("material", flags).GetValue(presenter);
+                    Assert.That(material.GetTexture("_SceneIndices"), Is.SameAs(indexedHud));
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    var pixels = ReadObjectivePixels(output);
+                    var palette = surface.FramePaletteRgb8;
+                    var artwork = menu.ObjectiveForProfile("cave");
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var leader = new[] { artwork.BlendSelector, artwork.TextColor };
+                    var sourceAnchor = (32 - raster.Y) * raster.Width + x - raster.X;
+                    CollectionAssert.AreEqual(leader, raster.IndicesThenMask.Skip(sourceAnchor).Take(2));
+                    Assert.That(raster.IndicesThenMask.Skip(raster.Width * raster.Height + sourceAnchor).Take(2), Is.All.EqualTo(1));
+                    var anchor = (raster.Height - 1 - (32 - raster.Y)) * raster.Width + x - raster.X;
+                    CollectionAssert.AreEqual(leader.Select(index => Colour(index)), pixels.Skip(anchor).Take(2));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                    for (var frame = 0; frame < 49; frame++) DrawFrame();
+                    Assert.That(hint.VisibleRow, Is.EqualTo(row), "the fiftieth draw still shows the popup");
+                    DrawFrame();
+                    Assert.That(hint.VisibleRow, Is.Zero, "the draw after expiry clears the popup");
+                    if (row != 38) continue;
+
+                    // Row 4 can recur at priority 4. If the Thief claims
+                    // Fireball again, normal overlap recovers it in this room.
+                    // Wait for an open poll with the real left holder present.
+                    bool LeftHolderPresent() => native.DayHudState(native.Tick).left.holderEntityIndex == 78;
+                    bool OpenPollWithLeftHolder() => hint.VisibleRow == 0 && (int)lifetime.GetValue(hint) == 0 &&
+                        (int)pollDelay.GetValue(hint) < 0 && LeftHolderPresent();
+                    for (var frame = 0; frame < 180 && !OpenPollWithLeftHolder(); frame++)
+                    {
+                        DrawFrame();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(39),
+                            $"after the left hint, draw {draw}, native tick {native.Tick}");
+                    }
+                    Assert.That(OpenPollWithLeftHolder(), Is.True,
+                        $"a real open poll skips the empty right hand at draw {draw}, native tick {native.Tick}");
+                    CheckHands(-1, 0);
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.fireball", 0, rightHand: true);
+                }
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(6, 4, "render-completion-20261117/incoming-cave4.mcs", false, "not_acquired")]
+        [TestCase(8, 6, "hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs", true, "not_acquired")]
+        [TestCase(9, 6, "hud-cave6-20261118.vrlCHd/cave6-reacquired-paused.mcs", true, "not_acquired")]
+        [TestCase(0, 3, "adaptive-day-night-loop-20261118/day-entrance-paused.mcs", true, "ready")]
+        public void ProductionSpellSearchHelpUsesCurrentInventoryOnFullMap(int row, int packageCount,
+            string replayPath, bool hasSpell, string castleAvailability)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated", replayPath);
+            var arguments = InstalledOpeningArguments(packageCount).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary full map spell-search help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                var possessionPending = hintType.GetField("possessionHelpPending", flags);
+                var entitySubject = hintType.GetField("entityHelpSubject", flags);
+                bool PossessionPending() => (bool)possessionPending.GetValue(hint);
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                void CheckInventory()
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    var castle = snapshot.player_spells.Single(spell => spell.id == "spell.castle");
+                    Assert.That((snapshot.spell_menu_has_any_spell, castle.availability, castle.hand),
+                        Is.EqualTo((hasSpell, castleAvailability, "none")));
+                    if (row is 8 or 9)
+                    {
+                        Assert.That(snapshot.player_spells.Single(spell => spell.id == "spell.fireball").hand,
+                            Is.EqualTo("left"));
+                        var left = native.DayHudState(native.Tick).left;
+                        Assert.That((left.rawSpellSelector, left.holderEntityIndex), Is.EqualTo(((short)0, (ushort)78)));
+                    }
+                    if (row == 9)
+                    {
+                        var possession = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                        Assert.That((possession.availability, possession.acquired, possession.hand),
+                            Is.EqualTo(("not_acquired", false, "none")));
+                    }
+                    if (row == 0) Assert.That(castle.acquired, Is.True, "an unassigned Castle still occupies the source slot");
+                }
+                CheckInventory();
+                if (runtime.GameRuntimeProductionIdentity.mode == GameRuntimeTransport.PausedMode)
+                    Assert.That(runtime.QualificationResumeGameRuntimeProduction().mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.True);
+                var action = menus.Step(true, false, false, false, false, true);
+                Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                    menus.PlayerInformationOpen, action), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(menus.MapOpen, Is.True);
+
+                var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                // Day 3's full map also admits the priority-5 objective
+                // reminder. With an unassigned Castle, row 13 also recurs.
+                var possessionHelp = menu.LocaleCache.HasPossessionHelp;
+                var looseManaHelp = menu.LocaleCache.HasLooseManaHelp;
+                var extraIntervals = menu.LocaleCache.HasCastleSpellHelp ? 6 : 2;
+                // Both Cave full maps also admit one row21 building cue.
+                var frameLimit = row == 0 ? 350 + extraIntervals * (50 + 20) :
+                    row == 9 ? 350 + 5 * (50 + 20) :
+                    row == 8 && looseManaHelp ? 350 + 3 * (50 + 20) :
+                    possessionHelp ? 350 + 50 + 20 : 350;
+                ushort recurringManaSubject = 0;
+                ulong recurringManaFirstDraw = 0, recurringManaClose = 0;
+                for (var frame = 0; frame < frameLimit; frame++)
+                {
+                    // With entity and Castle cues both present, ordinary
+                    // short speed pulses avoid the stationary-help cycle.
+                    if (row == 0 && possessionHelp && frame % 80 == 78)
+                        transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                    if (row == 0 && possessionHelp && frame > 80 && frame % 80 == 0)
+                        transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (hint.VisibleRow != 0 && (drawn.Count == 0 ||
+                        drawn[drawn.Count - 1].Row != hint.VisibleRow))
+                        drawn.Add((hint.VisibleRow, native.Tick));
+                    if (row != 6) Assert.That(hint.VisibleRow, Is.Not.EqualTo(6));
+                    if (row is not (8 or 9)) Assert.That(hint.VisibleRow, Is.Not.EqualTo(8));
+                    if (row == 9 && drawn.Count == 9 && hint.VisibleRow == 18)
+                    {
+                        var remaining = (int)lifetime.GetValue(hint);
+                        if (remaining == 49)
+                        {
+                            recurringManaFirstDraw = native.Tick;
+                            recurringManaSubject = (ushort)entitySubject.GetValue(hint);
+                            Assert.That(recurringManaSubject, Is.Not.Zero);
+                            CheckInventory();
+                            var sphere = native.ManaSpheres().Single(sphere => sphere.sourceEntityIndex == recurringManaSubject);
+                            Assert.That((sphere.active, sphere.ownerEntityIndex), Is.EqualTo(((byte)1, (ushort)0)));
+                        }
+                        if (remaining != 0)
+                        {
+                            Assert.That((entitySubject.GetValue(hint), PossessionPending()),
+                                Is.EqualTo(((object)recurringManaSubject, false)));
+                            Assert.That(surface.EntityHelpMarks.Any(mark =>
+                                mark.Row == 18 && mark.Subject == recurringManaSubject), Is.True);
+                        }
+                        else
+                        {
+                            recurringManaClose = native.Tick;
+                            Assert.That((recurringManaClose - recurringManaFirstDraw, PossessionPending()),
+                                Is.EqualTo((49UL, true)));
+                        }
+                    }
+                    if (row == 9 && recurringManaClose != 0 && native.Tick > recurringManaClose)
+                        Assert.That(PossessionPending(), Is.EqualTo(native.Tick - recurringManaClose < 20));
+                    if ((row != 0 && hint.VisibleRow == row) ||
+                        (row == 0 && drawn.Any(item => item.Row == 2) && (int)pollDelay.GetValue(hint) < 0)) break;
+                }
+                CheckInventory();
+                Assert.That(menus.MapOpen, Is.True);
+                var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
+                TestContext.WriteLine($"Full-map help draws {chronology}. Final tick {native.Tick}.");
+                if (row == 9)
+                {
+                    Assert.That((possessionHelp, looseManaHelp, recurringManaSubject != 0, native.Tick - recurringManaClose),
+                        Is.EqualTo((true, true, true, 21UL)));
+                    CollectionAssert.AreEqual(new[] { 18, 21, 15, 16, 18, 1, 2, 8, 18, 9 },
+                        drawn.Select(item => item.Row), "the one-shot requests lose to the earlier source polls");
+                    TestContext.WriteLine($"Live sphere slot{recurringManaSubject} closed at tick {recurringManaClose}.");
+                }
+                else if (possessionHelp && row != 0)
+                    CollectionAssert.AreEqual(row == 8 && looseManaHelp
+                        ? new[] { 18, 21, 15, 16, 18, 1, 2, 8 } : new[] { 21, 1, 15, 16, 2, row },
+                        drawn.Select(item => item.Row), "the live source markers precede the search cues");
+                Assert.That(drawn.Any(item => item.Row == 2), Is.True,
+                    $"the earlier equal-priority source prompt precedes spell search. Draws {chronology}");
+                if (row == 0)
+                {
+                    Assert.That(drawn.Count(item => item.Row == 82), Is.GreaterThanOrEqualTo(2),
+                        $"the real objective reminder preempts later polls more than once. Draws {chronology}");
+                    Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
+                        $"an actual open poll skips both rows while Castle remains acquired. Draws {chronology}");
+                    AssertSourceHelpWouldWin(hint, 8, 0, menus.MapOpen, runtime.GameRuntimeProductionIdentity.display_settings.minimap);
+                    return;
+                }
+                Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((row, (object)49)));
+                var binding = menu.GameplayHelpForRow(row);
+                var (record, text) = row switch {
+                    6 => (291, "Search for spells"),
+                    8 => (293, "Search for castle spell"),
+                    9 => (294, "Search for possession spell"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(row))
+                };
+                Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                    binding.Y, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((record, 50, row == 6 ? 0x404 : 0x004, 320, 80, 600, 2)));
+                Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null, "ordinary map drawing reaches the indexed help consumer");
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                var artwork = menu.ObjectiveForProfile("cave");
+                Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                var pixels = ReadObjectivePixels(output);
+                var palette = surface.FramePaletteRgb8;
+                var color = artwork.HelpTextColor * 3;
+                Assert.That(pixels, Does.Contain(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That(hint.VisibleRow, Is.EqualTo(row));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.Zero);
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        private static void AssertSourceHelpWouldWin(MagicCarpetRuntime.ManaHelpHint hint,
+            int refusedRow, int winnerRow, bool mapOpen, bool minimapEnabled)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            var rows = ((Array)hint.GetType().GetField("rows", flags).GetValue(hint)).Cast<object>();
+            (OwnerCampaignMenuCache.GameplayHelpBinding Binding, int Priority, int Overdue) Read(int id)
+            {
+                var row = rows.Single(candidate => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                    candidate.GetType().GetField("Binding", flags).GetValue(candidate)).Row == id);
+                var type = row.GetType();
+                var binding = (OwnerCampaignMenuCache.GameplayHelpBinding)type.GetField("Binding", flags).GetValue(row);
+                return (binding, (int)type.GetField("Priority", flags).GetValue(row),
+                    (int)type.GetField("Age", flags).GetValue(row) - binding.AgeThreshold);
+            }
+
+            Assert.That(hint.VisibleRow, Is.EqualTo(winnerRow));
+            var refused = Read(refusedRow);
+            Assert.That(refused.Overdue, Is.Positive);
+            Assert.That(mapOpen && (refused.Binding.Flags & 0x20) != 0, Is.False);
+            Assert.That(!minimapEnabled && (refused.Binding.Flags & 0x2ff) != 0, Is.False);
+            if (winnerRow == 0) return;
+            var winner = Read(winnerRow);
+            Assert.That(refused.Priority > winner.Priority ||
+                refused.Priority == winner.Priority && (refused.Overdue > winner.Overdue ||
+                    refused.Overdue == winner.Overdue && refusedRow < winnerRow), Is.True,
+                $"eligible row{refusedRow} ({refused.Priority}/{refused.Overdue}) would beat row{winnerRow} ({winner.Priority}/{winner.Overdue})");
+            TestContext.WriteLine($"Refused row{refusedRow} priority/overdue {refused.Priority}/{refused.Overdue}; " +
+                $"actual row{winnerRow} {winner.Priority}/{winner.Overdue}; map {mapOpen}, minimap {minimapEnabled}.");
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void ProductionCastleHelpUsesOrdinaryAssignmentAndOwnedCastle(bool assignRight, bool buildCastle)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var lifetime = hintType.GetField("remaining", flags);
+                var pollDelay = hintType.GetField("pollDelay", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var looseManaHelp = menu.LocaleCache.HasLooseManaHelp;
+                EngineSessionTransport.CampaignSnapshotValue Snapshot() => transport.GameRuntimeCampaignSnapshot().value;
+                bool RefusalWouldBeatWinner(int refusedRow, int winnerRow, bool mapOpen, bool minimapEnabled)
+                {
+                    if (winnerRow == 0 || refusedRow == winnerRow) return false;
+                    var rows = ((Array)hintType.GetField("rows", flags).GetValue(hint)).Cast<object>();
+                    (OwnerCampaignMenuCache.GameplayHelpBinding Binding, int Priority, int Overdue) Read(int id)
+                    {
+                        var state = rows.Single(item => ((OwnerCampaignMenuCache.GameplayHelpBinding)
+                            item.GetType().GetField("Binding", flags).GetValue(item)).Row == id);
+                        var type = state.GetType();
+                        var binding = (OwnerCampaignMenuCache.GameplayHelpBinding)type.GetField("Binding", flags).GetValue(state);
+                        return (binding, (int)type.GetField("Priority", flags).GetValue(state),
+                            (int)type.GetField("Age", flags).GetValue(state) - binding.AgeThreshold);
+                    }
+                    var refused = Read(refusedRow);
+                    var winner = Read(winnerRow);
+                    return refused.Overdue > 0 && !(mapOpen && (refused.Binding.Flags & 0x20) != 0) &&
+                        !(!minimapEnabled && (refused.Binding.Flags & 0x2ff) != 0) &&
+                        (refused.Priority > winner.Priority || refused.Priority == winner.Priority &&
+                            (refused.Overdue > winner.Overdue || refused.Overdue == winner.Overdue && refusedRow < winnerRow));
+                }
+                void CheckSource(short right, int ownedCastles)
+                {
+                    var snapshot = Snapshot();
+                    var spell = snapshot.player_spells.Single(row => row.id == "spell.castle");
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((snapshot.spell_menu_has_any_spell, spell.acquired, spell.hand),
+                        Is.EqualTo((true, true, right == 2 ? "right" : "none")));
+                    Assert.That((hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo(((short)0, right)));
+                    Assert.That(snapshot.source_top_status.castle_rows.Length, Is.EqualTo(ownedCastles));
+                }
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                CheckSource(1, 0);
+                if (assignRight)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.castle", 0, rightHand: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    CheckSource(2, 0);
+                }
+                if (buildCastle)
+                {
+                    Assert.That(Snapshot().player_vitals.mana, Is.EqualTo(1000));
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                    for (var frame = 0; frame < 20 && Snapshot().source_top_status.castle_rows.Length == 0; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    var castle = Snapshot().source_top_status.castle_rows.Single();
+                    Assert.That((castle.stage, castle.life, castle.mana), Is.EqualTo(((byte)1, 20000, 0)),
+                        "a paid ordinary Castle cast completes construction on the actual owner");
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, rightHand: true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var drawn = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                    var decisiveRow = 0;
+                    for (var frame = 0; frame < 1800 && decisiveRow == 0; frame++)
+                    {
+                        if (looseManaHelp && frame % 80 == 78)
+                            transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                        if (looseManaHelp && frame > 0 && frame % 80 == 0)
+                            transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12).And.Not.EqualTo(13).And.Not.EqualTo(14));
+                        if (hint.VisibleRow != 0 && (drawn.Count == 0 || drawn[drawn.Count - 1].Row != hint.VisibleRow))
+                        {
+                            drawn.Add((hint.VisibleRow, native.Tick));
+                        }
+                        var winner = hint.VisibleRow;
+                        var minimapEnabled = runtime.GameRuntimeProductionIdentity.display_settings.minimap;
+                        if ((int)lifetime.GetValue(hint) == 49 && winner != 0 &&
+                            new[] { 12, 13 }.All(refused => RefusalWouldBeatWinner(refused, winner, menus.MapOpen, minimapEnabled)) &&
+                            (!menu.LocaleCache.HasCastleReturnReminder || RefusalWouldBeatWinner(14, winner, menus.MapOpen, minimapEnabled)))
+                            decisiveRow = winner;
+                    }
+                    var chronology = string.Join(", ", drawn.Select(item => $"{item.Row}@{item.Tick}"));
+                    TestContext.WriteLine($"Owned Castle help draws {chronology}. Final tick {native.Tick}.");
+                    if (!looseManaHelp)
+                        Assert.That(drawn.Any(item => item.Row == 16), Is.True, "the earlier idle steering reminder retains priority");
+                    Assert.That(decisiveRow, Is.Not.Zero, $"no actual winner had a decisive Castle-refusal counterfactual. Draws {chronology}");
+                    Assert.That(hint.VisibleRow, Is.EqualTo(decisiveRow),
+                        $"the decisive poll follows the Castle refusals. Draws {chronology}");
+                    CheckSource(1, 1);
+                    Assert.That(menus.MapOpen, Is.False);
+                    var minimap = runtime.GameRuntimeProductionIdentity.display_settings.minimap;
+                    foreach (var refused in new[] { 12, 13 })
+                        AssertSourceHelpWouldWin(hint, refused, decisiveRow, menus.MapOpen, minimap);
+                    if (menu.LocaleCache.HasCastleReturnReminder)
+                    {
+                        var current = Snapshot();
+                        var holder = current.player_spells.Single(spell => spell.id == "spell.castle");
+                        var hud = native.DayHudState(native.Tick);
+                        Assert.That((current.source_top_status.castle_rows.Single().stage,
+                            holder.acquired, holder.mana_cost, hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                            Is.EqualTo(((byte)1, true, 10000, (short)0, (short)1)));
+                        Assert.That(current.player_vitals.mana, Is.LessThan(holder.mana_cost));
+                        AssertSourceHelpWouldWin(hint, 14, decisiveRow, menus.MapOpen, minimap);
+                    }
+                    return;
+                }
+
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void PaintAndExpire(int row, int record, string text, int? anchorX = null)
+                {
+                    Assert.That((hint.VisibleRow, lifetime.GetValue(hint)), Is.EqualTo((row, (object)49)));
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.X,
+                        binding.Y, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo(row == 12 ? (record, 50, 0x624, 320, 80, 600, 5) :
+                            (record, 50, 0x404, 320, 80, 120, 4)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(anchorX.HasValue ? (anchorX.Value, 32) : (320, 80)));
+                    Assert.That(surface, Is.Not.Null, "the retained Day3 owner publishes its real frame surface");
+                    if (display == null) display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (window == null)
+                    {
+                        window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True, "the ordinary indexed popup allocated its actual render target");
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    if (anchorX.HasValue)
+                    {
+                        var x = anchorX.Value + 1 - raster.X;
+                        var y = 32 - raster.Y;
+                        Assert.That(raster.IndicesThenMask[y * raster.Width + x], Is.EqualTo(artwork.TextColor));
+                        Assert.That(pixels[(raster.Height - 1 - y) * raster.Width + x], Is.EqualTo(Colour(artwork.TextColor)),
+                            "the indexed highlight starts at the assigned hand");
+                    }
+                    else
+                    {
+                        Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                        Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                    }
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, lifetime.GetValue(hint)), Is.EqualTo((tick, (object)49)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    TestContext.WriteLine($"Castle help row {row} painted at tick {tick}, anchor ({hint.AnchorX}, {hint.AnchorY}).");
+                    runtime.QualificationDriveGameRuntimeFrames(49);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(row));
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+
+                ToggleMap(true);
+                var seenMinimap = false;
+                var buildingProvesRefusal = assignRight && looseManaHelp;
+                var refusalWinner = 0;
+                var frameLimit = menu.LocaleCache.HasCreaturePickupMinimapHelp ? 1800 :
+                    menu.LocaleCache.HasPossessionHelp ? 500 + 2 * (50 + 20) : 500;
+                for (var frame = 0; frame < frameLimit; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "the full map masks row 12");
+                    seenMinimap |= hint.VisibleRow == 2;
+                    if (assignRight) Assert.That(hint.VisibleRow, Is.Not.EqualTo(13));
+                    if (buildingProvesRefusal && (int)lifetime.GetValue(hint) == 49 &&
+                        RefusalWouldBeatWinner(13, hint.VisibleRow, menus.MapOpen,
+                            runtime.GameRuntimeProductionIdentity.display_settings.minimap))
+                        refusalWinner = hint.VisibleRow;
+                    if ((!assignRight && hint.VisibleRow == 13) ||
+                        (buildingProvesRefusal && refusalWinner != 0) ||
+                        (assignRight && !buildingProvesRefusal && seenMinimap && (int)pollDelay.GetValue(hint) < 0)) break;
+                }
+                if (assignRight)
+                {
+                    if (buildingProvesRefusal)
+                    {
+                        CheckSource(2, 0);
+                        Assert.That(menus.MapOpen, Is.True);
+                        Assert.That(refusalWinner, Is.Not.Zero, "a real lower-priority winner must establish the row 13 refusal");
+                        AssertSourceHelpWouldWin(hint, 13, refusalWinner, menus.MapOpen,
+                            runtime.GameRuntimeProductionIdentity.display_settings.minimap);
+                    }
+                    else
+                    {
+                        Assert.That(seenMinimap, Is.True);
+                        Assert.That((hint.VisibleRow, (int)pollDelay.GetValue(hint)), Is.EqualTo((0, -1)),
+                            "the assigned Castle spell suppresses the unassigned-hand prompt at an open full-map poll");
+                    }
+                }
+                else PaintAndExpire(13, 298, "Press control for spell menu");
+                ToggleMap(false);
+                var intervening = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                // The assigned case now encounters one extra natural
+                // Fireball cue after the full-map building guidance.
+                var fireballPrecedesCastle = assignRight && menu.LocaleCache.HasPossessionHelp && !looseManaHelp;
+                var castleLimit = menu.LocaleCache.HasCreaturePickupMinimapHelp ? 1800 :
+                    fireballPrecedesCastle || buildingProvesRefusal ? 110 + 50 + 20 : 110;
+                for (var frame = 0; frame < castleLimit && hint.VisibleRow != 12; frame++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (hint.VisibleRow != 0 && (intervening.Count == 0 || intervening[intervening.Count - 1].Row != hint.VisibleRow))
+                        intervening.Add((hint.VisibleRow, native.Tick));
+                }
+                if (fireballPrecedesCastle)
+                {
+                    var order = string.Join(", ", intervening.Select(item => $"{item.Row}@{item.Tick}"));
+                    TestContext.WriteLine($"Assigned Castle world draws {order}.");
+                    Assert.That(intervening.Any(item => item.Row == 10), Is.True, "the real Fireball cue retains its priority");
+                }
+                if (buildingProvesRefusal)
+                    TestContext.WriteLine($"Assigned Castle world draws {string.Join(", ", intervening.Select(item => $"{item.Row}@{item.Tick}"))}.");
+                CheckSource(assignRight ? (short)2 : (short)1, 0);
+                PaintAndExpire(12, 297, "Use castle spell to build a safe haven", assignRight ? 600 : null);
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        private const string CastleRecastHelpText = "Return to castle and recast castle spell";
+
+        private static void CheckCastleRecastHelpBinding(CampaignMenuPresenter menu)
+        {
+            var binding = menu.GameplayHelpForRow(14);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.X, binding.Y,
+                binding.AgeThreshold, binding.Priority), Is.EqualTo((299, 0x404, 50, 320, 80, 600, 5)));
+            Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(CastleRecastHelpText));
+        }
+
+        [Test]
+        public void ProductionCastleRecastHelpFollowsAnOrdinaryFireballMarkerClose() =>
+            CheckProductionFireballHelp(centerCue: true, mapMasksCue: false, castleRecastCue: true);
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        public void ProductionFireballHelpConsumesTheOrdinaryObjectivePopupClose(bool centerCue, bool mapMasksCue) =>
+            CheckProductionFireballHelp(centerCue, mapMasksCue, castleRecastCue: false);
+
+        [Test]
+        public void ProductionFireballSearchFollowsAnOrdinaryWyvernMarkerClose() =>
+            CheckProductionFireballHelp(centerCue: true, mapMasksCue: false, castleRecastCue: false, searchCue: true);
+
+        private static void CheckProductionFireballHelp(bool centerCue, bool mapMasksCue, bool castleRecastCue, bool searchCue = false)
+        {
+            var replay = Path.Combine(PrivateRoot, searchCue
+                ? "generated/fireball-search-ammyridia-20261118.dx3k373s/ammyridia-fireball-search-entry.mcs"
+                : "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(searchCue ? 30 : 3)
+                .Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Fireball help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var pending = hintType.GetField("fireballHelpPending", flags);
+                var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("objectiveHelpSubject", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                bool Pending() => (bool)pending.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void CheckFireball()
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    var fireball = snapshot.player_spells.Single(spell => spell.id == "spell.fireball");
+                    var hud = native.DayHudState(native.Tick);
+                    if (searchCue)
+                    {
+                        var possession = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                        Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.availability,
+                            possession.availability, hud.left.rawSpellSelector),
+                            Is.EqualTo((true, false, "not_acquired", "ready", (short)1)));
+                        Assert.That(snapshot.objective_progress.current_objective, Is.EqualTo("objective.campaign.task_1"));
+                        return;
+                    }
+                    Assert.That((snapshot.spell_menu_has_any_spell, fireball.acquired, fireball.hand,
+                        hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo((true, true, centerCue ? "none" : "left", (short)(centerCue ? 3 : 0), (short)1)));
+                    if (castleRecastCue) Assert.That(snapshot.source_top_status.castle_rows, Is.Empty);
+                }
+
+                ulong FindWyvernClose()
+                {
+                    ushort wyvern = 0;
+                    var pollDelay = hintType.GetField("pollDelay", flags);
+                    var idle = hintType.GetField("idleDraws", flags);
+                    var polls = 0;
+                    var previousRow = 0;
+                    ulong markerFirstDraw = 0, markerClose = 0, requestPoll = 0;
+                    // A source visit is at most 50 popup draws and 20 delay draws.
+                    for (var frame = 0; frame < 20 * (50 + 20); frame++)
+                    {
+                        // The neutral run's fourth loose-mana close leaves rows 18
+                        // and 21 cooling down, but the Wyvern is off the small map
+                        // and idle row 15 wins. Use the ordinary full map and a
+                        // brief forward/slowdown input before the next poll.
+                        if (native.Tick == 1172)
+                        {
+                            Assert.That((hint.VisibleRow, remaining.GetValue(hint), menus.MapOpen),
+                                Is.EqualTo((18, (object)0, false)));
+                            ToggleMap(true);
+                        }
+                        if (native.Tick == 1173) runtime.QualificationApplyGameRuntimeProductionMovement(true, false, false, false);
+                        if (native.Tick is 1174 or 1178) runtime.QualificationApplyGameRuntimeProductionMovement(false, false, false, false);
+                        if (native.Tick == 1177) runtime.QualificationApplyGameRuntimeProductionMovement(false, true, false, false);
+                        var polling = (int)remaining.GetValue(hint) == 0 && (int)pollDelay.GetValue(hint) <= 1;
+                        if (polling && polls == 20) break;
+                        if (polling) polls++;
+                        var wasPending = Pending();
+                        Draw();
+                        Assert.That(menus.MapOpen, Is.EqualTo(native.Tick > 1172));
+                        if (native.Tick == 1174)
+                        {
+                            Assert.That(transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed, Is.Positive);
+                            Assert.That(idle.GetValue(hint), Is.Zero, "ordinary motion resets the idle source counter");
+                        }
+                        if (native.Tick == 1178)
+                            Assert.That(transport.GameRuntimeCampaignSnapshot().value.player_motion.actual_speed, Is.Zero);
+                        var row = hint.VisibleRow;
+                        var drawsLeft = (int)remaining.GetValue(hint);
+                        if (row != 0 && previousRow != row) TestContext.WriteLine($"Row {row} at {native.Tick}, poll {polls}.");
+                        previousRow = row;
+                        if (row == 82)
+                        {
+                            if (drawsLeft == 49)
+                            {
+                                markerFirstDraw = native.Tick;
+                                wyvern = (ushort)subjectField.GetValue(hint);
+                                if (menus.MapOpen) Assert.That(wyvern, Is.InRange((ushort)299, (ushort)302));
+                                else Assert.That(wyvern, Is.EqualTo((ushort)302));
+                            }
+                            var mark = surface.ObjectiveHelpMarks.Single(item => item.Row == 82 && item.Subject == wyvern);
+                            Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((mark.X, mark.Y)));
+                            if (drawsLeft != 0)
+                            {
+                                Assert.That(subjectField.GetValue(hint), Is.EqualTo(wyvern));
+                                Assert.That(Pending(), Is.False);
+                            }
+                            else
+                            {
+                                markerClose = native.Tick;
+                                Assert.That((markerFirstDraw != 0, markerClose - markerFirstDraw, wasPending, Pending()),
+                                    Is.EqualTo((true, 49UL, false, true)));
+                                CheckFireball();
+                                TestContext.WriteLine($"Wyvern {wyvern} naturally closed row 82 at {markerClose}.");
+                            }
+                        }
+                        if (wasPending && !Pending())
+                        {
+                            requestPoll = native.Tick;
+                            Assert.That((polling, markerClose != 0, requestPoll - markerClose, row),
+                                Is.EqualTo((true, true, 20UL, 0)));
+                            CheckFireball();
+                            TestContext.WriteLine($"Fireball request consumed at {requestPoll}.");
+                        }
+                        if (row != 7) continue;
+                        Assert.That((requestPoll != 0, native.Tick - requestPoll, native.Tick - markerClose, Pending(),
+                            menus.MapOpen, (int)idle.GetValue(hint) <= 100),
+                            Is.EqualTo((true, 1UL, 21UL, false, true, true)));
+                        return markerClose;
+                    }
+                    Assert.Fail($"No row 7 after {polls} ordinary polls. Last marker close {markerClose}, request poll {requestPoll}.");
+                    return 0;
+                }
+
+                Assert.That(native.Tick, Is.EqualTo(searchCue ? 0 : 2431));
+                if (centerCue && !searchCue)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.speed", 0, rightHand: false);
+                    Draw();
+                }
+                CheckFireball();
+                var search = menu.GameplayHelpForRow(7);
+                Assert.That((search.TextRecord, search.Flags, search.Duration, search.AgeThreshold, search.Priority),
+                    Is.EqualTo((292, 4, 50, 600, 2)));
+                Assert.That(menu.GameplayLanguageText(search.TextRecord), Is.EqualTo("Search for fireball spell"));
+                if (searchCue)
+                {
+                    Assert.That(surface, Is.Not.Null);
+                    Assert.That(Pending(), Is.False);
+                }
+                var closedAt = searchCue ? FindWyvernClose() : 0UL;
+                if (!searchCue)
+                {
+                    ToggleMap(true);
+                    Assert.That(Pending(), Is.False);
+                    var objectiveLimit = menu.LocaleCache.HasLooseManaHelp ? 80 + 50 + 20 : 80;
+                    for (var frame = 0; frame < objectiveLimit && hint.VisibleRow != 82; frame++)
+                    {
+                        Draw();
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((82, (object)49)));
+                    var subject = (ushort)subjectField.GetValue(hint);
+                    Assert.That(surface.ObjectiveHelpMarks.Any(mark => mark.Row == 82 && mark.Subject == subject), Is.True);
+                    for (var frame = 0; frame < 48; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.EqualTo(82));
+                        Assert.That(Pending(), Is.False, "the active objective hint has not closed");
+                    }
+                    Draw();
+                    Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()), Is.EqualTo((82, (object)0, true)));
+                    closedAt = native.Tick;
+                    var afterClose = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    Assert.That((native.Tick, Pending()), Is.EqualTo((closedAt, true)));
+                    CollectionAssert.AreEqual(afterClose, runtime.QualificationSaveGameRuntimeProductionReplay());
+                }
+
+                if (mapMasksCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen), Is.EqualTo((false, 20UL, true)),
+                        "the ordinary poll consumes the Fireball request on the full map");
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.EqualTo(13), "the map-admitted spell-menu cue wins that same poll");
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 80 && hint.VisibleRow != 12; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(7).And.Not.EqualTo(10));
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That(hint.VisibleRow, Is.EqualTo(12), "the next world poll offers Castle, with no delayed Fireball hint");
+                    CheckFireball();
+                    TestContext.WriteLine($"Fireball request armed at {closedAt}, masked on the next full-map poll, then row12 at {native.Tick}.");
+                    return;
+                }
+
+                var cue = searchCue ? 7 : castleRecastCue ? 14 : 10;
+                if (castleRecastCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen, hint.VisibleRow),
+                        Is.EqualTo((false, 20UL, true, 0)));
+                    Draw();
+                    Assert.That(native.Tick - closedAt, Is.EqualTo(21UL));
+                }
+                else if (!searchCue)
+                {
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 23 && hint.VisibleRow != cue; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "Fireball wins its source-order tie with Castle");
+                    }
+                }
+                var x = centerCue ? 320 : 540;
+                var y = centerCue ? 80 : 32;
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint), Pending()),
+                    Is.EqualTo((cue, x, y, (object)49, false)));
+                var text = searchCue ? "Search for fireball spell" :
+                    castleRecastCue ? CastleRecastHelpText : "Use fireball spell to destroy target";
+                if (castleRecastCue) CheckCastleRecastHelpBinding(menu);
+                else if (!searchCue)
+                {
+                    var binding = menu.GameplayHelpForRow(10);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((295, 0x624, 50, 600, 5)));
+                    Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                }
+                CheckFireball();
+                display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                Assert.That(output?.IsCreated(), Is.True);
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                var artwork = menu.ObjectiveForProfile("day");
+                var palette = surface.FramePaletteRgb8;
+                Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                var pixels = ReadObjectivePixels(output);
+                Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                if (centerCue)
+                {
+                    Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                    Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                }
+                else
+                {
+                    var sourceX = x + 1 - raster.X;
+                    var sourceY = y - raster.Y;
+                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                }
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                if (searchCue)
+                    for (var drawsLeft = 48; drawsLeft >= 0; drawsLeft--)
+                    {
+                        Draw();
+                        Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending()),
+                            Is.EqualTo((7, (object)drawsLeft, false)));
+                    }
+                else runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((cue, false)));
+                Draw();
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
+                TestContext.WriteLine($"Fireball request armed at {closedAt}, row{cue} painted at {tick}, anchor ({x}, {y}).");
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ProductionPossessionHelpFollowsTheOrdinaryBuildingMarkerClose(bool mapMasksCue) =>
+            CheckProductionPossessionMapCue(21, mapMasksCue);
+
+        [Test]
+        public void ProductionPossessionHelpFollowsAnOrdinaryLooseManaMarkerClose() =>
+            CheckProductionPossessionMapCue(18, mapMasksCue: false);
+
+        [Test]
+        public void ProductionCastleRecastHelpFollowsAnOrdinaryPossessionMarkerClose() =>
+            CheckProductionPossessionMapCue(18, mapMasksCue: false, castleRecastCue: true);
+
+        [Test]
+        public void ProductionLooseManaMarkerLosesItsHelpWhenActuallyClaimed()
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 loose-mana claim");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                const ushort subject = 259;
+                NativeSim.CampaignMinimapEntity Marker() => native.MinimapEntities(native.Tick, native.MinimapState(native.Tick))
+                    .Single(mark => mark.subjectEntityIndex == subject);
+                NativeSim.ManaSphereSnapshot Sphere() => native.ManaSpheres().Single(sphere => sphere.sourceEntityIndex == subject);
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                Assert.That((Sphere().active, Sphere().ownerEntityIndex, Sphere().mana, Marker().helpSelector),
+                    Is.EqualTo(((byte)1, (ushort)0, 500, (byte)18)));
+                Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 18 && mark.Subject == subject), Is.True);
+                Assert.That(native.DayHudState(native.Tick).right.rawSpellSelector, Is.EqualTo(1));
+                // The retained pose can reach this sphere with a single
+                // ordinary right-hand Possession shot and neutral turns.
+                transport.GameRuntimeCampaignStep(0, 0, 0x20, unchecked((ushort)(-165)), 16);
+                for (var frame = 0; frame < 12; frame++)
+                    transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var sphere = Sphere();
+                var marker = Marker();
+                Assert.That((sphere.active, sphere.ownerEntityIndex, sphere.mana), Is.EqualTo(((byte)1, (ushort)252, 500)));
+                Assert.That((marker.visible, marker.helpSelector), Is.EqualTo(((byte)1, (byte)0)),
+                    "claimed source word94 retains the owned dot and removes its loose-mana hint");
+                Assert.That(surface.EntityHelpMarks.Any(mark => mark.Subject == subject), Is.False);
+                TestContext.WriteLine($"Live model39 slot{subject} retained its owned map dot and lost row18 at tick {native.Tick}.");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        private static void CheckProductionPossessionMapCue(int sourceRow, bool mapMasksCue, bool castleRecastCue = false)
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Possession help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var pending = hintType.GetField("possessionHelpPending", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                bool Pending() => (bool)pending.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                void ToggleMap(bool expected)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                }
+                void CheckIndexedCue(int row, int record, string text, int x, int y)
+                {
+                    Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, remaining.GetValue(hint)),
+                        Is.EqualTo((row, x, y, (object)49)));
+                    Assert.That(menu.GameplayHelpForRow(row).TextRecord, Is.EqualTo(record));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var type = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(type.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)type.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True);
+                    var raster = (ObjectiveTextboxCompositor.Raster)type.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    if (row == 14)
+                    {
+                        Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(x));
+                        Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(y + artwork.Corner.Height));
+                    }
+                    else
+                    {
+                        var sourceX = x + 1 - raster.X;
+                        var sourceY = y - raster.Y;
+                        Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                        Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    }
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, remaining.GetValue(hint), Pending()), Is.EqualTo((tick, (object)49, false)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                }
+                Assert.That(native.Tick, Is.EqualTo(2431));
+                var spells = transport.GameRuntimeCampaignSnapshot().value.player_spells;
+                var possession = spells.Single(spell => spell.id == "spell.possession");
+                Assert.That((possession.acquired, possession.hand, native.DayHudState(native.Tick).right.rawSpellSelector),
+                    Is.EqualTo((true, "right", (short)1)));
+                void CheckUnassignedPossession()
+                {
+                    var snapshot = transport.GameRuntimeCampaignSnapshot().value;
+                    var holder = snapshot.player_spells.Single(spell => spell.id == "spell.possession");
+                    var hud = native.DayHudState(native.Tick);
+                    Assert.That((holder.acquired, holder.hand, hud.left.rawSpellSelector, hud.right.rawSpellSelector),
+                        Is.EqualTo((true, "none", (short)0, (short)3)));
+                    Assert.That(snapshot.source_top_status.castle_rows, Is.Empty);
+                }
+                if (castleRecastCue)
+                {
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.speed", 0, rightHand: true);
+                    Draw();
+                    CheckUnassignedPossession();
+                }
+                Assert.That(surface, Is.Not.Null);
+                ToggleMap(true);
+                var looseManaPrecedesBuilding = sourceRow == 21 && menu.LocaleCache.HasLooseManaHelp;
+                var frameLimit = looseManaPrecedesBuilding ? 430 + 4 * (50 + 20) : 430;
+                var sawLooseMana = false;
+                for (var frame = 0; frame < frameLimit && hint.VisibleRow != sourceRow; frame++)
+                {
+                    var wasPending = Pending();
+                    Draw();
+                    if (!wasPending && Pending())
+                    {
+                        Assert.That(looseManaPrecedesBuilding, Is.True);
+                        Assert.That((hint.VisibleRow, remaining.GetValue(hint)), Is.EqualTo((18, (object)0)),
+                            "only the real preceding sphere popup closure requests Possession");
+                        sawLooseMana = true;
+                    }
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(sourceRow));
+                Assert.That(Pending(), Is.False);
+                if (looseManaPrecedesBuilding) Assert.That(sawLooseMana, Is.True);
+                var candidates = surface.EntityHelpMarks.Where(mark => mark.Row == sourceRow).ToArray();
+                Assert.That(candidates.Length, Is.GreaterThan(1), "the real aperture has competing map subjects");
+                var entities = native.Entities();
+                var player = transport.GameRuntimeCampaignSnapshot().value.player_pose;
+                var spheres = sourceRow == 18 ? native.ManaSpheres().ToDictionary(sphere => sphere.sourceEntityIndex) : null;
+                int Distance(ushort slot)
+                {
+                    var (x, y) = spheres != null && spheres.TryGetValue(slot, out var sphere) ?
+                        (sphere.x, sphere.y) : (entities[slot].x, entities[slot].y);
+                    var dx = unchecked((short)(x - player.x));
+                    var dy = unchecked((short)(y - player.y));
+                    return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                }
+                var nearest = candidates.OrderBy(mark => Distance(mark.Subject)).First();
+                var subject = (ushort)subjectField.GetValue(hint);
+                Assert.That(subject, Is.EqualTo(nearest.Subject), "first source candidate wins equal floored distances");
+                if (sourceRow == 18)
+                {
+                    Assert.That(subject, Is.EqualTo(259));
+                    var sphere = spheres[subject];
+                    Assert.That((sphere.ownerEntityIndex, sphere.active, sphere.mana), Is.EqualTo(((ushort)0, (byte)1, 500)));
+                    var binding = menu.GameplayHelpForRow(18);
+                    Assert.That((binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((0x400, 50, 160, 5)));
+                    CheckIndexedCue(18, 306, "Possess This Mana", nearest.X, nearest.Y);
+                }
+                else CheckIndexedCue(21, 309, "Possess this building to increase your spells mana", nearest.X, nearest.Y);
+                for (var frame = 0; frame < 48; frame++)
+                {
+                    Draw();
+                    var current = surface.EntityHelpMarks.Single(mark => mark.Row == sourceRow && mark.Subject == subject);
+                    Assert.That((hint.VisibleRow, subjectField.GetValue(hint), hint.AnchorX, hint.AnchorY, Pending()),
+                        Is.EqualTo((sourceRow, (object)subject, current.X, current.Y, false)));
+                }
+                Draw();
+                Assert.That((hint.VisibleRow, remaining.GetValue(hint), Pending(), fireball.GetValue(hint)),
+                    Is.EqualTo((sourceRow, (object)0, true, (object)false)));
+                var closedAt = native.Tick;
+                if (mapMasksCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen), Is.EqualTo((false, 20UL, true)));
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 210 && hint.VisibleRow != 12; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(9).And.Not.EqualTo(11));
+                        Assert.That(Pending(), Is.False);
+                    }
+                    Assert.That(hint.VisibleRow, Is.EqualTo(12), "a real post-map world poll proves the masked cue does not return");
+                    TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; full-map poll consumed Possession before row12 at {native.Tick}.");
+                    return;
+                }
+
+                var cue = castleRecastCue ? 14 : 11;
+                if (castleRecastCue)
+                {
+                    for (var frame = 0; frame < 21 && Pending(); frame++) Draw();
+                    Assert.That((Pending(), native.Tick - closedAt, menus.MapOpen, hint.VisibleRow, fireball.GetValue(hint)),
+                        Is.EqualTo((false, 20UL, true, 0, (object)false)));
+                    Draw();
+                    Assert.That(native.Tick - closedAt, Is.EqualTo(21UL));
+                    CheckUnassignedPossession();
+                    CheckCastleRecastHelpBinding(menu);
+                    CheckIndexedCue(14, 299, CastleRecastHelpText, 320, 80);
+                }
+                else
+                {
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 23 && hint.VisibleRow != cue; frame++)
+                    {
+                        Draw();
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(12), "row11 wins an equally overdue Castle cue");
+                    }
+                    CheckIndexedCue(11, 296, "Use possession spell to possess mana", 600, 32);
+                }
+                Assert.That(Pending(), Is.False);
+                TestContext.WriteLine($"Row{sourceRow} subject {subject} closed at {closedAt}; row{cue} painted at {native.Tick}.");
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((cue, false)));
+                Draw();
+                Assert.That((hint.VisibleRow, Pending()), Is.EqualTo((0, false)));
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionCastleAttackHelpFollowsAnOrdinaryHostileHit()
+        {
+            var replay = Path.Combine(PrivateRoot,
+                "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle attack help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            CampaignGuiWindow window = null;
+            RenderTexture display = null;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var remaining = hintType.GetField("remaining", flags);
+                var attackPolls = hintType.GetField("castleAttackPolls", flags);
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                int Remaining() => (int)remaining.GetValue(hint);
+                int AttackPolls() => (int)attackPolls.GetValue(hint);
+                EngineSessionTransport.SourceCastleStatus Castle() =>
+                    transport.GameRuntimeCampaignSnapshot().value.source_top_status.castle_rows.Single();
+                NativeSim.CampaignEntitySnapshot Root() => native.Entities()[261];
+
+                const string text = "Your castle has been attacked";
+                var binding = menu.GameplayHelpForRow(17);
+                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.X, binding.Y,
+                    binding.AgeThreshold, binding.Priority), Is.EqualTo((302, 0x624, 50, 214, 16, 400, 5)));
+                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(text));
+                Assert.That((native.Tick, menus.MapOpen, runtime.GameRuntimeProductionIdentity.display_settings.top_bar,
+                    runtime.GameRuntimeProductionIdentity.display_settings.minimap), Is.EqualTo((2048UL, false, true, true)));
+                var first = Root();
+                void CheckRoot()
+                {
+                    var current = Root();
+                    Assert.That((current.entityIndex, current.sourceId, current.classId, current.model, current.active,
+                        current.x, current.y), Is.EqualTo(((ushort)261, (ushort)252, (byte)3, (byte)2, (byte)1,
+                        first.x, first.y)));
+                    Assert.That(Castle().stage, Is.EqualTo(1));
+                }
+                CheckRoot();
+                Assert.That((Castle().life, native.CastleHudHitFrames(native.Tick), AttackPolls()),
+                    Is.EqualTo((20000, (byte)0, 0)));
+                Draw();
+                Assert.That((native.Tick, Castle().life, native.CastleHudHitFrames(native.Tick), AttackPolls(),
+                    hint.VisibleRow, Remaining()), Is.EqualTo((2049UL, 20000, (byte)0, 0, 0, 0)));
+
+                // The retained coast input lets the real hostile attack
+                // consume the linked Castle's mailbox on the source visit.
+                Draw();
+                CheckRoot();
+                var phase = native.DayHudState(native.Tick).colorPhase1;
+                Assert.That((native.Tick, Castle().life, Castle().panel_selector,
+                    native.CastleHudHitFrames(native.Tick), AttackPolls(), hint.VisibleRow, Remaining()),
+                    Is.EqualTo((2050UL, 17400, (ushort)(phase != 0 ? 55 : 41),
+                        (byte)(4 - phase), 99, 0, 50)));
+                Draw();
+                Assert.That((native.Tick, hint.VisibleRow, hint.AnchorX, hint.AnchorY, Remaining(), AttackPolls()),
+                    Is.EqualTo((2051UL, 17, 320, 80, 49, 99)));
+
+                display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show();
+                window.position = new Rect(0, 0, 640, 480);
+                var tick = native.Tick;
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var frames = native.CastleHudHitFrames(tick);
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                Assert.That(output?.IsCreated(), Is.True);
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                var artwork = menu.ObjectiveForProfile("day");
+                var palette = surface.FramePaletteRgb8;
+                var color = artwork.HelpTextColor * 3;
+                var pixels = ReadObjectivePixels(output);
+                Assert.That(pixels, Does.Contain(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                Assert.That(raster.BlendX + raster.BlendWidth / 2, Is.EqualTo(320));
+                Assert.That(raster.BlendY + (raster.BlendHeight - 14) / 2, Is.EqualTo(80 + artwork.Corner.Height));
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((native.Tick, Remaining(), AttackPolls(), native.CastleHudHitFrames(tick)),
+                    Is.EqualTo((tick, 49, 99, frames)));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                var sawFinalNativeFlash = false;
+                for (var elapsed = 1; elapsed <= 49; elapsed++)
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Remaining(), AttackPolls()), Is.EqualTo((17, 49 - elapsed, 99)));
+                    if (Castle().panel_selector == 55 && native.CastleHudHitFrames(native.Tick) == 0)
+                        sawFinalNativeFlash = true;
+                }
+                Assert.That(sawFinalNativeFlash, Is.True, "the final hit panel can draw after the native counter reaches zero");
+                CheckRoot();
+                Draw();
+                Assert.That((hint.VisibleRow, Remaining()), Is.EqualTo((0, 0)));
+                TestContext.WriteLine($"Day3 root 261 took 2600 damage at 2050. Indexed row17 drew from {tick} for 50 draws.");
+            }
+            finally
+            {
+                if (window != null)
+                {
+                    window.DrawRuntime = null;
+                    window.Close();
+                }
+                runtime.QualificationDisposeGameRuntimeProduction();
+                if (display != null) { display.Release(); UnityEngine.Object.DestroyImmediate(display); }
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(23)]
+        [TestCase(24)]
+        public void ProductionOwnedCastleMinimapHelpFollowsBothActualMarkers(int targetRow)
+        {
+            var replay = Path.Combine(PrivateRoot,
+                targetRow == 23 ? "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs" :
+                "generated/low-health-help-20261118.bc502sO6/day3-health-recovered.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary Day3 Castle and Collector map help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var transport = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var remaining = hintType.GetField("remaining", flags);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                var possession = hintType.GetField("possessionHelpPending", flags);
+                var draws = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                var priorRow = 0;
+                int Remaining() => (int)remaining.GetValue(hint);
+                ushort Subject() => (ushort)subjectField.GetValue(hint);
+                void Draw()
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != priorRow)
+                        draws.Add((hint.VisibleRow, native.Tick));
+                    priorRow = hint.VisibleRow;
+                }
+                (int X, int Y) CurrentAnchor(int row, ushort subject)
+                {
+                    Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, native.Tick)));
+                    var mark = surface.EntityHelpMarks.Single(mark => mark.Row == row && mark.Subject == subject);
+                    return (mark.X, mark.Y);
+                }
+
+                Assert.That(surface, Is.Not.Null);
+                if (targetRow == 23)
+                {
+                    Assert.That((native.Tick, menus.MapOpen), Is.EqualTo((2048UL, false)));
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That((native.Tick, menus.MapOpen), Is.EqualTo((2049UL, true)));
+                }
+                else
+                {
+                    Assert.That((native.Tick, menus.MapOpen), Is.EqualTo((2431UL, false)));
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.castle", 0, rightHand: true);
+                    Draw();
+                    Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana, Is.EqualTo(1000));
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, true);
+                    Draw();
+                    runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                    for (var frame = 0; frame < 20 && runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status.castle_rows.Length == 0; frame++)
+                        Draw();
+                    var castle = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status.castle_rows.Single();
+                    Assert.That((castle.stage, castle.life, castle.mana), Is.EqualTo(((byte)1, 20000, 0)),
+                        "the ordinary paid cast creates the actual owned Castle");
+                    runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, rightHand: true);
+                    Draw();
+                }
+
+                var admitted = false;
+                var finalTick = native.Tick + 1800UL;
+                var elapsed = 0;
+                while (native.Tick < finalTick && !admitted)
+                {
+                    var row = hint.VisibleRow;
+                    if (row != targetRow)
+                    {
+                        // Keep the same ordinary movement/full-stop sequence as
+                        // the paid-Castle checkpoint; it clears idle reminders.
+                        if (targetRow == 24 && elapsed % 80 == 78)
+                            transport.GameRuntimeCampaignStep(0, 0, 1, 0, 0);
+                        if (targetRow == 24 && elapsed > 0 && elapsed % 80 == 0)
+                            transport.GameRuntimeCampaignStep(0, 0, 0, 0, 0, fullStop: true);
+                        Draw();
+                        elapsed++;
+                        continue;
+                    }
+                    var collector = row == 23;
+                    var subject = Subject();
+                    Assert.That(subject, Is.Not.Zero);
+                    if (collector) Assert.That(subject, Is.EqualTo((ushort)258));
+                    var record = collector ? 311 : 312;
+                    var text = collector ? "This is your balloon which collects your possessed mana" : "This is your castle";
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                        Is.EqualTo((record, 0, 50, 160, 5)));
+                    Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(text));
+                    var entity = native.Entities()[subject];
+                    Assert.That((entity.entityIndex, entity.sourceId, entity.active, entity.classId, entity.model),
+                        Is.EqualTo((subject, (ushort)252, (byte)1, (byte)3, (byte)(collector ? 3 : 2))));
+                    var commands = menus.MapOpen ? native.WorldMap(native.Tick).entities :
+                        native.MinimapEntities(native.Tick, native.MinimapState(native.Tick));
+                    var command = commands.Single(mark =>
+                        mark.helpSelector == row && mark.subjectEntityIndex == subject);
+                    Assert.That((command.visible, command.selector),
+                        Is.EqualTo(((byte)1, (ushort)(collector ? 66 : 58))));
+                    var (x, y) = CurrentAnchor(row, subject);
+                    var scale = menus.MapOpen ? 1 : 2;
+                    Assert.That((Subject(), hint.AnchorX, hint.AnchorY, Remaining()),
+                        Is.EqualTo((subject, 2 * (command.x / scale), 2 * (command.y / scale), 49)));
+                    Assert.That((x, y), Is.EqualTo((hint.AnchorX, hint.AnchorY)));
+
+                    foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    if (!shown)
+                    {
+                        window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                        window.minSize = new Vector2(640, 480);
+                        window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                    }
+                    var tick = native.Tick;
+                    var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(presenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(text));
+                    var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                    Assert.That(output?.IsCreated(), Is.True);
+                    var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                    var artwork = menu.ObjectiveForProfile("day");
+                    var palette = surface.FramePaletteRgb8;
+                    Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                    var pixels = ReadObjectivePixels(output);
+                    Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)));
+                    var sourceX = x + 1 - raster.X;
+                    var sourceY = y - raster.Y;
+                    Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor));
+                    Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX], Is.EqualTo(Colour(artwork.TextColor)));
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                    Assert.That((native.Tick, Remaining(), Subject()), Is.EqualTo((tick, 49, subject)));
+                    CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                    for (var frame = 0; frame < 48; frame++)
+                    {
+                        Draw();
+                        Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((row, subject, 48 - frame)));
+                        Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(CurrentAnchor(row, subject)));
+                    }
+                    var requests = (fireball.GetValue(hint), possession.GetValue(hint));
+                    Draw();
+                    Assert.That((hint.VisibleRow, Remaining(), Subject()), Is.EqualTo((row, 0, (ushort)0)));
+                    Assert.That((fireball.GetValue(hint), possession.GetValue(hint)), Is.EqualTo(requests));
+                    admitted = true;
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+                var chronology = string.Join(", ", draws.Select(frame => $"{frame.Row}@{frame.Tick}"));
+                Assert.That(admitted, Is.True, $"Ordinary row{targetRow} draws {chronology} through tick {native.Tick}.");
+                TestContext.WriteLine($"Ordinary row{targetRow} draws {chronology}; the actual subject held for 50 draws.");
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(19)]
+        [TestCase(20)]
+        public void ProductionCreaturePickupMinimapHelpFollowsNearestActualMarker(int row)
+        {
+            var replay = Environment.GetEnvironmentVariable(row == 19 ? "MC_CREATURE_MAP_HELP_REPLAY" : "MC_PICKUP_MAP_HELP_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs");
+            var arguments = InstalledOpeningArguments(3).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("ordinary creature and pickup map help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface"));
+                var remainingField = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                var subjectField = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("entityHelpSubject", flags);
+                int Remaining() => (int)remainingField.GetValue(hint);
+                ushort Subject() => (ushort)subjectField.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                var record = row == 19 ? 307 : 308;
+                var expectedText = row == 19 ? "Destroy this for its mana" : "Collect this spell by flying into it";
+                var binding = menu.GameplayHelpForRow(row);
+                Assert.That((binding.TextRecord, binding.Duration), Is.EqualTo((record, 50)), "requires the 50-row owner cache");
+                Assert.That(menu.GameplayLanguageText(record), Is.EqualTo(expectedText));
+                Assert.That(menus.MapOpen, Is.False);
+                var cornerMarks = surface.EntityHelpMarks.Where(mark => mark.Row == row).ToArray();
+                var action = menus.Step(true, false, false, false, false, true);
+                Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                    menus.PlayerInformationOpen, action), Is.True);
+                Draw();
+                Assert.That(menus.MapOpen, Is.True);
+                if (row == 19)
+                {
+                    var fullMarks = surface.EntityHelpMarks.Where(mark => mark.Row == row).ToArray();
+                    Assert.That(cornerMarks.Any(corner => fullMarks.Any(full => full.Subject == corner.Subject &&
+                        (full.X != corner.X || full.Y != corner.Y))), Is.True,
+                        "an actual creature marker changes its projected anchor when the player opens the full map");
+                }
+
+                var selected = false;
+                for (var frame = 0; frame < 1800 && !selected; frame++)
+                {
+                    Draw();
+                    if (Remaining() != 50 || Subject() == 0) continue;
+                    var marks = surface.EntityHelpMarks.Where(mark => mark.Row == row).ToArray();
+                    if (!marks.Any(mark => mark.Subject == Subject())) continue;
+                    Assert.That(marks.Length, Is.GreaterThanOrEqualTo(2), "checkpoint must expose two eligible real subjects at the selection poll");
+                    Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, native.Tick)));
+                    var entities = native.Entities();
+                    var player = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                    int Distance(ushort subject)
+                    {
+                        var entity = entities[subject];
+                        var dx = unchecked((short)(entity.x - player.x));
+                        var dy = unchecked((short)(entity.y - player.y));
+                        return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                    }
+                    var winner = marks.OrderBy(mark => Distance(mark.Subject)).First();
+                    Assert.That(Subject(), Is.EqualTo(winner.Subject), "the nearest source-distance subject wins, with first-in-order ties");
+                    selected = true;
+                }
+                Assert.That(selected, Is.True, $"row {row} was not selected in this real checkpoint; provide an eligible replay via its MC_*_MAP_HELP_REPLAY override");
+                var subject = Subject();
+                Draw();
+                Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((row, subject, 49)));
+                var command = native.WorldMap(native.Tick).entities.Single(mark => mark.helpSelector == row && mark.subjectEntityIndex == subject);
+                Assert.That(command.visible, Is.EqualTo((byte)1));
+                Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((2 * command.x, 2 * command.y)));
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                Assert.That(presenterType.GetField("currentText", flags).GetValue(presenter), Is.EqualTo(expectedText));
+                var output = (RenderTexture)presenterType.GetField("output", flags).GetValue(presenter);
+                var raster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(presenter);
+                Assert.That(output?.IsCreated(), Is.True);
+                var artwork = menu.ObjectiveForProfile("day");
+                var sourceX = hint.AnchorX + 1 - raster.X;
+                var sourceY = hint.AnchorY - raster.Y;
+                Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(artwork.TextColor), "indexed leader starts at the live marker");
+                var pixels = ReadObjectivePixels(output);
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                if (row == 20)
+                {
+                    Assert.That(Remaining(), Is.GreaterThan(1), "the popup must still be active before the map closes");
+                    action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.False, "the ordinary map toggle returns to the corner minimap");
+                    Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == row && mark.Subject == subject), Is.False,
+                        "the selected actual pickup is outside the corner-map aperture");
+                    Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((0, (ushort)0, 0)),
+                        "losing the selected marker releases the popup immediately, before its timed expiry");
+                    TestContext.WriteLine($"Row 20 pickup {subject} left the admitted aperture on normal map close and its popup released.");
+                    return;
+                }
+
+                var disappeared = false;
+                while (Remaining() > 0)
+                {
+                    Draw();
+                    if (!surface.EntityHelpMarks.Any(mark => mark.Row == row && mark.Subject == subject))
+                    {
+                        Assert.That(Subject(), Is.Zero, "a disappeared actual marker releases its popup subject");
+                        disappeared = true;
+                        break;
+                    }
+                    if (Remaining() > 0)
+                    {
+                        var mark = surface.EntityHelpMarks.Single(item => item.Row == row && item.Subject == subject);
+                        Assert.That((hint.VisibleRow, Subject(), hint.AnchorX, hint.AnchorY), Is.EqualTo((row, subject, mark.X, mark.Y)));
+                    }
+                }
+                Assert.That(Subject(), Is.Zero, "expiry or actual disappearance releases the subject");
+                TestContext.WriteLine($"Row {row}, subject {subject}; actual disappearance before expiry: {disappeared}.");
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(22, 310, "This stone restores your life")]
+        [TestCase(26, 314, "This is an enemy balloon")]
+        public void SourceBuildingAndRivalCollectorHelpFollowsAndClearsControlledMarker(int row, int record, string text)
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            Assert.That(cache.HasBuildingMinimapHelp && cache.HasRivalCollectorMinimapHelp, Is.True);
+            var binding = cache.GameplayHelpForRow(row);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                Is.EqualTo(row == 22 ? (record, 0, 50, 320, 4) : (record, 0, 50, 160, 5)));
+            Assert.That(cache.LanguageText(record), Is.EqualTo(text));
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow, hasFireballHelp: true,
+                hasRivalCollectorMinimapHelp: true, hasBuildingMinimapHelp: true);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var subject = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("entityHelpSubject", flags);
+            var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+            var fireball = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("fireballHelpPending", flags);
+            var marks = new[] { ((byte)row, (ushort)77, 180, 220) };
+            void Advance() => hint.Advance(false, false, true, false, false, mapOpen: true, entityMarks: marks,
+                nearestRivalMarkers: row == 26 ? ((ushort)0, (ushort)77) : default,
+                nearestBuildingSubject: row == 22 ? (ushort)77 : (ushort)0);
+            for (var frame = 0; frame < 300 && hint.VisibleRow != row; frame++) Advance();
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((row, (ushort)77, 49)));
+            marks[0] = ((byte)row, (ushort)77, 182, 224);
+            for (var frame = 0; frame < 48; frame++)
+            {
+                Advance();
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY, (int)remaining.GetValue(hint)),
+                    Is.EqualTo((row, 182, 224, 48 - frame)));
+            }
+            Advance();
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((row, (ushort)0, 0)), "the fiftieth draw expires and releases the subject");
+            Assert.That((bool)fireball.GetValue(hint), Is.EqualTo(row == 26), "only rival collector closure arms Fireball help");
+        }
+
+        [Test]
+        public void PeriliumRivalCastleFullMapHelpUsesRealMarkerAndSourcePresenter()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "settlement-20261105-integration/owner-collision-closure-v4/level7");
+            var environment = Path.Combine(generated, "campaign-original-environments/level7-complete");
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            Assert.That(cache.HasRivalCastleMinimapHelp, Is.True, "requires the candidate source help cache");
+            var binding = cache.GameplayHelpForRow(25);
+            Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                Is.EqualTo((313, 0, 50, 160, 5)));
+            const string text = "This is an enemy castle";
+            Assert.That(cache.LanguageText(313), Is.EqualTo(text));
+            var assets = cache.ObjectiveForProfile("night");
+            var materials = OwnerAssetCache.OpenAndValidateEnvironment(environment, package);
+            using var native = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(7, 6, 1), environment);
+            using var surface = new CampaignPresentationSurface();
+            using var presenter = new SourceObjectiveTextboxPresenter(assets);
+            surface.PresentEnvironment(native, materials, fullMap: true);
+            Assert.That((native.Generation, native.Tick), Is.EqualTo((0UL, 0UL)));
+            var command = native.WorldMap(native.Tick).entities.Single(mark => mark.helpSelector == 25 && mark.subjectEntityIndex == 366);
+            Assert.That((command.visible, command.x, command.y), Is.EqualTo(((byte)1, (short)94, (short)155)));
+            var marker = surface.EntityHelpMarks.Single(mark => mark.Row == 25 && mark.Subject == 366);
+            Assert.That((marker.X, marker.Y), Is.EqualTo((188, 310)));
+            var hint = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow,
+                hasFireballHelp: true, hasRivalCastleMinimapHelp: true);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var subject = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("entityHelpSubject", flags);
+            var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+            var fireball = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("fireballHelpPending", flags);
+            for (var frame = 0; frame < 200 && hint.VisibleRow != 25; frame++)
+                hint.Advance(false, false, true, false, false, mapOpen: true,
+                    entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (366, 0));
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint), hint.AnchorX, hint.AnchorY),
+                Is.EqualTo((25, (ushort)366, 49, 188, 310)));
+            presenter.PresentObjectiveMarkHint(text, native.Generation, hint.AnchorX, hint.AnchorY, fullMap: true, entityAnchor: true);
+            var output = presenter.Render(49, surface.HudUnderlayIndices, native.Generation, native.Tick, surface.FramePaletteRgb8);
+            Assert.That(output?.IsCreated(), Is.True);
+            var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+            var sourceX = hint.AnchorX + 1 - raster.X;
+            var sourceY = hint.AnchorY - raster.Y;
+            Assert.That(raster.IndicesThenMask[sourceY * raster.Width + sourceX], Is.EqualTo(assets.TextColor));
+            var palette = surface.FramePaletteRgb8;
+            var color = assets.TextColor * 3;
+            var pixels = ReadObjectivePixels(output);
+            Assert.That(pixels[(raster.Height - 1 - sourceY) * raster.Width + sourceX],
+                Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)),
+                "the actual source presenter paints the pointer at the live Castle marker");
+            // Keep the native opening frame fixed while exercising the
+            // presentation clock; this tests duration, not fifty simulation turns.
+            var timed = new MagicCarpetRuntime.ManaHelpHint(cache.GameplayHelpForRow,
+                hasFireballHelp: true, hasRivalCastleMinimapHelp: true);
+            void TimedDraw() => timed.Advance(false, false, true, false, false, mapOpen: true,
+                entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (366, 0));
+            for (var frame = 0; frame < 200 && timed.VisibleRow != 25; frame++) TimedDraw();
+            Assert.That((timed.VisibleRow, (int)remaining.GetValue(timed)), Is.EqualTo((25, 49)));
+            for (var frame = 0; frame < 48; frame++)
+            {
+                TimedDraw();
+                Assert.That((timed.VisibleRow, (ushort)subject.GetValue(timed), (int)remaining.GetValue(timed)),
+                    Is.EqualTo((25, (ushort)366, 48 - frame)));
+            }
+            TimedDraw();
+            Assert.That((timed.VisibleRow, (ushort)subject.GetValue(timed), (int)remaining.GetValue(timed)),
+                Is.EqualTo((25, (ushort)0, 0)));
+            Assert.That((bool)fireball.GetValue(timed), Is.True);
+            surface.PresentEnvironment(native, materials, fullMap: false);
+            Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 25 && mark.Subject == 366), Is.False,
+                "the actual Castle is outside the corner minimap aperture");
+            hint.Advance(false, false, true, false, false, mapOpen: false,
+                entityMarks: surface.EntityHelpMarks, nearestRivalMarkers: (0, 0));
+            Assert.That((hint.VisibleRow, (ushort)subject.GetValue(hint), (int)remaining.GetValue(hint)),
+                Is.EqualTo((0, (ushort)0, 0)));
+            Assert.That((bool)fireball.GetValue(hint), Is.True, "source row25 closure requests Fireball guidance");
+        }
+
+        [Test]
+        public void CastleStatusHelpRespectsRealNonGoalStageAndCastlePresence()
+        {
+            var replay = Path.Combine(PrivateRoot, "generated/original-castle-status-20261123/night-paid-castle-t1740.mcs");
+            var root = new GameObject("real non-goal Castle stage");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var activeBefore = NativeSession.ActiveSessionCount;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    InstalledOpeningArguments(30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray());
+                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(runtime);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var hud = native.DayHudState(native.Tick);
+                var first = native.ObjectiveStageState(hud.localPlayerSlot, hud.localPlayerSlot);
+                var selected = native.ObjectiveStageState(hud.localPlayerSlot, (byte)first.stageFlags);
+                var status = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
+                Assert.That(first.isLevelEnd, Is.Zero);
+                Assert.That(selected.stageKind, Is.EqualTo(5));
+                Assert.That(status.mana_goal_percent, Is.EqualTo(15));
+                Assert.That(status.castle_rows.Single().stage, Is.EqualTo((byte)1));
+                var eligible = first.isLevelEnd == 0 && selected.stageKind == 0;
+                foreach (var (hasCastle, mapOpen) in new[] { (true, false), (false, false), (true, true) })
+                {
+                    var hint = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasCastleStatusHelp: true);
+                    var seenStatus = false;
+                    for (var frame = 0; frame < 650; frame++)
+                    {
+                        hint.Advance(false, false, true, false, false, mapOpen: mapOpen,
+                            hasCastleStatus: hasCastle, castleGoalHintEligible: eligible, castleGoalAnchorX: 73);
+                        Assert.That(hint.VisibleRow, Is.Not.EqualTo(35));
+                        seenStatus |= hint.VisibleRow is >= 29 and <= 34;
+                    }
+                    Assert.That(seenStatus, Is.EqualTo(hasCastle && !mapOpen));
+                }
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [Test]
+        public void ProductionCastleStatusHelpUsesActualGoalAndSourceText()
+        {
+            var replay = Environment.GetEnvironmentVariable("MC_CASTLE_STATUS_HELP_REPLAY") ??
+                Path.Combine(PrivateRoot, "generated/original-castle-mana-20261122/cave4-paid-row35.mcs");
+            var arguments = InstalledOpeningArguments(30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("actual Castle status help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            var activeBefore = NativeSession.ActiveSessionCount;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface") ??
+                    Field("level2DayPresentationSurface") ?? Field("gameRuntimeNightSurface"));
+                Assert.That(hint.HasCastleStatusHelp, Is.True);
+                Assert.That(menu.LocaleCache.Font1Record40Width, Is.EqualTo(4));
+                var texts = new[] { "Castled mana, current and capacity", "Castle life", "Current size of castle",
+                    "Mana held by balloons", "Number of balloons", "Balloons life", "Castle mana required" };
+                var axes = new[] { (214, 32), (214, 16), (130, 16), (320, 32), (260, 16), (320, 16), (0, 0) };
+                for (var row = 29; row <= 35; row++)
+                {
+                    var binding = menu.GameplayHelpForRow(row);
+                    Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority, binding.X, binding.Y),
+                        Is.EqualTo((row + 288, row == 35 ? 0x620 : 0x220, 50, 800, 2, axes[row - 29].Item1, axes[row - 29].Item2)));
+                    Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo(texts[row - 29]));
+                }
+                var status = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
+                Assert.That(native.Tick, Is.EqualTo(5UL));
+                Assert.That(status.castle_rows.Single().stage, Is.EqualTo(1));
+                Assert.That(status.mana_goal_percent, Is.EqualTo(40));
+                var stage = native.ObjectiveStageState(0, 0);
+                Assert.That((stage.isLevelEnd, stage.stageFlags), Is.EqualTo(((byte)0, (sbyte)0)));
+                Assert.That(native.ObjectiveStageState(0, (byte)stage.stageFlags).stageKind, Is.Zero);
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var advance = typeof(MagicCarpetRuntime).GetMethod("AdvanceGameRuntimeHelpFrame", flags);
+                void DrawHelpFrame() => advance.Invoke(runtime, null);
+                var observed = new System.Collections.Generic.List<int>();
+                var statusRows = new System.Collections.Generic.HashSet<int>();
+                var previous = 0;
+                // Keep the real tick-5 Castle, map subjects, controls and
+                // observation fixed while driving the ordinary help-frame
+                // boundary. This does not simulate subsequent combat turns.
+                for (var frame = 0; frame < 10000 && hint.VisibleRow != 35; frame++)
+                {
+                    DrawHelpFrame();
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != previous) observed.Add(hint.VisibleRow);
+                    if (hint.VisibleRow is >= 29 and <= 35 && statusRows.Add(hint.VisibleRow))
+                    {
+                        var row = hint.VisibleRow;
+                        var expected = row == 35 ? (89, 38) : axes[row - 29];
+                        Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo(expected));
+                        window.SendEvent(new Event { type = EventType.Layout });
+                        window.SendEvent(new Event { type = EventType.Repaint });
+                        var rendered = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                        Assert.That(rendered, Is.Not.Null);
+                        Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(rendered),
+                            Is.EqualTo(texts[row - 29]));
+                    }
+                    previous = hint.VisibleRow;
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(35), "the retained eligible Castle goal must win an ordinary help poll; rows " + string.Join(",", observed));
+                CollectionAssert.AreEquivalent(new[] { 29, 30, 31, 32, 33, 34, 35 }, statusRows);
+                Assert.That(native.Tick, Is.EqualTo(5UL), "help draws do not advance the retained world");
+                Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((89, 38)));
+                var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                Assert.That((int)remaining.GetValue(hint), Is.EqualTo(49));
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter), Is.EqualTo(texts[6]));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var assets = menu.ObjectiveForProfile("cave");
+                var palette = surface.FramePaletteRgb8;
+                var color = assets.TextColor * 3;
+                var anchor = (38 - raster.Y) * raster.Width + 90 - raster.X;
+                Assert.That(raster.IndicesThenMask[anchor], Is.EqualTo(assets.TextColor));
+                Assert.That(ReadObjectivePixels(output)[(raster.Height - 1 - (38 - raster.Y)) * raster.Width + 90 - raster.X],
+                    Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                for (var frame = 0; frame < 49; frame++) DrawHelpFrame();
+                Assert.That(hint.VisibleRow, Is.EqualTo(35));
+                DrawHelpFrame();
+                Assert.That(hint.VisibleRow, Is.Zero);
+                Assert.That(native.Tick, Is.EqualTo(5UL));
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ProductionMarkerStoneHintTracksRealSubjectAcrossBlink(bool fullMap)
+        {
+            var replay = Environment.GetEnvironmentVariable(fullMap ? "MC_MARKER_STONE_REPLAY" : "MC_MARKER_STONE_CORNER_REPLAY") ??
+                Path.Combine(PrivateRoot, fullMap ? "generated/castle-attack-help-native-20261118.zMzMpe/ordinary-day3-before-castle-hit.mcs" :
+                    "generated/original-marker-stone-20261122/jaleen-entry.mcs");
+            var arguments = InstalledOpeningArguments(fullMap ? 3 : 30).Concat(new[] { "-mc-runtime-replay-load", replay }).ToArray();
+            var root = new GameObject("real marker stone help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var native = (NativeCampaignSession)Field("campaignSession");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ?? Field("level3PresentationSurface") ??
+                    Field("level2DayPresentationSurface") ?? Field("gameRuntimeNightSurface"));
+                var hintType = typeof(MagicCarpetRuntime.ManaHelpHint);
+                var subjectField = hintType.GetField("entityHelpSubject", flags);
+                var remainingField = hintType.GetField("remaining", flags);
+                var fireball = hintType.GetField("fireballHelpPending", flags);
+                ushort Subject() => (ushort)subjectField.GetValue(hint);
+                int Remaining() => (int)remainingField.GetValue(hint);
+                void Draw() => runtime.QualificationDriveGameRuntimeFrames(1);
+                NativeSim.CampaignMinimapEntity[] Commands() => fullMap ? native.WorldMap(native.Tick).entities :
+                    native.MinimapEntities(native.Tick, native.MinimapState(native.Tick));
+                var binding = menu.GameplayHelpForRow(27);
+                Assert.That((binding.TextRecord, binding.Flags, binding.Duration, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((315, 0, 50, 320, 3)));
+                Assert.That(menu.GameplayLanguageText(315), Is.EqualTo("Marker stone"));
+                Assert.That(hint.HasMarkerStoneMinimapHelp, Is.True);
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((native.Generation, native.Tick)));
+                if (fullMap)
+                {
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                }
+                Assert.That(menus.MapOpen, Is.EqualTo(fullMap));
+                var tables = (byte[])typeof(CampaignPresentationSurface).GetField("minimapTables", flags).GetValue(surface);
+                bool InsideCorner(NativeSim.CampaignMinimapEntity command)
+                {
+                    var x = command.x / 2;
+                    var y = command.y / 2;
+                    if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
+                    var sourceY = y * 2;
+                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                    var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+                    return x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
+                }
+                if (fullMap)
+                {
+                    // Both native views are read at this same tick. Check an
+                    // actual full-map Stone that lies outside the corner,
+                    // including the source circle rather than just its box.
+                    var cornerState = native.MinimapState(native.Tick);
+                    var corner = native.MinimapEntities(native.Tick, cornerState);
+                    var full = surface.EntityHelpMarks.Where(mark => mark.Row == 27).ToArray();
+                    var outside = corner.First(command => command.helpSelector == 27 && !InsideCorner(command) &&
+                        full.Any(mark => mark.Subject == command.subjectEntityIndex));
+                    var cornerMarks = native.MinimapMarks(native.Tick, cornerState);
+                    using var cornerProbe = new CampaignPresentationSurface();
+                    typeof(CampaignPresentationSurface).GetField("minimapTables", flags).SetValue(cornerProbe, tables);
+                    typeof(CampaignPresentationSurface).GetMethod("CollectObjectiveHelpMarks", flags)
+                        .Invoke(cornerProbe, new object[] { corner, cornerMarks, false });
+                    Assert.That(cornerProbe.EntityHelpMarks.Any(mark => mark.Row == 27 && mark.Subject == outside.subjectEntityIndex), Is.False,
+                        "the same actual Stone is excluded from the corner aperture at this tick");
+                    TestContext.WriteLine($"Same-tick Stone {outside.subjectEntityIndex} admitted in full map and excluded from corner.");
+                }
+                var chronology = new System.Collections.Generic.List<(int Row, ulong Tick)>();
+                var previous = 0;
+                for (var frame = 0; frame < 1800 && hint.VisibleRow != 27; frame++)
+                {
+                    Draw();
+                    if (hint.VisibleRow != 0 && hint.VisibleRow != previous)
+                        chronology.Add((hint.VisibleRow, native.Tick));
+                    previous = hint.VisibleRow;
+                }
+                Assert.That(hint.VisibleRow, Is.EqualTo(27), $"real stone must win an ordinary poll; draws {string.Join(", ", chronology)}");
+                var subject = Subject();
+                Assert.That(subject, Is.Not.Zero);
+                Assert.That(Remaining(), Is.EqualTo(49));
+                var initialMarks = surface.EntityHelpMarks.Where(mark => mark.Row == 27).ToArray();
+                Assert.That(initialMarks.Length, Is.GreaterThanOrEqualTo(1));
+                var entities = native.Entities();
+                var player = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                int Distance(ushort slot)
+                {
+                    var entity = entities[slot];
+                    var dx = unchecked((short)(entity.x - player.x));
+                    var dy = unchecked((short)(entity.y - player.y));
+                    return (int)Math.Sqrt((long)dx * dx + (long)dy * dy);
+                }
+                Assert.That(subject, Is.EqualTo(initialMarks.OrderBy(mark => Distance(mark.Subject)).First().Subject),
+                    "source distance chooses the nearest actual admitted Stone");
+                var stone = entities[subject];
+                Assert.That((stone.active, stone.classId, stone.model, stone.action),
+                    Is.EqualTo(((byte)1, (byte)2, (byte)1, (byte)3)));
+                var sawVisible = false;
+                var sawHidden = false;
+                var validatedHidden = false;
+                void CheckMarker()
+                {
+                    var command = Commands().Single(item => item.helpSelector == 27 && item.subjectEntityIndex == subject);
+                    var mark = surface.EntityHelpMarks.Single(item => item.Row == 27 && item.Subject == subject);
+                    var scale = fullMap ? 1 : 2;
+                    Assert.That((mark.X, mark.Y), Is.EqualTo((2 * (command.x / scale), 2 * (command.y / scale))));
+                    Assert.That((hint.AnchorX, hint.AnchorY), Is.EqualTo((mark.X, mark.Y)));
+                    var singleFrame = new byte[320 * 200];
+                    var writes = CampaignPresentationSurface.MaterializeMinimapPixels(singleFrame, new[] { command }, tables,
+                        native.Generation, native.Tick, fullMap: fullMap);
+                    Assert.That(writes > 0, Is.EqualTo(command.visible != 0), "hidden blink suppresses dot pixels but retains hint subject");
+                    if (command.visible == 0 && !validatedHidden)
+                    {
+                        var validate = typeof(NativeCampaignSession).GetMethod("ValidateMinimapEntities",
+                            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                        validate.Invoke(null, new object[] { new[] { command }, native.Generation, native.Tick });
+                        var invalid = command;
+                        invalid.helpSelector = 26;
+                        var wrongKind = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+                            validate.Invoke(null, new object[] { new[] { invalid }, native.Generation, native.Tick }));
+                        Assert.That(wrongKind.InnerException, Is.TypeOf<InvalidOperationException>());
+                        invalid = command;
+                        invalid.visible = 2;
+                        var invalidVisibility = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+                            validate.Invoke(null, new object[] { new[] { invalid }, native.Generation, native.Tick }));
+                        Assert.That(invalidVisibility.InnerException, Is.TypeOf<InvalidOperationException>());
+                        validatedHidden = true;
+                    }
+                    sawVisible |= command.visible != 0;
+                    sawHidden |= command.visible == 0;
+                }
+                CheckMarker();
+                foreach (var camera in surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>().OrderBy(camera => camera.depth))
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                window.minSize = new Vector2(640, 480);
+                window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                var saved = runtime.QualificationSaveGameRuntimeProductionReplay();
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null);
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter), Is.EqualTo("Marker stone"));
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter).GetField("raster", flags).GetValue(presenter);
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var assets = menu.ObjectiveForProfile(native.Selection.mapType switch { 0 => "day", 1 => "night", 2 => "cave", _ => throw new InvalidOperationException("unknown campaign map type") });
+                var sx = hint.AnchorX + 1 - raster.X;
+                var sy = hint.AnchorY - raster.Y;
+                Assert.That(raster.IndicesThenMask[sy * raster.Width + sx], Is.EqualTo(assets.TextColor));
+                var palette = surface.FramePaletteRgb8;
+                var color = assets.TextColor * 3;
+                Assert.That(ReadObjectivePixels(output)[(raster.Height - 1 - sy) * raster.Width + sx],
+                    Is.EqualTo(new Color32(palette[color], palette[color + 1], palette[color + 2], 255)));
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(saved, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var trackedFrames = fullMap ? 8 : 48;
+                for (var frame = 0; frame < trackedFrames; frame++)
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((27, subject, 48 - frame)));
+                    CheckMarker();
+                }
+                Assert.That(sawVisible && sawHidden && validatedHidden, Is.True, "the same source Stone must remain selected in both blink phases");
+                var cueBefore = fireball.GetValue(hint);
+                if (fullMap)
+                {
+                    var selected = Subject();
+                    Assert.That(selected, Is.Not.Zero);
+                    var remainingBeforeSwitch = Remaining();
+                    Assert.That(remainingBeforeSwitch, Is.GreaterThan(1));
+                    var cue = fireball.GetValue(hint);
+                    var action = menus.Step(true, false, false, false, false, true);
+                    Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                        menus.PlayerInformationOpen, action), Is.True);
+                    Draw();
+                    Assert.That(menus.MapOpen, Is.False);
+                    var cornerState = native.MinimapState(native.Tick);
+                    var projected = native.MinimapEntities(native.Tick, cornerState).Single(command =>
+                        command.helpSelector == 27 && command.subjectEntityIndex == selected);
+                    if (InsideCorner(projected))
+                    {
+                        var mark = surface.EntityHelpMarks.Single(item => item.Row == 27 && item.Subject == selected);
+                        Assert.That((hint.VisibleRow, Subject(), Remaining(), hint.AnchorX, hint.AnchorY),
+                            Is.EqualTo((27, selected, remainingBeforeSwitch - 1, mark.X, mark.Y)),
+                            "the actual Stone remains selected and reanchors when it is inside the corner");
+                    }
+                    else
+                    {
+                        Assert.That(surface.EntityHelpMarks.Any(mark => mark.Row == 27 && mark.Subject == selected), Is.False);
+                        Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((0, (ushort)0, 0)),
+                            "losing the actual Stone immediately clears the pointer and subject");
+                    }
+                    Assert.That(fireball.GetValue(hint), Is.EqualTo(cue));
+                }
+                else
+                {
+                    Draw();
+                    Assert.That((hint.VisibleRow, Subject(), Remaining()), Is.EqualTo((27, (ushort)0, 0)));
+                    Assert.That(fireball.GetValue(hint), Is.EqualTo(cueBefore), "stone closure does not arm the Fireball cue");
+                    Draw();
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                }
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
+        }
+
+        private static void CheckProductionMapHelp(bool largeMapHint)
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var root = new GameObject("ordinary source map help");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var window = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            var shown = false;
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var arguments = InstalledOpeningArguments();
+                if (largeMapHint)
+                {
+                    var caveReplay = Environment.GetEnvironmentVariable("MC_LARGE_MAP_HELP_CAVE_REPLAY") ??
+                        Path.Combine(PrivateRoot, "generated/render-completion-20261117/incoming-cave4.mcs");
+                    arguments = arguments.Concat(new[] { "-mc-runtime-replay-load", caveReplay }).ToArray();
+                }
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.minimap, Is.True);
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var binding = menu.GameplayHelpForRow(2);
+                Assert.That((binding.TextRecord, binding.Duration, binding.Flags, binding.AgeThreshold, binding.Priority),
+                    Is.EqualTo((287, 50, 0x0200, 600, 2)));
+                Assert.That(menu.GameplayLanguageText(binding.TextRecord), Is.EqualTo("You are here"));
+                var hint = (MagicCarpetRuntime.ManaHelpHint)Field("gameRuntimeManaHint");
+                var surface = (CampaignPresentationSurface)(Field("gameRuntimeSecretSurface") ??
+                    Field("gameRuntimeNightSurface"));
+                void PrepareCurrentFrameForOnGui()
+                {
+                    var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                    Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in cameras)
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = display;
+                        camera.Render();
+                    }
+                    window.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                    window.minSize = new Vector2(640, 480);
+                    window.Show(); shown = true; window.position = new Rect(0, 0, 640, 480);
+                }
+                var remaining = typeof(MagicCarpetRuntime.ManaHelpHint).GetField("remaining", flags);
+                if (largeMapHint)
+                {
+                    var identity = runtime.GameRuntimeProductionIdentity;
+                    Assert.That(identity.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.spider_cave"));
+                    Assert.That(((NativeCampaignSession)Field("campaignSession")).Tick, Is.EqualTo(1));
+                    Assert.That(hint.HasLargeMapHelp, Is.True, "requires the current hash-qualified row 4 cache");
+                    var mapHint = menu.GameplayHelpForRow(4);
+                    Assert.That((mapHint.TextRecord, mapHint.Duration, mapHint.Flags, mapHint.X,
+                        mapHint.Y, mapHint.AgeThreshold, mapHint.Priority), Is.EqualTo((289, 50, 0x24, 320, 80, 300, 4)));
+                    const string mapHelp = "Press RETURN for large map";
+                    Assert.That(menu.GameplayLanguageText(mapHint.TextRecord), Is.EqualTo(mapHelp));
+                    Assert.That(surface.LiveMinimapReady, Is.True);
+                    Assert.That(surface.HasObjectiveHelpSubject, Is.False, "ordinary Cave entrance has a known empty aperture");
+                    var missingSubjectData = new MagicCarpetRuntime.ManaHelpHint(menu.GameplayHelpForRow, hasLargeMapHelp: true);
+                    for (var frame = 0; frame < 3; frame++)
+                        missingSubjectData.Advance(false, false, true, false, false);
+                    Assert.That(missingSubjectData.VisibleRow, Is.EqualTo(1), "an unavailable aperture does not admit row 4");
+                    var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                    void ToggleMap(bool expected)
+                    {
+                        var action = menus.Step(true, false, false, false, false, true);
+                        Assert.That(menus.QueueAction(action.Action, menus.MapOpen, menus.SpellOpen,
+                            menus.PlayerInformationOpen, action), Is.True);
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(menus.MapOpen, Is.EqualTo(expected));
+                    }
+                    ToggleMap(true);
+                    for (var frame = 0; frame < 90 && !hint.Visible; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(1), "opening the actual map excludes the higher-priority row 4");
+                    ToggleMap(false);
+                    for (var frame = 0; frame < 150 && hint.VisibleRow != 4; frame++)
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(4));
+                    Assert.That(remaining.GetValue(hint), Is.EqualTo(49));
+                    PrepareCurrentFrameForOnGui();
+                    var beforeHint = runtime.QualificationSaveGameRuntimeProductionReplay();
+                    var prior = ReadObjectivePixels(display);
+                    window.SendEvent(new Event { type = EventType.Layout });
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    var mapPresenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                    Assert.That(mapPresenter, Is.Not.Null);
+                    var presenterType = typeof(SourceObjectiveTextboxPresenter);
+                    Assert.That(presenterType.GetField("currentText", flags).GetValue(mapPresenter), Is.EqualTo(mapHelp));
+                    var mapRaster = (ObjectiveTextboxCompositor.Raster)presenterType.GetField("raster", flags).GetValue(mapPresenter);
+                    var mapArtwork = menu.ObjectiveForProfile("cave");
+                    Assert.That(mapRaster.BlendX + mapRaster.BlendWidth / 2, Is.EqualTo(320));
+                    Assert.That(mapRaster.BlendY + (mapRaster.BlendHeight - 14) / 2,
+                        Is.EqualTo(80 + mapArtwork.Corner.Height), "top-center help retains the source frame margin");
+                    var mapPixels = ReadObjectivePixels((RenderTexture)presenterType.GetField("output", flags).GetValue(mapPresenter));
+                    var colourIndex = mapArtwork.HelpTextColor * 3;
+                    var rgb = surface.FramePaletteRgb8;
+                    Assert.That(mapPixels, Does.Contain(new Color32(rgb[colourIndex], rgb[colourIndex + 1],
+                        rgb[colourIndex + 2], 255)), "selected English glyphs reach the indexed popup output");
+                    runtime.QualificationRefreshGameRuntimeProductionEvents();
+                    window.SendEvent(new Event { type = EventType.Repaint });
+                    Assert.That(remaining.GetValue(hint), Is.EqualTo(49));
+                    CollectionAssert.AreEqual(beforeHint, runtime.QualificationSaveGameRuntimeProductionReplay());
+                    CollectionAssert.AreEqual(prior, ReadObjectivePixels(display), "help leaves the underlying camera frame intact");
+                    runtime.QualificationDriveGameRuntimeFrames(49);
+                    Assert.That(hint.VisibleRow, Is.EqualTo(4));
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(hint.VisibleRow, Is.Zero);
+                    TestContext.WriteLine("Real Cave map input and selected row 4 indexed lifetime verified");
+                    return;
+                }
+
+                for (var frame = 0; frame < 90 && !hint.Visible; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.EqualTo(1), "equal source priority retains row 1 first");
+                for (var frame = 0; frame < 71 && hint.VisibleRow != 2; frame++)
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((hint.VisibleRow, hint.AnchorX, hint.AnchorY), Is.EqualTo((2, 64, 66)));
+
+                PrepareCurrentFrameForOnGui();
+                var tick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                var plays = speech.PlayCount;
+                Assert.That(remaining.GetValue(hint), Is.EqualTo(49), "the first visible draw consumes one pass");
+                window.SendEvent(new Event { type = EventType.Layout });
+                window.SendEvent(new Event { type = EventType.Repaint });
+                var presenter = (SourceObjectiveTextboxPresenter)Field("gameRuntimeManaHintPresenter");
+                Assert.That(presenter, Is.Not.Null, "ordinary OnGUI reaches the indexed textbox consumer");
+                var raster = (ObjectiveTextboxCompositor.Raster)typeof(SourceObjectiveTextboxPresenter)
+                    .GetField("raster", flags).GetValue(presenter);
+                var output = (RenderTexture)typeof(SourceObjectiveTextboxPresenter).GetField("output", flags).GetValue(presenter);
+                var pixels = ReadObjectivePixels(output);
+                var palette = surface.FramePaletteRgb8;
+                var artwork = menu.ObjectiveForProfile("night");
+                Color32 Colour(int index) => new(palette[index * 3], palette[index * 3 + 1], palette[index * 3 + 2], 255);
+                Color32 At(int x, int y) => pixels[(raster.Height - 1 - (y - raster.Y)) * raster.Width + x - raster.X];
+                Assert.That(At(64, 66), Is.EqualTo(Colour(artwork.BlendSelector)), "source dark leader starts at the player marker");
+                Assert.That(At(65, 66), Is.EqualTo(Colour(artwork.TextColor)), "second source leader pixel is highlighted");
+                Assert.That(pixels, Does.Contain(Colour(artwork.HelpTextColor)), "owner glyph pixels reach the live indexed frame");
+                runtime.QualificationRefreshGameRuntimeProductionEvents();
+                window.SendEvent(new Event { type = EventType.Repaint });
+                CollectionAssert.AreEqual(pixels, ReadObjectivePixels(output));
+                Assert.That((runtime.GameRuntimeProductionIdentity.session.tick, speech.PlayCount), Is.EqualTo((tick, plays)));
+                Assert.That(remaining.GetValue(hint), Is.EqualTo(49));
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay());
+
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                Assert.That(hint.VisibleRow, Is.EqualTo(2), "the fiftieth source draw still shows row 2");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(hint.VisibleRow, Is.Zero, "the following frame clears row 2");
+            }
+            finally
+            {
+                window.DrawRuntime = null;
+                if (shown) window.Close(); else UnityEngine.Object.DestroyImmediate(window);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            }
         }
 
         [Test]
@@ -1275,7 +4186,7 @@ namespace MagicCarpet.Native.Tests
                         received = input.mousePosition;
                         GUI.DrawTexture(view, background);
                         identity = native.GameRuntimeIdentity();
-                        action = menu.Draw(identity, true, false, false, null);
+                        action = menu.Draw(identity, true, false, false, null, false);
                         menu.DrawPauseHoverHelp(identity, scene, generation, 0, view, palette, true);
                     }
                     finally { input.mousePosition = hostCursor; }
@@ -1429,6 +4340,12 @@ namespace MagicCarpet.Native.Tests
                     false, false, false, 14, menu.GameplayLanguageText);
                 Assert.That(plainRows[0].Text, Is.EqualTo(menu.GameplayLanguageText(443)));
                 stateBefore = JsonUtility.ToJson(native.GameRuntimeIdentity()); replayBefore = native.GameRuntimeSaveReplay();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 1 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleSound)); Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 2 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleMusic)); Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 3 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.None), "missing retained speech owner disables the source option"); Unchanged();
                 Send(EventType.MouseDown, new Vector2(320, 67 + 5 * 18 + 9));
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.IncreaseBrightness), "left click proposes the source clamped increase");
                 Unchanged();
@@ -1440,6 +4357,13 @@ namespace MagicCarpet.Native.Tests
                 Unchanged();
                 Send(EventType.MouseDown, new Vector2(320, 67 + 6 * 18 + 9), 1);
                 Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.SpeedSecondary), "right click proposes source super-fast mode");
+                Unchanged();
+                Assert.That(menu.GameplayLanguageText(13).ToLowerInvariant(), Is.EqualTo("alter screen size"));
+                Send(EventType.MouseDown, new Vector2(320, 67 + 7 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ViewportDecrease));
+                Unchanged();
+                Send(EventType.MouseDown, new Vector2(320, 67 + 7 * 18 + 9), 1);
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ViewportIncrease));
                 Unchanged();
                 var speedLabels = new[] { "speed normal", "speed fast", "speed super fast" };
                 for (var speed = 0; speed < speedLabels.Length; speed++)
@@ -1903,6 +4827,7 @@ namespace MagicCarpet.Native.Tests
                 foreach (var texture in new[] { current, prior, lut }) { texture.filterMode = FilterMode.Point; texture.Apply(); }
                 material.SetTexture("_SceneHistory", prior); material.SetTexture("_BlendLut", lut);
                 material.SetFloat("_BlendHistory", 1);
+                Assert.That(CampaignPresentationSurface.SourceViewportBounds(40), Is.EqualTo(new Vector4(0, 0, 1, 1)));
                 GL.sRGBWrite = false;
                 Graphics.Blit(current, output, material);
                 RenderTexture.active = output;
@@ -1910,6 +4835,53 @@ namespace MagicCarpet.Native.Tests
                 var rgba = pixels.GetPixels32(); var actual = new byte[rgba.Length];
                 for (var i = 0; i < actual.Length; i++) actual[i] = rgba[i].r;
                 CollectionAssert.AreEqual(table, actual, "each actual source LUT entry uses current-high/prior-low indices");
+
+                // Size 17 has an asymmetric bottom margin. Current labels in
+                // that margin survive, but old history cannot bleed into it.
+                var bounds = CampaignPresentationSurface.SourceViewportBounds(17);
+                Assert.That(bounds, Is.EqualTo(new Vector4(92 / 320f, 58 / 200f, 228 / 320f, 143 / 200f)));
+                var clear = (byte)(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path)[0] >> 2);
+                var index = -1;
+                for (var candidate = 0; candidate < table.Length; candidate++)
+                    if ((candidate >> 8) != clear && table[candidate] != (byte)(candidate >> 8) &&
+                        table[(clear << 8) | (candidate & 255)] != clear) { index = candidate; break; }
+                Assert.That(index, Is.GreaterThanOrEqualTo(0));
+                var currentIndex = (byte)(index >> 8); var priorIndex = (byte)index;
+                var scene = new Texture2D(320, 200, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
+                var oldScene = new Texture2D(320, 200, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
+                var smallOutput = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                var smallPixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    var currentBytes = new byte[320 * 200]; var priorBytes = new byte[320 * 200];
+                    Array.Fill(currentBytes, clear); Array.Fill(priorBytes, priorIndex);
+                    for (var y = 58; y < 143; y++) for (var x = 92; x < 228; x++)
+                        currentBytes[y * 320 + x] = currentIndex;
+                    currentBytes[40 * 320 + 40] = currentIndex; // current source label outside viewport
+                    scene.LoadRawTextureData(currentBytes); scene.Apply();
+                    oldScene.LoadRawTextureData(priorBytes); oldScene.Apply();
+                    material.SetTexture("_SceneHistory", oldScene);
+                    material.SetVector("_SourceViewport", bounds);
+                    Graphics.Blit(scene, smallOutput, material);
+                    RenderTexture.active = smallOutput;
+                    smallPixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); smallPixels.Apply();
+                    var result = smallPixels.GetPixels32();
+                    byte At(int x, int y) => result[y * 320 + x].r;
+                    Assert.That(At(91, 100), Is.EqualTo(clear));
+                    Assert.That(At(228, 100), Is.EqualTo(clear));
+                    Assert.That(At(160, 57), Is.EqualTo(clear));
+                    Assert.That(At(160, 143), Is.EqualTo(clear));
+                    Assert.That(At(40, 40), Is.EqualTo(currentIndex), "current-frame exterior label survives without history");
+                    Assert.That(At(92, 58), Is.EqualTo(table[index]));
+                    Assert.That(At(227, 142), Is.EqualTo(table[index]),
+                        "history retains source LUT order inside the actual viewport");
+                }
+                finally
+                {
+                    smallOutput.Release();
+                    foreach (var resource in new UnityEngine.Object[] { scene, oldScene, smallOutput, smallPixels })
+                        UnityEngine.Object.DestroyImmediate(resource);
+                }
             }
             finally
             {
@@ -1959,6 +4931,94 @@ namespace MagicCarpet.Native.Tests
             surface.PresentImmobilization(2, false);
             Assert.That(visible.GetValue(surface), Is.False);
             Assert.That(session.Tick, Is.Zero, "WEB consumer diagnostic performs no gameplay");
+        }
+
+        [Test]
+        public void ControlledSpiderContactReachesActualCaveWebAndExpires()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var receiptPath = Environment.GetEnvironmentVariable("MC_SPIDER_WEB_RECEIPT") ??
+                Path.Combine(PrivateRoot, "generated/status-web-20261116/spider-contact-observation.json");
+            var receiptJson = File.ReadAllText(receiptPath);
+            var receipt = JsonUtility.FromJson<SpiderWebReceipt>(receiptJson);
+            Assert.That(receipt?.controlled_encounter, Does.Contain("controlled").Or.Contain("position"));
+            var receiptDocument = ReadReplayDocument(Encoding.UTF8.GetBytes(receiptJson));
+            Assert.That(receiptDocument.SelectSingleNode("/root/active_clone_reset_counter")?.InnerText, Is.EqualTo("0"),
+                "the producer reset a cloned active-contact source owner");
+            Assert.That(receiptDocument.SelectSingleNode("/root/active_clone_reset_subcounter")?.InnerText, Is.EqualTo("0"));
+            foreach (var value in new[] { receipt.initial, receipt.contact, receipt.expired, receipt.reset })
+                Assert.That(value?.player_vitals, Is.Not.Null, "the producer emitted its actual render observation");
+            Assert.That(receipt.initial.player_immobilized_ticks, Is.Zero);
+            Assert.That(receipt.contact.player_immobilized_ticks, Is.EqualTo(1));
+            Assert.That(receipt.contact.player_vitals.life, Is.GreaterThanOrEqualTo(0));
+            Assert.That(receipt.expired.player_immobilized_ticks, Is.Zero);
+            Assert.That(receipt.reset.player_immobilized_ticks, Is.Zero);
+
+            // Controlled geometry/protection in the native producer and this
+            // receipt bridge are not a same-session live-player claim.
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var packageRoot = Environment.GetEnvironmentVariable("MC_ORDINARY_CAMPAIGN_PACKAGES") ??
+                Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj");
+            var package = Path.Combine(packageRoot, "level4");
+            var cachePath = Path.Combine(generated, "mc-oi62-environment-level4-audio-v3");
+            Assert.That(receipt.package, Is.Not.Null.And.Not.Empty);
+            Assert.That(Path.GetFullPath(receipt.package), Is.EqualTo(Path.GetFullPath(package)),
+                "the contact producer and Cave presentation bind the same source package");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            Assert.That(cache.EnvironmentMaterials.profile.web, Is.EqualTo("MWEBC0-0"));
+            var bank = cache.EnvironmentMaterials.bitmap_banks.Single(row => row.bank == "MWEBC0-0");
+            var first = bank.bitmaps.Single(row => row.selector == 1);
+            Assert.That((first.width, first.height), Is.EqualTo((100, 100)));
+            var sourceIndices = cache.ReadOutput(first.indices_path);
+            var sourceMask = cache.ReadOutput(first.mask_path);
+            using var session = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(4, 3, 2), cachePath);
+            using var surface = new CampaignPresentationSurface();
+            surface.PresentEnvironment(session, cache);
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                }
+                Assert.That(surface.ComposedSceneIndices, Is.Not.Null, "the real Cave world history is present");
+                Color32[] Draw(EngineSessionTransport.CampaignRenderValue value)
+                {
+                    surface.PresentImmobilization(value.player_immobilized_ticks, value.player_vitals.life >= 0);
+                    var underlay = surface.HudUnderlayIndices;
+                    Assert.That(underlay, Is.Not.Null);
+                    RenderTexture.active = underlay;
+                    pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                    return pixels.GetPixels32();
+                }
+                var before = Draw(receipt.initial);
+                var active = Draw(receipt.contact);
+                var actual = -1;
+                for (var y = 64; y < 100 && actual < 0; y++)
+                    for (var x = 64; x < 100; x++)
+                    {
+                        var source = y * first.width + x;
+                        var target = (199 - y) * 320 + x;
+                        if (sourceMask[source] != 0 && sourceIndices[source] != before[target].r)
+                        { actual = target; Assert.That(active[target].r, Is.EqualTo(sourceIndices[source]),
+                            "real MWEBC selector1 is drawn outside the minimap in source order"); break; }
+                    }
+                Assert.That(actual, Is.GreaterThanOrEqualTo(0), "the actual source web has a discriminating visible pixel");
+                CollectionAssert.AreEqual(active, Draw(receipt.contact), "repeated render reads do not advance contact");
+                CollectionAssert.AreEqual(before, Draw(receipt.expired), "ordinary producer expiry removes the web");
+                CollectionAssert.AreEqual(before, Draw(receipt.reset), "reset observation leaves no stale web");
+                Assert.That(session.Tick, Is.Zero, "the separate real aggregate owner is never stepped by drawing");
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                display.Release(); UnityEngine.Object.DestroyImmediate(display); UnityEngine.Object.DestroyImmediate(pixels);
+            }
         }
 
         [Test]
@@ -2203,8 +5263,6 @@ namespace MagicCarpet.Native.Tests
                         CollectionAssert.AreEqual(File.ReadAllBytes(inputSave), nativeBefore,
                             "native replay admission preserves the original complete controlled source packet");
                         var identityBefore = JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity);
-                        var f5Consumed = gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F5 });
-                        if (isResults) Assert.That(f5Consumed, Is.True, "Results consumes F5 without dismissing itself");
                         runtime.QualificationRequestGameRuntimeProductionReplaySave();
                         runtime.QualificationRequestGameRuntimeProductionReplaySave(false);
                         update.Invoke(runtime, null);
@@ -2212,7 +5270,7 @@ namespace MagicCarpet.Native.Tests
                         Assert.That(File.Exists(outputSave), Is.False, "the real completed phase retains one queued edge");
                         fixedUpdate.Invoke(runtime, null);
                         Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity), Is.EqualTo(identityBefore),
-                            "F5 cannot dismiss Results, alter the frontier/secret state, or add a gameplay tick");
+                            "explicit replay publication cannot alter the frontier/secret state or add a gameplay tick");
                         var completedBytes = File.ReadAllBytes(outputSave);
                         CollectionAssert.AreEqual(nativeBefore, completedBytes,
                             "the exact native packet retains all map, media, source-context and semantic-carry bytes");
@@ -2226,6 +5284,17 @@ namespace MagicCarpet.Native.Tests
                             Is.EqualTo(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.secret_campaign)));
                         CollectionAssert.AreEqual(nativeBefore, cold.GameRuntimeSaveReplay(),
                             "a fresh native owner reserializes the same media and full pending carry without consuming or awarding it");
+                        if (isResults)
+                        {
+                            Assert.That(gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F5 }), Is.True);
+                            Assert.That((CampaignMenuPresenter.Action)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenuAction", flags).GetValue(runtime),
+                                Is.EqualTo(CampaignMenuPresenter.Action.DismissResults), "source Results dismisses on any key, including F5");
+                            Assert.That((bool)typeof(MagicCarpetRuntime).GetField("gameRuntimeReplaySaveRequested", flags).GetValue(runtime), Is.False,
+                                "F5 does not queue a host save");
+                            update.Invoke(runtime, null);
+                            Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.phase, Is.EqualTo("mission_select"));
+                            CollectionAssert.AreEqual(completedBytes, File.ReadAllBytes(outputSave));
+                        }
                     }
                     finally
                     {
@@ -2542,7 +5611,8 @@ namespace MagicCarpet.Native.Tests
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }
 
-        private static System.Collections.IEnumerator StartReturnedParentFromNormalMap(MagicCarpetRuntime runtime)
+        private static System.Collections.IEnumerator StartReturnedParentFromNormalMap(MagicCarpetRuntime runtime,
+            bool verifyLoadingAndAudioBinding = false)
         {
             var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
             var identity = runtime.GameRuntimeProductionIdentity;
@@ -2591,6 +5661,9 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True);
             Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+            if (verifyLoadingAndAudioBinding)
+                Assert.That(GameRuntimeTransport.ReadLoadingPresentation(runtime.GameRuntimeProductionIdentity).level_id,
+                    Is.EqualTo("level.magic_carpet_2.ammyridia"), "the real Loading response has its own contract");
             runtime.QualificationDriveGameRuntimeFrames(1);
             Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
             runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
@@ -2599,6 +5672,20 @@ namespace MagicCarpet.Native.Tests
             Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
                 Is.EqualTo("level.magic_carpet_2.ammyridia"));
             Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("0"));
+            if (verifyLoadingAndAudioBinding)
+            {
+                var active = runtime.GameRuntimeProductionIdentity;
+                var session = (NativeSession)typeof(MagicCarpetRuntime).GetField("session", flags).GetValue(runtime);
+                Assert.That(session.BindGameRuntimeActiveEntryPresentation(active).level_id,
+                    Is.EqualTo("level.magic_carpet_2.ammyridia"));
+                var qualified = session.GameRuntimeIdentity();
+                Assert.That((qualified.session.generation, qualified.session.tick),
+                    Is.EqualTo((active.session.generation, active.session.tick)));
+                Assert.That(qualified.source_audio_capabilities, Is.Not.Null,
+                    "the active-entry response must bind qualified audio capabilities");
+                Assert.That((qualified.source_audio_capabilities.sound_available,
+                    qualified.source_audio_capabilities.music_available), Is.EqualTo((true, true)));
+            }
         }
 
         private static void AssertReturnedParentCarry(byte[] mapBytes, byte[] liveBytes)
@@ -2961,6 +6048,52 @@ namespace MagicCarpet.Native.Tests
                     "current-scene sampling and the wrong-scene negative remain purely observational");
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
                 Assert.That(speech.PlayCount, Is.EqualTo(playCount));
+                var f1 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF1Input", flags);
+                void F1(bool shift = false, bool alt = false) => f1.Invoke(runtime, new object[] { true, shift, alt });
+                var helpOwner = Hint();
+                var abilityNotice = Field("gameRuntimeAbilityNotification");
+                var abilityRemaining = abilityNotice == null ? 0 :
+                    (int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice);
+                F1(true); F1(false, true);
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "modifier branches do not toggle bare help");
+                F1();
+                Assert.That(preferences.Current.preferences.show_help, Is.False);
+                Assert.That(Hint(), Is.SameAs(helpOwner));
+                Assert.That(Hint().Visible, Is.False, "F1 hides the actual selected-font popup immediately");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                var helpNotice = ((NativeSession)Field("session")).GameRuntimeParticipantNotifications().value;
+                Assert.That((helpNotice[0].kind, helpNotice[0].remaining_frames), Is.EqualTo(("participant.help_mode_off", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(helpNotice, false, false, false, 14, menu.GameplayLanguageText)[0].Text,
+                    Is.EqualTo(accepted.Record(401)));
+                Assert.That(Field("gameRuntimeAbilityNotification"), Is.SameAs(abilityNotice));
+                if (abilityNotice != null)
+                    Assert.That((int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice),
+                        Is.EqualTo(abilityRemaining), "help does not consume the ability notice");
+                F1();
+                Assert.That(preferences.Current.preferences.show_help, Is.True);
+                Assert.That(Hint(), Is.SameAs(helpOwner));
+                Assert.That(Hint().Visible, Is.False);
+                Assert.That(Hint().Priority, Is.EqualTo(2), "source ON resets retained hint rows");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(tick));
+                helpNotice = ((NativeSession)Field("session")).GameRuntimeParticipantNotifications().value;
+                Assert.That((helpNotice[0].kind, helpNotice[0].remaining_frames), Is.EqualTo(("participant.help_mode_on", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(helpNotice, false, false, false, 14, menu.GameplayLanguageText)[0].Text,
+                    Is.EqualTo(accepted.Record(400)));
+                Assert.That(Field("gameRuntimeAbilityNotification"), Is.SameAs(abilityNotice));
+                if (abilityNotice != null)
+                    Assert.That((int)typeof(MagicCarpetRuntime.AbilityImprovedNotification).GetField("remaining", flags).GetValue(abilityNotice),
+                        Is.EqualTo(abilityRemaining), "help ON also preserves the ability notice");
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                for (var pass = 0; pass < 21 && !Hint().Visible; pass++) runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Hint().Visible, Is.True, "ordinary failed casting selects the real popup after ON");
+                RenderCurrentScene();
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(typeof(SourceObjectiveTextboxPresenter).GetField("currentText", flags).GetValue(presenter),
+                    Is.EqualTo(menu.GameplayLanguageText(menu.GameplayHelpForRow(Hint().VisibleRow).TextRecord)),
+                    "reinitialized help reaches the selected-locale source glyph consumer");
+                remaining = Remaining();
                 cursor = ulong.Parse(runtime.GameRuntimeProductionSemanticEventCursor);
                 Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.volcano"), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -3095,11 +6228,11 @@ namespace MagicCarpet.Native.Tests
                         "source timer zero is the last drawn frame");
                     Assert.That(coldHidden.GameRuntimeIdentity().session.tick, Is.EqualTo(coldIdentity.session.tick));
                 }
-                F5(false, false);
-                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its save edge");
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "explicit save retains its pending edge");
                 typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
                 Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False);
-                CollectionAssert.AreEqual(hiddenReplay, File.ReadAllBytes(save), "bare F5 publishes the real hidden-display replay");
+                CollectionAssert.AreEqual(hiddenReplay, File.ReadAllBytes(save), "explicit save publishes the real hidden-display replay");
                 F5(true, true);
                 Assert.That((runtime.GameRuntimeProductionIdentity.display_settings.minimap,
                     runtime.GameRuntimeProductionIdentity.display_settings.top_bar), Is.EqualTo((true, true)));
@@ -3267,7 +6400,12 @@ namespace MagicCarpet.Native.Tests
                 var before = runtime.GameRuntimeProductionIdentity;
                 var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
                 void F6(bool pressed, bool physical, bool admitted, bool alt) => f6.Invoke(runtime, new object[] { pressed, physical, admitted, alt });
-                F6(true, false, false, false); F6(true, true, false, false); F6(true, true, true, true);
+                var musicInitiallyEnabled = runtime.GameRuntimeProductionIdentity.player_preferences.preferences.music_enabled;
+                F6(true, false, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.music_enabled, Is.EqualTo(!musicInitiallyEnabled),
+                    "bare F6 controls source music independently of panel transparency");
+                F6(true, false, false, false);
+                F6(true, true, false, false); F6(true, true, true, true);
                 Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.panels_opaque, Is.False);
                 F6(true, true, true, false);
                 var after = runtime.GameRuntimeProductionIdentity;
@@ -3290,11 +6428,16 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(cold.GameRuntimeIdentity().display_settings.panels_opaque, Is.True);
                     Assert.That(cold.GameRuntimeIdentity().session.tick, Is.EqualTo(after.session.tick));
                 }
+                var soundBefore = runtime.GameRuntimeProductionIdentity.player_preferences.preferences.sound_enabled;
                 typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
                     new object[] { true, false, false, false });
-                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.True, "bare F5 retains its independent save edge");
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.sound_enabled, Is.EqualTo(!soundBefore));
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "bare F5 is the source sound control");
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags).Invoke(runtime,
+                    new object[] { true, false, false, false });
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
                 typeof(MagicCarpetRuntime).GetMethod("ServiceGameRuntimeReplaySave", flags).Invoke(runtime, null);
-                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(save));
+                CollectionAssert.AreEqual(runtime.QualificationSaveGameRuntimeProductionReplay(), File.ReadAllBytes(save));
                 var campaign = (NativeCampaignSession)Field("campaignSession");
                 var unshaded = (byte[])campaign.SceneFrameIndices.Clone();
                 var beforeFlat = runtime.GameRuntimeProductionIdentity;
@@ -3481,6 +6624,891 @@ namespace MagicCarpet.Native.Tests
                 RenderTexture.active = previousTarget;
                 gui.DrawRuntime = null;
                 if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceViewportChangesRealWorldAndKeepsFullHud()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-viewport-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source viewport");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                yield return StartReturnedParentFromNormalMap(runtime);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras) if (camera.targetTexture == null) camera.targetTexture = display;
+                gui.DrawRuntime = () => typeof(MagicCarpetRuntime).GetMethod("OnGUI", flags).Invoke(runtime, null);
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var beforeYield = runtime.QualificationSaveGameRuntimeProductionReplay();
+                UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                yield return null;
+                CollectionAssert.AreEqual(beforeYield, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "a GUI frame does not advance the inactive actual session");
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.display_settings.viewport_size, Is.EqualTo(40));
+                var fullFrame = (byte[])campaign.SceneFrameIndices.Clone();
+                var key = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeViewportInput", flags);
+                void Key(bool left, bool right, bool shift = false, bool alt = false, bool control = false) =>
+                    key.Invoke(runtime, new object[] { left, right, shift, alt, control });
+                Key(false, true, true); Key(false, true, false, true); Key(false, true, false, false, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(40),
+                    "source modifier branches suppress bracket resize");
+                for (var i = 0; i < 24; i++)
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                var small = runtime.GameRuntimeProductionIdentity;
+                Assert.That(small.display_settings.viewport_size, Is.EqualTo(16));
+                Assert.That((small.generation, small.session.generation, small.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)));
+                var environment = (OwnerAssetCache)Field("gameRuntimeEnvironmentCache");
+                var clear = environment.ReadOutput(environment.EnvironmentMaterials.palette.rgb8_path)[0] >> 2;
+                var smallFrame = (byte[])campaign.SceneFrameIndices.Clone();
+                Assert.That(smallFrame[0], Is.EqualTo(clear), "the exterior uses the original base-palette clear index");
+                var visible = false;
+                for (var y = 60; y < 140 && !visible; y++)
+                    for (var x = 96; x < 224 && !visible; x++) visible = smallFrame[y * 320 + x] != clear;
+                Assert.That(visible, Is.True, "the actual projected source world remains visible inside the viewport");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePanelTransparency), Is.True);
+                foreach (var camera in cameras) camera.Render();
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                var hudTexture = (RenderTexture)Field("gameRuntimeHudIndices");
+                Assert.That(hudTexture, Is.Not.Null, "the actual HUD remains admitted at full size");
+                var hud = runtime.Level2ProductionDayHud;
+                var indices = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapIndices");
+                var masks = (System.Collections.Generic.Dictionary<int, byte[]>)Field("hudBitmapMasks");
+                var rows = (System.Collections.IDictionary)Field("hudBitmapDescriptors");
+                var descriptor = rows[(int)hud.minimapPanelSelector];
+                Assert.That(descriptor, Is.Not.Null);
+                int Extent(string name) => (int)descriptor.GetType().GetField(name).GetValue(descriptor);
+                var width = Extent("stored_width"); var height = Extent("stored_height");
+                var drawWidth = Extent("runtime_width"); var drawHeight = Extent("runtime_height");
+                var hudPixels = new Texture2D(640, 480, TextureFormat.RGBA32, false, true);
+                try
+                {
+                    RenderTexture.active = hudTexture;
+                    hudPixels.ReadPixels(new Rect(0, 0, 640, 480), 0, 0); hudPixels.Apply();
+                    var pixels = hudPixels.GetPixels32(); var checkedPixel = false;
+                    for (var y = 0; y < drawHeight && !checkedPixel; y++)
+                    for (var x = 0; x < drawWidth && !checkedPixel; x++)
+                    {
+                        var source = y * height / drawHeight * width + x * width / drawWidth;
+                        if (masks[hud.minimapPanelSelector][source] == 0) continue;
+                        Assert.That(pixels[(479 - (2 + y)) * 640 + 2 + x].r,
+                            Is.EqualTo(indices[hud.minimapPanelSelector][source]), "source HUD pixels remain full-sized");
+                        checkedPixel = true;
+                    }
+                    Assert.That(checkedPixel, Is.True);
+                }
+                finally { UnityEngine.Object.DestroyImmediate(hudPixels); RenderTexture.active = previousTarget; }
+                var minimumReceipt = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Key(false, true);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(16));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                CollectionAssert.AreEqual(minimumReceipt, runtime.QualificationSaveGameRuntimeProductionReplay());
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(minimumReceipt, resources))
+                    Assert.That(cold.GameRuntimeIdentity().display_settings.viewport_size, Is.EqualTo(16));
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, minimumReceipt, resources))
+                    Assert.That(warm.GameRuntimeIdentity().display_settings.viewport_size, Is.EqualTo(16));
+                Key(true, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(17));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                for (var i = 0; i < 24; i++)
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportIncrease), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(40));
+                CollectionAssert.AreEqual(fullFrame, campaign.SceneFrameIndices, "reversal restores the same actual world frame");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.ViewportDecrease), Is.True);
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.display_settings.viewport_size, Is.EqualTo(39),
+                    "retry preserves the GAME viewport");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                display.Release(); UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
+        public void SteeringObservationEncodingPreservesCommandVariantsAndLegacyBytes()
+        {
+            foreach (var json in new[] {
+                "{}",
+                "{\"roll_axis\":0,\"cast_left\":false}",
+                "{\"roll_axis\":0,\"select_spell\":\"spell.fireball\"}",
+                "{\"roll_axis\":0,\"assign_spell\":{\"spell_id\":\"spell.fireball\",\"tier\":1,\"hand\":\"left\"}}",
+                "{\"roll_axis\":0,\"mark_spell\":{\"spell_id\":\"spell.fireball\",\"hand\":\"left\"}}",
+                "{\"roll_axis\":0,\"cycle_marked_spell\":{\"hand\":\"left\",\"direction\":\"next\"}}",
+                "{\"roll_axis\":0,\"abandon_action\":\"toggle_gameplay_map\"}" })
+            {
+                var original = Encoding.UTF8.GetBytes(json);
+                Assert.That(EngineSessionTransport.EncodeSteeringObservation(original, null), Is.SameAs(original));
+                var encoded = EngineSessionTransport.EncodeSteeringObservation(original, new Vector2(-0f, 0.45f));
+                System.Xml.Linq.XElement Decode(byte[] bytes)
+                {
+                    using var reader = JsonReaderWriterFactory.CreateJsonReader(bytes, System.Xml.XmlDictionaryReaderQuotas.Max);
+                    return System.Xml.Linq.XElement.Load(reader);
+                }
+                var before = Decode(original);
+                var after = Decode(encoded);
+                var observed = after.Element("steering_observation");
+                Assert.That(observed, Is.Not.Null);
+                var bits = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(
+                    observed.Elements("item"), item => uint.Parse(item.Value, System.Globalization.CultureInfo.InvariantCulture)));
+                Assert.That(bits, Is.EqualTo(new[] { 0u, unchecked((uint)BitConverter.SingleToInt32Bits(0.45f)) }));
+                observed.Remove();
+                // Empty JSON objects can be represented as either a full
+                // element or an empty element by the XML JSON reader.
+                void NormalizeEmptyObjects(System.Xml.Linq.XElement root)
+                {
+                    foreach (var element in root.DescendantsAndSelf())
+                        if (element.Attribute("type")?.Value == "object" &&
+                            !element.HasElements && element.Value.Length == 0)
+                            element.RemoveNodes();
+                }
+                NormalizeEmptyObjects(before);
+                NormalizeEmptyObjects(after);
+                Assert.That(System.Xml.Linq.XNode.DeepEquals(before, after), Is.True,
+                    $"the original command fields are preserved; input={json}; encoded={Encoding.UTF8.GetString(encoded)}; " +
+                    $"before={before.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)}; after={after.ToString(System.Xml.Linq.SaveOptions.DisableFormatting)}; " +
+                    $"before.IsEmpty={before.IsEmpty}; after.IsEmpty={after.IsEmpty}");
+                var negative = Decode(EngineSessionTransport.EncodeSteeringObservation(original, new Vector2(-0.45f, 0.45f)));
+                var negativeObservation = negative.Element("steering_observation");
+                Assert.That(negativeObservation, Is.Not.Null);
+                var negativeBits = System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(
+                    negativeObservation.Elements("item"), item => uint.Parse(item.Value, System.Globalization.CultureInfo.InvariantCulture)));
+                Assert.That(negativeBits, Is.EqualTo(new[] {
+                    unchecked((uint)BitConverter.SingleToInt32Bits(-0.45f)),
+                    unchecked((uint)BitConverter.SingleToInt32Bits(0.45f)) }));
+                negativeObservation.Remove();
+                NormalizeEmptyObjects(negative);
+                Assert.That(System.Xml.Linq.XNode.DeepEquals(before, negative), Is.True,
+                    "negative steering bits preserve the original command fields");
+            }
+        }
+
+        [Test]
+        public void SourceFlightAssistanceDoesNotRecenterWhileSubByteMouseMoves()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-assist-mouse-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source assistance mouse precision"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                var owner = (NativeSession)Field("session");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                runtime.QualificationPauseGameRuntimeProduction();
+                Assert.That(preferences.ApplySource(value => {
+                    value.input_device = "mouse_keyboard";
+                    value.mouse_sensitivity = 10;
+                }), Is.True);
+                runtime.QualificationResumeGameRuntimeProduction();
+                typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF2Input", flags).Invoke(runtime,
+                    new object[] { true, false, false });
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.preferences.flight_assistance, Is.True);
+                var initialSequence = owner.ObservedCampaignIdentity().player_preferences.assistance_sequence;
+                float mouseX = 0;
+                var sampled = new PlayerPreferencesPresenter(_ => throw new InvalidOperationException("unexpected preferences command"),
+                    Path.Combine(temporary, "profile"), preferences.Current,
+                    keyHeld: _ => false, keyPressed: _ => false, mouseHeld: _ => false, mousePressed: _ => false,
+                    mouseAxis: axis => axis == "Mouse X" ? mouseX : 0);
+                var clamp = typeof(MagicCarpetRuntime).GetMethod("ClampToSByte",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                var steering = typeof(MagicCarpetRuntime).GetField("steeringRoll", flags);
+                var frames = 0;
+                for (var turn = 0; turn < 49; turn++)
+                {
+                    mouseX = turn % 2 == 0 ? 1 : -1;
+                    var sample = sampled.SampleInput(0, true);
+                    Assert.That(sample.Roll, Is.EqualTo(turn % 2 == 0 ? 0.45f : 0f).Within(0.0001f));
+                    Assert.That((sbyte)clamp.Invoke(null, new object[] { sample.Roll }), Is.Zero,
+                        "the current command quantizes both moving samples to zero");
+                    steering.SetValue(runtime, sample.Roll);
+                    var tick = ulong.Parse(owner.ObservedCampaignIdentity().session.tick);
+                    do {
+                        runtime.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(++frames, Is.LessThan(300), "the real owner admits the requested turns");
+                    } while (ulong.Parse(owner.ObservedCampaignIdentity().session.tick) == tick);
+                    Assert.That(ulong.Parse(owner.ObservedCampaignIdentity().session.tick), Is.EqualTo(tick + 1));
+                    Assert.That(owner.ObservedCampaignIdentity().player_preferences.assistance_sequence,
+                        Is.EqualTo(initialSequence), "changing mouse position must not produce an idle recenter");
+                }
+                var stationaryTick = ulong.Parse(owner.ObservedCampaignIdentity().session.tick);
+                var targetTick = stationaryTick + 49;
+                while (ulong.Parse(owner.ObservedCampaignIdentity().session.tick) < targetTick)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(++frames, Is.LessThan(600), "the real owner admits stationary turns");
+                }
+                Assert.That(ulong.Parse(owner.ObservedCampaignIdentity().session.tick), Is.EqualTo(targetTick));
+                Assert.That(owner.ObservedCampaignIdentity().player_preferences.assistance_sequence,
+                    Is.EqualTo(initialSequence + 1), "stationary fractional steering still reaches the real idle recenter");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAudioKeysDriveRealSpeechSoundAndMusicWithoutGameplayStep()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-source-audio-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source audio controls"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                var prefs = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                var audio = (OwnerAudioPresentation)Field("ownerAudio");
+                Assert.That(speech.IsAvailable, Is.True, "the actual retained speech catalog is validated");
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)));
+                var f4 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF4Input", flags);
+                var f2 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF2Input", flags);
+                var f5 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF5Input", flags);
+                var f6 = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeF6Input", flags);
+                void F4(bool shift = false, bool alt = false) => f4.Invoke(runtime, new object[] { true, shift, alt });
+                void F2(bool shift = false, bool alt = false) => f2.Invoke(runtime, new object[] { true, shift, alt });
+                void F5(bool shift = false, bool admitted = false, bool alt = false) =>
+                    f5.Invoke(runtime, new object[] { true, shift, admitted, alt });
+                void F6(bool shift = false, bool admitted = false, bool alt = false) =>
+                    f6.Invoke(runtime, new object[] { true, shift, admitted, alt });
+                void Notice(string kind, int record)
+                {
+                    var notices = owner.GameRuntimeParticipantNotifications().value;
+                    Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo((kind, (short)50)));
+                    var selected = menu.LocaleCache.PrepareLocale(prefs.Current.locale_binding);
+                    Assert.That(SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14,
+                        menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(record)));
+                }
+                var beforeBlocked = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False);
+                F2(true); F2(false, true);
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False, "modifier branches suppress bare F2");
+                var flightTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                F2();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(flightTick));
+                Notice("participant.flight_assistance_on", 398);
+                F2();
+                Assert.That(prefs.Current.preferences.flight_assistance, Is.False);
+                Notice("participant.flight_assistance_off", 399);
+                beforeBlocked = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Assert.That(owner.GameRuntimeSourceAudio(GameRuntimeTransport.SourceAudioAction.Speech, false, out var blocked), Is.False);
+                Assert.That(blocked, Is.Null, "unavailable CD support cannot change the actual owner");
+                CollectionAssert.AreEqual(beforeBlocked, runtime.QualificationSaveGameRuntimeProductionReplay());
+                F4(true); F4(false, true); F5(false, false, true); F6(false, false, true);
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)), "modifier branches suppress bare audio actions");
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That((speech.PlayCount, speech.LastTrack), Is.EqualTo((1, 26)), "the real source phase plays the first secret announcement");
+                var speechSource = (AudioSource)typeof(CampaignSpeechPresenter).GetField("source", flags).GetValue(speech);
+                var currentClip = speechSource.clip;
+                Assert.That(currentClip, Is.Not.Null);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var settingsTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var soundVolume = prefs.Current.preferences.sound_volume;
+                var musicVolume = prefs.Current.preferences.music_volume;
+                Assert.That(soundVolume, Is.GreaterThan(24));
+                Assert.That(musicVolume, Is.GreaterThan(24));
+                Assert.That(speech.SoundMix, Is.EqualTo((soundVolume / 3) / (float)soundVolume));
+                Assert.That(speech.MusicMix, Is.EqualTo((musicVolume / 3) / (float)musicVolume));
+                Assert.That(prefs.ApplySource(next => next.music_volume = 8), Is.True);
+                Assert.That(speech.MusicMix, Is.EqualTo(1), "the source slider writes the selected master channel immediately");
+                Assert.That(speech.SoundMix, Is.EqualTo((soundVolume / 3) / (float)soundVolume),
+                    "the other channel remains ducked");
+                var musicMix = typeof(OwnerAudioPresentation).GetField("speechMusicGain", flags);
+                Assert.That(musicMix.GetValue(audio), Is.EqualTo(1f), "the live mixer receives the accepted gain");
+                Assert.That(prefs.ApplySource(next => next.sound_volume = 8), Is.True);
+                Assert.That(speech.SoundMix, Is.EqualTo(1));
+                Assert.That(speechSource.volume, Is.EqualTo(8f / 127));
+                Assert.That((speechSource.clip, speech.PlayCount), Is.EqualTo((currentClip, 1)));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(settingsTick));
+                Assert.That(prefs.ApplySource(next => {
+                    next.sound_volume = soundVolume;
+                    next.music_volume = musicVolume;
+                }), Is.True);
+                runtime.QualificationResumeGameRuntimeProduction();
+                var before = runtime.GameRuntimeProductionIdentity;
+                F4();
+                Assert.That(prefs.Current.preferences.speech_enabled, Is.False);
+                Assert.That(speechSource.clip, Is.SameAs(currentClip), "speech off does not stop the current source CD segment");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(before.session.tick));
+                Notice("participant.speech_off", 470);
+                runtime.QualificationResetGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "real subsequent source phase suppresses a new cue while speech is off");
+                F4();
+                Assert.That(prefs.Current.preferences.speech_enabled, Is.True);
+                Notice("participant.speech_on", 469);
+                runtime.QualificationResetGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That((speech.PlayCount, speech.LastTrack), Is.EqualTo((2, 26)), "re-enabled speech reaches a later real source cue");
+                audio = (OwnerAudioPresentation)Field("ownerAudio");
+                campaign = (NativeCampaignSession)Field("campaignSession");
+                var loops = (System.Collections.IDictionary)typeof(OwnerAudioPresentation).GetField("loops", flags).GetValue(audio);
+                before = runtime.GameRuntimeProductionIdentity;
+                F5();
+                Assert.That(prefs.Current.preferences.sound_enabled, Is.False);
+                Assert.That((speechSource.clip, loops.Count), Is.EqualTo(((AudioClip)null, 0)), "sound off ends CD and resident voices");
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(before.session.tick));
+                Assert.That((bool)Field("gameRuntimeReplaySaveRequested"), Is.False, "bare F5 cannot queue a save");
+                Notice("participant.sound_off", 391);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(loops.Count, Is.Zero, "disabled source sound produces no stale voice burst");
+                F5();
+                Assert.That(prefs.Current.preferences.sound_enabled, Is.True);
+                Notice("participant.sound_on", 390);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var musicBefore = campaign.DayMusicState();
+                F6();
+                var musicOff = campaign.DayMusicState();
+                Assert.That(prefs.Current.preferences.music_enabled, Is.False);
+                Notice("participant.music_off", 393);
+                Assert.That(musicOff.playing, Is.Zero);
+                Assert.That(musicOff.fadeCallbackCount, Is.EqualTo(musicBefore.fadeCallbackCount), "toggle does not advance the fade clock");
+                F6();
+                Assert.That(prefs.Current.preferences.music_enabled, Is.True);
+                Notice("participant.music_on", 392);
+                Assert.That(campaign.DayMusicState().playing, Is.EqualTo(1));
+
+                // Pav is a Cave: its player body produces cave ambience, not surface land ambience.
+                // Use the real returned-parent Day entry to exercise land ambience ownership across F5.
+                var surfaceRoot = new GameObject("actual surface land ambience controls");
+                surfaceRoot.SetActive(false);
+                var surfaceRuntime = surfaceRoot.AddComponent<MagicCarpetRuntime>();
+                try
+                {
+                    var surfaceInput = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                        Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                    var surfaceArguments = ReturnedParentArguments(surfaceInput, Path.Combine(temporary, "surface-profile"),
+                        Path.Combine(temporary, "surface-save.mcs"));
+                    surfaceRuntime.QualificationInitializeGameRuntimeProductionFromArguments(surfaceArguments);
+                    typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(surfaceRuntime, new object[] { surfaceArguments });
+                    yield return StartReturnedParentFromNormalMap(surfaceRuntime, true);
+                    var surfaceCampaign = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(surfaceRuntime);
+                    Assert.That((surfaceCampaign.Selection.externalLevel, surfaceCampaign.Selection.internalLevel, surfaceCampaign.Selection.mapType),
+                        Is.EqualTo(((ushort)20, (ushort)19, (byte)0)), "the real returned parent uses its Day source profile");
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    var surfaceAudio = (OwnerAudioPresentation)typeof(MagicCarpetRuntime).GetField("ownerAudio", flags).GetValue(surfaceRuntime);
+                    var surfaceLoops = (System.Collections.IDictionary)typeof(OwnerAudioPresentation).GetField("loops", flags).GetValue(surfaceAudio);
+                    var surfacePrefs = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime).GetField("playerPreferences", flags).GetValue(surfaceRuntime);
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.True);
+                    Assert.That(surfaceLoops.Contains(2), Is.True, "the actual surface player body owns its source land ambience voice");
+                    var surfaceTick = surfaceRuntime.GameRuntimeProductionIdentity.session.tick;
+                    f5.Invoke(surfaceRuntime, new object[] { true, false, false, false });
+                    Assert.That(surfaceRuntime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(surfaceTick));
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.False);
+                    Assert.That(surfaceLoops.Count, Is.Zero, "F5 retires the actual surface land ambience voice");
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(surfaceLoops.Count, Is.Zero, "disabled sound does not recreate the source land ambience voice");
+                    surfaceTick = surfaceRuntime.GameRuntimeProductionIdentity.session.tick;
+                    f5.Invoke(surfaceRuntime, new object[] { true, false, false, false });
+                    Assert.That(surfaceRuntime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(surfaceTick));
+                    Assert.That(surfacePrefs.Current.preferences.sound_enabled, Is.True);
+                    surfaceRuntime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(surfaceLoops.Contains(2), Is.True, "the next actual surface body pass reacquires land ambience");
+                }
+                finally
+                {
+                    surfaceRuntime.QualificationDisposeGameRuntimeProduction();
+                    UnityEngine.Object.DestroyImmediate(surfaceRoot);
+                }
+                F2();
+                var assistanceBefore = prefs.Current.assistance_sequence;
+                typeof(PlayerPreferencesPresenter).GetField("roll", flags).SetValue(prefs, 0.5f);
+                runtime.QualificationDriveGameRuntimeFrames(49);
+                prefs.Synchronize(owner.ObservedCampaignIdentity().player_preferences);
+                Assert.That(prefs.Current.assistance_sequence, Is.EqualTo(assistanceBefore + 1),
+                    "the accepted F2 preference reaches the actual idle recenter producer");
+                Assert.That(prefs.SteeringRoll, Is.Zero, "the retained sequence reaches the real recenter consumer");
+                var shortcut = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeGraphicsShortcut", flags);
+                var profilePath = Path.Combine(temporary, "profile", "player-preferences.json");
+                var profileBeforeGraphics = File.ReadAllBytes(profilePath);
+                var displayBefore = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((displayBefore.reflections, displayBefore.sky, displayBefore.shadows, displayBefore.dynamic_lighting),
+                    Is.EqualTo((true, true, true, true)), "ordinary source startup enables all four GAME flags");
+                foreach (var graphics in new[] {
+                    (KeyCode.F1, "participant.reflections_off", 360),
+                    (KeyCode.F2, "participant.sky_off", 364),
+                    (KeyCode.F3, "participant.shadows_off", 358),
+                    (KeyCode.F4, "participant.dynamic_lighting_off", 396) })
+                {
+                    var beforeGraphics = runtime.GameRuntimeProductionIdentity;
+                    shortcut.Invoke(runtime, new object[] { true, false, false, graphics.Item1 });
+                    shortcut.Invoke(runtime, new object[] { true, true, true, graphics.Item1 });
+                    Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionIdentity.display_settings),
+                        Is.EqualTo(JsonUtility.ToJson(beforeGraphics.display_settings)), "held Shift and Alt cannot admit the shortcut");
+                    shortcut.Invoke(runtime, new object[] { true, true, false, graphics.Item1 });
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(beforeGraphics.session.tick));
+                    Notice(graphics.Item2, graphics.Item3);
+                }
+                var changed = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((changed.reflections, changed.sky, changed.shadows, changed.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)));
+                CollectionAssert.AreEqual(profileBeforeGraphics, File.ReadAllBytes(profilePath),
+                    "GAME graphics actions do not write CONFIG preferences");
+                var profileJson = File.ReadAllText(profilePath);
+                foreach (var key in new[] { "\"reflections\"", "\"sky\"", "\"shadows\"", "\"dynamic_lighting\"" })
+                    Assert.That(profileJson, Does.Not.Contain(key), "CONFIG does not serialize source GAME flags");
+                var graphicsReplay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(graphicsReplay, resources))
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, graphicsReplay, resources))
+                    foreach (var restored in new[] { cold.GameRuntimeIdentity(), warm.GameRuntimeIdentity() })
+                        Assert.That((restored.display_settings.reflections, restored.display_settings.sky,
+                            restored.display_settings.shadows, restored.display_settings.dynamic_lighting),
+                            Is.EqualTo((false, false, false, false)), "real cold and warm GAME replay retain all four flags");
+                runtime.QualificationResetGameRuntimeProduction();
+                changed = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((changed.reflections, changed.sky, changed.shadows, changed.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)), "retry retains the accepted GAME graphics flags");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAudioOptionsUseRealPausedOwnerAndColdProfile()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-source-audio-options-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source audio options"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>(); var guiShown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_SECRET_ANNOUNCEMENT_LIVE_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/secret-announcement-20261115/fresh-pav-1.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var owner = (NativeSession)Field("session");
+                var prefs = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var speech = (CampaignSpeechPresenter)Field("campaignSpeech");
+                Assert.That((prefs.Current.preferences.sound_enabled, prefs.Current.preferences.music_enabled,
+                    prefs.Current.preferences.speech_enabled), Is.EqualTo((true, true, true)));
+                void Notice(string kind, int record)
+                {
+                    var notices = owner.GameRuntimeParticipantNotifications().value;
+                    Assert.That((notices[0].kind, notices[0].remaining_frames), Is.EqualTo((kind, (short)50)));
+                    var selected = menu.LocaleCache.PrepareLocale(prefs.Current.locale_binding);
+                    Assert.That(SourcePlayerNotificationsPresenter.Rows(notices, false, false, false, 14,
+                        menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(record)));
+                }
+                var initial = runtime.GameRuntimeProductionIdentity;
+                runtime.QualificationDriveGameRuntimeFrames(12);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var pausedTick = runtime.GameRuntimeProductionIdentity.session.tick;
+                var caps = runtime.GameRuntimeProductionIdentity.source_audio_capabilities;
+                Assert.That(caps, Is.Not.Null);
+                Assert.That((caps.sound_available, caps.music_available, speech.IsAvailable), Is.EqualTo((true, true, true)),
+                    "the actual retained owners admit all three source Options");
+                var view = new Rect(); var origin = Vector2.zero; var cursor = Vector2.zero;
+                CampaignMenuPresenter.Action action = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var e = Event.current; var prior = e.mousePosition;
+                    try {
+                        e.mousePosition = view.position + cursor * scale;
+                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null, speech.IsAvailable);
+                    }
+                    finally { e.mousePosition = prior; }
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); guiShown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Vector2 point)
+                {
+                    cursor = point; var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = EventType.MouseDown,
+                        mousePosition = view.position + point * (view.width / 640f) + origin, button = 0 });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw));
+                }
+                Send(SourcePauseMenu.IconRect(178).center);
+                foreach (var choice in new[] {
+                    (2, CampaignMenuPresenter.Action.ToggleMusic, "participant.music_off", 393),
+                    (1, CampaignMenuPresenter.Action.ToggleSound, "participant.sound_off", 391),
+                    (3, CampaignMenuPresenter.Action.ToggleSpeech, "participant.speech_off", 470),
+                    (4, CampaignMenuPresenter.Action.ToggleFlightAssistance, "participant.flight_assistance_on", 398),
+                    (0, CampaignMenuPresenter.Action.ToggleHelpMode, "participant.help_mode_off", 401) })
+                {
+                    Send(new Vector2(320, 67 + choice.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(choice.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(choice.Item3, choice.Item4);
+                }
+                using var coldOwner = new GameRuntimeTransport();
+                var cold = new PlayerPreferencesPresenter(json => GameRuntimeTransport.PreferencesCommand(
+                    coldOwner.Handle, coldOwner.IdentitySnapshot(), json), Path.Combine(temporary, "profile"));
+                Assert.That((cold.Current.preferences.sound_enabled, cold.Current.preferences.music_enabled,
+                    cold.Current.preferences.speech_enabled), Is.EqualTo((false, false, false)), "source audio choices persist in the cold profile");
+                Assert.That(cold.Current.preferences.flight_assistance, Is.True, "source assistance persists in the cold profile");
+                Assert.That(cold.Current.preferences.show_help, Is.False, "source help mode persists in the cold profile");
+                Send(new Vector2(320, 67 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.ToggleHelpMode), "Options remains open after toggling help");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                Notice("participant.help_mode_on", 400);
+                var graphicsProfilePath = Path.Combine(temporary, "profile", "player-preferences.json");
+                var profileBeforeGraphics = File.ReadAllBytes(graphicsProfilePath);
+                foreach (var graphics in new[] {
+                    (8, CampaignMenuPresenter.Action.ToggleReflections, "participant.reflections_off", 360),
+                    (9, CampaignMenuPresenter.Action.ToggleSky, "participant.sky_off", 364),
+                    (10, CampaignMenuPresenter.Action.ToggleShadows, "participant.shadows_off", 358),
+                    (11, CampaignMenuPresenter.Action.ToggleDynamicLighting, "participant.dynamic_lighting_off", 396) })
+                {
+                    Send(new Vector2(320, 67 + graphics.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(graphics.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(graphics.Item3, graphics.Item4);
+                }
+                var graphicsState = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((graphicsState.reflections, graphicsState.sky, graphicsState.shadows, graphicsState.dynamic_lighting),
+                    Is.EqualTo((false, false, false, false)), "all real Options rows reach GAME authority");
+                foreach (var graphics in new[] {
+                    (8, CampaignMenuPresenter.Action.ToggleReflections, "participant.reflections_on", 359),
+                    (9, CampaignMenuPresenter.Action.ToggleSky, "participant.sky_on", 363),
+                    (10, CampaignMenuPresenter.Action.ToggleShadows, "participant.shadows_on", 357),
+                    (11, CampaignMenuPresenter.Action.ToggleDynamicLighting, "participant.dynamic_lighting_on", 395) })
+                {
+                    Send(new Vector2(320, 67 + graphics.Item1 * 18 + 9));
+                    Assert.That(action, Is.EqualTo(graphics.Item2));
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                    Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(pausedTick));
+                    Notice(graphics.Item3, graphics.Item4);
+                }
+                graphicsState = runtime.GameRuntimeProductionIdentity.display_settings;
+                Assert.That((graphicsState.reflections, graphicsState.sky, graphicsState.shadows, graphicsState.dynamic_lighting),
+                    Is.EqualTo((true, true, true, true)), "the same Options rows restore the GAME flags");
+                CollectionAssert.AreEqual(profileBeforeGraphics, File.ReadAllBytes(graphicsProfilePath),
+                    "the paused Options consumer does not write CONFIG for GAME flags");
+                Assert.That(initial.session.session_id, Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (guiShown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourcePlayerNamesOptionRetainsItsActualRuntimeLifetime()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-player-names-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source player names");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                var input = Environment.GetEnvironmentVariable("MC_COMPLETED_SECRET_SAVE_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/continuity-20261115/controlled-secret-map.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                yield return StartReturnedParentFromNormalMap(runtime);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var owner = (NativeSession)Field("session");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var selected = menu.LocaleCache.PrepareLocale(preferences.Current.locale_binding);
+                Assert.That(menu.GameplayLanguageText(402), Is.EqualTo(selected.Record(402)));
+                Assert.That(menu.GameplayLanguageText(403), Is.EqualTo(selected.Record(403)));
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.True,
+                    "fresh actual source runtime defaults to player names on");
+                var view = new Rect(); var origin = Vector2.zero; var cursor = Vector2.zero;
+                CampaignMenuPresenter.Action action = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var e = Event.current; var prior = e.mousePosition;
+                    try {
+                        e.mousePosition = view.position + cursor * scale;
+                        action = menu.Draw(runtime.GameRuntimeProductionIdentity, true, false, false, null,
+                            ((CampaignSpeechPresenter)Field("campaignSpeech"))?.IsAvailable == true);
+                    }
+                    finally { e.mousePosition = prior; }
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (view.width <= 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Vector2 source)
+                {
+                    cursor = source; var beforeDraw = gui.DrawCount;
+                    gui.SendEvent(new Event { type = EventType.MouseDown,
+                        mousePosition = view.position + source * (view.width / 640f) + origin, button = 0 });
+                    Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw));
+                }
+                Send(SourcePauseMenu.IconRect(178).center);
+                var before = runtime.GameRuntimeProductionIdentity;
+                Send(new Vector2(320, 67 + 16 * 18 + 9));
+                Assert.That(action, Is.EqualTo(CampaignMenuPresenter.Action.TogglePlayerNames));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(action), Is.True);
+                var off = runtime.GameRuntimeProductionIdentity;
+                Assert.That(off.source_player_names_visible, Is.False);
+                Assert.That((off.generation, off.session.generation, off.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)),
+                    "the real source option does not step the session");
+                var notice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((notice[0].kind, notice[0].remaining_frames), Is.EqualTo(("participant.player_names_off", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(notice, false, false, false, 14,
+                    menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(403)));
+                var save = runtime.QualificationSaveGameRuntimeProductionReplay();
+                var resources = (GameRuntimeTransport.InstalledPackageResource[])Field("gameRuntimePackages");
+                using (var cold = NativeSession.OpenGameRuntimeReplay(save, resources))
+                    Assert.That(cold.GameRuntimeIdentity().source_player_names_visible, Is.True, "fresh process defaults on after verifying the replay");
+                using (var warm = NativeSession.OpenGameRuntimeReplayFrom(owner, save, resources))
+                    Assert.That(warm.GameRuntimeIdentity().source_player_names_visible, Is.False, "warm load retains the receiver process flag");
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.False, "retry retains the source auxiliary flag");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.source_player_names_visible, Is.True);
+                notice = owner.GameRuntimeParticipantNotifications().value;
+                Assert.That((notice[0].kind, notice[0].remaining_frames), Is.EqualTo(("participant.player_names_on", (short)50)));
+                Assert.That(SourcePlayerNotificationsPresenter.Rows(notice, false, false, false, 14,
+                    menu.GameplayLanguageText)[0].Text, Is.EqualTo(selected.Record(402)));
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
+        public void PlayerNamesRenderSelectedFontOnRealNyphurAndPreserveQueries()
+        {
+            var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT");
+            Assert.That(string.IsNullOrEmpty(input), Is.False, "requires the real source-valid Nyphur replay");
+            var proof = ReadReplayDocument(File.ReadAllBytes(Path.ChangeExtension(input, ".json")));
+            int ProofInt(string path) => int.Parse(proof.SelectSingleNode(path).InnerText);
+            Assert.That((ProofInt("/root/target/slot"), ProofInt("/root/target/class"), ProofInt("/root/target/model")),
+                Is.EqualTo((112, 3, 1)));
+            var labelX = ProofInt("/root/label/x"); var labelY = ProofInt("/root/label/y");
+            var colorIndex = ProofInt("/root/target/color");
+            var dayColors = new byte[] { 0x60, 0x7b, 0x1c, 0x5b, 0x9a, 0xdb, 0x76, 0x3d };
+            Assert.That(colorIndex, Is.InRange(0, dayColors.Length - 1));
+            var ownerColor = dayColors[colorIndex];
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-nyphur-label-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual Nyphur label"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            var previousTarget = RenderTexture.active;
+            Transform surfaceRoot = null, originalParent = null;
+            try
+            {
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"), Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                var owner = (NativeSession)Field("session");
+                var campaign = (NativeCampaignSession)Field("campaignSession");
+                Assert.That((campaign.Selection.externalLevel, campaign.Selection.internalLevel, campaign.Selection.mapType),
+                    Is.EqualTo(((ushort)2, (ushort)1, (byte)0)));
+                var actor = Array.Find(campaign.Entities(), row => row.entityIndex == 112);
+                Assert.That((actor.active, actor.classId, actor.model), Is.EqualTo(((byte)1, (byte)3, (byte)1)),
+                    "the real retained Nyphur remains the current source actor");
+                var preferences = (PlayerPreferencesPresenter)Field("playerPreferences");
+                var menu = (CampaignMenuPresenter)Field("gameRuntimeMenu");
+                var selected = menu.LocaleCache.PrepareLocale(preferences.Current.locale_binding);
+                Assert.That(selected.Id, Is.EqualTo(proof.SelectSingleNode("/root/locale/id").InnerText));
+                Assert.That(selected.Identity.font_ids, Does.Contain("font1"), "the real accepted language owns FONT1");
+                var manifest = ReadReplayDocument(File.ReadAllBytes(Path.Combine(selected.CachePath, "manifest.json")));
+                var font = manifest.SelectSingleNode("/root/fonts/item[id='font1']");
+                Assert.That(font, Is.Not.Null);
+                var glyph = font.SelectSingleNode("glyphs/item[index='79']"); // 'N' + 1
+                var width = int.Parse(glyph.SelectSingleNode("width").InnerText);
+                var height = int.Parse(glyph.SelectSingleNode("height").InnerText);
+                var offset = int.Parse(glyph.SelectSingleNode("offset").InnerText);
+                var masks = File.ReadAllBytes(Path.Combine(selected.CachePath, font.SelectSingleNode("masks_path").InnerText));
+                var surface = (CampaignPresentationSurface)Field("level2DayPresentationSurface");
+                // Keep the real runtime inactive to prevent automatic gameplay,
+                // but let its actual presentation meshes participate in camera renders.
+                surfaceRoot = surface.FrameCamera.transform.parent;
+                originalParent = surfaceRoot.parent;
+                surfaceRoot.SetParent(null, true);
+                Assert.That(surfaceRoot.gameObject.activeInHierarchy, Is.True);
+                var cameras = surfaceRoot.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras) if (camera.targetTexture == null) camera.targetTexture = display;
+                byte[] Scene()
+                {
+                    foreach (var camera in cameras) camera.Render();
+                    Assert.That(surface.SceneHistoryGeneration, Is.EqualTo(surface.Generation));
+                    var capture = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+                    try {
+                        RenderTexture.active = surface.ComposedSceneIndices;
+                        capture.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); capture.Apply();
+                        var rgba = capture.GetPixels32(); var result = new byte[rgba.Length];
+                        for (var y = 0; y < 200; y++) for (var x = 0; x < 320; x++)
+                            result[y * 320 + x] = rgba[(199 - y) * 320 + x].r;
+                        return result;
+                    }
+                    finally { UnityEngine.Object.DestroyImmediate(capture); RenderTexture.active = previousTarget; }
+                }
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.source_player_names_visible, Is.True);
+                var on = Scene();
+                var nativeOn = (byte[])campaign.SceneFrameIndices.Clone();
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                var offIdentity = runtime.GameRuntimeProductionIdentity;
+                Assert.That(offIdentity.source_player_names_visible, Is.False);
+                Assert.That((offIdentity.generation, offIdentity.session.generation, offIdentity.session.tick),
+                    Is.EqualTo((before.generation, before.session.generation, before.session.tick)));
+                var off = Scene();
+                var nativeOff = (byte[])campaign.SceneFrameIndices.Clone();
+                var trace = new System.Text.StringBuilder();
+                var nativeChanges = 0; var gpuChanges = 0;
+                var nMinX = 320; var nMaxX = -1; var nMinY = 200; var nMaxY = -1;
+                var gMinX = 320; var gMaxX = -1; var gMinY = 200; var gMaxY = -1;
+                for (var y = 0; y < 200; y++) for (var x = 0; x < 320; x++)
+                {
+                    var pixel = y * 320 + x;
+                    if (nativeOn[pixel] != nativeOff[pixel]) {
+                        nativeChanges++; nMinX = Math.Min(nMinX, x); nMaxX = Math.Max(nMaxX, x);
+                        nMinY = Math.Min(nMinY, y); nMaxY = Math.Max(nMaxY, y);
+                    }
+                    if (on[pixel] != off[pixel]) {
+                        gpuChanges++; gMinX = Math.Min(gMinX, x); gMaxX = Math.Max(gMaxX, x);
+                        gMinY = Math.Min(gMinY, y); gMaxY = Math.Max(gMaxY, y);
+                    }
+                }
+                for (var y = 0; y < height / 2; y++) for (var x = 0; x < width; x++)
+                {
+                    if (masks[offset + y * width + x] == 0) continue;
+                    var px = (labelX + 4) / 2 + x; var py = labelY / 2 + y;
+                    var pixel = py * 320 + px;
+                    trace.Append($" ({px},{py}:native={nativeOn[pixel]}/{nativeOff[pixel]} gpu={on[pixel]}/{off[pixel]})");
+                }
+                TestContext.WriteLine($"NYPHUR_GLYPH label={labelX},{labelY} color={ownerColor} " +
+                    $"font={width}x{height}@{offset} frame={surface.Generation}/{surface.Tick} " +
+                    $"history={surface.SceneHistoryGeneration}/{surface.SceneHistoryRevision} " +
+                    $"nativeDiff={nativeChanges}[{nMinX},{nMinY}..{nMaxX},{nMaxY}] " +
+                    $"gpuDiff={gpuChanges}[{gMinX},{gMinY}..{gMaxX},{gMaxY}]{trace}");
+                var glyphVisible = false;
+                for (var y = 0; y < height / 2; y++) for (var x = 0; x < width; x++)
+                {
+                    var pixel = (labelY / 2 + y) * 320 + (labelX + 4) / 2 + x;
+                    if (masks[offset + y * width + x] != 0 && on[pixel] == ownerColor && off[pixel] != ownerColor)
+                        glyphVisible = true;
+                }
+                Assert.That(glyphVisible, Is.True, "actual selected FONT1 Nyphur glyph reaches the composed indexed scene");
+                Assert.That(ProofInt("/root/target/life"), Is.GreaterThan(0));
+                var barY = (labelY + 14) / 2; var barX = (labelX + 2) / 2;
+                var barVisible = false;
+                for (var x = 0; x < 25; x++)
+                    if (on[barY * 320 + barX + x] == ownerColor && off[barY * 320 + barX + x] != ownerColor)
+                        barVisible = true;
+                Assert.That(barVisible, Is.True, "the actual living Nyphur health bar reaches the same scene");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.TogglePlayerNames), Is.True);
+                CollectionAssert.AreEqual(on, Scene(), "turning names back on restores the same indexed frame");
+                var replay = runtime.QualificationSaveGameRuntimeProductionReplay();
+                Scene(); campaign.Entities();
+                CollectionAssert.AreEqual(replay, runtime.QualificationSaveGameRuntimeProductionReplay(),
+                    "repeated raster and actor queries do not mutate the actual runtime");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                if (surfaceRoot != null) surfaceRoot.SetParent(originalParent, true);
                 runtime.QualificationDisposeGameRuntimeProduction();
                 display.Release(); UnityEngine.Object.DestroyImmediate(display);
                 UnityEngine.Object.DestroyImmediate(root);
@@ -4218,6 +8246,237 @@ namespace MagicCarpet.Native.Tests
             var document = new System.Xml.XmlDocument();
             document.Load(reader);
             return document;
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceTitleExitUsesTimedConfirmationAndPreservesOwnerOnCancel()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-title-exit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source title exit"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var originalCursorVisible = Cursor.visible;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var arguments = new[] {
+                    "-mc-game-runtime", "-mc-runtime-menu",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile"),
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-package", LevelThreePackage };
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                Assert.That(runtime.StepGameRuntimeTitleMedia(0, false, false, startup: false), Is.True);
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.clear_input, Is.False,
+                    "the normal Title media frame completes its source input-release delay");
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(before.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                var preferences = (PlayerPreferencesPresenter)typeof(MagicCarpetRuntime).GetField("playerPreferences", flags).GetValue(runtime);
+                var originalPreferences = JsonUtility.ToJson(preferences.Current.preferences);
+                var menu = (CampaignMenuPresenter)typeof(MagicCarpetRuntime).GetField("gameRuntimeMenu", flags).GetValue(runtime);
+                var cache = menu.LocaleCache;
+                var exit = Array.Find(cache.Startup.buttons, entry => entry.source_action == 0x258980);
+                Assert.That(exit, Is.Not.Null, "the retained source title owns its Exit button");
+                Assert.That(cache.StartupBitmap(39), Is.Not.Null, "the source cursor bitmap is bound");
+                Assert.That(cache.LanguageText(407), Is.Not.Empty, "the selected source locale owns the Exit prompt");
+                // Controlled source-clock check using the actual retained nine
+                // source rows; it does not advance the live Title GUI clock.
+                var helpRows = cache.Startup.help;
+                CollectionAssert.AreEqual(new[] { 6, 10, 9, 13, 12, 15, 8, 7, 11 },
+                    Array.ConvertAll(helpRows, row => row.help_key));
+                var help = new CampaignMenuPresenter.TitleHelpState(helpRows, 1000);
+                help.Advance(1199, 0, true);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 0, 1000u, 6)));
+                help.Advance(1200, 0, true);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 1, 1200u, 10)));
+                help.Advance(1900, 0, true);
+                Assert.That((help.Index, help.LastTime, help.DrawnHelp.help_key), Is.EqualTo((2, 1900u, 9)),
+                    "a delayed source draw advances only once");
+                help.Advance(1910, 11, true);
+                Assert.That((help.Mode, help.DrawnHelp.help_key, help.LastTime), Is.EqualTo((3, 11, 1910u)));
+                help.Advance(2109, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(3));
+                Assert.That(help.DrawnHelp, Is.Null, "leaving hover does not redraw its tooltip");
+                help.Advance(2110, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(2));
+                Assert.That(help.DrawnHelp, Is.Null, "the transition pass also draws no tooltip");
+                help.Advance(2110, 0, true);
+                Assert.That((help.Index, help.DrawnHelp.help_key), Is.EqualTo((3, 13)));
+                help.Advance(2200, 9, false);
+                Assert.That(help.Mode, Is.EqualTo(1));
+                Assert.That(help.DrawnHelp, Is.Null);
+                help.Advance(2201, 0, true);
+                Assert.That(help.Mode, Is.EqualTo(1));
+                Assert.That(help.DrawnHelp, Is.Null, "an absent hover is not an invented row");
+                help.Advance(2202, 9, true);
+                Assert.That((help.Mode, help.DrawnHelp.help_key), Is.EqualTo((3, 9)));
+                var suspended = (help.Mode, help.Index, help.LastTime, help.GoldHelpKey);
+                help.Suspend();
+                Assert.That(help.DrawnHelp, Is.Null);
+                Assert.That((help.Mode, help.Index, help.LastTime, help.GoldHelpKey), Is.EqualTo(suspended),
+                    "modal suspension preserves source clock and selection");
+                var wrapped = new CampaignMenuPresenter.TitleHelpState(helpRows, uint.MaxValue - 99);
+                wrapped.Advance(100, 0, true);
+                Assert.That((wrapped.Index, wrapped.DrawnHelp.help_key), Is.EqualTo((1, 10)), "source hundredths wrap safely");
+                SourceScrollDialog Dialog() => (SourceScrollDialog)typeof(CampaignMenuPresenter).GetField("scrollDialog", flags).GetValue(menu);
+                int Height() => (int)typeof(SourceScrollDialog).GetField("height", flags).GetValue(Dialog());
+                int Closing() => (int)typeof(SourceScrollDialog).GetField("closeResult", flags).GetValue(Dialog());
+                var view = new Rect(); var origin = Vector2.zero;
+                var quitCount = 0;
+                var lastAction = CampaignMenuPresenter.Action.None;
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                        640 * scale, 480 * scale);
+                    origin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    lastAction = menu.Draw(runtime.GameRuntimeProductionIdentity, false, false, false, null, false);
+                    if (lastAction == CampaignMenuPresenter.Action.Quit) quitCount++;
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true; gui.position = new Rect(0, 0, 640, 480);
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(gui.DrawCount, Is.GreaterThan(0), "the real Title GUI host drew");
+                Assert.That(Cursor.visible, Is.False, "the actual source title cursor owns cursor visibility");
+                var liveHelp = menu.TitleHelp;
+                Assert.That(liveHelp, Is.Not.Null);
+                var liveClock = (liveHelp.Mode, liveHelp.Index, liveHelp.LastTime);
+                var liveFrame = Time.frameCount;
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(Time.frameCount, Is.EqualTo(liveFrame), "both repaints belong to the same frame");
+                Assert.That((liveHelp.Mode, liveHelp.Index, liveHelp.LastTime), Is.EqualTo(liveClock),
+                    "another GUI repaint in the same frame does not advance the live source clock");
+                System.Collections.IEnumerator WaitFor(Func<bool> ready, string reason)
+                {
+                    var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                    do
+                    {
+                        gui.SendEvent(new Event { type = EventType.Repaint });
+                        if (ready()) yield break;
+                        Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), reason);
+                        UnityEditor.EditorApplication.QueuePlayerLoopUpdate();
+                        yield return null;
+                    } while (true);
+                }
+                var profilePath = Path.Combine(temporary, "profile", "player-preferences.json");
+                bool PersistedHelp() => JsonUtility.FromJson<PlayerPreferences>(File.ReadAllText(profilePath)).show_help;
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "source Title begins with help enabled");
+                yield return WaitFor(() => liveHelp.DrawnHelp != null, "the actual Title draws its source help");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.False, "Title F1 disables retained help");
+                Assert.That(PersistedHelp(), Is.False, "the accepted source action persists its profile");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.False, "held F1 does not toggle twice");
+                var disabledClock = (liveHelp.Index, liveHelp.LastTime);
+                yield return WaitFor(() => liveHelp.DrawnHelp == null, "disabled source help disappears on an admitted draw");
+                Assert.That((liveHelp.Index, liveHelp.LastTime), Is.EqualTo(disabledClock),
+                    "disabled Title help does not advance its source clock");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1 });
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "released F1 re-enables retained help");
+                Assert.That(PersistedHelp(), Is.True);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "held F1 cannot reverse the accepted enable");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1 });
+                yield return WaitFor(() => liveHelp.DrawnHelp != null, "enabled source help resumes through its real clock");
+
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1, modifiers = EventModifiers.Shift });
+                Assert.That(preferences.Current.preferences.show_help, Is.False, "Shift+F1 also toggles source Title help");
+                Assert.That(PersistedHelp(), Is.False);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1, modifiers = EventModifiers.Shift });
+                Assert.That(preferences.Current.preferences.show_help, Is.False, "modified held F1 does not repeat");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1, modifiers = EventModifiers.Shift });
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1, modifiers = EventModifiers.Control });
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "Control+F1 also toggles source Title help");
+                Assert.That(PersistedHelp(), Is.True);
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1, modifiers = EventModifiers.Control });
+
+                var language = Array.Find(cache.Startup.buttons, entry => entry.source_action == 0x2589e0);
+                Assert.That(language, Is.Not.Null);
+                var languagePoint = view.position + new Vector2(language.x + language.width * .5f,
+                    language.y + language.height * .5f) * (view.width / 640f) + origin;
+                gui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = languagePoint });
+                gui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = languagePoint });
+                Assert.That(preferences.IsOpen, Is.True, "the real source button owns the language page");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "settings own F1 while open");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                Assert.That(preferences.IsOpen, Is.False);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.True, "held settings F1 cannot leak into Title");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1 });
+                Assert.That(PersistedHelp(), Is.True);
+                var pointer = view.position + new Vector2(exit.x + exit.width * .5f, exit.y + exit.height * .5f) * (view.width / 640f) + origin;
+                gui.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = pointer });
+                gui.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = pointer });
+                Assert.That(lastAction, Is.EqualTo(CampaignMenuPresenter.Action.None), "Exit opens a source confirmation, not Quit");
+                yield return WaitFor(() => Dialog() != null && Height() >= 80, "Exit scroll opens through real GUI frames");
+                Assert.That(quitCount, Is.Zero);
+                var exitDialog = Dialog();
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.False, "source F1 remains active while Exit is open");
+                Assert.That(Dialog(), Is.SameAs(exitDialog));
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1 });
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.F1 });
+                Assert.That(preferences.Current.preferences.show_help, Is.True);
+                Assert.That(Dialog(), Is.SameAs(exitDialog));
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.F1 });
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Dialog(), Is.Not.Null);
+                Assert.That(Closing(), Is.EqualTo(2), "Escape cancels the existing confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Closing(), Is.EqualTo(2), "a held Escape cannot open another action during closing");
+                Assert.That(quitCount, Is.Zero);
+                yield return WaitFor(() => Dialog() == null, "Cancel closes the source scroll");
+                Assert.That(quitCount, Is.Zero);
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(Dialog(), Is.Null, "held Escape cannot reopen Exit after Cancel finishes");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                var afterCancel = runtime.GameRuntimeProductionIdentity;
+                Assert.That((afterCancel.runtime_id, afterCancel.generation, afterCancel.mode),
+                    Is.EqualTo((before.runtime_id, before.generation, GameRuntimeTransport.TitleMode)));
+                Assert.That(JsonUtility.ToJson(preferences.Current.preferences), Is.EqualTo(originalPreferences));
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(Dialog(), Is.Null, "the released key cannot reopen the Title action");
+
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                Assert.That(lastAction, Is.EqualTo(CampaignMenuPresenter.Action.None), "Title Escape opens confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                yield return WaitFor(() => Dialog() != null && Height() >= 80, "Escape opens the real source scroll");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(Dialog(), Is.Not.Null);
+                Assert.That(Closing(), Is.EqualTo(1));
+                Assert.That(quitCount, Is.Zero, "Quit is withheld until the scroll has closed");
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(Closing(), Is.EqualTo(1), "a held Return cannot confirm twice");
+                Assert.That(quitCount, Is.Zero);
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Return });
+                yield return WaitFor(() => Dialog() == null && quitCount == 1, "confirmed Exit emits Quit after closing");
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(quitCount, Is.EqualTo(1), "closing emits exactly one typed Quit action");
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode),
+                    "this GUI check observes the action without executing process shutdown");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            Assert.That(Cursor.visible, Is.EqualTo(originalCursorVisible), "disposing the title owner restores the prior cursor");
         }
 
         [UnityEngine.TestTools.UnityTest]
@@ -5808,7 +10067,8 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
                     "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
-                    "-mc-runtime-menu-cache", Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
                     "-mc-runtime-replay-save", save };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(args);
                 var runtimeId = runtime.GameRuntimeProductionIdentity.runtime_id;
@@ -6556,17 +10816,10 @@ namespace MagicCarpet.Native.Tests
             var levelOneCache = Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_CACHE") ??
                 Path.Combine(generated, "mc2-level1-night-cache-v2");
             // The real Level 3 Loading control declares incoming Castle and
-            // other spell carry. Old v5 receipts are not admissible.
+            // other spell carry. Both loads use the same installed roles.
             var entry = Environment.GetEnvironmentVariable("MC_CORRECTED_DAY_REPLAY_OUTPUT") ??
-                Path.Combine(generated, "top-status-20261116/fresh-level3-full-role-entry.mcs");
-            var second = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL2_PACKAGE") ??
-                Path.Combine(generated, "level2-day-block32-campaign-v2");
-            var package = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PACKAGE") ??
-                Path.Combine(generated, "level3-day-block32-campaign-recipe-v2");
-            var environment = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_OWNER") ??
-                Path.Combine(generated, "mc-level3-environment-exit-20261025");
-            var presentation = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PRESENTATION") ??
-                Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4");
+                Path.Combine(generated, "gameplay-audio-20261117/current-day-entry.mcs");
+            var resources = ReadInstalledCampaignResources(3);
             var temporary = Path.Combine(Path.GetTempPath(), "mc-source-top-status-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(temporary);
             var replayPath = Path.Combine(temporary, "paid-castle.mcs");
@@ -6577,6 +10830,7 @@ namespace MagicCarpet.Native.Tests
             var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             var shown = false;
             byte[] paidReplay = null;
+            ushort sourceCastle = 0, sourceCollector = 0;
             var previousTarget = RenderTexture.active;
             const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
             object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
@@ -6584,11 +10838,7 @@ namespace MagicCarpet.Native.Tests
             {
                 using (var producer = new GameRuntimeTransport())
                 {
-                    producer.LoadReplay(File.ReadAllBytes(entry),
-                        new GameRuntimeTransport.InstalledPackageResource { package_dir = LevelOnePackage,
-                            presentation_cache_path = levelOneCache }, Package(second),
-                        new GameRuntimeTransport.InstalledPackageResource { package_dir = package,
-                            owner_cache_path = environment, presentation_cache_path = presentation });
+                    producer.LoadReplay(File.ReadAllBytes(entry), resources);
                     var initial = producer.CampaignSnapshot().value;
                     Assert.That(initial.source_top_status.castle_rows, Is.Empty, "the qualified entry starts without a linked Castle");
                     Assert.That(initial.player_vitals.mana, Is.EqualTo(1000));
@@ -6704,6 +10954,7 @@ namespace MagicCarpet.Native.Tests
                     var rootRow = CurrentRoot();
                     Assert.That(rootRow.entityIndex, Is.Not.Zero, "the paid Castle has a current source root and player binding");
                     var rootSlot = rootRow.entityIndex;
+                    sourceCastle = rootSlot;
                     // Initial 37BC0 counts 19 down to -1 and then zero (20
                     // visits); one scheduling boundary and one root state2
                     // visit bound its ordinary transition to action4.
@@ -6726,6 +10977,7 @@ namespace MagicCarpet.Native.Tests
                     var collectorRow = Array.Find(CurrentEntities(), row => row.active != 0 && row.classId == 3 &&
                         row.model == 3 && row.sourceId == player.entityIndex);
                     Assert.That(collectorRow.entityIndex, Is.Not.Zero, "the current collector is bound to the same source player");
+                    sourceCollector = collectorRow.entityIndex;
                     Assert.That(bornStatus.balloons[0].max_life, Is.GreaterThan(0));
                     Assert.That(bornStatus.balloons[0].life, Is.InRange(0, bornStatus.balloons[0].max_life));
                     Assert.That(bornStatus.balloons[0].max_mana, Is.GreaterThan(0));
@@ -6742,17 +10994,14 @@ namespace MagicCarpet.Native.Tests
                         diagnostic.Flush(true);
                     }
                 }
-                var arguments = new[] {
+                var coldArguments = new System.Collections.Generic.List<string> {
                     "-mc-game-runtime", "-mc-runtime-loading-cache", levelOneCache,
                     "-mc-runtime-menu-cache", CampaignMenuCache, "-mc-runtime-speech-cache", CampaignSpeechCache,
                     "-mc-preferences-profile", Path.Combine(temporary, "profile"),
-                    "-mc-runtime-package", LevelOnePackage,
-                    "-mc-runtime-presentation-cache", levelOneCache,
-                    "-mc-runtime-package", second,
-                    "-mc-runtime-package", package, "-mc-runtime-owner-cache", environment,
-                    "-mc-runtime-presentation-cache", presentation,
                     "-mc-runtime-replay-load", replayPath
                 };
+                AppendInstalledPackageArguments(coldArguments, resources);
+                var arguments = coldArguments.ToArray();
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
                 typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
                 var full = runtime.GameRuntimeProductionCampaignSnapshot.value.source_top_status;
@@ -6776,8 +11025,21 @@ namespace MagicCarpet.Native.Tests
                     "the source int32 shift wraps before division and int16 narrowing");
                 Assert.That((int)sourceWidth.Invoke(null, new object[] { 100, 6400 }), Is.Zero,
                     "DrawBar suppresses an actual source width of one");
-                var surface = (CampaignPresentationSurface)Field("level3PresentationSurface");
-                Assert.That(surface, Is.Not.Null);
+                var surface = (CampaignPresentationSurface)Field("gameRuntimeSecretSurface");
+                Assert.That(surface, Is.Not.Null, "the installed Day owner binds the shared environment surface");
+                var mapSession = (NativeCampaignSession)Field("campaignSession");
+                Assert.That((surface.Generation, surface.Tick), Is.EqualTo((mapSession.Generation, mapSession.Tick)));
+                var mapState = mapSession.MinimapState(mapSession.Tick);
+                var mapRows = mapSession.MinimapEntities(mapSession.Tick, mapState);
+                var castleMarker = mapRows.Single(row => row.subjectEntityIndex == sourceCastle);
+                var collectorMarker = mapRows.Single(row => row.subjectEntityIndex == sourceCollector);
+                Assert.That((castleMarker.generation, castleMarker.tick, castleMarker.visible),
+                    Is.EqualTo((mapSession.Generation, mapSession.Tick, (byte)1)));
+                Assert.That((collectorMarker.generation, collectorMarker.tick, collectorMarker.visible),
+                    Is.EqualTo((mapSession.Generation, mapSession.Tick, (byte)1)));
+                Assert.That(castleMarker.selector, Is.InRange(58, 65), "the paid source Castle owns its map symbol");
+                Assert.That(collectorMarker.selector, Is.InRange(66, 73), "the natural source collector owns its map symbol");
+                Assert.That(surface.LiveMinimapReady, Is.True, "the real indexed surface consumes the current marker batch");
                 var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
                 Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
                 foreach (var camera in cameras)
@@ -7603,6 +11865,261 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(campaignSessionsBefore));
         }
 
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAbandonReleasesGameplayMenusBeforeReturnedTitleDraw()
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var campaignBefore = NativeCampaignSession.ActiveSessionCount;
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-abandon-title-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("actual source abandon and returned Title"); root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            object Field(string name) => typeof(MagicCarpetRuntime).GetField(name, flags).GetValue(runtime);
+            try
+            {
+                // Real declared incoming L2 state, followed only by accepted
+                // source menu commands. This does not claim earned L1 progress.
+                var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT") ??
+                    Path.Combine(PrivateRoot, "generated/player-names-20261116/real-nyphur-view.mcs");
+                var arguments = ReturnedParentArguments(input, Path.Combine(temporary, "profile"),
+                    Path.Combine(temporary, "save.mcs"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                typeof(MagicCarpetRuntime).GetMethod("PreparePlayerPreferences", flags).Invoke(runtime, new object[] { arguments });
+                Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                var owner = (NativeSession)Field("session");
+                var menus = (SourceCampaignMenus)Field("gameRuntimeSourceMenus");
+                Assert.That(menus.QueueAction("open_abandon_confirmation", false, null, null), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(owner.GameRuntimePlayerMenuState(runtime.GameRuntimeProductionCampaignSnapshot.identity), Is.EqualTo(13));
+                Assert.That((bool)Field("gameRuntimeAbandonConfirmationOpen"), Is.True);
+                var openedFrame = Time.frameCount;
+                GameRuntimeTransport.Identity drawnIdentity = null;
+                var drawnObjective = false;
+                gui.DrawRuntime = () => {
+                    var output = new object[] { null, false };
+                    typeof(MagicCarpetRuntime).GetMethod("DrawRuntimeGui", flags).Invoke(runtime, output);
+                    drawnIdentity = (GameRuntimeTransport.Identity)output[0];
+                    drawnObjective = (bool)output[1];
+                };
+                gui.minSize = new Vector2(640, 480); gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true;
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (gui.DrawCount == 0 || Time.frameCount <= openedFrame)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline), "normal GUI frames admit a fresh confirmation key");
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                gui.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(menus.PendingAction, Is.EqualTo("confirm_abandon"), "the real dialog submits the source confirmation");
+                gui.SendEvent(new Event { type = EventType.KeyUp, keyCode = KeyCode.Return });
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.return_to_title_requested, Is.True);
+                Assert.That(owner.GameRuntimePlayerMenuState(runtime.GameRuntimeProductionCampaignSnapshot.identity), Is.EqualTo(13),
+                    "source action29 retains menu13 until its outer return");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                runtime.StepGameRuntimeTitleMedia(0, false, false);
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                var beforeDraw = gui.DrawCount;
+                gui.SendEvent(new Event { type = EventType.Layout });
+                gui.SendEvent(new Event { type = EventType.Repaint });
+                Assert.That(gui.DrawCount, Is.GreaterThan(beforeDraw), "the actual returned Title GUI draws after world teardown");
+                Assert.That(drawnIdentity?.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(drawnObjective, Is.False);
+                Assert.That(Field("campaignSession"), Is.Null);
+                Assert.That((bool)Field("gameRuntimeAbandonConfirmationOpen"), Is.False);
+                Assert.That((bool)Field("gameRuntimeSpellMenuOpen"), Is.False);
+                Assert.That(menus.AbandonConfirmationPending || menus.HasPendingAction || menus.SpellOpen || menus.MapOpen,
+                    Is.False, "gameplay menu/input ownership ends with its borrowed world");
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore));
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore + 1), "the Title runtime remains usable");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignBefore));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AbandonConfirmationIgnoresRepeatedEscapeWithoutChangingOtherDialogs()
+        {
+            using var cache = new OwnerCampaignMenuCache(CampaignMenuCache);
+            var gui = ScriptableObject.CreateInstance<CampaignGuiWindow>();
+            var shown = false;
+            var result = SourcePauseMenu.ConfirmationResult.None;
+            var cursor = Vector2.zero;
+            var view = new Rect();
+            var windowOrigin = Vector2.zero;
+            var mouseDownCount = 0;
+            try
+            {
+                // Controlled component input reaches the real source renderer;
+                // the installed player separately proves fresh key admission.
+                gui.DrawRuntime = () => {
+                    var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+                    view = new Rect((Screen.width - 640 * scale) / 2,
+                        (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
+                    windowOrigin = GUIUtility.GUIToScreenPoint(Vector2.zero) - gui.position.position;
+                    var input = Event.current; var previous = input.mousePosition;
+                    try {
+                        input.mousePosition = view.position + cursor * scale;
+                        if (input.type == EventType.MouseDown) mouseDownCount++;
+                        var drawn = cache.PauseMenu.DrawAbandonConfirmation("day", false, true, false);
+                        if (drawn != SourcePauseMenu.ConfirmationResult.None) result = drawn;
+                    }
+                    finally { input.mousePosition = previous; }
+                };
+                gui.minSize = new Vector2(640, 480);
+                gui.position = new Rect(0, 0, 640, 480);
+                gui.Show(); shown = true;
+                var deadline = Time.realtimeSinceStartupAsDouble + 10;
+                while (gui.DrawCount == 0)
+                {
+                    Assert.That(Time.realtimeSinceStartupAsDouble, Is.LessThan(deadline));
+                    gui.Repaint(); UnityEditor.EditorApplication.QueuePlayerLoopUpdate(); yield return null;
+                }
+                void Send(Event input)
+                {
+                    result = SourcePauseMenu.ConfirmationResult.None;
+                    var before = gui.DrawCount;
+                    var mouseDownsBefore = mouseDownCount;
+                    var mouseDown = input.type == EventType.MouseDown;
+                    if (input.isMouse)
+                        input.mousePosition = view.position + cursor * (view.width / 640f) + windowOrigin;
+                    gui.SendEvent(input);
+                    Assert.That(gui.DrawCount, Is.GreaterThan(before));
+                    if (mouseDown)
+                        Assert.That(mouseDownCount, Is.EqualTo(mouseDownsBefore + 1),
+                            "the EditorWindow delivers MouseDown to the actual confirmation renderer");
+                }
+                for (var repeat = 0; repeat < 4; repeat++)
+                {
+                    Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                    Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.None),
+                        "raw IMGUI repeats cannot cancel the source Escape confirmation");
+                }
+                Send(new Event { type = EventType.KeyUp, keyCode = KeyCode.Escape });
+                Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.Return });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Confirm));
+                Send(new Event { type = EventType.KeyDown, keyCode = KeyCode.KeypadEnter });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Confirm));
+                cursor = new Vector2(335, 120);
+                Send(new Event { type = EventType.MouseDown, button = 0 });
+                Assert.That(result, Is.EqualTo(SourcePauseMenu.ConfirmationResult.Cancel),
+                    "the actual source Cancel button remains operational");
+                Assert.That(SourcePauseMenu.ConfirmationInput(EventType.KeyDown, KeyCode.Escape,
+                    0, Vector2.zero, new Rect(270, 104, 50, 32), new Rect(320, 104, 50, 32)),
+                    Is.EqualTo(SourcePauseMenu.ConfirmationResult.Cancel),
+                    "generic Save/Load confirmation keeps its Escape cancellation");
+            }
+            finally
+            {
+                gui.DrawRuntime = null;
+                if (shown) gui.Close(); else UnityEngine.Object.DestroyImmediate(gui);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProgressedDayTwoTitleReopensItsRetainedMapAndLoadsOnce()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var input = Environment.GetEnvironmentVariable("MC_PLAYER_NAMES_NYPHUR_REPLAY_OUTPUT") ??
+                Path.Combine(generated, "player-names-20261116/real-nyphur-view.mcs");
+            var bytes = File.ReadAllBytes(input);
+            var saved = ReadReplayDocument(bytes);
+            var completed = saved.SelectNodes("/root/completed_levels/item").Cast<System.Xml.XmlNode>()
+                .Select(row => row.InnerText).ToArray();
+            const string dayTwo = "level.magic_carpet_2.payahandra_ruins";
+            const string nightOne = "level.magic_carpet_2.night_spire";
+            Assert.That(saved.SelectSingleNode("/root/definition/runtime_flow/bound_level_id").InnerText,
+                Is.EqualTo(dayTwo));
+            Assert.That(completed, Is.EqualTo(new[] { nightOne }),
+                "this real replay declares an incoming L2 frontier; it does not prove earned L1 progress");
+            GameRuntimeTransport.InstalledPackageResource[] resources;
+            using (var stream = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                Path.Combine(generated, "continuity-20261115/installed-full-resources.json")))
+                resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                    typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(stream);
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var root = new GameObject("retained Day 2 loading frontier");
+            try
+            {
+                using var owner = NativeSession.OpenGameRuntimeReplay(bytes, resources);
+                using var presenter = new CampaignTransitionPresenter(root.transform,
+                    Path.Combine(generated, "mc2-loading-asset-cache"));
+                var incoming = owner.GameRuntimeIdentity();
+                Assert.That(incoming.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(incoming.active_runtime_flow.bound_level_id, Is.EqualTo(dayTwo));
+                var catalog = incoming.active_runtime_flow.entries.Select(row => row.level_id).ToArray();
+                var previousSessionGeneration = ulong.Parse(incoming.session.generation);
+                for (var visit = 0; visit < 2; visit++)
+                {
+                    var title = owner.GameRuntimeClose();
+                    Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                    Assert.That(title.session?.session_id, Is.Null.Or.Empty);
+                    var map = owner.GameRuntimeBeginNewGame();
+                    Assert.That(map.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                    Assert.That(map.runtime_id, Is.EqualTo(incoming.runtime_id));
+                    Assert.That(map.session?.session_id, Is.Null.Or.Empty);
+                    Assert.That(map.campaign_menu.phase, Is.EqualTo("mission_select"));
+                    Assert.That(map.campaign_menu.completed_level_id, Is.Null.Or.Empty);
+                    Assert.That(map.campaign_menu.completed_levels, Is.EqualTo(completed));
+                    Assert.That(map.campaign_menu.available_levels, Is.EqualTo(new[] { nightOne, dayTwo }));
+                    Assert.That(map.campaign_menu.selected_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(map.campaign_menu.briefing_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(map.active_runtime_flow.entries.Select(row => row.level_id), Is.EqualTo(catalog));
+
+                    var loading = owner.GameRuntimeCampaignMenuAction("start_mission");
+                    presenter.Present(loading);
+                    var binding = presenter.Destination;
+                    Assert.That((binding.level_id, binding.environment, binding.artwork_profile),
+                        Is.EqualTo((dayTwo, "day", "ordinary")));
+                    Assert.That((binding.source_selection.external_level, binding.source_selection.internal_level,
+                        binding.source_selection.map_type_id), Is.EqualTo(((ushort)2, (ushort)1, (byte)0)));
+                    CampaignTransitionPresenter.PreflightDestination(binding, resources);
+                    Assert.That(presenter.IsVisible, Is.True);
+                    var gate = new CampaignTransitionPresenter.LoadingGate();
+                    gate.Begin(loading, dayTwo);
+                    Assert.That(gate.TryClaimOpen(loading, presenter.IsVisible), Is.False);
+                    Assert.That(owner.GameRuntimeIdentity().session?.session_id, Is.Null.Or.Empty);
+                    // This is the existing controlled presentation-boundary seam;
+                    // the installed player separately proves actual visible art.
+                    gate.Observe(loading, presenter.IsVisible);
+                    Assert.That(gate.TryClaimOpen(loading, presenter.IsVisible), Is.True);
+                    var playing = owner.GameRuntimeOpenLevel();
+                    gate.Complete(playing);
+                    presenter.Present(playing);
+                    Assert.That(playing.runtime_id, Is.EqualTo(incoming.runtime_id));
+                    Assert.That(playing.active_runtime_flow.bound_level_id, Is.EqualTo(dayTwo));
+                    Assert.That(playing.session.tick, Is.EqualTo("0"));
+                    Assert.That(ulong.Parse(playing.generation), Is.EqualTo(ulong.Parse(loading.generation) + 1));
+                    Assert.That(ulong.Parse(playing.session.generation), Is.GreaterThan(previousSessionGeneration));
+                    previousSessionGeneration = ulong.Parse(playing.session.generation);
+                    Assert.That(presenter.IsVisible, Is.False);
+                    Assert.That(gate.IsPending, Is.False);
+                    var duplicate = Assert.Throws<GameRuntimeTransport.TransitionException>(() => owner.GameRuntimeOpenLevel());
+                    Assert.That(duplicate.Status, Is.EqualTo(3));
+                    Assert.That(owner.GameRuntimeIdentity().session.generation, Is.EqualTo(playing.session.generation));
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+            Assert.That(File.ReadAllBytes(input), Is.EqualTo(bytes), "the incoming receipt is never rewritten");
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [Test]
         [Timeout(180000)]
         public void ProductionLoadingGateWaitsForVisibleFrameBeforeRealRustOpen()
@@ -7627,7 +12144,7 @@ namespace MagicCarpet.Native.Tests
                 var loading = transport.BootstrapPackageSet(ResolverPackages());
                 GameRuntimeTransport.ValidateIdentity(loading, transport.Handle);
                 Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
-                Assert.That(loading.session.session_id, Is.Null.Or.Empty);
+                Assert.That(loading.session, Is.Null, "Loading has no opened nested session");
                 presenter.Present(loading);
                 gate.Begin(
                     loading,
@@ -7881,34 +12398,38 @@ namespace MagicCarpet.Native.Tests
         {
             var nativeSessions = NativeSession.ActiveSessionCount;
             var campaignSessions = NativeCampaignSession.ActiveSessionCount;
-            var save = Path.Combine(Path.GetTempPath(), $"mc-paused-reload-{Guid.NewGuid():N}.json");
+            var temporary = Path.Combine(Path.GetTempPath(), $"mc-paused-reload-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(temporary);
+            var save = Path.Combine(temporary, "save.json");
             var root = new GameObject("paused menu replay with live audio owner");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             try
             {
-                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
-                    "-mc-game-runtime", "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/mc-bhq8-level1-collision-v5-night"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level1-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/mc2-level1-night-cache-v2"),
-                    "-mc-runtime-loading-cache", Path.Combine(PrivateRoot,
-                        "generated/mc2-level1-night-cache-v2"),
-                    "-mc-runtime-replay-save", save,
-                    "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/mc-level2-vault-successor-closure-20261025"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level2-vault-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/level2-vault-successor-owner-cache-20261025"),
-                    "-mc-runtime-package", Path.Combine(PrivateRoot,
-                        "generated/level3-day-block32-campaign-recipe-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
-                        "generated/mc-b9s2-cursor-level3-20261029"),
-                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
-                        "generated/level3-day-spell-owner-cache-audio-v4") });
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var arguments = new System.Collections.Generic.List<string> {
+                    "-mc-game-runtime",
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", CampaignMenuCache,
+                    "-mc-runtime-speech-cache", CampaignSpeechCache,
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile"),
+                    "-mc-runtime-replay-save", save
+                };
+                using (var input = File.OpenRead(Environment.GetEnvironmentVariable("MC_CAMPAIGN_SAVE_RESOURCES") ??
+                    Path.Combine(generated, "continuity-20261115/installed-full-resources.json")))
+                {
+                    var resources = (GameRuntimeTransport.InstalledPackageResource[])new DataContractJsonSerializer(
+                        typeof(GameRuntimeTransport.InstalledPackageResource[])).ReadObject(input);
+                    Assert.That(resources.Length, Is.GreaterThanOrEqualTo(3));
+                    for (var index = 0; index < 3; index++)
+                    {
+                        arguments.Add("-mc-runtime-package"); arguments.Add(resources[index].package_dir);
+                        arguments.Add("-mc-runtime-owner-cache"); arguments.Add(resources[index].owner_cache_path);
+                        arguments.Add("-mc-runtime-presentation-cache"); arguments.Add(resources[index].presentation_cache_path);
+                    }
+                }
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
                 runtime.QualificationDriveGameRuntimeFrames(3);
                 var saved = runtime.GameRuntimeProductionCampaignSnapshot;
                 runtime.QualificationSaveGameRuntimeProductionReplayToPath(save);
@@ -7968,7 +12489,7 @@ namespace MagicCarpet.Native.Tests
             {
                 runtime.QualificationDisposeNativeOwners();
                 UnityEngine.Object.DestroyImmediate(root);
-                if (File.Exists(save)) File.Delete(save);
+                Directory.Delete(temporary, true);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));

@@ -24,6 +24,27 @@ mod enhanced_abi;
 mod native_v2;
 mod presentation_bridge;
 
+// The browser worker owns one instance and uses this aligned scratch area for
+// the same checked pointer/length calls as a native presentation client.
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_wasm_scratch(byte_count: u32) -> *mut u64 {
+    thread_local! {
+        static SCRATCH: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if byte_count == 0 || byte_count > 16 * 1024 * 1024 {
+        return std::ptr::null_mut();
+    }
+    SCRATCH.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        let words = (byte_count as usize).div_ceil(size_of::<u64>());
+        if buffer.len() < words {
+            buffer.resize(words, 0);
+        }
+        buffer.as_mut_ptr()
+    })
+}
+
 const ABI_VERSION: u32 = 1;
 #[cfg(test)]
 const OWNER_STATE_SEQUENCE: &[u8] = include_bytes!(

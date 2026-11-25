@@ -1353,6 +1353,21 @@ int32_t mc_game_runtime_render_observation_copy_v1(
     uint64_t handle, uint64_t expected_runtime_generation,
     uint64_t expected_session_generation, uint64_t expected_tick,
     uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+/* Current source-owned animated TMAP images, read-only. Little-endian payload:
+ * u16 count, then count records of u16 selector, u32 length, length bytes.
+ * Missing selectors use their owner base image. A short buffer returns BOUNDS
+ * and the required size without writing the payload. */
+int32_t mc_game_runtime_tmap_pixels_copy_v1(
+    uint64_t handle, uint64_t expected_runtime_generation,
+    uint64_t expected_session_generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+/* Acknowledge actually submitted geometry selectors at this exact source turn.
+ * Selectors must be sorted, unique, animated and present in the live view.
+ * The source owner deduplicates demands and records them for replay. */
+int32_t mc_game_runtime_tmap_draw_v1(
+    uint64_t handle, uint64_t expected_runtime_generation,
+    uint64_t expected_session_generation, uint64_t expected_tick,
+    int16_t source_yaw, const uint16_t *selectors, uint32_t count);
 /* Read-only, generation/tick-guarded live source BUILD owners. */
 typedef struct McRuntimeBuildingV1 {
     uint32_t abi_version, struct_size;
@@ -1439,6 +1454,21 @@ int32_t mc_game_runtime_toggle_flat_shading_v1(
 int32_t mc_game_runtime_source_speed_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
     uint64_t expected_tick, uint8_t secondary);
+/* Source GAME viewport: 0 menu shrink, 1 menu enlarge, 2 '[' enlarge,
+ * 3 ']' shrink. Changes projection within the existing full frame envelope. */
+int32_t mc_game_runtime_source_viewport_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick, uint8_t action);
+/* Source auxiliary byte207, visible by default and independent of GAME/CONFIG. */
+int32_t mc_game_runtime_toggle_player_names_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick);
+/* Pure current source MenuState_0x3DF read, including ordinary lifecycle writes.
+ * Playing/Paused only; both generations and tick must match. On error the
+ * output byte is unchanged. No frame, menu action or presentation clock runs. */
+int32_t mc_game_runtime_player_menu_state_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick, uint8_t *out_menu_state);
 int32_t mc_game_runtime_participant_notifications_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_runtime_resume_v1(
@@ -1463,8 +1493,20 @@ int32_t mc_game_runtime_campaign_menu_command_json_v1(
 int32_t mc_game_runtime_media_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
-/* source_brightness may return MC_STATUS_SOURCE_ACTION_BLOCKED while the
- * guarded palette cannot accept a change; this leaves the owner unchanged. */
+/* source_graphics accepts action reflections/shadows/sky/dynamic_lighting
+ * with decimal-string session_guard. It changes GAME display_settings and
+ * the local source notice, never CONFIG/profile or the gameplay tick.
+ * source_help_mode uses the same exact decimal-string session_guard and
+ * atomically toggles help preference/native policy/local notice. Help data is
+ * admitted by the pinned source; there is no host-availability argument.
+ * source_brightness/source_audio/source_flight_assistance use the exact
+ * decimal-string session_guard. source_flight_assistance toggles the supported
+ * single-player preference and its local source notice without advancing time.
+ * MC_STATUS_SOURCE_ACTION_BLOCKED leaves preferences, notices and replay
+ * unchanged. source_audio accepts sound/music/speech; speech_available is
+ * solely the host's validated CD-resource fact. Sound/music availability is
+ * derived from bound native resources and reported in runtime identity's
+ * source_audio_capabilities. No generic Playing preference edit is admitted. */
 int32_t mc_game_runtime_preferences_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
@@ -1505,6 +1547,10 @@ int32_t mc_game_session_destroy_v1(uint64_t handle);
 int32_t mc_game_session_snapshot_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Runtime JSON may carry steering_observation:[roll_bits,pitch_bits], the
+ * exact finite IEEE754 f32 sample before i8 quantization, in -128..127.
+ * Signed zero is normalized. Runtime assistance consumes it before recording
+ * the derived gameplay command; omitted observations retain legacy axes. */
 int32_t mc_game_session_step_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     const uint8_t *command_json, uint32_t command_json_len);
@@ -1514,6 +1560,27 @@ int32_t mc_game_session_events_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t cursor, uint32_t limit, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Read a campaign actor page at the exact generation/tick. Pass the returned
+ * next_offset with the same generation/tick to continue, or zero to start. */
+int32_t mc_game_session_actors_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+/* Read the bounded campaign objective stages at the exact generation/tick. */
+int32_t mc_game_session_objectives_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+/* Read the current Castle, Collector and mana sphere lifetimes.
+ * Pass next_offset with the same generation/tick to continue a page. */
+int32_t mc_game_session_economy_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t offset, uint32_t limit, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+/* Read current terrain samples in a nonwrapping, row-major tile rectangle. */
+int32_t mc_game_session_terrain_window_json_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_session_audio_json_v1(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint64_t event_sequence, uint8_t *buffer, uint32_t capacity,

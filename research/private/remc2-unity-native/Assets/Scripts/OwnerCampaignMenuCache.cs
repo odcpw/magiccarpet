@@ -275,24 +275,81 @@ namespace MagicCarpet.Native
                     if (manifest.gameplay_help_path != "gameplay-help.json")
                         throw new InvalidDataException("source gameplay help path is unbound");
                     var helpReceipt = manifest.outputs.SingleOrDefault(row => row.path == manifest.gameplay_help_path);
-                    if (helpReceipt == null || helpReceipt.bytes != 2638)
-                        throw new InvalidDataException("source gameplay help receipt is incomplete");
+                    var helpHash = helpReceipt?.bytes switch {
+                        2638 => "50cbdaec44a5ca55ef9451301c76f304bc6e18e32cdfb2c3c869b1ce52cabc33",
+                        2746 => "914179b7e5e064cd41ab694defd0163d349b23738bf6a76fb8f6c878ce4be052",
+                        2965 => "e6c0c41882fc529d239f2815a6b9e19e4cbdb295b5ce79f1384d25c01578aea5",
+                        3075 => "b950880c717595525010f9752b712be3acd357c567e295325f3ddd28ca92dae2",
+                        3186 => "76b2093efe79e811c5ba510286232f896c7f589046fcf432219c52328edc17d2",
+                        3406 => "022637d862cd209bd56b5e66f96bfd976318a7e3da3bcc2f8da76d28ce369fca",
+                        3630 => "6340326111c40b7272065af8bcf411ef49ff016791e61479bdb0ec51492b8702",
+                        3856 => "d4cc8b1203b2ca4f9da0c2488c27966c2aaa3c099425ff7b78f2400f560896ce",
+                        4077 => "8a108cc216d64884e51df5dd17f6419a4e31551af972c2d0f735f62fd64eb12f",
+                        4303 => "472d70de35f78b3545fcfeaa864a29ea4a8706583b6eb400a33e5b2451a2efa1",
+                        4525 => "5b18ce4a633f19ebc951d387cc2669553767c316d18f623cf60ac3f44e7a01db",
+                        4857 => "6f4cedce621770af8f0a1ea92cf3cc9e79d6375ebe9057899be1ea2516a2a1be",
+                        4967 => "a1262ada4fb8bf14f8d0e7077748636ea4190b4773d3dcee810fff36eee585c2",
+                        5080 => "6dfd1ca61db643b2ef2ae94b9dda41c3de03bcd5acb1c861e6417426ffdb2f75",
+                        5193 => "f8805e4d672a70d40509f0af76f629e5ee0cec8e6aa24c502f6b1aee6e7585fd",
+                        5407 => "1e93cf05abd3e3af63451030736017f4c6d74bc244de48f8b57f0aa3e5ccbf8d",
+                        5624 => "6cbf278b437fb90e25a0f7712185f2a0f9df86cd678720c97f106d3824c374cd",
+                        5945 => "a50150983ec1a827520a8f6c471e26beb0cff852908bd4a86f273733758cd1d9",
+                        6052 => "624603b9dfbcf670672e28ebb555ecfac57cd96de8a603f62c2bc6a569a5ba29",
+                        6834 => "670380d5da12834b117652fb750ff2e6105658927061aa10153b9c1ae44757fe",
+                        _ => throw new InvalidDataException("source gameplay help receipt is incomplete")
+                    };
                     var helpBytes = Read(manifest.gameplay_help_path, helpReceipt.bytes);
-                    if (Digest(helpBytes) != "50cbdaec44a5ca55ef9451301c76f304bc6e18e32cdfb2c3c869b1ce52cabc33")
+                    if (Digest(helpBytes) != helpHash)
                         throw new InvalidDataException("source gameplay help table identity differs");
                     var help = JsonUtility.FromJson<GameplayHelpDocument>(Encoding.ASCII.GetString(helpBytes));
+                    var sourceRows = new List<int> { 1, 3, 40, 41, 42, 69, 70, 71,
+                        72, 73, 74, 75, 76, 77, 78, 79, 80, 85, 86, 87, 88, 89, 90 };
+                    if (helpReceipt.bytes >= 2746) sourceRows.Insert(1, 2);
+                    if (helpReceipt.bytes >= 2965)
+                    {
+                        sourceRows.Insert(sourceRows.IndexOf(85), 81);
+                        sourceRows.Insert(sourceRows.IndexOf(85), 82);
+                    }
+                    if (helpReceipt.bytes >= 3075) sourceRows.Insert(sourceRows.IndexOf(40), 4);
+                    if (helpReceipt.bytes >= 3186) sourceRows.Insert(sourceRows.IndexOf(40), 5);
+                    if (helpReceipt.bytes >= 4077) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 6, 8 });
+                    if (helpReceipt.bytes >= 4303) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 12, 13 });
+                    if (helpReceipt.bytes >= 4525)
+                    {
+                        sourceRows.Insert(sourceRows.IndexOf(8), 7);
+                        sourceRows.Insert(sourceRows.IndexOf(12), 10);
+                    }
+                    if (helpReceipt.bytes >= 3406) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 15, 16 });
+                    if (helpReceipt.bytes >= 3630) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 36, 37 });
+                    if (helpReceipt.bytes >= 4857)
+                    {
+                        sourceRows.Insert(sourceRows.IndexOf(10), 9);
+                        sourceRows.Insert(sourceRows.IndexOf(12), 11);
+                        sourceRows.Insert(sourceRows.IndexOf(36), 21);
+                    }
+                    if (helpReceipt.bytes >= 4967) sourceRows.Insert(sourceRows.IndexOf(21), 18);
+                    if (helpReceipt.bytes >= 5080) sourceRows.Insert(sourceRows.IndexOf(15), 14);
+                    if (helpReceipt.bytes >= 5193) sourceRows.Insert(sourceRows.IndexOf(18), 17);
+                    if (helpReceipt.bytes >= 5407) sourceRows.InsertRange(sourceRows.IndexOf(36), new[] { 23, 24 });
+                    if (helpReceipt.bytes >= 5624) sourceRows.InsertRange(sourceRows.IndexOf(21), new[] { 19, 20 });
+                    if (helpReceipt.bytes >= 5945)
+                    {
+                        sourceRows.Insert(sourceRows.IndexOf(23), 22);
+                        sourceRows.InsertRange(sourceRows.IndexOf(36), new[] { 25, 26 });
+                    }
+                    if (helpReceipt.bytes >= 6052) sourceRows.Insert(sourceRows.IndexOf(36), 27);
+                    if (helpReceipt.bytes >= 6834) sourceRows.InsertRange(sourceRows.IndexOf(36), new[] { 29, 30, 31, 32, 33, 34, 35 });
+                    if (helpReceipt.bytes >= 3856) sourceRows.InsertRange(sourceRows.IndexOf(40), new[] { 38, 39 });
                     if (help?.schema != "mc2-gameplay-help/v1" ||
                         help.source_sha256 != "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386" ||
-                        help.rows?.Length != 23)
+                        help.rows?.Length != sourceRows.Count)
                         throw new InvalidDataException("source gameplay help table is incomplete");
-                    var sourceRows = new[] { 1, 3, 40, 41, 42, 69, 70, 71,
-                        72, 73, 74, 75, 76, 77, 78, 79, 80, 85, 86, 87, 88, 89, 90 };
                     for (var index = 0; index < help.rows.Length; index++)
                     {
                         var row = help.rows[index];
                         var expectedRow = sourceRows[index];
-                        var expectedKind = index < 2 ? 1 : index < 5 ? 5 : index < 8 ? 6 :
-                            index < 17 ? 7 : index == 17 ? 10 : 11;
+                        var expectedKind = expectedRow <= 17 ? 1 : expectedRow <= 27 ? 2 : expectedRow <= 35 ? 3 : expectedRow <= 37 ? 4 : expectedRow <= 42 ? 5 : expectedRow <= 71 ? 6 :
+                            expectedRow <= 80 ? 7 : expectedRow <= 82 ? 8 : expectedRow == 85 ? 10 : 11;
                         if (row == null || row.row != expectedRow || row.kind != expectedKind ||
                             row.text_record < 0 || row.text_record >= 471 ||
                             (expectedKind == 11 ? row.duration != 0 : row.duration <= 0) ||
@@ -303,6 +360,8 @@ namespace MagicCarpet.Native
                         gameplayHelp.Add(row.row, new GameplayHelpBinding(row.row, row.text_record,
                             row.duration, row.flags, row.x, row.y, row.age_threshold, row.priority));
                     }
+                    if (helpReceipt.bytes >= 6834 && Font1Record40Width <= 0)
+                        throw new InvalidDataException("source status FONT1 record 40 is unbound");
                 }
                 if (manifest.schema == "mc2-owner-campaign-menu-cache/v3")
                 {
@@ -563,6 +622,30 @@ namespace MagicCarpet.Native
             gameplayHelp.TryGetValue(row, out var binding) ? binding :
                 throw new InvalidDataException("source gameplay help row is unbound: " + row);
 
+        internal bool HasMinimapHelp => gameplayHelp.ContainsKey(2);
+        internal bool HasLargeMapHelp => gameplayHelp.ContainsKey(4);
+        internal bool HasLowLifeHelp => gameplayHelp.ContainsKey(5);
+        internal bool HasIdleHelp => gameplayHelp.ContainsKey(15) && gameplayHelp.ContainsKey(16);
+        internal bool HasVitalsHelp => gameplayHelp.ContainsKey(36) && gameplayHelp.ContainsKey(37);
+        internal bool HasCastHelp => gameplayHelp.ContainsKey(38) && gameplayHelp.ContainsKey(39);
+        internal bool HasSpellSearchHelp => gameplayHelp.ContainsKey(6) && gameplayHelp.ContainsKey(8);
+        internal bool HasCastleSpellHelp => gameplayHelp.ContainsKey(12) && gameplayHelp.ContainsKey(13);
+        internal bool HasFireballHelp => gameplayHelp.ContainsKey(7) && gameplayHelp.ContainsKey(10);
+        internal bool HasPossessionHelp => gameplayHelp.ContainsKey(9) && gameplayHelp.ContainsKey(11) &&
+            gameplayHelp.ContainsKey(21);
+        internal bool HasLooseManaHelp => gameplayHelp.ContainsKey(18);
+        internal bool HasCastleReturnReminder => gameplayHelp.ContainsKey(14);
+        internal bool HasCastleAttackHelp => gameplayHelp.ContainsKey(17);
+        internal bool HasOwnedCastleMinimapHelp => gameplayHelp.ContainsKey(23) && gameplayHelp.ContainsKey(24);
+        internal bool HasBuildingMinimapHelp => gameplayHelp.ContainsKey(22);
+        internal bool HasMarkerStoneMinimapHelp => gameplayHelp.ContainsKey(27);
+        internal bool HasCastleStatusHelp => gameplayHelp.ContainsKey(29) && gameplayHelp.ContainsKey(35);
+        internal int Font1Record40Width { get; private set; }
+        internal bool HasRivalCastleMinimapHelp => gameplayHelp.ContainsKey(25);
+        internal bool HasRivalCollectorMinimapHelp => gameplayHelp.ContainsKey(26);
+        internal bool HasCreaturePickupMinimapHelp => gameplayHelp.ContainsKey(19) && gameplayHelp.ContainsKey(20);
+        internal bool HasObjectiveMarkHelp => gameplayHelp.ContainsKey(81) && gameplayHelp.ContainsKey(82);
+
         internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
             .OrderBy(row => row.source_ordinary_index).ToArray();
         internal SourceCampaignTerminalEffects.FinalMissionBinding FinalMissionBinding
@@ -718,6 +801,12 @@ namespace MagicCarpet.Native
                 if (bytes.Length != output.bytes || Digest(bytes) != output.sha256 || !payloads.TryAdd(output.path, bytes))
                     throw new InvalidDataException("campaign language output identity mismatch");
             }
+            var statusFont = language.fonts?.SingleOrDefault(row => row.id == "font1");
+            if (statusFont?.glyphs != null && statusFont.glyphs.Length > 40 &&
+                statusFont.glyphs[40] != null && statusFont.glyphs[40].index == 40 &&
+                statusFont.glyphs[40].width > 0 && statusFont.masks_path == "fonts/font1.masks.u8" &&
+                payloads.ContainsKey(statusFont.masks_path))
+                Font1Record40Width = statusFont.glyphs[40].width;
             if (menu.objective != null)
             {
                 var font = language.fonts?.SingleOrDefault(row => row.id == "hfont3");

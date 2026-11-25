@@ -224,6 +224,18 @@ pub(super) fn acquired_holder(
         })
 }
 
+/// A source-owned holder is usable as an observed semantic binding only while
+/// its current arena incarnation also passes the backend's physical checks.
+/// This does not test mana, activation state, or later emission prerequisites.
+pub(super) fn current_holder<'a>(
+    shared: &'a Level2SharedSpellResetSession,
+    family: u8,
+    holder_actor: impl Fn(&EntitySnapshot) -> Option<RuntimeActorId>,
+) -> Option<(&'a EntitySnapshot, RuntimeActorId)> {
+    let holder = acquired_holder(shared, family)?;
+    Some((holder, holder_actor(holder)?))
+}
+
 pub(super) fn observe(
     shared: &Level2SharedSpellResetSession,
     holder_actor: impl Fn(&EntitySnapshot) -> Option<RuntimeActorId>,
@@ -238,9 +250,9 @@ pub(super) fn observe(
     BINDINGS
         .iter()
         .map(|binding| {
-            let candidate = acquired_holder(shared, binding.family);
-            let actor = candidate.and_then(&holder_actor);
-            let holder = candidate.filter(|_| actor.is_some());
+            let current = current_holder(shared, binding.family, &holder_actor);
+            let actor = current.map(|(_, actor)| actor);
+            let holder = current.map(|(holder, _)| holder);
             let acquired = holder.is_some();
             let hand = match (
                 acquired && player.left_spell_slot_raw == i16::from(binding.family),
@@ -594,6 +606,16 @@ mod tests {
             spell(&session).availability,
             SpellAvailability::InsufficientMana
         );
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(acquired.id.clone()),
+                    ..GameCommand::default()
+                },
+            )
+            .expect("source selection does not require enough mana to cast");
+        assert!(spell(&session).selected, "the live low-mana holder remains selectable");
         assert!(!spell(&session).menu_help.unwrap().mana_unavailable,
             "idle source68D50 omits the fresh-pulse cost check; activation readiness does not");
         set_mana(session.backend_mut().campaign.simulation_mut(), -1);
@@ -630,5 +652,108 @@ mod tests {
                 .active_value,
             0
         );
+
+        // Use the ordinary mark command on the acquired holder. Cycling is a
+        // source selection action and remains valid when the caster lacks mana.
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    mark_spell: Some(sim_session::SpellMark {
+                        spell_id: ended.id.clone(),
+                        hand: sim_session::SpellMarkHand::Right,
+                        holder_actor: ended.holder_actor,
+                    }),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        set_mana(session.backend_mut().campaign.simulation_mut(), 0);
+        assert_eq!(spell(&session).availability, SpellAvailability::InsufficientMana);
+        let marked = session.snapshot();
+        let right_marked: Vec<_> = marked.value.player_spells.iter()
+            .filter(|row| row.acquired && row.marked_hand == sim_session::SpellMarkHand::Right)
+            .collect();
+        assert_eq!(right_marked.len(), 1, "the actual fixture has one live right-hand mark");
+        assert_eq!(right_marked[0].id, ended.id);
+        let cycle = GameCommand {
+            longitudinal: sim_session::LongitudinalControl::Accelerate,
+            cycle_marked_spell: Some(sim_session::MarkedSpellCycle {
+                hand: sim_session::SpellAssignmentHand::Right,
+                direction: sim_session::SpellCycleDirection::Next,
+            }),
+            ..GameCommand::default()
+        };
+        let live_cycle = session.backend().campaign_player_command(&cycle).unwrap();
+        assert_eq!(live_cycle.opcode, 32, "low mana does not block source cycling");
+        assert_eq!(live_cycle.argument_1, SOURCE_SPELL_INDEX_MAP.iter()
+            .position(|&family| family == 12).unwrap() as i8);
+        assert_eq!(live_cycle.flags & 1, 1, "cycling retains ordinary movement input");
+        assert_eq!(session.snapshot(), marked, "translating a cycle cannot advance state");
+
+        // Controlled stale-reference boundary from the existing source-arena
+        // reuse check: preserve the row bytes but advance its incarnation.
+        // This does not claim that ordinary play reached this exact geometry.
+        {
+            let simulation = session.backend_mut().campaign.simulation_mut();
+            let arena = &mut simulation.session.state.live.economy;
+            let old = arena.handle(slot).expect("the acquired Beyond Sight holder is live");
+            let payload = arena.entities[usize::from(slot)].clone();
+            arena.entities[usize::from(slot)].reclaim_source_row();
+            arena.economy.release_slot(slot, None);
+            assert_eq!(arena.economy.allocate_slot(), Some(slot));
+            arena.entities[usize::from(slot)] = payload;
+            let replacement = arena.handle(slot).expect("the numeric slot was reused");
+            assert_ne!(replacement.generation, old.generation);
+            assert!(arena.resolve(old).is_none());
+        }
+        assert!(session.backend().campaign.simulation().current_beyond_sight_holder().is_none());
+        let before_stale = session.snapshot();
+        let stale = spell(&session);
+        assert!(!stale.acquired);
+        assert_eq!(stale.availability, SpellAvailability::InvalidHolder);
+        assert!(stale.holder_actor.is_none());
+        assert_eq!(stale.marked_hand, sim_session::SpellMarkHand::Right,
+            "the remembered source mark survives holder reuse");
+        let stale_cycle = session.backend().campaign_player_command(&cycle).unwrap();
+        assert_eq!(stale_cycle, super::super::campaign_player_command(&cycle),
+            "no live marked holder leaves the complete incoming input unchanged");
+        assert_eq!(session.snapshot(), before_stale, "stale cycling is read-only");
+        let rejected = session.step(
+            guard(&session),
+            GameCommand {
+                select_spell: Some(stale.id.clone()),
+                ..GameCommand::default()
+            },
+        );
+        assert!(rejected.is_err(), "an advertised stale holder cannot be selected");
+        assert_eq!(session.snapshot(), before_stale, "stale selection is atomic");
+        let rejected = session.step(
+            guard(&session),
+            GameCommand {
+                assign_spell: Some(sim_session::SpellAssignment {
+                    spell_id: stale.id.clone(),
+                    tier: 0,
+                    hand: sim_session::SpellAssignmentHand::Left,
+                    holder_actor: None,
+                }),
+                ..GameCommand::default()
+            },
+        );
+        assert!(rejected.is_err(), "semantic-only assignment cannot revive a stale holder");
+        assert_eq!(session.snapshot(), before_stale, "stale assignment is atomic");
+        let rejected = session.step(
+            guard(&session),
+            GameCommand {
+                mark_spell: Some(sim_session::SpellMark {
+                    spell_id: stale.id,
+                    hand: sim_session::SpellMarkHand::Left,
+                    holder_actor: None,
+                }),
+                ..GameCommand::default()
+            },
+        );
+        assert!(rejected.is_err(), "semantic-only marking cannot revive a stale holder");
+        assert_eq!(session.snapshot(), before_stale, "stale marking is atomic");
     }
 }

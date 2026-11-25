@@ -67,6 +67,7 @@ namespace MagicCarpet.Native
         private int sampleRate;
         private long nonZeroSamples;
         private float peak;
+        private bool captureEnabled;
         private bool finished;
         private CaptureSummary finishedSummary;
 
@@ -84,12 +85,24 @@ namespace MagicCarpet.Native
             Debug.Log($"MC_AUDIO_CAPTURE ARMED path={outputPath} rate={sampleRate}");
         }
 
+        private void OnEnable()
+        {
+            lock (gate) captureEnabled = true;
+        }
+
+        private void OnDisable()
+        {
+            lock (gate) captureEnabled = false;
+        }
+
         private void OnAudioFilterRead(float[] data, int callbackChannels)
         {
-            if (!enabled || pcm == null || data == null) return;
+            if (data == null) return;
             lock (gate)
             {
-                if (finished) return;
+                // This callback runs on the mixer thread. Main-thread
+                // lifecycle callbacks publish the component's enable state.
+                if (!captureEnabled || pcm == null || finished) return;
                 if (channels == 0) channels = callbackChannels;
                 if (channels != callbackChannels) return;
                 foreach (var sample in data)

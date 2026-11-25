@@ -264,7 +264,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal ModernVegetation(ModernTerrainMesh terrain, bool voxel = false)
+        internal ModernVegetation(ModernTerrainMesh terrain)
         {
             this.terrain = terrain ?? throw new ArgumentNullException(nameof(terrain));
             mainBatches = new BatchAccumulator(SubmitMainBatch);
@@ -282,9 +282,8 @@ namespace MagicCarpet.Native
             distantMaterials = new Material[7];
             try
             {
-                var treeBounds = voxel ? default : ScannedTreeBounds();
-                for (var i = 0; i < meshes.Length; i++)
-                    meshes[i] = voxel ? LoadVoxelMesh(i, 0) : LoadSourceMesh(i, treeBounds);
+                var treeBounds = ScannedTreeBounds();
+                for (var i = 0; i < meshes.Length; i++) meshes[i] = LoadSourceMesh(i, treeBounds);
                 materials[0] = ScannedMaterial(shader, "grass_medium_01", meshes[0], true);
                 materials[1] = ScannedMaterial(shader, "fern_02", meshes[1], true);
                 materials[2] = ScannedMaterial(shader, "shrub_02", meshes[2], true);
@@ -295,38 +294,19 @@ namespace MagicCarpet.Native
                 materials[6] = ScannedMaterial(shader, "tree_small_02_leaves", meshes[6], true);
                 for (var i = 0; i < meshes.Length; i++)
                 {
-                    if (voxel)
+                    var intermediate = Resources.Load<Mesh>("ModernNature/" + IntermediateResourceName(i));
+                    if (intermediate == null) throw new InvalidOperationException("Missing authored vegetation mesh: " + IntermediateResourceName(i));
+                    intermediateMeshes[i] = UnityEngine.Object.Instantiate(intermediate);
+                    if (i < 3 || i == 6)
                     {
-                        intermediateMeshes[i] = LoadVoxelMesh(i, 1);
-                        // Surface colors are baked once from source albedo and
-                        // alpha; retain the instanced wind/fade shader path.
-                        materials[i].SetFloat("_UseTextures", 0f);
-                        materials[i].SetFloat("_UseNormalMap", 0f);
-                        materials[i].SetFloat("_UseRoughnessMap", 0f);
-                        materials[i].SetFloat("_Smoothness", 0f);
-                        if (Voxels.VoxelVegetationMesh.UsesAlpha(i))
-                        {
-                            distantMeshes[i] = MakeImpostorCards(meshes[i]);
-                            distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], "Voxels/" + Voxels.VoxelVegetationMesh.KindName(i));
-                        }
-                        else distantMeshes[i] = LoadVoxelMesh(i, 2);
+                        distantMeshes[i] = MakeImpostorCards(meshes[i]);
+                        var name = i == 0 ? "grass" : i == 1 ? "fern" : i == 2 ? "shrub" : "tree_leaves";
+                        distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], name);
                     }
+                    else if (i == 3 || i == 5)
+                        distantMeshes[i] = LoadScannedMesh("tree_small_02_lod", i == 3 ? "tree_trunk" : "tree_branches", 4.5f, treeBounds);
                     else
-                    {
-                        var intermediate = Resources.Load<Mesh>("ModernNature/" + IntermediateResourceName(i));
-                        if (intermediate == null) throw new InvalidOperationException("Missing authored vegetation mesh: " + IntermediateResourceName(i));
-                        intermediateMeshes[i] = UnityEngine.Object.Instantiate(intermediate);
-                        if (i < 3 || i == 6)
-                        {
-                            distantMeshes[i] = MakeImpostorCards(meshes[i]);
-                            var name = i == 0 ? "grass" : i == 1 ? "fern" : i == 2 ? "shrub" : "tree_leaves";
-                            distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], name);
-                        }
-                        else if (i == 3 || i == 5)
-                            distantMeshes[i] = LoadScannedMesh("tree_small_02_lod", i == 3 ? "tree_trunk" : "tree_branches", 4.5f, treeBounds);
-                        else
-                            distantMeshes[i] = LoadScannedMesh("rock_moss_set_01_lod", "rock_moss_set_01_rock03", 2.4f);
-                    }
+                        distantMeshes[i] = LoadScannedMesh("rock_moss_set_01_lod", "rock_moss_set_01_rock03", 2.4f);
                     if (distantMaterials[i] == null)
                         distantMaterials[i] = new Material(materials[i]) { enableInstancing = true, name = materials[i].name + " distant" };
                     // Endpoint batches need no per-instance MaterialPropertyBlock.
@@ -342,15 +322,6 @@ namespace MagicCarpet.Native
                 Dispose();
                 throw;
             }
-        }
-
-        private static Mesh LoadVoxelMesh(int kind, int lod)
-        {
-            var name = Voxels.VoxelVegetationMesh.ResourceName(kind, lod);
-            var mesh = Resources.Load<Mesh>("ModernNature/Voxels/" + name);
-            if (mesh == null || mesh.vertexCount == 0 || mesh.GetIndexCount(0) == 0)
-                throw new InvalidOperationException("Missing voxel vegetation mesh: " + name);
-            return UnityEngine.Object.Instantiate(mesh);
         }
 
         // Call after the source terrain planes change, even if the camera has not moved.
@@ -656,7 +627,6 @@ namespace MagicCarpet.Native
                 var z = (cellZ + 0.12f + 0.76f * Random01(seed ^ 0x9e3779b9u)) * Cell;
                 if (terrain.IsWater(x, z)) continue;
                 var height = terrain.SampleHeight(x, z);
-                var surfaceHeight = terrain.SampleVisualHeight(x, z);
                 var hx = terrain.SampleHeight(x + 1.5f, z) - terrain.SampleHeight(x - 1.5f, z);
                 var hz = terrain.SampleHeight(x, z + 1.5f) - terrain.SampleHeight(x, z - 1.5f);
                 var slope = Mathf.Sqrt(hx * hx + hz * hz) / 3f;
@@ -689,7 +659,7 @@ namespace MagicCarpet.Native
                         // plants. Their roots need a dry supporting footprint.
                         var support=(kind==0?.20f:kind==1?.65f:.45f)*scale;
                         if(!DryFootprint(px,pz,support)) continue;
-                        Add(chunk, kind, px, terrain.SampleVisualHeight(px, pz) - .05f, pz,
+                        Add(chunk, kind, px, terrain.SampleHeight(px, pz) - .05f, pz,
                             Random01(tuftSeed ^ 0xc2b2ae35u) * 360f, scale, normal);
                     }
                 }
@@ -698,7 +668,7 @@ namespace MagicCarpet.Native
                 {
                     // Scanned trees follow the same terrain as ground cover, independently of actors.
                     var scale = .65f + .95f * Random01(seed ^ 0xd3a2646cu);
-                    Add(chunk, 3, x, surfaceHeight - .08f, z, yaw, scale, Vector3.up);
+                    Add(chunk, 3, x, height - .08f, z, yaw, scale, Vector3.up);
                 }
                 else if (landmark > Mathf.Lerp(.88f,.97f,Mathf.Clamp01((height-15)/35)) && slope < 1.15f)
                 {
@@ -707,7 +677,7 @@ namespace MagicCarpet.Native
                     // Scanned boulders have rounded undersides. Half-burial makes
                     // them supported outcrops rather than rocks perched on one
                     // point of a curved slope.
-                    var anchor = new Vector3(x, surfaceHeight, z) - normal * (meshes[4].bounds.size.y*.48f*scale);
+                    var anchor = new Vector3(x, height, z) - normal * (meshes[4].bounds.size.y*.48f*scale);
                     Add(chunk, 4, anchor.x, anchor.y, anchor.z, yaw, scale, normal);
                     // Talus gathers around boulders on supported ground. Sparse
                     // isolated boulders on near-vertical faces looked suspended.
@@ -723,7 +693,7 @@ namespace MagicCarpet.Native
                         var fragmentNormal = GroundNormal(px, pz);
                         if (fragmentNormal.y < .70f) continue;
                         var fragmentScale = .12f + .28f * Random01(fragmentSeed ^ 0x02e5be93u);
-                        var fragmentAnchor = new Vector3(px, terrain.SampleVisualHeight(px, pz), pz)
+                        var fragmentAnchor = new Vector3(px, terrain.SampleHeight(px, pz), pz)
                             - fragmentNormal * (.25f * fragmentScale);
                         Add(chunk, 4, fragmentAnchor.x, fragmentAnchor.y, fragmentAnchor.z,
                             Random01(fragmentSeed ^ 0xc2b2ae35u) * 360f, fragmentScale, fragmentNormal);

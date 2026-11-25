@@ -728,7 +728,7 @@ namespace MagicCarpet.Native
             bool removeCastleStage = false,
             SpellMark mark = null,
             MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null, Vector2? steeringObservation = null)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -772,7 +772,7 @@ namespace MagicCarpet.Native
             command.show_objective = showObjective;
             command.look_yaw = unchecked((short)lookYaw);
             command.look_pitch = unchecked((short)lookPitch);
-            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));
+            var bytes = EncodeSteeringObservation(Encoding.UTF8.GetBytes(JsonUtility.ToJson(command)), steeringObservation);
             if (bytes.Length > maximumCommandJsonBytes)
             {
                 throw new InvalidOperationException("managed neutral command exceeds negotiated bound");
@@ -787,6 +787,48 @@ namespace MagicCarpet.Native
                     checked((uint)bytes.Length)),
                 "step neutral engine session", commandSubmission: true); }
             finally { ModernCapture.EndMeasurement("engine_step_native", stepStart); }
+        }
+
+        internal static byte[] EncodeSteeringObservation(byte[] original, Vector2? observation)
+        {
+            if (!observation.HasValue) return original;
+            var sample = observation.Value;
+            var rollBits = unchecked((uint)BitConverter.SingleToInt32Bits(sample.x == 0f ? 0f : sample.x));
+            var pitchBits = unchecked((uint)BitConverter.SingleToInt32Bits(sample.y == 0f ? 0f : sample.y));
+            using var reader = JsonReaderWriterFactory.CreateJsonReader(original, System.Xml.XmlDictionaryReaderQuotas.Max);
+            using var output = new MemoryStream();
+            using (var writer = JsonReaderWriterFactory.CreateJsonWriter(output, Encoding.UTF8, false, false))
+            {
+                reader.MoveToContent();
+                var empty = reader.IsEmptyElement;
+                reader.ReadStartElement("root");
+                writer.WriteStartElement("root");
+                writer.WriteAttributeString("type", "object");
+                if (!empty)
+                {
+                    while (true)
+                    {
+                        var node = reader.MoveToContent();
+                        if (node == System.Xml.XmlNodeType.EndElement) break;
+                        if (node != System.Xml.XmlNodeType.Element)
+                            throw new InvalidDataException("steering command JSON ended inside its object");
+                        writer.WriteNode(reader, true);
+                    }
+                    reader.ReadEndElement();
+                }
+                writer.WriteStartElement("steering_observation");
+                writer.WriteAttributeString("type", "array");
+                foreach (var value in new[] { rollBits, pitchBits })
+                {
+                    writer.WriteStartElement("item");
+                    writer.WriteAttributeString("type", "number");
+                    writer.WriteString(value.ToString(CultureInfo.InvariantCulture));
+                    writer.WriteEndElement();
+                }
+                writer.WriteEndElement();
+                writer.WriteEndElement();
+            }
+            return output.ToArray();
         }
 
         internal SnapshotObservation Reset()

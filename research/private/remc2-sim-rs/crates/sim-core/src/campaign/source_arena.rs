@@ -16,6 +16,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use super::state::{SourceLink, SourceTopology, digest_topology};
 
@@ -54,7 +55,7 @@ pub(crate) struct SourceManaRow {
 /// An UpdateEntities head. Links live in the fixed raw records,
 /// including inactive shadows of typed rows. NewEvent resets a reused
 /// record's next_0; sub57F20 alone leaves its old successor intact.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SourceSlotChain {
     slots: Vec<u16>,
     generations: BTreeMap<u16, u32>,
@@ -85,8 +86,16 @@ impl SourceSlotChain {
         economy: &Level2EconomyState,
         entities: &[EntitySnapshot],
     ) -> Vec<u16> {
+        self.follow_current_slots(economy, entities).0
+    }
+
+    fn follow_current_slots(
+        &self,
+        economy: &Level2EconomyState,
+        entities: &[EntitySnapshot],
+    ) -> (Vec<u16>, u16) {
         if self.epoch != economy.source_list_epoch() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let mut current = self.slots.first().copied().unwrap_or(0);
         let mut visited = BTreeSet::new();
@@ -101,7 +110,7 @@ impl SourceSlotChain {
                 raw.next_relation.unwrap_or(0)
             } else { 0 };
         }
-        rows
+        (rows, current)
     }
 }
 
@@ -277,6 +286,9 @@ pub struct SourceArena {
     pub(crate) dynamic_lighting: crate::dynamic_lighting::DynamicLightingState,
     /// Runtime setting consumed at admission, not at later light service.
     pub(crate) dynamic_lighting_enabled: bool,
+    // Derived from the existing UpdateEntities pre-pass. Replays repopulate
+    // it while executing the same source passes.
+    pub(crate) class5_model_chains: Option<Arc<[SourceSlotChain; 29]>>,
     replacement_slots: Vec<u16>,
     // Producer provenance only; all mutable creature fields remain in entities.
     raw_creature_origins: BTreeMap<u16, (u32, CreatureKind, CreatureRootOrigin)>,
@@ -294,6 +306,7 @@ impl SourceArena {
             effects: crate::world::effects::State::default(),
             dynamic_lighting: crate::dynamic_lighting::DynamicLightingState::reset(),
             dynamic_lighting_enabled: true,
+            class5_model_chains: None,
             replacement_slots: Vec::new(),
             raw_creature_origins: BTreeMap::new(),
             raw_creature_parts: BTreeMap::new(),
@@ -1494,6 +1507,27 @@ impl SourceArena {
         initial_bindings: &BTreeMap<u16, CreatureKind>,
         authored_bindings: &BTreeMap<u16, CreatureKind>,
     ) -> CreatureRuntimeCensus {
+        CreatureRuntimeCensus {
+            entries: self
+                .creature_observation_slots(initial_bindings)
+                .into_iter()
+                .filter_map(|source_slot| {
+                    self.creature_runtime_identity_inner(
+                        source_slot,
+                        initial_bindings,
+                        authored_bindings,
+                        true,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+
+    pub(crate) fn creature_observation_slots(
+        &self,
+        initial_bindings: &BTreeMap<u16, CreatureKind>,
+    ) -> BTreeSet<u16> {
         let mut slots = initial_bindings.keys().copied().collect::<BTreeSet<_>>();
         // Dynamic raw roots need not have a reset binding or a typed row.
         // The identity resolver below checks the current slot generation.
@@ -1544,20 +1578,50 @@ impl SourceArena {
                 .map(|source| source.source_entity_index),
         );
 
-        CreatureRuntimeCensus {
-            entries: slots
-                .into_iter()
-                .filter_map(|source_slot| {
-                    self.creature_runtime_identity_inner(
-                        source_slot,
-                        initial_bindings,
-                        authored_bindings,
-                        true,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
+        slots
+    }
+
+    /// Check the parent birth while the two current allocations still exist.
+    /// Repeated authored groups can construct the same record again. Their
+    /// current linked body identifies this birth. Reset births use generation
+    /// zero, and converted Dragons retain an explicit root handle.
+    pub(crate) fn dragon_observation_parent(
+        &self,
+        child: CreatureRuntimeIdentity,
+        parent: CreatureRuntimeIdentity,
+    ) -> Option<SourceEntityHandle> {
+        if child.kind != CreatureKind::Dragon
+            || child.role != CreatureRuntimeRole::MultipartPart
+            || parent.kind != CreatureKind::Dragon
+            || parent.role != CreatureRuntimeRole::Root
+            || parent.handle.source_slot != child.root_slot
+            || self.handle(child.handle.source_slot) != Some(child.handle)
+            || self.handle(child.root_slot) != Some(parent.handle)
+        {
+            return None;
         }
+        let same_birth = match child.origin {
+            CreatureRootOrigin::InitialPackage => {
+                parent.origin == child.origin && parent.handle.generation == 0
+            }
+            CreatureRootOrigin::AuthoredRecord { authored_record } => {
+                parent.origin == child.origin
+                    && crate::native_world::source_target::authored_dragon_chain_contains(
+                        self,
+                        parent.handle.source_slot,
+                        authored_record,
+                        child.handle.source_slot,
+                    )
+            }
+            _ => self
+                .dynamic_dragon_part_origins
+                .get(&child.handle.source_slot)
+                .is_some_and(|binding| {
+                    binding.child_generation == child.handle.generation
+                        && binding.root == parent.handle
+                }),
+        };
+        same_birth.then_some(parent.handle)
     }
 
     /// Resolve one live creature identity without rebuilding the full census.
@@ -2069,6 +2133,32 @@ impl SourceArena {
             .map(|source_slots| !source_slots.is_empty())
     }
 
+    pub(crate) fn objective_creature_slots(&self, model: u32) -> Result<Vec<u16>, String> {
+        let model = model as usize;
+        if let Some(chains) = &self.class5_model_chains {
+            let chain = chains
+                .get(model)
+                .ok_or_else(|| format!("creature objective model {model} leaves the source lists"))?;
+            let (slots, unvisited) = chain.follow_current_slots(&self.economy, &self.entities);
+            if unvisited != 0 {
+                return Err(format!(
+                    "creature objective model {model} has invalid source link {unvisited}"
+                ));
+            }
+            if let Some(slot) = slots.iter().find(|slot| !chain.generations.contains_key(slot)) {
+                return Err(format!(
+                    "creature objective model {model} source link leaves the captured list at {slot}"
+                ));
+            }
+            Ok(slots)
+        } else {
+            self.rebuilt_class5_model_slots()
+                .into_iter()
+                .nth(model)
+                .ok_or_else(|| format!("creature objective model {model} leaves the source lists"))
+        }
+    }
+
     /// Rebuild remc2's source-ordered class-10/model-45 membership as the
     /// raw `byte_0x46` selectors consumed by the type-9 objective service.
     /// Drawing state is deliberately ignored: a callback may hide a member
@@ -2466,6 +2556,7 @@ mod tests {
                 session.source_arena().entities[usize::from(slot)].action,
                 72
             );
+            let skeleton_handle = session.source_arena().handle(slot).unwrap();
             for _ in 0..17 {
                 step_opening_source_turn(&mut session);
             }
@@ -2489,7 +2580,7 @@ mod tests {
             assert_eq!(u16::from_le_bytes([row.record[102], row.record[103]]), 0);
             assert_eq!(row.particle_parameter_index, Some(202));
             let spheres = session.source_arena().economy.spheres().len();
-            let bursts = session.source_arena().economy.death_bursts().len();
+            let event_start = session.source_arena().economy.events().len();
             session
                 .stage_imported_skeleton_fireball_damage_for_test(slot, player, 1000)
                 .unwrap();
@@ -2514,26 +2605,59 @@ mod tests {
             );
             let economy = &session.source_arena().economy;
             assert!(economy.spheres().len() > spheres);
-            assert!(
-                economy.death_bursts()[bursts..]
-                    .iter()
-                    .any(|burst| burst.parent_entity_index == slot)
-            );
+            let burst = economy.events()[event_start..].iter().find_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index, parent_entity_index, ..
+                } if *parent_entity_index == slot => Some(*source_entity_index),
+                _ => None,
+            }).expect("the actual Skeleton death produces a burst");
+            let burst_generation = economy.slot_generation(burst);
+            let burst_row = &session.source_arena().entities[usize::from(burst)];
+            assert_eq!((burst_row.active, burst_row.class, burst_row.model, burst_row.action), (true, 10, 1, 1));
+            assert!((0..=1).contains(&burst_row.life));
             step_opening_source_turn(&mut session);
             let row = &session.source_arena().entities[usize::from(slot)];
+            let current_handle = session.source_arena().handle(slot);
+            eprintln!("Level {level} Skeleton reclaimed: original={skeleton_handle:?} current={current_handle:?} raw=(active={}, class={}, model={}, action={}, life={})", row.active, row.class, row.model, row.action, row.life);
             assert!(
-                !row.active && row.class == 0,
-                "next pass reclaims the raw authored carrier"
+                session.source_arena().resolve(skeleton_handle).is_none(),
+                "next pass must reclaim the original Skeleton generation: original={skeleton_handle:?}, current={current_handle:?}, row={row:?}"
             );
-            assert!(session.creature_identity_for_source_slot(slot).is_none());
-            assert!(
-                !session
-                    .source_arena()
-                    .economy
-                    .map_chains()
-                    .linked_entity_indices()
-                    .contains(&slot)
-            );
+            let mut hidden = false;
+            for _ in 0..4 {
+                let row = &session.source_arena().entities[usize::from(burst)];
+                assert_eq!(session.source_arena().economy.slot_generation(burst), burst_generation);
+                if row.drawing_disabled() {
+                    assert_eq!(row.life, -2, "source post-decrement hides on the negative-life visit");
+                    hidden = true;
+                    break;
+                }
+                let life_before = row.life;
+                step_opening_source_turn(&mut session);
+                let row = &session.source_arena().entities[usize::from(burst)];
+                assert_eq!(row.life, life_before - 1);
+                assert_eq!(row.drawing_disabled(), life_before < 0);
+            }
+            assert!(hidden, "burst reaches the source hide callback");
+            assert!(session.source_arena().economy.events()[event_start..].iter().any(|event| matches!(event,
+                crate::native_world::Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. } if *source_entity_index == burst
+            )));
+            step_opening_source_turn(&mut session);
+            let row = &session.source_arena().entities[usize::from(burst)];
+            assert!(session.source_arena().economy.slot_generation(burst) != burst_generation || !row.active || row.class == 0,
+                "the next source pass reclaims the hidden burst");
+            assert!(session.creature_identity_for_source_slot(slot)
+                .is_none_or(|identity| identity.handle != skeleton_handle));
+            if session.source_arena().handle(slot).is_none() {
+                assert!(
+                    !session
+                        .source_arena()
+                        .economy
+                        .map_chains()
+                        .linked_entity_indices()
+                        .contains(&slot)
+                );
+            }
         }
     }
 

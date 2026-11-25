@@ -2389,6 +2389,13 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_castle_hud_hit_frames(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            out byte frames);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_day_music_state(
             ulong handle,
             ulong generation,
@@ -2826,8 +2833,21 @@ namespace MagicCarpet.Native
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_toggle_player_names_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_source_speed_v1(
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick, byte secondary);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_source_viewport_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick, byte action);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_player_menu_state_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration,
+            ulong expectedTick, out byte menuState);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_participant_notifications_json_v1(

@@ -19,8 +19,6 @@ namespace MagicCarpet.Native
         public bool sound_enabled, music_enabled, speech_enabled;
         public int sound_volume, music_volume;
         public bool show_help;
-        public bool reflections = true, sky = true, shadows = true;
-        public bool dynamic_lighting = true;
         public bool auto_show_objectives_for_foreign_languages;
         public int[] brightness;
         public bool flight_assistance, fullscreen;
@@ -90,6 +88,7 @@ namespace MagicCarpet.Native
         private readonly Func<KeyCode, bool> keyPressed;
         private readonly Func<int, bool> mouseHeld;
         private readonly Func<int, bool> mousePressed;
+        private readonly Func<string, float> mouseAxis;
         private readonly Action<OwnerCampaignMenuCache.LocaleTextBinding> localeApplied;
         private OwnerCampaignMenuCache languageCache;
         private readonly HashSet<KeyCode> releaseKeys = new();
@@ -113,13 +112,15 @@ namespace MagicCarpet.Native
             PlayerPreferencesSnapshot installed = null, Func<KeyCode, bool> keyHeld = null,
             Func<KeyCode, bool> keyPressed = null, Func<int, bool> mouseHeld = null,
             Func<int, bool> mousePressed = null,
-            Action<OwnerCampaignMenuCache.LocaleTextBinding> localeApplied = null)
+            Action<OwnerCampaignMenuCache.LocaleTextBinding> localeApplied = null,
+            Func<string, float> mouseAxis = null)
         {
             this.command = command ?? throw new ArgumentNullException(nameof(command));
             this.keyHeld = keyHeld ?? (key => Input.GetKey(key));
             this.keyPressed = keyPressed ?? (key => Input.GetKeyDown(key));
             this.mouseHeld = mouseHeld ?? (button => Input.GetMouseButton(button));
             this.mousePressed = mousePressed ?? (button => Input.GetMouseButtonDown(button));
+            this.mouseAxis = mouseAxis ?? Input.GetAxisRaw;
             this.localeApplied = localeApplied;
             if (installed != null && !installed.installed)
                 throw new InvalidOperationException("preferences hydration requires an installed Rust profile");
@@ -215,6 +216,9 @@ namespace MagicCarpet.Native
         }
 
         internal void Open() => Open(SourceSettingsDialog.Page.Keys);
+
+        internal bool OwnsSourceCursor => IsOpen &&
+            (page is SourceSettingsDialog.Page.Keys or SourceSettingsDialog.Page.Language);
 
         internal void Open(SourceSettingsDialog.Page requestedPage)
         {
@@ -327,6 +331,12 @@ namespace MagicCarpet.Native
         internal bool CaptureKey(Event input)
         {
             if (captureKey < 0 || input.type != EventType.KeyDown) return false;
+            // IMGUI can deliver text separately from the physical key used by this dialog.
+            if (input.keyCode == KeyCode.None && input.character != '\0')
+            {
+                input.Use();
+                return true;
+            }
             if (input.keyCode == KeyCode.Escape)
             {
                 captureKey = -1;
@@ -344,7 +354,8 @@ namespace MagicCarpet.Native
                 return true;
             }
             var key = input.keyCode.ToString();
-            if (slot < 4 && (input.keyCode is KeyCode.C or KeyCode.L or KeyCode.Space))
+            // Fixed gameplay controls must not also trigger a custom binding.
+            if (input.keyCode is KeyCode.C or KeyCode.L or KeyCode.O or KeyCode.Space)
             {
                 keyCaptureRejected = true;
                 status = "That key conflicts with a reserved control.";
@@ -394,7 +405,8 @@ namespace MagicCarpet.Native
             AddKeys(previous);
             AddKeys(next);
             foreach (var key in new[] { KeyCode.Space, KeyCode.C, KeyCode.LeftShift, KeyCode.RightShift,
-                         KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F3, KeyCode.F5, KeyCode.F6, KeyCode.F7,
+                         KeyCode.LeftAlt, KeyCode.RightAlt, KeyCode.F1, KeyCode.F2, KeyCode.F3, KeyCode.F4, KeyCode.F5, KeyCode.F6, KeyCode.F7,
+                         KeyCode.LeftBracket, KeyCode.RightBracket,
                          KeyCode.JoystickButton0, KeyCode.JoystickButton1 })
                 if (keyHeld(key)) releaseKeys.Add(key);
             for (var button = 0; button < 3; button++)
@@ -457,8 +469,8 @@ namespace MagicCarpet.Native
             var gain = prefs.mouse_sensitivity / 100f;
             if (mouse && !suppressSourceMouse)
             {
-                roll = Mathf.Clamp(roll + Input.GetAxisRaw("Mouse X") * 4.5f * gain, -128, 127);
-                pitch = Mathf.Clamp(pitch + Input.GetAxisRaw("Mouse Y") * (prefs.invert_mouse ? 4.5f : -4.5f) * gain, -128, 127);
+                roll = Mathf.Clamp(roll + mouseAxis("Mouse X") * 4.5f * gain, -128, 127);
+                pitch = Mathf.Clamp(pitch + mouseAxis("Mouse Y") * (prefs.invert_mouse ? 4.5f : -4.5f) * gain, -128, 127);
             }
             // Source mouse/keyboard input (EventsFunctions mode7) reads the
             // configured flight slots independently of mouse steering. The

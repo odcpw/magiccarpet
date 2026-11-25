@@ -355,6 +355,7 @@ pub(crate) fn step_row(
     particles: &[ParticleParameter],
     source_context: crate::native_world::source_target::Context<'_>,
     animations: &crate::source_animation::SourceAnimationResidency,
+    animation_action: Option<&mut crate::source_animation::SourceAnimationAction<'_>>,
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
@@ -381,7 +382,11 @@ pub(crate) fn step_row(
         Ok(target) => target,
         Err(error) => { *read_error.borrow_mut() = Some(error); None }
     };
+    let animation_action = std::cell::RefCell::new(animation_action);
     let animation_count = || {
+        if let Some(action) = animation_action.borrow_mut().as_deref_mut() {
+            action(SOURCE_ATTACK_ANIMATION_TMAP, false)?;
+        }
         animations.resident_frame_count_read(SOURCE_ATTACK_ANIMATION_TMAP)
     };
     let frame = Frame { terrain, targets: &[], current_target: Some(&lookup),
@@ -545,7 +550,7 @@ mod alliance_tests {
         let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
         families[usize::from(SOURCE_MODEL)].push(slot);
         step_row(&mut arena, &runtime, &mut terrain, particles, Default::default(),
-            &crate::source_animation::SourceAnimationResidency::default(), slot, &[], &families).unwrap();
+            &crate::source_animation::SourceAnimationResidency::default(), None, slot, &[], &families).unwrap();
         assert_eq!(arena.handle(slot), Some(handle));
         assert!(arena.entities[usize::from(slot)].drawing_disabled());
         assert!(arena.economy.map_chains.is_linked(slot),
@@ -578,6 +583,7 @@ mod alliance_tests {
     fn level14_authored_creature28_transforms_splashes_and_hits_player() {
         use crate::campaign::{CampaignSession, source_arena::CreatureRootOrigin, spec::CampaignSelection};
         use crate::native_world::{Mc2DispatchEvent, area_damage, Level2EconomyEvent};
+        use crate::day_indexed_frame::{DayIndexedFrameAssets, DayIndexedFrameState};
         use crate::{PlayerCommand, level_definition::CreatureKind};
 
         let package = std::env::var_os("MC_LEVEL14_PACKAGE").map_or_else(
@@ -587,8 +593,20 @@ mod alliance_tests {
         );
         let owner_cache = std::env::var_os("MC_LEVEL14_OWNER_CACHE")
             .expect("MC_LEVEL14_OWNER_CACHE must name the qualified Level14 owner animation cache");
-        let mut session = CampaignSession::open_with_owner_cache(package, owner_cache, CampaignSelection::ordinary(14).unwrap())
-            .expect("whole retained Level14 owner package").simulation().clone();
+        let assets = DayIndexedFrameAssets::load_night(&owner_cache).unwrap();
+        let campaign = CampaignSession::open_with_owner_cache(package, &owner_cache, CampaignSelection::ordinary(14).unwrap())
+            .expect("whole retained Level14 owner package");
+        let inspection = campaign.inspection_arc();
+        let generation = campaign.generation();
+        let mut session = campaign.simulation().clone();
+        let (_, payloads) = assets.source_animation_bank().unwrap();
+        let payload = &payloads[usize::from(SOURCE_ATTACK_ANIMATION_TMAP)];
+        let width = u16::from_le_bytes([payload[2], payload[3]]);
+        let height = u16::from_le_bytes([payload[4], payload[5]]);
+        let mut first_transition = vec![0; usize::from(width) * usize::from(height)];
+        sim_ss2_tmap::apply_ss2_delta(payload, &mut first_transition, "creature28", SOURCE_ATTACK_ANIMATION_TMAP,
+            width, height, 6 + u32::from(width) * u32::from(height), payload.len()).unwrap();
+        assert!(first_transition.iter().any(|&pixel| pixel != 0));
         let player = session.state.entity_index;
         let player_handle = session.source_arena().handle(player).unwrap();
         let switch = session.source_arena().handle(499).unwrap();
@@ -675,7 +693,13 @@ mod alliance_tests {
         let mut consumptions = Vec::new();
         let mut matching_writers = Vec::new();
         let mut contact_setup = None;
-        for turn in 0..320 {
+        let mut admitted_reset = false;
+        let mut awaiting_transition = false;
+        let mut saw_live_image = false;
+        let mut saw_live_reset = false;
+        for turn in 0..640 {
+            let before_image = session.source_animation_clocks.pixels(SOURCE_ATTACK_ANIMATION_TMAP)
+                .map(|pixels| pixels.to_vec());
             start_callback_damage_trace(root);
             session.step_outer_turn(PlayerCommand::default(), 0);
             let callbacks = take_callback_damage_trace();
@@ -693,6 +717,47 @@ mod alliance_tests {
             let presentations = session.campaign_entity_presentations(0).unwrap();
             saw_attack_dto |= presentations.iter().any(|view|
                 view.entity_index == root.source_slot && view.render_parameter_index == SOURCE_ATTACK_VISUAL);
+            if awaiting_transition {
+                assert_eq!(session.source_animation_clocks.pixels(SOURCE_ATTACK_ANIMATION_TMAP),
+                    Some(first_transition.as_slice()), "the admitted reset image advances on the next source turn");
+                // Compare the real native composition to a same-state diagnostic
+                // copy with only this group's image reset. The live owner is untouched.
+                let mut zeroed = session.clone();
+                {
+                    let live = &mut zeroed.session.state.live;
+                    let resident = live.source_animations.clone();
+                    let bytes = live.source_animation_payloads.clone();
+                    live.source_animation_clocks.reset_or_finish(SOURCE_ATTACK_ANIMATION_TMAP, false,
+                        &resident, |id| bytes.get(usize::from(id)).map(AsRef::as_ref)).unwrap();
+                }
+                let row = session.entities()[usize::from(root.source_slot)].clone();
+                let mut scene_changed = false;
+                'views: for depth in [512_i16, 1024, 2048] {
+                    for altitude in [128_i16, 256, 512] {
+                        let mut position = row.position;
+                        crate::move_entity(&mut position, row.yaw, 0, -depth);
+                        position.z = row.position.z.wrapping_add(altitude);
+                        let camera = Some(sim_session::CameraPose { x: position.x, y: position.y,
+                            z: position.z, yaw: row.yaw, pitch: 0, roll: 0 });
+                        session.session.state.scratch.source_camera_pose = camera;
+                        zeroed.session.state.scratch.source_camera_pose = camera;
+                        let frame = DayIndexedFrameState::new(generation)
+                            .render_current(&inspection, &session, &assets, generation).unwrap();
+                        if !frame.animation_sources().iter().any(|source| source.entity_index == root.source_slot
+                            && source.selected_tmap == SOURCE_ATTACK_ANIMATION_TMAP) { continue; }
+                        let without_image = DayIndexedFrameState::new(generation)
+                            .render_current(&inspection, &zeroed, &assets, generation).unwrap();
+                        if frame.scene_indices != without_image.scene_indices {
+                            scene_changed = true;
+                            break 'views;
+                        }
+                    }
+                }
+                assert!(scene_changed, "the advanced source group contributes actual native scene pixels");
+                awaiting_transition = false;
+                saw_live_image = true;
+            }
+            let mut reset_now = false;
             for callback in callbacks {
                 let Some(after) = callback.after else { continue };
                 let before = &callback.before;
@@ -731,6 +796,7 @@ mod alliance_tests {
                         session.state.target_speed = 0;
                         contact_setup = Some((turn, heading, position));
                     }
+                    if after.record[74] == 4 { reset_now = true; }
                 }
                 if let Some(splash) = callback.splash {
                     saw_splash |= session.source_arena().handle(splash.source_slot) == Some(splash)
@@ -740,6 +806,49 @@ mod alliance_tests {
                     saw_splash_dto |= session.source_arena().handle(splash.source_slot) == Some(splash)
                         && presentations.iter().any(|view| view.entity_index == splash.source_slot
                             && view.render_parameter_index == 244);
+                }
+            }
+            if reset_now {
+                let reset = session.source_animation_clocks.pixels(SOURCE_ATTACK_ANIMATION_TMAP)
+                    .expect("the resident attack group owns its mutable image");
+                assert!(reset.iter().all(|&pixel| pixel == 0), "source phase3 clears the group image");
+                if saw_live_image {
+                    assert!(before_image.as_ref().is_some_and(|pixels| pixels.iter().any(|&pixel| pixel != 0)),
+                        "a natural prior draw advanced the same image before this reset");
+                    saw_live_reset = true;
+                } else if !admitted_reset {
+                    let row = session.entities()[usize::from(root.source_slot)].clone();
+                    let mut admitted = None;
+                    for depth in [512_i16, 1024, 2048] {
+                        for altitude in [128_i16, 256, 512] {
+                            let mut camera_position = row.position;
+                            crate::move_entity(&mut camera_position, row.yaw, 0, -depth);
+                            camera_position.z = row.position.z.wrapping_add(altitude);
+                            session.session.state.scratch.source_camera_pose = Some(sim_session::CameraPose {
+                                x: camera_position.x, y: camera_position.y, z: camera_position.z,
+                                yaw: row.yaw, pitch: 0, roll: 0,
+                            });
+                            let mut carrier = DayIndexedFrameState::new(generation);
+                            let frame = carrier.render_current(&inspection, &session, &assets, generation).unwrap();
+                            if frame.animation_sources().iter().any(|source| source.entity_index == root.source_slot
+                                && source.selected_tmap == SOURCE_ATTACK_ANIMATION_TMAP) {
+                                admitted = Some(frame);
+                                break;
+                            }
+                        }
+                        if admitted.is_some() { break; }
+                    }
+                    let frame = admitted.expect("a real attack-form camera admits selector311");
+                    let hash = session.campaign_state_hash();
+                    let clocks = session.source_animation_clocks.clone();
+                    let repeated = DayIndexedFrameState::new(generation)
+                        .render_current(&inspection, &session, &assets, generation).unwrap();
+                    assert_eq!(frame.scene_indices, repeated.scene_indices);
+                    assert_eq!(session.campaign_state_hash(), hash, "frame reads do not advance source clocks");
+                    assert_eq!(session.source_animation_clocks, clocks);
+                    frame.apply_primary_visibility(&mut session, generation).unwrap();
+                    admitted_reset = true;
+                    awaiting_transition = true;
                 }
             }
             for consumed in area_damage::take_player_damage_consumptions() {
@@ -754,8 +863,9 @@ mod alliance_tests {
                             if *target_entity_index == player && *attacker_entity_index == original.source_id && *damage == consumed.mailbox.0)
                 { hit = Some(consumed); }
             }
-            if saw_recovery && saw_attack_form && saw_attack_dto && saw_splash && saw_splash_dto && hit.is_some() { break; }
+            if saw_recovery && saw_attack_form && saw_attack_dto && saw_splash && saw_splash_dto && hit.is_some() && saw_live_reset { break; }
         }
+        assert!(saw_live_image && saw_live_reset, "the naturally drawn group must advance and later be reset by the real attack");
         assert!(contact_setup.is_some() && saw_recovery && saw_attack_form && saw_attack_dto && saw_splash && saw_splash_dto && hit.is_some(),
             "actual authored511 must transform, emit its water splash and damage the player: recovery={saw_recovery} attack={saw_attack_form} attack_dto={saw_attack_dto} splash={saw_splash} splash_dto={saw_splash_dto} hit={hit:?} initial={original:?} lure={approach:?} one_contact_placement={contact_setup:?} observations={observations:?} melee_requests={melee_requests:?} matching_writers={matching_writers:?} player_consumptions={consumptions:?}");
         assert!(session.effect_journal().records().iter().any(|record| record.sequence >= journal_start && matches!(
@@ -904,14 +1014,14 @@ mod alliance_tests {
         families[usize::from(SOURCE_MODEL)].push(slot);
         let animations = crate::source_animation::SourceAnimationResidency::default();
         let effects = step_row(&mut arena, &runtime, &mut terrain, particles,
-            Default::default(), &animations, slot, &[parent], &families).unwrap();
+            Default::default(), &animations, None, slot, &[parent], &families).unwrap();
         assert_eq!(effects.feedback, vec![(parent, 24)]);
         let row = &arena.entities[usize::from(slot)];
         assert_eq!((row.action, word(row, 154), row.record[77]), (226, enemy, 14));
         let row = &mut arena.entities[usize::from(slot)];
         row.set_source_action(231); put_word(row, 50, 1);
         step_row(&mut arena, &runtime, &mut terrain, particles,
-            Default::default(), &animations, slot, &[parent], &families).unwrap();
+            Default::default(), &animations, None, slot, &[parent], &families).unwrap();
         let row = &arena.entities[usize::from(slot)];
         assert_eq!((row.record[77], row.record[76], word(row, 44)), (10, 3, 0));
         assert!(!row.drawing_disabled());

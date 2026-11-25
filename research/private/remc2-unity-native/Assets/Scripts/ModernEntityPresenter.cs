@@ -30,7 +30,6 @@ namespace MagicCarpet.Native
         private readonly ModernCollector collectors;
         private readonly ModernExperienceScroll scrolls;
         private readonly ModernCastleSpellJar castleJars;
-        private readonly ModernCastleProjectile castleProjectiles;
         private readonly Voxels.VoxelManaSpheres voxelMana;
         private readonly Voxels.VoxelNativeProjectiles voxelProjectiles;
         private readonly Action<NativeSim.CampaignVoxelDeath> applyVoxelDeath;
@@ -40,7 +39,6 @@ namespace MagicCarpet.Native
         private ushort sceneryReviewSource;
         private ulong sceneryReviewGeneration = ulong.MaxValue;
         private readonly Shader smokeShader;
-        private readonly Shader effectShader;
         private bool loggedSmoke;
         private bool loggedFamilies;
         private bool loggedGeometry;
@@ -68,24 +66,22 @@ namespace MagicCarpet.Native
             palette = cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path);
             shader = Resources.Load<Shader>("ModernEntity");
             smokeShader = Resources.Load<Shader>("ModernSmoke");
-            effectShader = Resources.Load<Shader>("ModernSpellEffect");
             if (shader == null) throw new InvalidOperationException("Missing ModernEntity shader");
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
             characters = new ModernCharacterActors(root, terrain);
-            dolmens = new ModernDolmens(root, Voxels.VoxelModernWorld.Requested, terrain.SampleVisualHeight);
-            stoneStatues = new ModernStoneStatues(root, Voxels.VoxelModernWorld.Requested, cache.EnvironmentMaterials.tmaps.bank,
-                Voxels.VoxelModernWorld.Requested ? terrain.SampleVisualHeight : null);
+            dolmens = new ModernDolmens(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
+            stoneStatues = new ModernStoneStatues(root, Voxels.VoxelModernWorld.Requested, cache.EnvironmentMaterials.tmaps.bank);
             exitPortal = new ModernExitPortal(root, Voxels.VoxelModernWorld.Requested);
-            trees = new ModernAuthoredTrees(root, Voxels.VoxelModernWorld.Requested ? terrain.SampleVisualHeight : null);
-            collectors = new ModernCollector(root, Voxels.VoxelModernWorld.Requested);
+            trees = new ModernAuthoredTrees(root);
+            collectors = new ModernCollector(root);
             scrolls = new ModernExperienceScroll(root, Voxels.VoxelModernWorld.Requested);
-            castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested, terrain.SampleVisualHeight);
-            castleProjectiles = new ModernCastleProjectile(root, Voxels.VoxelModernWorld.Requested);
-            voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleVisualHeight,Voxels.VoxelModernWorld.Requested);
-            var possessionSource = assets[144];
-            var possessionTint = Voxels.VoxelManaSpheres.ColorFromIndexedSprite(cache.ReadOutput(possessionSource.indices_path), palette);
-            voxelProjectiles=new Voxels.VoxelNativeProjectiles(root, Voxels.VoxelModernWorld.Requested, possessionTint);
+            castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
+            if(Voxels.VoxelModernWorld.Requested)
+            {
+                voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
+                voxelProjectiles=new Voxels.VoxelNativeProjectiles(root);
+            }
             quad = new Mesh { name = "Modern actor billboard" };
             quad.vertices = new[] { new Vector3(-.5f, 0, 0), new Vector3(.5f, 0, 0), new Vector3(-.5f, 1, 0), new Vector3(.5f, 1, 0) };
             quad.uv = new[] { new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, 0), new Vector2(1, 0) };
@@ -100,9 +96,9 @@ namespace MagicCarpet.Native
             var presentations = session.EntityPresentations(yaw, worldView: sceneryReviewSlot.HasValue);
             entitySnapshots.Clear();
             foreach (var entity in session.Entities()) entitySnapshots.Add(entity.entityIndex, entity);
-            if(Voxels.VoxelModernWorld.Requested)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
+            if(voxelProjectiles!=null)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
             else voxelImpactChildren.Clear();
-            if(Voxels.VoxelModernWorld.Requested){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
+            if(voxelProjectiles!=null){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
             characters.Observe(session, presentations);
             dolmens.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
             stoneStatues.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
@@ -111,14 +107,13 @@ namespace MagicCarpet.Native
             collectors.Present(session, presentations);
             scrolls.Present(entitySnapshots, presentations);
             castleJars.Present(entitySnapshots, presentations);
-            castleProjectiles.Present(entitySnapshots, presentations);
             if(voxelMana!=null)
                 voxelMana.Present(session.ManaSpheres(),session.EntityPresentations(yaw,worldView:true),session.Generation,session.Tick);
             voxelProjectiles?.Present(session.CharacterStates(),presentations,session.Generation,session.VoxelWorldEpoch);
             foreach (var row in presentations)
             {
                 rows.Add(row.entityIndex, row);
-                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||dolmens.Replaces(row.entityIndex)||stoneStatues.Replaces(row.entityIndex)||exitPortal.Replaces(row.entityIndex)||trees.Replaces(row.entityIndex,row.sourceId)||collectors.Replaces(row.entityIndex,row.sourceId)||scrolls.Replaces(row.entityIndex)||castleJars.Replaces(row.entityIndex)||castleProjectiles.Replaces(row.entityIndex)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
+                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||dolmens.Replaces(row.entityIndex)||stoneStatues.Replaces(row.entityIndex)||exitPortal.Replaces(row.entityIndex)||trees.Replaces(row.entityIndex,row.sourceId)||collectors.Replaces(row.entityIndex,row.sourceId)||scrolls.Replaces(row.entityIndex)||castleJars.Replaces(row.entityIndex)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
                 if (!assets.TryGetValue(row.selectedTmap, out var texture))
                     throw new InvalidOperationException($"Live entity {row.entityIndex} has absent sprite {row.selectedTmap}");
                 if (!objects.TryGetValue(row.entityIndex, out var node))
@@ -131,18 +126,14 @@ namespace MagicCarpet.Native
                     objects.Add(row.entityIndex, node);
                 }
                 // These source TMAPs are blend-table operands, not opaque RGB artwork.
-                var smoke = UsesSmokeMaterial(row);
+                var smoke = (row.baseTmap == 57 || row.baseTmap == 63) && (row.pixelMode == 2 || row.pixelMode == 6);
                 var visual = node.GetComponent<MeshRenderer>();
-                var effect = HotEffectKind(row);
-                var halo = IsSourceHalo(row);
-                visual.sharedMaterial = GetMaterial(texture, smoke, effect, halo, IsColdEffect(row));
+                visual.sharedMaterial = GetMaterial(texture, smoke);
                 emission.Clear();
                 var lightKind = ModernNightLighting.SourceKind(row);
-                emission.SetFloat("_EmissionStrength", lightKind >= 1 && lightKind <= 5 ? 2.5f : 0);
-                emission.SetFloat("_EffectSeed", row.entityIndex * 1.37f);
-                emission.SetFloat("_Seed", row.entityIndex * 1.37f);
+                emission.SetFloat("_EmissionStrength", lightKind >= 1 && lightKind <= 4 ? 2.5f : 0);
                 visual.SetPropertyBlock(emission);
-                visual.shadowCastingMode = smoke || effect != 0 || halo ? ShadowCastingMode.Off : ShadowCastingMode.TwoSided;
+                visual.shadowCastingMode = smoke ? ShadowCastingMode.Off : ShadowCastingMode.TwoSided;
                 if (smoke && !loggedSmoke)
                 {
                     var actor = session.Entities().First(entity => entity.entityIndex == row.entityIndex);
@@ -152,7 +143,7 @@ namespace MagicCarpet.Native
                 var height = row.logicalHeight / 64f;
                 node.transform.localScale = new Vector3(height * texture.width / texture.height * (row.mirrored == 0 ? 1 : -1), height, 1);
             }
-            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||dolmens.Replaces(key)||stoneStatues.Replaces(key)||exitPortal.Replaces(key)||scrolls.Replaces(key)||castleJars.Replaces(key)||castleProjectiles.Replaces(key)||rows.TryGetValue(key,out var row)&&(trees.Replaces(key,row.sourceId)||collectors.Replaces(key,row.sourceId))||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
+            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||dolmens.Replaces(key)||stoneStatues.Replaces(key)||exitPortal.Replaces(key)||scrolls.Replaces(key)||castleJars.Replaces(key)||rows.TryGetValue(key,out var row)&&(trees.Replaces(key,row.sourceId)||collectors.Replaces(key,row.sourceId))||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
             {
                 UnityEngine.Object.Destroy(objects[key]);
                 objects.Remove(key);
@@ -186,12 +177,12 @@ namespace MagicCarpet.Native
             var logDiagnostic = ModernCapture.VisualDebug && loggedDebug != ModernCapture.SmokeDebug;
             foreach (var pair in rows)
             {
-                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||dolmens.Replaces(pair.Key)||stoneStatues.Replaces(pair.Key)||exitPortal.Replaces(pair.Key)||trees.Replaces(pair.Key,pair.Value.sourceId)||collectors.Replaces(pair.Key,pair.Value.sourceId)||scrolls.Replaces(pair.Key)||castleJars.Replaces(pair.Key)||castleProjectiles.Replaces(pair.Key)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
+                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||dolmens.Replaces(pair.Key)||stoneStatues.Replaces(pair.Key)||exitPortal.Replaces(pair.Key)||trees.Replaces(pair.Key,pair.Value.sourceId)||collectors.Replaces(pair.Key,pair.Value.sourceId)||scrolls.Replaces(pair.Key)||castleJars.Replaces(pair.Key)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
                 var row = pair.Value;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
                 var node = objects[pair.Key];
-                var smoke = UsesSmokeMaterial(row);
+                var smoke = (row.baseTmap == 57 || row.baseTmap == 63) && (row.pixelMode == 2 || row.pixelMode == 6);
                 node.transform.SetPositionAndRotation(new Vector3(x, row.z / 64f, z),
                     Quaternion.Euler(0, camera.transform.eulerAngles.y, 0));
                 var visual = node.GetComponent<MeshRenderer>();
@@ -221,7 +212,6 @@ namespace MagicCarpet.Native
             collectors.Render(camera, ModernCapture.EntityVisibility != 1);
             scrolls.Render(camera, ModernCapture.EntityVisibility != 1);
             castleJars.Render(camera, ModernCapture.EntityVisibility != 1);
-            castleProjectiles.Render(camera, ModernCapture.EntityVisibility != 1);
             voxelMana?.Render(camera,ModernCapture.EntityVisibility!=1);
             voxelProjectiles?.Render(camera,ModernCapture.EntityVisibility!=1);
         }
@@ -261,56 +251,16 @@ namespace MagicCarpet.Native
             return true;
         }
 
-        // Cold ash/splash reuses the soft particle asset, never the hot effect.
-        internal static bool UsesSmokeMaterial(NativeSim.CampaignEntityPresentation row) =>
-            ((row.baseTmap == 57 || row.baseTmap == 63) && (row.pixelMode == 2 || row.pixelMode == 6)) ||
-            IsColdEffect(row);
-
-        internal static bool IsColdEffect(NativeSim.CampaignEntityPresentation row) =>
-            row.renderParameterIndex == 244 && row.baseTmap == 186;
-
-        internal static bool IsSourceHalo(NativeSim.CampaignEntityPresentation row) =>
-            ModernNightLighting.SourceKind(row) == 5;
-
-        internal static int HotEffectKind(NativeSim.CampaignEntityPresentation row)
+        private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke)
         {
-            var source = ModernNightLighting.SourceKind(row);
-            return source == 4 ? 2 : source == 2 || source == 3 ? 1 : 0;
-        }
-
-        internal static Color EffectTint(byte[] indices, byte[] sourcePalette)
-        {
-            int visible = 0;
-            foreach (var index in indices) if (index != 0) visible++;
-            // The impact animation ends with six real, fully transparent frames.
-            // They must neither throw during colour sampling nor emit invented fire.
-            if (visible == 0) return Color.clear;
-            var tint = Voxels.VoxelManaSpheres.ColorFromIndexedSprite(indices, sourcePalette);
-            tint.a = Mathf.Clamp01(visible * 3f / indices.Length);
-            return tint;
-        }
-
-        private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke, int effect, bool halo, bool cold)
-        {
-            var key = row.index + (smoke ? 1000 : halo ? 4000 : effect == 1 ? 2000 : effect == 2 ? 3000 : 0);
+            var key = row.index + (smoke ? 1000 : 0);
             if (materials.TryGetValue(key, out var material)) return material;
-            if (effect != 0 || halo)
-            {
-                if (effectShader == null) throw new InvalidOperationException("Missing ModernSpellEffect shader");
-                material = new Material(effectShader) { name = effect == 2 ? "Native flame impact" : "Native source fire" };
-                material.SetFloat("_Impact", effect == 2 ? 1 : 0);
-                material.SetFloat("_Halo", halo ? 1 : 0);
-                material.SetFloat("_Voxel", Voxels.VoxelModernWorld.Requested ? 1 : 0);
-                material.SetColor("_Tint", EffectTint(cache.ReadOutput(row.indices_path), palette));
-                materials.Add(key, material);
-                return material;
-            }
             if (smoke)
             {
                 if (smokeShader == null) throw new InvalidOperationException("Missing ModernSmoke shader");
                 material = new Material(smokeShader);
                 material.SetFloat("_Seed", row.index * 1.37f);
-                material.SetFloat("_Opacity", .24f * (cold ? EffectTint(cache.ReadOutput(row.indices_path), palette).a : 1));
+                material.SetFloat("_Opacity", .24f);
                 materials.Add(key, material);
                 return material;
             }
@@ -345,7 +295,6 @@ namespace MagicCarpet.Native
             collectors.Dispose();
             scrolls.Dispose();
             castleJars.Dispose();
-            castleProjectiles.Dispose();
             UnityEngine.Object.Destroy(root.gameObject);
             UnityEngine.Object.Destroy(quad);
             foreach (var value in materials.Values) UnityEngine.Object.Destroy(value);

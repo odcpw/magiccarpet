@@ -36,6 +36,119 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/mc-paj2-source-secret-34-campaign-package");
 
         [Test]
+        public void DayShoreFlightDrivesTheLiveAmbientVoices()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var input = Environment.GetEnvironmentVariable("MC_DAY_AUDIO_REPLAY") ??
+                Path.Combine(generated, "gameplay-audio-20261117/current-day-entry.mcs");
+            var temporary = Path.Combine(Path.GetTempPath(), "mc-day-shore-audio-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            var root = new GameObject("Day shore real runtime audio");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var activeBefore = NativeSession.ActiveSessionCount;
+            try
+            {
+                var arguments = new List<string> {
+                    "-mc-game-runtime", "-mc-runtime-replay-load", input,
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE") ??
+                        Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
+                    "-mc-runtime-speech-cache", Path.Combine(generated, "mc2-campaign-speech-current"),
+                    "-mc-runtime-media-cache", Path.Combine(generated, "mc2-campaign-media-cache-decoded"),
+                    "-mc-preferences-profile", Path.Combine(temporary, "profile")
+                };
+                foreach (var pair in new[] {
+                    ("settlement-20261105-integration/owner-closed-v6/level1", "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1"),
+                    ("mc-level2-vault-successor-closure-20261025", "mc-b9s2-cursor-level2-vault-20261029"),
+                    ("settlement-20261105-integration/owner-closed-v6/level3", "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3")
+                })
+                    arguments.AddRange(new[] { "-mc-runtime-package", Path.Combine(generated, pair.Item1),
+                        "-mc-runtime-owner-cache", Path.Combine(generated, pair.Item2),
+                        "-mc-runtime-presentation-cache", Path.Combine(generated, pair.Item2) });
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                var campaign = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession", flags).GetValue(runtime);
+                var audio = (OwnerAudioPresentation)typeof(MagicCarpetRuntime).GetField("ownerAudio", flags).GetValue(runtime);
+                Assert.That((campaign.Selection.externalLevel, campaign.Selection.mapType), Is.EqualTo(((ushort)3, (byte)0)));
+                var terrain = campaign.TerrainPlane(NativeSim.TerrainTypes);
+                byte CurrentTerrain() {
+                    var pose = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                    return terrain[(pose.y >> 8) * 256 + (pose.x >> 8)];
+                }
+                Assert.That(CurrentTerrain(), Is.Not.Zero, "the real Day entry begins over land");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(audio.QualificationLoopTargetUnits(2), Is.EqualTo(70));
+                var landVoice = audio.QualificationLoopVoiceIndex(2);
+                Assert.That(landVoice, Is.GreaterThanOrEqualTo(0));
+                Assert.That(audio.QualificationLoopPlayStarts(2), Is.EqualTo(1));
+                audio.Tick(0.5f);
+                Assert.That(audio.QualificationLoopUnits(2), Is.EqualTo(30), "source ambience advances at 60 Hz");
+                audio.Tick(1f);
+                Assert.That(audio.QualificationLoopUnits(2), Is.EqualTo(70));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(audio.QualificationLoopVoiceIndex(2), Is.EqualTo(landVoice));
+                Assert.That(audio.QualificationLoopPlayStarts(2), Is.EqualTo(1), "repeated source prepares reuse the live loop");
+                var steer = typeof(MagicCarpetRuntime).GetMethod("ApplyGameRuntimeSteeringInput", flags);
+                var fullStop = typeof(MagicCarpetRuntime).GetField("preferenceFullStopRequested", flags);
+                void Turn(int frames)
+                {
+                    // Same accumulated keyboard input consumed by the real
+                    // fixed-update route; no pose or audio state is injected.
+                    steer.Invoke(runtime, new object[] { 0f, 0f, false, true, false, false, false, 127f });
+                    runtime.QualificationDriveGameRuntimeFrames(frames);
+                    steer.Invoke(runtime, new object[] { 0f, 0f, false, false, false, false, true, 0f });
+                    runtime.QualificationDriveGameRuntimeFrames(16);
+                    fullStop.SetValue(runtime, true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                }
+                void Accelerate(int frames)
+                {
+                    runtime.QualificationApplyGameRuntimeProductionMovement(true, false, false, false);
+                    runtime.QualificationDriveGameRuntimeFrames(frames);
+                    runtime.QualificationApplyGameRuntimeProductionMovement(false, false, false, false);
+                    fullStop.SetValue(runtime, true);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                }
+                Turn(27);
+                Turn(6);
+                Accelerate(30);
+                Assert.That(CurrentTerrain(), Is.Zero, "ordinary flight reaches real Day water");
+                Assert.That(audio.QualificationLoopTargetUnits(2), Is.Zero, "water fades the land loop");
+                Assert.That(audio.QualificationLoopTargetUnits(1), Is.EqualTo(70), "water prepares the ocean loop");
+                var waterVoice = audio.QualificationLoopVoiceIndex(1);
+                Assert.That(waterVoice, Is.GreaterThanOrEqualTo(0).And.Not.EqualTo(landVoice));
+                Assert.That(audio.QualificationLoopPlayStarts(1), Is.EqualTo(1));
+                audio.Tick(0.5f);
+                Assert.That((audio.QualificationLoopUnits(2), audio.QualificationLoopUnits(1)), Is.EqualTo((40, 30)));
+                audio.Tick(1f);
+                Assert.That((audio.QualificationLoopUnits(2), audio.QualificationLoopUnits(1)), Is.EqualTo((0, 70)));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That((audio.QualificationLoopVoiceIndex(1), audio.QualificationLoopPlayStarts(1)), Is.EqualTo((waterVoice, 1)));
+                Turn(33);
+                Accelerate(30);
+                Assert.That(CurrentTerrain(), Is.Not.Zero, "ordinary return flight reaches real Day land");
+                Assert.That((audio.QualificationLoopTargetUnits(1), audio.QualificationLoopTargetUnits(2)), Is.EqualTo((0, 70)));
+                Assert.That((audio.QualificationLoopVoiceIndex(1), audio.QualificationLoopVoiceIndex(2)), Is.EqualTo((waterVoice, landVoice)));
+                Assert.That((audio.QualificationLoopPlayStarts(1), audio.QualificationLoopPlayStarts(2)), Is.EqualTo((1, 1)));
+                audio.Tick(0.5f);
+                Assert.That((audio.QualificationLoopUnits(1), audio.QualificationLoopUnits(2)), Is.EqualTo((40, 30)));
+                audio.Tick(1f);
+                Assert.That((audio.QualificationLoopUnits(1), audio.QualificationLoopUnits(2)), Is.EqualTo((0, 70)));
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(audio.QualificationActiveLoopCount, Is.Zero, "reset releases the old generation's device voices");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                Directory.Delete(temporary, true);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
+        [Test]
         public void MusicWaveHashFailureReportsOriginalAndFreshBytesWithoutAcceptingReread()
         {
             var original = System.Text.Encoding.ASCII.GetBytes("abc");

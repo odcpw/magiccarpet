@@ -3024,6 +3024,39 @@ pub fn level1_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection 
     }
 }
 
+/// Source screen-size setting 16..40 mapped into the fixed indexed target.
+pub(crate) fn source_viewport(size: u8) -> Option<crate::classic_hd::ClassicHdViewport> {
+    if !(16..=40).contains(&size) { return None; }
+    let size = u32::from(size);
+    Some(crate::classic_hd::ClassicHdViewport {
+        x: LEVEL1_VIEW_WIDTH as u32 * (40 - size) / 80,
+        y: LEVEL1_VIEW_HEIGHT as u32 * (40 - size) / 80,
+        width: LEVEL1_VIEW_WIDTH as u32 * size / 40,
+        height: LEVEL1_VIEW_HEIGHT as u32 * size / 40,
+    })
+}
+
+/// DrawWorld projects at the selected rectangle's actual diagonal and pitch.
+pub(crate) fn source_viewport_projection(
+    camera: Level1TerrainFrameCamera,
+    viewport: crate::classic_hd::ClassicHdViewport,
+) -> OutdoorProjection {
+    let width = viewport.width as i32;
+    let height = viewport.height as i32;
+    let diagonal = legacy_sqrt((width * width + height * height) as u32) as i32;
+    OutdoorProjection {
+        scale: 7_i32.wrapping_mul(diagonal).wrapping_mul(i32::from(camera.fov)) >> 11,
+        pitch_offset: i32::from(camera.pitch).wrapping_mul(width) >> 8,
+        roll: camera.roll,
+        center_x: viewport.x as i32 + width / 2,
+        center_y: viewport.y as i32 + height / 2,
+        // Sprite projection writes to the full backing; actual source clip
+        // bounds are carried separately by SourceWorldSprites.
+        viewport_width: LEVEL1_VIEW_WIDTH as i32,
+        viewport_height: LEVEL1_VIEW_HEIGHT as i32,
+    }
+}
+
 #[must_use]
 pub(crate) fn source_map_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection {
     const WIDTH: i32 = 128;
@@ -3066,22 +3099,54 @@ fn draw_level1_sky_viewport(
     viewport_width: usize,
     viewport_x: usize,
 ) -> Result<Vec<u8>, TerrainFrameError> {
+    let projection = if viewport_width == LEVEL1_VIEW_WIDTH {
+        level1_projection(camera)
+    } else {
+        source_map_projection(camera)
+    };
+    draw_level1_sky_rect(camera, sky, viewport_x, 0, viewport_width,
+        LEVEL1_VIEW_HEIGHT, projection, 0)
+}
+
+/// Source sky starts at the viewport buffer origin and uses local centre.
+pub(crate) fn draw_source_viewport_sky(
+    camera: Level1TerrainFrameCamera,
+    sky: &[u8],
+    viewport: crate::classic_hd::ClassicHdViewport,
+    background: u8,
+) -> Result<Vec<u8>, TerrainFrameError> {
+    let mut projection = source_viewport_projection(camera, viewport);
+    projection.center_x -= viewport.x as i32;
+    projection.center_y -= viewport.y as i32;
+    draw_level1_sky_rect(camera, sky, viewport.x as usize, viewport.y as usize,
+        viewport.width as usize, viewport.height as usize, projection, background)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_level1_sky_rect(
+    camera: Level1TerrainFrameCamera,
+    sky: &[u8],
+    viewport_x: usize,
+    viewport_y: usize,
+    viewport_width: usize,
+    viewport_height: usize,
+    projection: OutdoorProjection,
+    background: u8,
+) -> Result<Vec<u8>, TerrainFrameError> {
     if sky.len() != LEVEL1_SKY_BYTES {
         return Err(TerrainFrameError(format!(
             "Level 1 sky must contain {LEVEL1_SKY_BYTES} bytes, got {}",
             sky.len()
         )));
     }
-    if viewport_width == 0 || viewport_x + viewport_width > LEVEL1_VIEW_WIDTH {
+    if viewport_width == 0 || viewport_height == 0
+        || viewport_x + viewport_width > LEVEL1_VIEW_WIDTH
+        || viewport_y + viewport_height > LEVEL1_VIEW_HEIGHT
+    {
         return Err(TerrainFrameError(format!(
-            "Level 1 sky viewport {viewport_x}+{viewport_width} is outside {LEVEL1_VIEW_WIDTH}"
+            "Level 1 sky viewport is outside its indexed target"
         )));
     }
-    let projection = if viewport_width == LEVEL1_VIEW_WIDTH {
-        level1_projection(camera)
-    } else {
-        source_map_projection(camera)
-    };
     let roll = i32::from(camera.roll) & 0x07ff;
     let cos = SIN_16_16[usize::try_from(512 + roll).expect("masked sky cosine index")];
     let sin = SIN_16_16[usize::try_from(roll).expect("masked sky sine index")];
@@ -3120,13 +3185,13 @@ fn draw_level1_sky_viewport(
         .wrapping_add(sin_step.wrapping_mul(origin_x));
     let mut row_u = (i32::from(camera.yaw as u16) << 15).wrapping_sub(rotated_x);
     let mut row_v = rotated_y.wrapping_neg();
-    let mut frame = vec![0; LEVEL1_VIEW_PIXELS];
+    let mut frame = vec![background; LEVEL1_VIEW_PIXELS];
 
-    for row in 0..LEVEL1_VIEW_HEIGHT {
+    for row in 0..viewport_height {
         let mut u = byte2(row_u);
         let mut v = byte2(row_v);
         for column in 0..viewport_width {
-            frame[row * LEVEL1_VIEW_WIDTH + viewport_x + column] =
+            frame[(viewport_y + row) * LEVEL1_VIEW_WIDTH + viewport_x + column] =
                 sky[(usize::from(v) << 8) | usize::from(u)];
             u = u.wrapping_add(x_deltas[column]);
             v = v.wrapping_add(y_deltas[column]);

@@ -35,6 +35,75 @@ pub struct IndexedGlyph {
     pub length: u16,
 }
 
+trait SourceGlyphView {
+    fn dimensions(&self) -> (usize, usize, usize);
+}
+
+impl SourceGlyphView for IndexedGlyph {
+    fn dimensions(&self) -> (usize, usize, usize) {
+        (self.offset as usize, usize::from(self.width), usize::from(self.height))
+    }
+}
+
+impl SourceGlyphView for crate::game_runtime::preferences::installed_locale::SourceGlyph {
+    fn dimensions(&self) -> (usize, usize, usize) {
+        (self.offset, usize::from(self.width), usize::from(self.height))
+    }
+}
+
+/// Source FONT1 byte+1 text traversal, shared by indexed HUD and world text.
+/// The sink owns clipping and the destination plane.
+fn draw_source_text<G: SourceGlyphView>(
+    glyphs: &[G], masks: &[u8], mut x: i32, mut y: i32, text: &[u8],
+    coordinate_divisor: i32, height_divisor: usize,
+    mut write: impl FnMut(i32, i32) -> bool,
+) -> Result<u32, IndexedOverlayError> {
+    for byte in text.iter().take_while(|byte| **byte != 0) {
+        let index = match *byte {
+            b'\r' => continue,
+            b'\t' | b' ' => 33,
+            b'\n' => 34,
+            byte => usize::from(byte) + 1,
+        };
+        let glyph = glyphs.get(index)
+            .ok_or_else(|| IndexedOverlayError(format!("FONT1 glyph {index} missing")))?;
+        let (offset, width, height) = glyph.dimensions();
+        if offset.checked_add(width.saturating_mul(height)).is_none_or(|end| end > masks.len()) {
+            return Err(IndexedOverlayError(format!("FONT1 glyph {index} exceeds mask blob")));
+        }
+    }
+    let origin_x = x;
+    let mut writes = 0;
+    for byte in text.iter().take_while(|byte| **byte != 0) {
+        match *byte {
+            b'\r' => continue,
+            b'\n' => { x = origin_x; y += glyphs[34].dimensions().2 as i32; continue; }
+            b'\t' | b' ' => { x += glyphs[33].dimensions().1 as i32; continue; }
+            _ => {}
+        }
+        let (offset, width, height) = glyphs[usize::from(*byte) + 1].dimensions();
+        for row in 0..height / height_divisor {
+            for column in 0..width {
+                if masks[offset + row * width + column] != 0 {
+                    writes += u32::from(write(x / coordinate_divisor + column as i32,
+                        y / coordinate_divisor + row as i32));
+                }
+            }
+        }
+        x += width as i32;
+    }
+    Ok(writes)
+}
+
+pub(crate) fn draw_selected_source_font(
+    font: &crate::game_runtime::preferences::installed_locale::SourceFont,
+    x: i32, y: i32, text: &[u8], write: impl FnMut(i32, i32) -> bool,
+) -> Result<u32, IndexedOverlayError> {
+    // sub_8F935 halves coordinates and the number of source rows, then its
+    // colourized RLE writer consumes the original horizontal glyph runs.
+    draw_source_text(&font.glyphs, &font.masks, x, y, text, 2, 2, write)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IndexedObjective {
     reference_x: u16,
@@ -2172,49 +2241,14 @@ impl IndexedOverlayAssets {
         &self,
         indices: &mut [u8],
         provenance: &mut [u8],
-        mut x: i32,
-        mut y: i32,
+        x: i32,
+        y: i32,
         text: &[u8],
         colour: u8,
     ) -> Result<u32, IndexedOverlayError> {
         self.validate_text(text)?;
-        let mut writes = 0_u32;
-        let origin_x = x;
-        for byte in text.iter().take_while(|byte| **byte != 0) {
-            // remc2 sub_6F940 indexes FONT1 at character + 1. TAB rows
-            // already include the advance; there is no extra pixel gap.
-            match *byte {
-                b'\r' => continue,
-                b'\n' => {
-                    x = origin_x;
-                    y += i32::from(self.glyphs[34].height);
-                    continue;
-                }
-                b'\t' | b' ' => {
-                    x += i32::from(self.glyphs[33].width);
-                    continue;
-                }
-                _ => {}
-            }
-            let glyph = self.glyphs[usize::from(*byte) + 1];
-            let offset = usize::try_from(glyph.offset).expect("glyph offset fits usize");
-            let width = usize::from(glyph.width);
-            for row in 0..usize::from(glyph.height) {
-                for column in 0..width {
-                    if self.font_masks[offset + row * width + column] != 0 {
-                        writes += u32::from(write_pixel(
-                            indices,
-                            provenance,
-                            x + i32::try_from(column).expect("glyph width fits i32"),
-                            y + i32::try_from(row).expect("glyph height fits i32"),
-                            colour,
-                        ));
-                    }
-                }
-            }
-            x += i32::from(glyph.width);
-        }
-        Ok(writes)
+        draw_source_text(&self.glyphs, &self.font_masks, x, y, text, 1, 1,
+            |x, y| write_pixel(indices, provenance, x, y, colour))
     }
 
     fn draw_objective(

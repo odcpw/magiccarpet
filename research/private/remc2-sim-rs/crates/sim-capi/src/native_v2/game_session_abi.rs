@@ -18,8 +18,11 @@ use sim_core::{
     },
 };
 use sim_session::{
-    EventPage, GameAudioCommand, GameCommand, GameSession, GameSessionAssetError, GameSessionError,
-    OpenSessionError, SessionGuard, SessionGuardError, SessionGuardErrorCode, SessionObservation,
+    ActorPage, ActorPageRequest, ECONOMY_EVENT_IDS, EconomyPage, EventPage, GameAudioCommand,
+    GameCommand, GameSession, GameSessionAssetError, GameSessionError, MAX_ACTOR_PAGE_SIZE,
+    MAX_OBJECTIVE_STAGES, MAX_TERRAIN_WINDOW_SIDE, ObjectiveObservation, OpenSessionError,
+    SessionGuard, SessionGuardError, SessionGuardErrorCode, SessionObservation, TERRAIN_GRID_SIDE,
+    TerrainWindow, TerrainWindowRequest,
 };
 
 const MAX_COMMAND_JSON_BYTES: u32 = 4 * 1024;
@@ -145,6 +148,79 @@ impl NeutralSession {
                 .events_after(guard, cursor, limit)
                 .map_err(map_campaign_session_error),
         }
+    }
+
+    fn actors(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> AbiResult<SessionObservation<ActorPage>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "actor observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.actors(guard, request).map_err(map_guard_error)
+    }
+
+    fn objectives(
+        &self,
+        guard: SessionGuard,
+    ) -> AbiResult<SessionObservation<ObjectiveObservation>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "objective observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.objectives(guard).map_err(map_guard_error)
+    }
+
+    fn economy(
+        &self,
+        guard: SessionGuard,
+        request: ActorPageRequest,
+    ) -> AbiResult<SessionObservation<EconomyPage>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "economy observations are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session.economy(guard, request).map_err(map_guard_error)
+    }
+
+    fn terrain_window(
+        &self,
+        guard: SessionGuard,
+        request: TerrainWindowRequest,
+    ) -> AbiResult<SessionObservation<TerrainWindow>> {
+        let session = match self {
+            Self::Mc2Campaign(session) => session,
+            Self::Runtime(runtime) => runtime.session()?,
+            Self::Mc2Owned(_) => {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "terrain windows are unavailable on an MC2-owned session",
+                ));
+            }
+        };
+        session
+            .terrain_window(guard, request)
+            .map_err(map_guard_error)
     }
 
     fn audio_for_event(
@@ -456,6 +532,21 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 {
                     "profile": "mc2-campaign",
                     "snapshot_value": "campaign_snapshot/v5",
+                    "actor_pages": {
+                        "kinds": Mc2CampaignBackend::actor_page_kinds().collect::<Vec<_>>(),
+                        "maximum_page_size": MAX_ACTOR_PAGE_SIZE
+                    },
+                    "objective_observation": {"maximum_stages": MAX_OBJECTIVE_STAGES},
+                    "economy_pages": {
+                        "kinds": ["castle", "collector", "mana_sphere"],
+                        "maximum_page_size": MAX_ACTOR_PAGE_SIZE
+                    },
+                    "economy_event_payloads": ECONOMY_EVENT_IDS,
+                    "terrain_window": {
+                        "grid_side": TERRAIN_GRID_SIDE,
+                        "maximum_window_side": MAX_TERRAIN_WINDOW_SIDE,
+                        "wraps": false
+                    },
                     "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
@@ -682,6 +773,96 @@ pub extern "C" fn mc_game_session_events_json_v1(
                     .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "event limit exceeds usize"))?,
             )?;
             write_json(&page, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_actors_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    offset: u32,
+    limit: u32,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = ActorPageRequest::new(offset, limit)
+            .ok_or_else(|| AbiError::new(MC_STATUS_BOUNDS, "invalid actor page offset or limit"))?;
+        with_neutral_session(handle, |session| {
+            let page = session.actors(session_guard(handle, generation, expected_tick), request)?;
+            write_json(&page, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_objectives_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_neutral_session(handle, |session| {
+            let observation =
+                session.objectives(session_guard(handle, generation, expected_tick))?;
+            write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_economy_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    offset: u32,
+    limit: u32,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = ActorPageRequest::new(offset, limit).ok_or_else(|| {
+            AbiError::new(MC_STATUS_BOUNDS, "invalid economy page offset or limit")
+        })?;
+        with_neutral_session(handle, |session| {
+            let observation =
+                session.economy(session_guard(handle, generation, expected_tick), request)?;
+            write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_session_terrain_window_json_v1(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        let request = TerrainWindowRequest::new(x, y, width, height).ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_BOUNDS,
+                "terrain window exceeds the size or grid bounds",
+            )
+        })?;
+        with_neutral_session(handle, |session| {
+            let observation = session
+                .terrain_window(session_guard(handle, generation, expected_tick), request)?;
+            write_json(&observation, buffer, capacity, out_length)
         })
     })
 }
@@ -1187,14 +1368,96 @@ mod tests {
                 (trigger.position.x >> 8, trigger.position.y >> 8),
                 (161, 222)
             );
+            assert!(trigger.active && trigger.drawing_enabled);
+            let local = &sim.players()[usize::from(sim.runtime().local_player_slot)];
+            assert_eq!(sim.runtime().objectives[usize::from(local.player_color_index())].is_level_end, 0);
+            let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+            let camera = sim.world_map_camera();
+            let corner_plan = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+            let full_plan = crate::presentation_bridge::campaign_world_map_plan(sim, selection, camera).unwrap();
+            for plan in [&corner_plan, &full_plan] {
+                let matches = plan.entities.iter().filter(|row| row.subject_entity_index == trigger.source_entity_index).collect::<Vec<_>>();
+                assert_eq!(matches.len(), 1);
+                assert_eq!((matches[0].selector, matches[0].help_selector, matches[0].visible), (84, 83, 1));
+            }
+            let full_row = full_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index).unwrap();
+            assert!(full_row.x >= 0 && full_row.x < 191 && full_row.y >= 0 && full_row.y < 200,
+                "actual secret controller must be inside the full-map aperture: {full_row:?}");
+            if std::env::var_os("MC_EXIT_HINT_OBSERVATION").is_some() {
+                use sim_core::presentation::world_map::{MapGeometry, WorldMapView};
+                let camera = sim.world_map_camera();
+                let corner_view = WorldMapView { x: sim.state.position.x, y: sim.state.position.y, yaw: sim.state.yaw };
+                let corner = MapGeometry::MINIMAP.project(corner_view, trigger.position);
+                let full = MapGeometry::FULL_MAP.project(camera.into(), trigger.position);
+                let table_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/secret-lifecycle-20261111-source4-environment/palette/tables.u8");
+                let tables = std::fs::read(table_path).expect("source4 actual map aperture table");
+                let (x, y) = (i32::from(corner.0) / 2, i32::from(corner.1) / 2);
+                let inside_corner = if corner.0 < 0 || corner.1 < 0 || x >= 64 || y >= 64 { false } else {
+                    let source_y = y * 2;
+                    let phase = if source_y < 64 { 63 - source_y } else { source_y - 64 };
+                    let half_span = (64 * i32::from(tables[0x14300 + phase as usize * 4])) >> 8;
+                    x * 2 >= 64 - half_span && x * 2 < 64 + half_span
+                };
+                let inside_full = full.0 >= 0 && full.0 < 191 && full.1 >= 0 && full.1 < 200;
+                let local = &sim.players()[usize::from(sim.runtime().local_player_slot)];
+                let is_level_end = sim.runtime().objectives[usize::from(local.player_color_index())].is_level_end;
+                let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+                let corner_plan = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+                let full_plan = crate::presentation_bridge::campaign_world_map_plan(sim, selection, camera).unwrap();
+                eprintln!("exit-hint-observation: tick={} is_level_end={} all_satisfied={} player={:?} camera={:?} portal={portal:?} trigger={trigger:?} corner={corner:?} inside_corner={inside_corner} full={full:?} inside_full={inside_full} corner_row={:?} full_row={:?} typed={:?}",
+                    session.identity().tick, is_level_end, session.snapshot().value.objective_progress.all_objectives_satisfied,
+                    sim.state, camera,
+                    corner_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index),
+                    full_plan.entities.iter().find(|row| row.subject_entity_index == trigger.source_entity_index),
+                    sim.campaign_minimap_owned_inputs().unwrap().iter().find(|row| row.source_slot == trigger.source_entity_index));
+            }
             Ok((portal, trigger))
         })
         .unwrap();
+        let mut projected_entity = McCampaignEntitySnapshotV2::default();
+        let mut written = 0;
+        assert_eq!(super::super::campaign_abi::mc_native_campaign_entities_copy(
+            handle, u32::from(trigger.source_entity_index), &raw mut projected_entity, 1,
+            std::mem::size_of::<McCampaignEntitySnapshotV2>() as u32, &raw mut written), MC_STATUS_OK);
+        assert_eq!(written, 1);
+        assert_eq!((projected_entity.entity_index, projected_entity.source_id, projected_entity.active,
+            projected_entity.class_id, projected_entity.model, projected_entity.action,
+            projected_entity.x, projected_entity.y, projected_entity.z),
+            (trigger.source_entity_index, trigger.entity_id, 1, 11, 31, 31,
+             trigger.position.x, trigger.position.y, trigger.position.z));
         assert!(!observe(handle).2.active);
         eprintln!(
             "retainednative136: player={:?} portal={portal:?} controller={trigger:?}",
             observe(handle).1
         );
+        // The production journal is bounded. Retain only the exact exit
+        // witnesses as their turns are observed so later travel cannot evict
+        // the start before the completion assertions inspect it.
+        let mut exit_records = std::collections::BTreeMap::new();
+        let mut capture_exit_records = || {
+            with_neutral_session(handle, |record| {
+                let NeutralSession::Mc2Campaign(session) = record else { unreachable!() };
+                let sim = session.backend().campaign_presentation_source().simulation();
+                for row in sim.effect_journal.records() {
+                    let relevant = match &row.effect {
+                        CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
+                            trigger_entity_index, portal_entity_index, ..
+                        }) => *trigger_entity_index == trigger.source_entity_index
+                            && *portal_entity_index == portal.source_entity_index,
+                        CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
+                            player_entity_index, result_code, ..
+                        }) => *player_entity_index == state.entity_index && *result_code == 0x1a,
+                        CampaignEffect::Flight(sim_core::FlightEvent::PrepareSound {
+                            entity_index, player_index: -1, sound_id: 41, ..
+                        }) => *entity_index == state.entity_index,
+                        _ => false,
+                    };
+                    if relevant { exit_records.entry(row.sequence).or_insert_with(|| row.clone()); }
+                }
+                Ok(())
+            }).unwrap();
+        };
         advance(
             handle,
             &GameCommand {
@@ -1202,6 +1465,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        capture_exit_records();
         // Second fixed turn828→736:49 pulses−10 then24 neutral visits.
         for _ in 0..49 {
             advance(
@@ -1211,9 +1475,11 @@ mod tests {
                     ..Default::default()
                 },
             );
+            capture_exit_records();
         }
         for _ in 0..24 {
             advance(handle, &neutral);
+            capture_exit_records();
         }
         assert_eq!(
             (observe(handle).1.yaw, observe(handle).1.roll_accumulator),
@@ -1233,6 +1499,7 @@ mod tests {
                     ..Default::default()
                 },
             );
+            capture_exit_records();
             let exit = observe(handle).2;
             if exit.active || exit.complete {
                 first_active_phase.get_or_insert(exit.phase);
@@ -1256,7 +1523,9 @@ mod tests {
                 break;
             }
             advance(handle, &neutral);
+            capture_exit_records();
         }
+        drop(capture_exit_records);
         let (completed, state, exit) = observe(handle);
         assert_eq!(
             (
@@ -1295,10 +1564,7 @@ mod tests {
                 .backend()
                 .campaign_presentation_source()
                 .simulation();
-            let completed = sim
-                .effect_journal
-                .records()
-                .iter()
+            let completed = exit_records.values()
                 .filter(|row| {
                     matches!(&row.effect,
                 CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
@@ -1307,10 +1573,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(completed.len(), 1);
-            let starts = sim
-                .effect_journal
-                .records()
-                .iter()
+            let starts = exit_records.values()
                 .filter(|row| {
                     matches!(&row.effect,
                 CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
@@ -1320,10 +1583,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(starts.len(), 1);
-            let phase_zero = sim
-                .effect_journal
-                .records()
-                .iter()
+            let phase_zero = exit_records.values()
                 // ExitOverlap41 precedes the real start. The phase0 body
                 // emits the one player/-1/41 after start and before completion.
                 // audio_site is a sim-core-only cfg(test) field, not part of
@@ -1349,6 +1609,12 @@ mod tests {
                     .iter()
                     .all(|row| row.authored_index != 76)
             );
+            let selection = sim_core::campaign::spec::CampaignSelection::ordinary(5).unwrap();
+            let corner = crate::presentation_bridge::campaign_minimap_plan(sim, selection).unwrap();
+            let full = crate::presentation_bridge::campaign_world_map_plan(sim, selection, sim.world_map_camera()).unwrap();
+            assert!([&corner, &full].iter().all(|plan| plan.entities.iter().all(|row|
+                row.subject_entity_index != trigger.source_entity_index || row.help_selector != 83)),
+                "the reclaimed controller must not leave an exit hint");
             Ok(completed[0].sequence)
         })
         .unwrap();
@@ -1771,6 +2037,13 @@ mod tests {
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
         assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v5");
         assert_eq!(
+            profiles[1]["actor_pages"],
+            serde_json::json!({"kinds": [
+                "creature.goat", "creature.bee", "creature.dragon", "creature.archer",
+                "creature.skeleton", "creature.villager", "creature.trader"
+            ], "maximum_page_size": MAX_ACTOR_PAGE_SIZE})
+        );
+        assert_eq!(
             profiles[1]["capabilities"],
             serde_json::json!([
                 "snapshot",
@@ -2058,6 +2331,215 @@ mod tests {
         assert_eq!(campaign_snapshot(reopened)["value"], stepped["value"]);
         assert_eq!(mc_game_session_destroy_v1(reopened), MC_STATUS_OK);
         assert_eq!(mc_game_session_destroy_v1(owned), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn neutral_campaign_actor_pages_follow_live_goats_at_an_exact_session_boundary() {
+        let contract = read_json(|buffer, capacity, length| {
+            mc_game_session_contract_json_v1(buffer, capacity, length)
+        });
+        assert_eq!(
+            contract["session_profiles"][1]["actor_pages"]["maximum_page_size"],
+            MAX_ACTOR_PAGE_SIZE
+        );
+        let handle = open_campaign_fixture();
+        let read_page = |owner, generation, tick, offset, limit| {
+            read_json_with_capacity(64 * 1024, |buffer, capacity, length| {
+                mc_game_session_actors_json_v1(
+                    owner, generation, tick, offset, limit, buffer, capacity, length,
+                )
+            })
+        };
+        let rows = |page: serde_json::Value| page["value"]["actors"].as_array().unwrap().clone();
+        let initial = campaign_snapshot(handle);
+        let first = read_page(handle, 1, 0, 0, 2);
+        assert_eq!(first["identity"], initial["identity"]);
+        assert_eq!(first["value"]["next_offset"], 2);
+        let rest = read_page(handle, 1, 0, 2, MAX_ACTOR_PAGE_SIZE);
+        assert!(rest["value"]["next_offset"].is_null());
+        let all = rows(read_page(handle, 1, 0, 0, MAX_ACTOR_PAGE_SIZE));
+        let self_page = read_page(handle, 1, 0, 0, 2);
+        assert_eq!(first, self_page);
+        assert_eq!([rows(first), rows(rest)].concat(), all);
+        let goats = all
+            .iter()
+            .filter(|row| row["kind"] == "creature.goat")
+            .collect::<Vec<_>>();
+        assert_eq!(goats.len(), 36, "active ordinary Day2 Goat census");
+        assert!(goats.iter().all(|row| row["lifecycle"] == "alive"
+            && row["life"].is_i64()
+            && row["max_life"].is_i64()
+            && row.get("parent").is_none()));
+        assert!(goats.iter().any(|row| row["entity_id"].is_string()));
+        assert!(all.iter().any(|row| row["kind"] == "creature.villager"));
+        let ids: std::collections::BTreeSet<_> = all
+            .iter()
+            .map(|row| row["actor"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), all.len());
+        let mut ignored = 0;
+        for (offset, limit) in [(0, 0), (0, MAX_ACTOR_PAGE_SIZE + 1), (u32::MAX, 1)] {
+            assert_eq!(
+                mc_game_session_actors_json_v1(
+                    handle,
+                    1,
+                    0,
+                    offset,
+                    limit,
+                    std::ptr::null_mut(),
+                    0,
+                    &raw mut ignored
+                ),
+                MC_STATUS_BOUNDS,
+            );
+        }
+        assert_eq!(
+            campaign_snapshot(handle),
+            initial,
+            "observing and paging does not alter gameplay"
+        );
+
+        let command = br#"{}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_game_session_actors_json_v1(
+                handle,
+                1,
+                0,
+                2,
+                2,
+                std::ptr::null_mut(),
+                0,
+                &raw mut ignored
+            ),
+            MC_STATUS_INVALID_ARGUMENT,
+        );
+        let stepped = read_page(handle, 1, 1, 0, 2);
+        assert_eq!(stepped["identity"]["tick"], "1");
+        assert_eq!(stepped["value"]["actors"][0]["actor"], all[0]["actor"]);
+        let observed_step = campaign_snapshot(handle);
+
+        assert_eq!(mc_game_session_reset_v1(handle, 1, 1), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_session_actors_json_v1(
+                handle,
+                1,
+                1,
+                2,
+                2,
+                std::ptr::null_mut(),
+                0,
+                &raw mut ignored
+            ),
+            MC_STATUS_GENERATION_MISMATCH,
+        );
+        let reset = read_page(handle, 2, 0, 0, 2);
+        assert_eq!(
+            reset["value"]["actors"][0]["entity_id"],
+            all[0]["entity_id"]
+        );
+        assert_ne!(reset["value"]["actors"][0]["actor"], all[0]["actor"]);
+        let independent = open_campaign_fixture();
+        assert_eq!(
+            mc_game_session_step_json_v1(independent, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            campaign_snapshot(independent)["value"],
+            observed_step["value"],
+            "the same replayed input without observation leaves state, tick, and journal equal"
+        );
+        let independent_page = read_page(independent, 1, 1, 0, 2);
+        assert_ne!(
+            independent_page["value"]["actors"][0]["actor"],
+            all[0]["actor"]
+        );
+        assert_eq!(mc_game_session_destroy_v1(independent), MC_STATUS_OK);
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn neutral_campaign_actor_pages_expose_live_level_five_dragon_roots_and_parts() {
+        let package = std::env::var_os("MC_ACTOR_LEVEL5_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            PathBuf::from,
+        );
+        let handle = open_campaign_path(&package);
+        let page = |tick| {
+            read_json_with_capacity(64 * 1024, |buffer, capacity, length| {
+                mc_game_session_actors_json_v1(
+                    handle,
+                    1,
+                    tick,
+                    0,
+                    MAX_ACTOR_PAGE_SIZE,
+                    buffer,
+                    capacity,
+                    length,
+                )
+            })
+        };
+        // The first ordinary source pass adopts package Bees and Dragons
+        // into their existing typed carriers.
+        let command = br#"{}"#;
+        let step = |tick| {
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    handle,
+                    1,
+                    tick,
+                    command.as_ptr(),
+                    command.len() as u32
+                ),
+                MC_STATUS_OK
+            );
+        };
+        step(0);
+        let initial = page(1);
+        let rows = initial["value"]["actors"].as_array().unwrap();
+        for kind in ["creature.bee", "creature.archer", "creature.skeleton"] {
+            assert!(
+                rows.iter()
+                    .any(|row| row["kind"] == kind && row["max_life"].is_i64()),
+                "missing actual {kind}"
+            );
+        }
+        let children = rows
+            .iter()
+            .filter(|row| row["kind"] == "creature.dragon" && row["parent"].is_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !children.is_empty(),
+            "the actual package has linked Dragon parts"
+        );
+        for child in &children {
+            assert!(child.get("life").is_none() && child.get("max_life").is_none());
+            let parent = rows
+                .iter()
+                .find(|row| row["actor"] == child["parent"])
+                .unwrap();
+            assert_eq!(parent["kind"], "creature.dragon");
+            assert!(parent["life"].is_i64() && parent["max_life"].is_i64());
+            assert_ne!(parent["actor"], child["actor"]);
+        }
+        for tick in 1..5 {
+            step(tick);
+        }
+        let later = page(5);
+        let later = later["value"]["actors"].as_array().unwrap();
+        assert!(
+            children.iter().any(
+                |child| later.iter().any(|row| row["actor"] == child["actor"]
+                    && row["parent"] == child["parent"]
+                    && row["pose"] != child["pose"])
+            ),
+            "ordinary Flight frames move the same multipart lifetime"
+        );
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]

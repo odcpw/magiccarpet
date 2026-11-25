@@ -70,6 +70,15 @@ impl SourcePlayerResult {
         *header = (*header & !0x00ff_0000) | (u32::from(result) << 16);
     }
 
+    /// sub_57570 runs after objectives on an unpaused source frame. A secret
+    /// result owns bit 0x10 and prevents the ordinary success bit from being set.
+    pub(crate) fn record_completed_objectives(&mut self) {
+        let header = &mut self.headers[usize::from(self.source_player_slot)];
+        if *header & 0x0010_0000 == 0 {
+            *header |= 0x0002_0000;
+        }
+    }
+
     pub(crate) const fn result_byte(&self) -> u8 {
         (self.headers[self.source_player_slot as usize] >> 16) as u8
     }
@@ -131,6 +140,17 @@ mod tests {
         PLAYER_EVENT_1D_RESULT, SECRET_BANISHMENT_RESULT, SECRET_RESULT_LEVEL_THRESHOLD,
         SourcePlayerResult,
     };
+
+    #[test]
+    fn completed_objectives_preserve_retry_bits_and_exclude_secret_results() {
+        let mut state = SourcePlayerResult::source_level_start(0);
+        state.record_single_player_no_castle_recovery();
+        state.record_completed_objectives();
+        assert_eq!(state.result_byte(), 0x0e);
+        state.record_exit_result(0x10);
+        state.record_completed_objectives();
+        assert_eq!(state.result_byte(), 0x10);
+    }
 
     #[test]
     fn source_event_keeps_the_full_word_and_distinguishes_ordinary_from_secret() {

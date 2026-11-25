@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -35,6 +36,66 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void SourceMapFrontierScrollPublishesEveryMoveBeforePortalHitTesting()
+        {
+            var cachePath = Environment.GetEnvironmentVariable("MC_CAMPAIGN_MENU_CACHE") ??
+                Path.GetFullPath(Path.Combine(Application.dataPath,
+                    "../../generated/mc2-campaign-menu-cache-current"));
+            using var cache = new OwnerCampaignMenuCache(cachePath);
+            const string night = "level.magic_carpet_2.night_spire";
+            const string day = "level.magic_carpet_2.payahandra_ruins";
+            var first = cache.ForMission(night);
+            var frontier = cache.ForMission(day);
+            Assert.That((first.viewport_x, first.viewport_y, first.portal_x, first.portal_y),
+                Is.EqualTo((116, 478, 420, 820)), "actual source L1 map coordinates");
+            Assert.That((frontier.viewport_x, frontier.viewport_y, frontier.portal_x, frontier.portal_y),
+                Is.EqualTo((368, 478, 666, 805)), "actual source Day2 map coordinates");
+            var menu = new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "mission_select", selected_level_id = day, briefing_level_id = day,
+                available_levels = new[] { night, day }, completed_levels = new[] { night }
+            };
+            var before = JsonUtility.ToJson(menu);
+            var map = cache.Campaign;
+            var motion = map.Motion;
+            var center = map.Extent(37);
+            var view = cache.SourceView(menu);
+            Vector2 ScreenPoint(int x, int y) => view.position + new Vector2(x, y) * (view.width / 640f);
+            void Step(uint pass, int mouseX = 320, int mouseY = 240) =>
+                motion.Step(menu, cache.ForMission, pass, mouseX, mouseY, false, true,
+                    center.width / 2, center.height / 2, map.Extent,
+                    (_, _) => { }, (_, _, _) => { }, false);
+            // Declared map state, not earned campaign progress or live audio proof.
+            // Reentry repeats the actual L1-to-first-unfinished-Day2 presentation.
+            for (var entry = 0; entry < 2; entry++)
+            {
+                map.Enter(menu, cache.ForMission, null);
+                Assert.That((motion.X, motion.Y, motion.Ready), Is.EqualTo((116, 478, false)));
+                var oldFirstPortal = ScreenPoint(420 - 116 + 20, 820 - 478 + 20);
+                Assert.That(cache.HitTestPortal(menu, oldFirstPortal), Is.EqualTo(night));
+                for (uint pass = 1; pass <= 63; pass++)
+                {
+                    Step(pass);
+                    Assert.That((motion.X, motion.Y), Is.EqualTo((116 + (int)pass * 4, 478)),
+                        "source case2 publishes coordinates on every four-unit move");
+                    Assert.That(motion.Ready, Is.False, "arrival is reported on the following source move");
+                    Assert.That(cache.HitTestPortal(menu, ScreenPoint(666 - motion.X + 20, 805 - motion.Y + 20)),
+                        Is.EqualTo(day), "the real portal hit test consumes the current published viewport");
+                }
+                Step(64, 638, 478);
+                Assert.That((motion.X, motion.Y, motion.Ready, motion.DescriptionViewportY),
+                    Is.EqualTo((368, 478, true, 478)));
+                Assert.That(cache.HitTestPortal(menu, oldFirstPortal), Is.EqualTo(day),
+                    "after the source scroll, the former first-portal screen point targets Day2");
+                Step(65, 638, 478);
+                Assert.That((motion.X, motion.Y), Is.EqualTo((368, 478)),
+                    "case2's arrival pass does not also accelerate case3 edge panning");
+                Step(66, 638, 478);
+                Assert.That((motion.X, motion.Y), Is.EqualTo((372, 478)));
+            }
+            Assert.That(JsonUtility.ToJson(menu), Is.EqualTo(before), "map motion never changes campaign progress");
+        }
+
+        [Test]
         public void SourceMapEdgePanUsesPriorAccelerationAndExactSourceBounds()
         {
             var map = new SourceMapMotion(Array.ConvertAll(new int[15], _ => new SourceMapMotion.BackgroundBinding()),
@@ -62,6 +123,44 @@ namespace MagicCarpet.Native.Tests
             Assert.That(label, Is.EqualTo("ABC 12345678901"));
             Assert.That(SourceScrollDialog.EditName(label, ref edited, KeyCode.None, '!'), Is.EqualTo(label));
             Assert.That(SourceScrollDialog.EditName(label, ref edited, KeyCode.Backspace, '\0'), Is.EqualTo("ABC 1234567890"));
+        }
+
+        [Test]
+        public void CurrentSourceMenuStateClearsModalWithoutInferringPlayerLife()
+        {
+            var menus = new SourceCampaignMenus();
+            foreach (var state in new byte[] { 13, 14 })
+            {
+                menus.SynchronizeSourceState(state);
+                Assert.That(menus.AbandonConfirmationPending, Is.True);
+                Assert.That(menus.MapOpen, Is.EqualTo(state == 14));
+                Assert.That(menus.TryRequestBanishFromSourceKey1(true), Is.True);
+                // The input is an authoritative menu observation, independent
+                // of actor life. The real dying callback's integrated check
+                // separately supplies this ordinary menu0 transition.
+                menus.SynchronizeSourceState(0);
+                Assert.That(menus.AbandonConfirmationPending, Is.False);
+                Assert.That(menus.HasPendingAction, Is.False);
+                Assert.That(menus.TryGetPendingBanish(out _), Is.False);
+                Assert.That(menus.TryRequestBanishFromSourceKey1(true), Is.False);
+                Assert.That((menus.MapOpen, menus.SpellOpen, menus.PlayerInformationOpen),
+                    Is.EqualTo((false, false, false)));
+            }
+            foreach (var state in new byte[] { 5, 6, 7, 8 })
+            {
+                menus.SynchronizeSourceState(state);
+                Assert.That(menus.SpellOpen, Is.EqualTo(state is 5 or 8));
+                Assert.That(menus.MapOpen, Is.EqualTo(state is 6 or 7 or 8));
+                Assert.That(menus.PlayerInformationOpen, Is.EqualTo(state == 7));
+            }
+            menus.SynchronizeSourceState(0);
+            var open = menus.Step(false, false, true, false, false, true);
+            Assert.That(open.RequestAbandonConfirmation, Is.True,
+                "a later fresh control follows the new native flight state");
+            Assert.That(menus.QueueAction("open_abandon_confirmation", false, null, null), Is.True);
+            menus.SynchronizeSourceState(0);
+            Assert.That(menus.PendingAction, Is.EqualTo("open_abandon_confirmation"),
+                "a live observation does not pretend an unsubmitted command was admitted");
         }
 
         [Test]

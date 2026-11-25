@@ -14,6 +14,11 @@ const SOURCE_WIZARD_NAMES: [&str; SOURCE_PLAYER_SLOTS] = [
     "PLAYER", "Nyphur", "Rahn", "Belix", "Jark", "Elyssia", "Yragore", "Prish",
 ];
 
+/// The same pinned single-player roster used by world sorcerer labels.
+pub(crate) fn source_name_bytes(source_color: u8) -> Option<&'static [u8]> {
+    SOURCE_WIZARD_NAMES.get(usize::from(source_color)).map(|name| name.as_bytes())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ProjectionError {
     SourceSlotOutOfRange(u8),
@@ -108,7 +113,13 @@ pub(super) fn observe(
     let map_type = simulation.canonical_terrain().map_type();
     let players = simulation.shared_spells().players();
     let entities = simulation.entities();
-    project(players, entities, names_by_source_slot, map_type)
+    project(
+        players,
+        entities,
+        names_by_source_slot,
+        map_type,
+        simulation.runtime().player_count,
+    )
 }
 
 fn project(
@@ -116,11 +127,16 @@ fn project(
     entities: &[EntitySnapshot],
     names_by_source_slot: &[Option<String>; SOURCE_PLAYER_SLOTS],
     map_type: MapType,
+    player_count: u8,
 ) -> Result<SourceScoreboard, ProjectionError> {
     let mut active_players = players
         .iter()
         .filter(|player| {
-            source_player_is_visible(player.active_player_index, player.banishment_state_0x006)
+            player.slot < player_count
+                && source_player_is_visible(
+                    player.active_player_index,
+                    player.banishment_state_0x006,
+                )
         })
         .collect::<Vec<_>>();
     active_players.sort_by_key(|player| player.slot);
@@ -205,8 +221,89 @@ fn source_player_is_visible(active_player_index: i16, source_status: Option<u8>)
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectionError, project_score_row, source_player_is_visible};
+    use super::{
+        ProjectionError, project, project_score_row, source_names, source_player_is_visible,
+    };
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_definition::default_catalog;
+    use crate::game_session::GameSession;
     use crate::native_world::{MapType, campaign_hud_palette_indices};
+    use std::{path::PathBuf, sync::Arc};
+
+    #[test]
+    fn real_campaign_scoreboard_obeys_source_player_count_and_validates_live_links() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let cases = [
+            (
+                std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+                    || generated.join("mc-cf15-level1-package-v3-current"),
+                    PathBuf::from,
+                ),
+                vec![0],
+            ),
+            (
+                std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+                    || generated.join("mc-cf02-campaign-package-v2-b/qualified-level2"),
+                    PathBuf::from,
+                ),
+                vec![0, 1],
+            ),
+        ];
+        let catalog = default_catalog().unwrap();
+        for (root, expected_slots) in cases {
+            let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+            let game = GameSession::open(
+                &Mc2CampaignAdapter,
+                definition,
+                812,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let simulation = game.backend().campaign.simulation();
+            assert_eq!(
+                usize::from(simulation.runtime().player_count),
+                expected_slots.len()
+            );
+            let scoreboard = game.snapshot().value.source_scoreboard;
+            assert!(scoreboard.projection_error.is_none());
+            assert_eq!(
+                scoreboard
+                    .players
+                    .iter()
+                    .map(|row| row.source_slot)
+                    .collect::<Vec<_>>(),
+                expected_slots
+            );
+            for row in &scoreboard.players {
+                let source = &simulation.shared_spells().players()[usize::from(row.source_slot)];
+                let entity = &simulation.entities()[usize::from(source.entity_index)];
+                assert_eq!(entity.class, 3);
+                assert_eq!(row.max_mana, entity.max_mana);
+                assert_eq!(Some(row.kills8), source.source_kill_scores());
+            }
+
+            // The source count excludes unused slots, but a malformed live
+            // in-range player link must still fail closed.
+            let mut players = simulation.shared_spells().players().to_vec();
+            players[0].entity_index = 0;
+            let error = project(
+                &players,
+                simulation.entities(),
+                &source_names(),
+                simulation.canonical_terrain().map_type(),
+                simulation.runtime().player_count,
+            )
+            .expect_err("a real active row with a non-sorcerer link is invalid");
+            assert!(matches!(
+                error,
+                ProjectionError::ActivePlayerEntityIsNotSorcerer {
+                    source_slot: 0,
+                    entity_index: 0,
+                    class: 0,
+                }
+            ));
+        }
+    }
 
     #[test]
     fn scoreboard_visibility_matches_active_source_slot_and_state() {

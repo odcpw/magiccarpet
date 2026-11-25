@@ -1,0 +1,3 @@
+[build]
+# Share the disk-backed cache with the player and qualification tools.
+target-dir = "target"

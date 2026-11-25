@@ -664,7 +664,8 @@ namespace MagicCarpet.Native
                     "environment selected owner bank " + pair.Value);
             }
             var cache = new OwnerAssetCache(root, manifest.cache_content_sha256, rows.Count,
-                new HashSet<string>(rows.Keys, StringComparer.Ordinal));
+                new HashSet<string>(rows.Keys, StringComparer.Ordinal),
+                environmentOutputHashes: rows.ToDictionary(pair => pair.Key, pair => pair.Value.sha256, StringComparer.Ordinal));
             var descriptor = JsonUtility.FromJson<EnvironmentDescriptor>(cache.ReadOutputText("materials/descriptor.json"));
             RequireLevel2(descriptor?.schema == "mc2-environment-materials/v1" &&
                 JsonUtility.ToJson(descriptor.profile) == JsonUtility.ToJson(p), "environment descriptor/profile");
@@ -762,6 +763,7 @@ namespace MagicCarpet.Native
             return cache;
         }
         private readonly HashSet<string> approvedPaths;
+        private readonly Dictionary<string, string> environmentOutputHashes;
 
         private OwnerAssetCache(
             string rootPath,
@@ -770,7 +772,8 @@ namespace MagicCarpet.Native
             HashSet<string> approvedPaths,
             Level2DayHudDescriptor dayHud = null,
             Level3MaterialDescriptor level3Materials = null,
-            bool isLevel3Aggregate = false)
+            bool isLevel3Aggregate = false,
+            Dictionary<string, string> environmentOutputHashes = null)
         {
             RootPath = rootPath;
             ContentHash = contentHash;
@@ -779,6 +782,7 @@ namespace MagicCarpet.Native
             Level3Materials = level3Materials;
             IsDayAggregate = isLevel3Aggregate;
             this.approvedPaths = approvedPaths;
+            this.environmentOutputHashes = environmentOutputHashes;
         }
 
         internal bool HasOutput(string relative)
@@ -792,7 +796,10 @@ namespace MagicCarpet.Native
             var canonical = relative.Replace(Path.DirectorySeparatorChar, '/');
             if (!approvedPaths.Contains(canonical))
                 throw new InvalidDataException($"path is not a validated cache output: {relative}");
-            return File.ReadAllBytes(ConfinedPath(RootPath, canonical));
+            var bytes = File.ReadAllBytes(ConfinedPath(RootPath, canonical));
+            if (environmentOutputHashes != null && Sha256Bytes(bytes) != environmentOutputHashes[canonical])
+                throw new InvalidDataException($"environment output changed after validation: {relative}");
+            return bytes;
         }
 
         public string ReadOutputText(string relative)

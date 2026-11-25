@@ -723,6 +723,7 @@ pub struct SourceSpriteTmapFrame {
 pub struct SourceSpriteTmapBank {
     frames: Vec<SourceSpriteTmapFrame>,
     catalog: Option<crate::source_animation::SourceTmapCatalog>,
+    decoded_payloads: std::sync::Arc<[Box<[u8]>]>,
 }
 
 impl SourceSpriteTmapBank {
@@ -746,7 +747,7 @@ impl SourceSpriteTmapBank {
                 ));
             }
         }
-        Ok(Self { frames, catalog: None })
+        Ok(Self { frames, catalog: None, decoded_payloads: std::sync::Arc::from([]) })
     }
 
     pub(crate) fn with_catalog(mut self, catalog: crate::source_animation::SourceTmapCatalog) -> Self {
@@ -756,6 +757,15 @@ impl SourceSpriteTmapBank {
 
     pub(crate) fn catalog(&self) -> Option<&crate::source_animation::SourceTmapCatalog> {
         self.catalog.as_ref()
+    }
+
+    pub(crate) fn with_decoded_payloads(mut self, payloads: Vec<Box<[u8]>>) -> Self {
+        self.decoded_payloads = payloads.into();
+        self
+    }
+
+    pub(crate) fn decoded_payloads(&self) -> std::sync::Arc<[Box<[u8]>]> {
+        std::sync::Arc::clone(&self.decoded_payloads)
     }
 
     #[must_use]

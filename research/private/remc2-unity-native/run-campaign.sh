@@ -4,7 +4,6 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # Keep resources as argument arrays, including owner paths containing spaces.
 exec python3 - "$script_dir" "$@" <<'PY'
 import os
-import json
 from pathlib import Path
 import sys
 import tempfile
@@ -16,7 +15,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --menu                  Open the campaign menu (default)
   --new-game              Start at the installed campaign's resolver-owned entry
   --load-save PATH        Resume a current runtime save (also --replay PATH)
-  --save PATH             Save destination for F5 and the in-game Save action
+  --save PATH             Save destination for the in-game Save action
   --package DIR           Install a package; repeat for the complete campaign set
   --owner-cache DIR       Native owner cache for the preceding package
   --presentation-cache DIR  Presentation cache for the preceding package
@@ -26,7 +25,6 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --menu-cache DIR        Optional original campaign-map/menu cache override
   --media-cache DIR       Optional original intro, cutscene and credits cache override
   --speech-cache DIR      Optional original campaign speech cache override
-  --print-resources        Print the default installed campaign package set as JSON
 
 The default is the installed Original campaign (25 ordinary and 5 secret
 missions). An explicit package set replaces all defaults; Rust validates its
@@ -124,14 +122,6 @@ def default_campaign_resources():
 
 
 def main(arguments):
-    if arguments == ['--print-resources']:
-        resources = [{
-            'package_dir': str(resource['package']),
-            'owner_cache_path': str(resource['owner']),
-            'presentation_cache_path': str(resource['presentation']),
-        } for resource in default_campaign_resources()]
-        print(json.dumps({'packages': resources}))
-        return
     resources, player = [], []
     route, replay, save, loading, media, speech = None, None, None, None, None, None
     menu_cache = None

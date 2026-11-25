@@ -659,8 +659,10 @@ mod tests {
         let mut fire_births = Vec::new();
         let mut charged_launches = std::collections::BTreeSet::new();
         let mut debited = 0_i64;
+        let mut counted_solid_impact = false;
         let mut elapsed = 0;
         for turn in 0..256 {
+            let attempts_before = game.simulation().shared_spells().local_player().projectile_attempts;
             let target_was_hidden = target_hidden;
             let smoke_was_hidden = smoke_hidden;
             let before = game
@@ -690,8 +692,10 @@ mod tests {
                 .map(|(slot, generation, _)| (*slot, *generation))
                 .collect::<Vec<_>>();
             launches.extend(new_launches);
-            impacts.extend(area_damage::take_fireball_impact_birth_trace());
-            terminals.extend(crate::native_world::take_fireball_terminal_trace());
+            let new_impacts = area_damage::take_fireball_impact_birth_trace();
+            let new_terminals = crate::native_world::take_fireball_terminal_trace();
+            impacts.extend(new_impacts.iter().copied());
+            terminals.extend(new_terminals.iter().copied());
             accepted.extend(
                 area_damage::take_effect_damage_trace()
                     .into_iter()
@@ -775,6 +779,27 @@ mod tests {
                     debited += i64::from(before.1 - after.1);
                 }
             }
+            // The retained Day 3 producer trace places these ordinary solid
+            // terminals at this source address. Join the actual generation to
+            // both a paid launch and its own class-10 impact constructor.
+            for terminal in new_terminals.iter().filter(|terminal|
+                terminal.owner == player && terminal.collision_target.is_none()
+                    && terminal.position == (Position { x: 38136, y: 26986, z: 3248 }))
+            {
+                let Some(impact) = terminal.impact else { continue; };
+                let projectile = terminal.projectile;
+                if charged_launches.contains(&(projectile.source_slot, projectile.generation))
+                    && new_impacts.iter().any(|&(slot, generation, parent, parent_generation, owner)|
+                        slot == impact.source_slot && generation == impact.generation
+                            && parent == projectile.source_slot && parent_generation == projectile.generation
+                            && owner == player)
+                {
+                    assert_ne!(sim.canonical_terrain().material_mask(terminal.position), 1);
+                    assert!(sim.shared_spells().local_player().projectile_attempts > attempts_before,
+                        "the paid solid impact must increment the source attempts counter");
+                    counted_solid_impact = true;
+                }
+            }
             if new_consumed.iter().any(|hit| hit.target == target) {
                 if let (Some(before), Some(current)) =
                     (&before, sim.source_arena().handle(target_slot))
@@ -826,6 +851,12 @@ mod tests {
                 break;
             }
         }
+        assert!(counted_solid_impact, "the retained real solid impact must reach Results accuracy");
+        let player_stats = game.simulation().shared_spells().local_player();
+        assert!(player_stats.projectile_attempts > 0);
+        assert_eq!(game.simulation().completion_statistics().hit_accuracy_percent,
+            ((100_u64 * u64::from(player_stats.projectile_hits)
+                / u64::from(player_stats.projectile_attempts)).min(100)) as i32);
         eprintln!(
             "ballistic actual prefix: origin={origin:?} initial_distance={distance} elapsed={elapsed} current={:?} life={} consumed={consumed:?} tree_consumed={tree_consumed:?} fire_births={fire_births:?} launches={launches:?} impacts={impacts:?} terminals={terminals:?} accepted={:?} bounce={bounced} target={target_hidden}/{target_reclaimed} smoke={smoke:?}/{smoke_presented}/{smoke_hidden}/{smoke_reclaimed} charged={charged_launches:?} debited={debited}",
             game.simulation().entities()[usize::from(target_slot)].position,

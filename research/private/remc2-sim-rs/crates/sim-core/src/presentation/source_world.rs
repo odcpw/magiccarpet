@@ -6,6 +6,12 @@
 
 use std::collections::BTreeMap;
 
+#[path = "sorcerer_labels.rs"]
+mod sorcerer_labels;
+
+#[cfg(test)]
+mod animated_tests;
+
 use crate::{
     campaign::sprite_render::{source_sprite_pixel_metadata, source_sprite_pixel_mode},
     classic_hd_raster::ClassicHdRasterError,
@@ -49,9 +55,16 @@ struct Sprite {
 pub(crate) struct SourceWorldSprites<'a> {
     camera: Mode20SpriteCamera,
     bank: &'a SourceSpriteTmapBank,
+    animation_clocks: Option<&'a crate::source_animation::SourceAnimationClocks>,
     buckets: BTreeMap<u16, Vec<Sprite>>,
     reflections: bool,
+    #[cfg(test)]
+    omitted_reflection_actor: Option<u16>,
     previous_pixel_mode: u8,
+    viewport: Option<crate::classic_hd::ClassicHdViewport>,
+    map_type: MapType,
+    label_font: Option<&'a crate::game_runtime::preferences::installed_locale::SourceFont>,
+    label_empty_bar: u8,
     stats: SourceWorldSpriteStats,
     primary_visibility_completions: Vec<u16>,
     animation_demands: Vec<(u16, u16)>,
@@ -191,11 +204,18 @@ impl<'a> SourceWorldSprites<'a> {
         Ok(Self {
             camera: sprite_camera,
             bank,
+            animation_clocks: None,
             buckets,
             reflections: map_type != MapType::Cave
                 && camera.reflections
                 && camera.eye_z < REFLECTION_EYE_Z_LIMIT,
+            #[cfg(test)]
+            omitted_reflection_actor: None,
             previous_pixel_mode,
+            viewport: None,
+            map_type,
+            label_font: None,
+            label_empty_bar: 0,
             stats: SourceWorldSpriteStats::default(),
             primary_visibility_completions: Vec::new(),
             animation_demands: Vec::new(),
@@ -205,6 +225,30 @@ impl<'a> SourceWorldSprites<'a> {
 
     pub(crate) fn reflections_enabled(&self) -> bool {
         self.reflections
+    }
+
+    #[cfg(test)]
+    pub(crate) fn omit_reflection_actor(&mut self, slot: Option<u16>) {
+        self.omitted_reflection_actor = slot;
+    }
+
+    /// Bind the shared source lifetime for pure frame reads in every pass.
+    pub(crate) fn set_animation_clocks(
+        &mut self,
+        clocks: &'a crate::source_animation::SourceAnimationClocks,
+    ) {
+        self.animation_clocks = Some(clocks);
+    }
+    pub(crate) fn set_viewport(&mut self, viewport: crate::classic_hd::ClassicHdViewport) {
+        self.viewport = Some(viewport);
+    }
+    pub(crate) fn set_sorcerer_labels(
+        &mut self,
+        font: &'a crate::game_runtime::preferences::installed_locale::SourceFont,
+        empty_bar: u8,
+    ) {
+        self.label_font = Some(font);
+        self.label_empty_bar = empty_bar;
     }
     pub(crate) fn stats(&self) -> SourceWorldSpriteStats {
         self.stats
@@ -242,21 +286,34 @@ impl<'a> SourceWorldSprites<'a> {
         let Some(bucket) = self.buckets.get(&rank) else {
             return Ok(());
         };
+        let clip = self.viewport.unwrap_or_else(|| crate::classic_hd::ClassicHdViewport::full(
+            width as u32, height as u32,
+        ));
         for sprite in bucket {
             let source = sprite.source;
             let frame = self
                 .bank
                 .frame(source.selected_tmap)
                 .expect("source frame retained from validated planning");
+            let pixels = self.animation_clocks
+                .and_then(|clocks| clocks.pixels(source.selected_tmap))
+                .unwrap_or(&frame.pixels);
+            if pixels.len() != frame.pixels.len() {
+                return Err(ClassicHdRasterError(format!(
+                    "source TMAP {} live pixels do not match its retained extent",
+                    source.selected_tmap
+                )));
+            }
             let mut draw = |placement, pixel_mode, kind| {
                 rasterize_indexed_source_sprite(
                     indices,
                     width,
                     height,
+                    clip,
                     placement,
                     frame.width,
                     frame.height,
-                    &frame.pixels,
+                    pixels,
                     tables,
                     self.camera.projection.roll,
                     pixel_mode,
@@ -282,6 +339,10 @@ impl<'a> SourceWorldSprites<'a> {
                     -i32::from(source.position.z),
                 );
                 self.previous_pixel_mode = sprite.reflection_pixel_mode;
+                #[cfg(test)]
+                if self.omitted_reflection_actor == Some(source.entity_index) {
+                    continue;
+                }
                 let result = draw(
                     reflected,
                     sprite.reflection_pixel_mode,
@@ -319,6 +380,13 @@ impl<'a> SourceWorldSprites<'a> {
             let result = draw(primary, mode, SourceSpritePass::Primary)?;
             self.stats.primary_calls += 1;
             self.stats.primary_writes += u64::from(result.framebuffer_writes);
+            if !primary.quarter_sum_anchor {
+                if let (Some(font), Some(label)) = (self.label_font, source.player_label) {
+                    sorcerer_labels::draw(indices, width, height, clip, primary,
+                        self.camera.projection.roll, self.map_type, self.label_empty_bar, font, label)
+                        .map_err(ClassicHdRasterError)?;
+                }
+            }
             if !primary.quarter_sum_anchor && source.control_flags & 0x4000_0000 != 0 {
                 // In the source this write follows the primary rotated draw
                 // branch, including its internal clip exits. It is not
@@ -354,7 +422,7 @@ mod tests {
             orientation_sector: 0, mirrored: false,
             position: crate::Position { x: 1000, y: 488, z: 64 },
             yaw: 0, pixel_mode: 0, owner_color: 0, brightness: 8192,
-            draw_order: 0, control_flags: 0, primary_depth_adjustment: -480,
+            draw_order: 0, control_flags: 0, primary_depth_adjustment: -480, player_label: None,
         };
         let rejected = CampaignEntityPresentation {
             entity_index: 2, source_id: 2, selected_tmap: 2, base_tmap: 2,
@@ -421,6 +489,7 @@ mod tests {
             draw_order: 0,
             control_flags: 0x4000_0000,
             primary_depth_adjustment: 0,
+            player_label: None,
         };
         let particle = ParticleParameter {
             base_tmap: 1,
@@ -516,6 +585,38 @@ mod tests {
         assert_eq!(world.stats().primary_calls, 1);
         assert!(world.stats().shadow_writes > 0);
         assert_eq!(world.primary_visibility_completions(), &[1]);
+
+        // The retained live image, rather than the immutable bank's base
+        // image, must feed each pass. Latching alone never advances it.
+        let payload = [1, 0, 2, 0, 2, 0, 7, 7, 7, 7, 1, 0, 0, 0, 0, 0];
+        let mut clocks = crate::source_animation::SourceAnimationClocks::default();
+        let catalog = crate::source_animation::SourceTmapCatalog::new((0..504_u16)
+            .map(|selector| crate::source_animation::SourceTmapMetadata {
+                selector, group: selector, allocation_bytes: 16,
+                encoded_frame_count: (selector == 1).then_some(1),
+            }).collect()).unwrap();
+        let presentation = crate::native_world::PresentationSelectors {
+            particles: Box::new([]), level_sprite_selectors: Box::new([]),
+            entity_parameters: Box::new([]),
+        };
+        let mut residency = crate::source_animation::SourceAnimationResidency::initialize(
+            catalog, &presentation, &[],
+        ).unwrap();
+        residency.demand(1).unwrap();
+        clocks.latch_draw_demand(1, &payload, &residency).unwrap();
+        let before = clocks.clone();
+        let mut live = SourceWorldSprites::new(
+            camera, crate::terrain_frame::level1_projection(camera), MapType::Night,
+            vec![row], &[particle], &bank, &cells, &ground, 0, true,
+        ).unwrap();
+        live.set_animation_clocks(&clocks);
+        let mut live_indices = vec![77; 320 * 200];
+        live.draw_cell(TerrainPass::Reflected, 1, 0, 320, 200, &mut live_indices, &tables).unwrap();
+        assert_eq!(live_indices[140 * 320 + 160], 7);
+        live.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut live_indices, &tables).unwrap();
+        assert!(live_indices.contains(&7));
+        assert!(live.stats().shadow_writes > 0);
+        assert_eq!(clocks, before, "render reads must not mutate source clocks");
     }
 
     #[test]
@@ -530,7 +631,7 @@ mod tests {
             orientation_sector: 0, mirrored: false,
             position: crate::Position { x: 3000, y: 488, z: 64 },
             yaw: 0, pixel_mode: 0, owner_color: 123, brightness: 8192,
-            draw_order: 0, control_flags: 0x4000_0000, primary_depth_adjustment: 0,
+            draw_order: 0, control_flags: 0x4000_0000, primary_depth_adjustment: 0, player_label: None,
         };
         let particle = ParticleParameter {
             base_tmap: 1, word_2: 0, word_4: 0, speed: 0, rotation_speed: 128,

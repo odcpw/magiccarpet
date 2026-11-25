@@ -16,7 +16,6 @@ namespace MagicCarpet.Native
         internal sealed class Profile
         {
             public int build_index, columns, rows, diagonal_parity;
-            public bool terrain_only;
             public float[] heights;
         }
 
@@ -47,78 +46,13 @@ namespace MagicCarpet.Native
             var builder = new Builder();
             ForEachFacet(profile, (a, b, c) => builder.Triangle(a, b, c,
                 Vector3.Cross(b - a, c - a).normalized.y < .76f || Mathf.Max(a.y,Mathf.Max(b.y,c.y))<.1f ? Stone : Slate));
-            if (!profile.terrain_only)
-                foreach (var window in FindWindows(profile)) builder.Window(window, lod);
+            foreach (var window in FindWindows(profile)) builder.Window(window, lod);
             return builder.Finish("BUILD " + profile.build_index + " LOD" + lod);
-        }
-
-        // Quantize the same source facets into brick-sized exterior columns.
-        // Only exposed top and side faces are emitted, with one mesh per LOD.
-        internal static Mesh CreateVoxel(Profile profile, int lod)
-        {
-            Validate(profile);
-            if (lod < 0 || lod > 2) throw new ArgumentOutOfRangeException(nameof(lod));
-            float step = VoxelStep(profile, lod);
-            int nx = Mathf.RoundToInt((profile.columns - 1) * Cell / step);
-            int nz = Mathf.RoundToInt((profile.rows - 1) * Cell / step);
-            if ((long)nx * nz > 1000000) throw new ArgumentException("Voxel building footprint is too large.", nameof(profile));
-            var heights = new int[nx * nz];
-            for (int z = 0; z < nz; z++) for (int x = 0; x < nx; x++)
-                heights[z * nx + x] = Mathf.Max(0, Mathf.CeilToInt(SampleHeight(profile, (x + .5f) * step, (z + .5f) * step) / step));
-            var builder = new Builder();
-            float ox = nx * step * .5f, oz = nz * step * .5f;
-            int Height(int x, int z) => x < 0 || z < 0 || x >= nx || z >= nz ? 0 : heights[z * nx + x];
-            void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, int material)
-            { builder.Triangle(a, b, c, material); builder.Triangle(a, c, d, material); }
-            void Side(Vector3 a, Vector3 b, Vector3 c, Vector3 d, float bottom, float top)
-            {
-                if (top <= bottom) return;
-                Quad(a, b, c, d, Stone);
-            }
-            for (int z = 0; z < nz; z++) for (int x = 0; x < nx; x++)
-            {
-                float top = Height(x, z) * step;
-                if (top <= 0) continue;
-                float x0 = x * step - ox, x1 = x0 + step, z0 = z * step - oz, z1 = z0 + step;
-                Quad(new Vector3(x0, top, z0), new Vector3(x0, top, z1), new Vector3(x1, top, z1), new Vector3(x1, top, z0), Slate);
-                float low = Mathf.Min(top, Height(x - 1, z) * step);
-                Side(new Vector3(x0, low, z0), new Vector3(x0, low, z1), new Vector3(x0, top, z1), new Vector3(x0, top, z0), low, top);
-                low = Mathf.Min(top, Height(x + 1, z) * step);
-                Side(new Vector3(x1, low, z1), new Vector3(x1, low, z0), new Vector3(x1, top, z0), new Vector3(x1, top, z1), low, top);
-                low = Mathf.Min(top, Height(x, z - 1) * step);
-                Side(new Vector3(x1, low, z0), new Vector3(x0, low, z0), new Vector3(x0, top, z0), new Vector3(x1, top, z0), low, top);
-                low = Mathf.Min(top, Height(x, z + 1) * step);
-                Side(new Vector3(x0, low, z1), new Vector3(x1, low, z1), new Vector3(x1, top, z1), new Vector3(x0, top, z1), low, top);
-            }
-            foreach (var window in VoxelWindows(profile, step)) builder.Window(window, lod);
-            return builder.Finish("Voxel BUILD " + profile.build_index + " LOD" + lod);
-        }
-
-        private static float SampleHeight(Profile p, float x, float z)
-        {
-            float u = x / Cell, v = z / Cell;
-            int ix = Mathf.Min((int)u, p.columns - 2), iz = Mathf.Min((int)v, p.rows - 2);
-            u -= ix; v -= iz;
-            float a = p.heights[ix + iz * p.columns], b = p.heights[ix + 1 + iz * p.columns];
-            float c = p.heights[ix + (iz + 1) * p.columns], d = p.heights[ix + 1 + (iz + 1) * p.columns];
-            if (((ix + iz + p.diagonal_parity) & 1) == 0)
-                return u < v ? a + (d - c) * u + (c - a) * v : a + (b - a) * u + (d - b) * v;
-            return u + v < 1 ? a + (b - a) * u + (c - a) * v : d + (c - d) * (1 - u) + (b - d) * (1 - v);
-        }
-
-        private static float VoxelStep(Profile profile, int lod)
-        {
-            long fineColumns = (long)(profile.columns - 1) * (profile.rows - 1) * 256;
-            float near = fineColumns <= 16384 ? .25f : fineColumns <= 262144 ? .5f :
-                fineColumns <= 1048576 ? 1f : 2f;
-            while (fineColumns / ((near * 4) * (near * 4)) > 65536) near *= 2;
-            return lod == 0 ? near : lod == 1 ? Mathf.Max(.5f, near * 2) : Mathf.Max(2f, near * 4);
         }
 
         internal static Vector3[] WindowCenters(Profile profile)
         {
             Validate(profile);
-            if (profile.terrain_only) return Array.Empty<Vector3>();
             var windows = FindWindows(profile);
             var result = new Vector3[windows.Count];
             for (int i = 0; i < result.Length; i++) result[i] = windows[i].Anchor;
@@ -128,43 +62,9 @@ namespace MagicCarpet.Native
         internal static Vector3[] WindowNormals(Profile profile)
         {
             Validate(profile);
-            if (profile.terrain_only) return Array.Empty<Vector3>();
             var windows = FindWindows(profile);
             var result = new Vector3[windows.Count];
             for (int i = 0; i < result.Length; i++) result[i] = windows[i].normal;
-            return result;
-        }
-
-        internal static Vector3[] VoxelWindowCenters(Profile profile, int lod)
-        {
-            Validate(profile);
-            if (lod < 0 || lod > 2) throw new ArgumentOutOfRangeException(nameof(lod));
-            float step = VoxelStep(profile, lod);
-            var windows = VoxelWindows(profile, step); var result = new Vector3[windows.Count];
-            for (var i = 0; i < result.Length; i++) result[i] = windows[i].Anchor;
-            return result;
-        }
-
-        private static List<WindowSite> VoxelWindows(Profile profile, float step)
-        {
-            var result = new List<WindowSite>();
-            if (profile.terrain_only) return result;
-            float halfX = (profile.columns - 1) * Cell * .5f, halfZ = (profile.rows - 1) * Cell * .5f;
-            foreach (var original in FindWindows(profile))
-            {
-                var window = original; float offset = step * 1.1f;
-                // Keep every corner of every layer inside the source footprint.
-                for (int x = -1; x <= 1; x += 2) for (int y = -1; y <= 1; y += 2)
-                {
-                    var corner = window.center + window.across * (x * window.halfWidth) + window.up * (y * window.halfHeight);
-                    if (window.normal.x > 0) offset = Mathf.Min(offset, (halfX - corner.x) / window.normal.x - .05f);
-                    if (window.normal.x < 0) offset = Mathf.Min(offset, (-halfX - corner.x) / window.normal.x - .05f);
-                    if (window.normal.z > 0) offset = Mathf.Min(offset, (halfZ - corner.z) / window.normal.z - .05f);
-                    if (window.normal.z < 0) offset = Mathf.Min(offset, (-halfZ - corner.z) / window.normal.z - .05f);
-                }
-                window.center += window.normal * Mathf.Max(0, offset);
-                result.Add(window);
-            }
             return result;
         }
 

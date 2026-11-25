@@ -209,6 +209,21 @@ pub struct GoatState {
 }
 
 impl GoatState {
+    /// The family retains the hidden row until the next source pass reclaims it.
+    pub(crate) fn observation_lifecycle(&self) -> Option<crate::game_session::ActorLifecycle> {
+        use crate::game_session::ActorLifecycle;
+
+        if !self.active {
+            None
+        } else if self.control_flags & 0x0000_0400 != 0 {
+            Some(ActorLifecycle::Hidden)
+        } else if matches!(self.action, 12 | 13) || self.life < 0 {
+            Some(ActorLifecycle::Dying)
+        } else {
+            Some(ActorLifecycle::Alive)
+        }
+    }
+
     /// Decode the source fields reachable from the bounded Goat path.
     ///
     /// # Errors

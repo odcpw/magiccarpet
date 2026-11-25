@@ -112,6 +112,22 @@ pub(crate) fn step_projectile(
     owner_target_range: u16,
     frozen_targets: Option<(&[u16], &[Vec<u16>; 29])>,
 ) -> Result<super::level2_dynamic_economy::Level2FireballStep, String> {
+    step_projectile_with_accuracy_policy(arena, terrain, particles, slot, context, capture_slots,
+        owner_target_range, frozen_targets, false)
+}
+
+/// Historical replay prefixes counted water splashes as accuracy misses.
+pub(crate) fn step_projectile_with_accuracy_policy(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    slot: u16,
+    context: super::source_target::Context<'_>,
+    capture_slots: &[u16],
+    owner_target_range: u16,
+    frozen_targets: Option<(&[u16], &[Vec<u16>; 29])>,
+    legacy_water_accuracy: bool,
+) -> Result<super::level2_dynamic_economy::Level2FireballStep, String> {
     use super::level2_dynamic_economy::FireballBirth;
     let entry = arena
         .economy
@@ -625,6 +641,7 @@ pub(crate) fn step_projectile(
     // impact constructor. It counts successful eligible output even on
     // terrain; a hit additionally needs equal current target identities.
     if child.is_some()
+        && (birth == FireballBirth::Impact || legacy_water_accuracy)
         && matches!(
             (projectile.source_model, projectile.action),
             (0, 0) | (28, 29)

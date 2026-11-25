@@ -4724,11 +4724,12 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
 
 #[test]
 fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored model-17 session");
+    let owner_cache = std::env::var_os("MC_LEVEL2_OWNER_CACHE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-b9s2-cursor-level2-vault-20261029"),
+        PathBuf::from,
+    );
+    let mut session = level_two_campaign_session_with_owner_cache(&owner_cache);
     let baseline_hash = session.campaign_state_hash();
 
     // AUT-L2-0157 is a qualified class-10/subtype-17 row. Its parent
@@ -4765,6 +4766,7 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
 
     // The production outer cursor visits the parent and materializes the
     // three source SEARCH.DAT shape-0 child cells.
+    session.start_creature17_trace();
     session.step_outer_turn(PlayerCommand::default(), 0);
     let parent = session
         .economy()
@@ -4783,7 +4785,8 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
         ),
         (9, 2, 0x0001_0002, 0, 512)
     );
-    assert_eq!(session.economy().model17_spawned_children().len(), 3);
+    let impact_children = session.take_creature17_trace().meteor_children;
+    assert_eq!(impact_children.len(), 3);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
         Mc2DispatchEvent::DynamicArena {
@@ -4792,127 +4795,70 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
             ..
         } if *source_slot == meteor.source_entity_index
     )));
+    for (parent, child, packet) in &impact_children {
+        assert_eq!(parent.source_slot, meteor.source_entity_index);
+        assert_eq!(
+            (packet.index, packet.source_id, packet.class, packet.model, packet.action),
+            (child.source_slot, meteor.entity_id, 10, 0, 0)
+        );
+        assert_eq!((packet.subspell_index, packet.max_life, packet.life), (400, 8, 8));
+        assert_eq!((packet.array_pitch(), packet.array_roll(), packet.array_fov()), (512, 512, 512));
+        assert_eq!(packet.yaw, meteor.yaw);
+        assert_eq!(packet.control_flags & 0x0003_0080, 0x0003_0080);
+    }
 
-    let child = session.economy().model17_spawned_children()[0];
-    assert_eq!(
-        (
-            child.parent_entity_index,
-            child.parent_entity_id,
-            child.source_class,
-            child.model,
-            child.action,
-            child.subspell_index,
-            child.max_life,
-            child.life,
-            child.control_flags,
-            child.shift_rot_x,
-            child.shift_rot_y,
-            child.yaw,
-        ),
-        (
-            meteor.source_entity_index,
-            meteor.entity_id,
-            10,
-            0,
-            0,
-            400,
-            8,
-            7,
-            0x0003_0082,
-            512,
-            512,
-            meteor.yaw,
-        )
-    );
-    assert!(
-        session
-            .economy_mut()
-            .step_model17_spawned_child_slot(child.source_entity_index)
-    );
-    let stepped_child = session
-        .economy()
-        .model17_spawned_children()
-        .iter()
-        .find(|candidate| candidate.source_entity_index == child.source_entity_index)
-        .copied()
-        .expect("Meteor child remains live");
-    assert_eq!(stepped_child.life, 6);
-    // The callback is phase-free; only the production numeric scheduler owns
-    // the common byte-0x3E epilogue.
-    assert_eq!(stepped_child.phase, child.phase);
-
-    // The source child callback decrements first and disables on the same
-    // visit when the new life value is below -1.
-    session
-        .economy_mut()
-        .model17_spawned_children
-        .iter_mut()
-        .find(|candidate| candidate.source_entity_index == child.source_entity_index)
-        .expect("Meteor child for negative-life sentinel")
-        .life = -1;
-    assert!(
-        !session
-            .economy_mut()
-            .step_model17_spawned_child_slot(child.source_entity_index)
-    );
-    assert!(
-        !session
-            .economy()
-            .model17_spawned_children()
-            .iter()
-            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
-            .expect("Meteor child after negative-life sentinel")
-            .active
-    );
-    session.economy_mut().reclaim_inactive_slots();
-    assert!(
-        session
-            .economy()
-            .model17_spawned_children()
-            .iter()
-            .all(|candidate| candidate.source_entity_index != child.source_entity_index)
-    );
-
-    // Parent expiry follows the source negative-life sentinel and the
-    // ordinary reclaim pass releases its map-linked arena slot.
-    session
-        .economy_mut()
-        .authored_model17
-        .iter_mut()
-        .find(|source| source.source_entity_index == meteor.source_entity_index)
-        .expect("Meteor parent for expiry")
-        .life = -1;
-    let parent_phase_before = session
-        .economy()
-        .authored_model17()
-        .iter()
-        .find(|source| source.source_entity_index == meteor.source_entity_index)
-        .expect("Meteor parent before expiry")
-        .phase;
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let hidden_parent = session
-        .economy()
-        .authored_model17()
-        .iter()
-        .find(|source| source.source_entity_index == meteor.source_entity_index)
-        .expect("Meteor parent remains allocated through its callback pass");
-    assert!(!hidden_parent.active);
-    assert_eq!(hidden_parent.phase, parent_phase_before.wrapping_add(1));
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(
-        session
-            .economy()
-            .authored_model17()
-            .iter()
-            .all(|source| source.source_entity_index != meteor.source_entity_index)
-    );
-    assert!(
-        session
-            .economy()
-            .model17_spawned_children()
-            .iter()
-            .all(|child| child.active)
-    );
+    // Observe both lifetimes on the normal cursor. A hidden packet is still
+    // current until the following numeric visit retires its incarnation.
+    let (parent_handle, child, _) = &impact_children[0];
+    let child_slot = usize::from(child.source_slot);
+    let mut child_hidden = false;
+    let mut parent_hidden = false;
+    for _ in 0..12 {
+        let before = session.session.state.live.economy.entities[child_slot].clone();
+        let old_child = session.session.state.live.economy.resolve(*child).is_some();
+        let old_parent = session.economy().authored_model17().iter()
+            .find(|row| row.source_entity_index == meteor.source_entity_index).copied();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let arena = &session.session.state.live.economy;
+        if old_child {
+            if before.drawing_disabled() {
+                assert!(arena.resolve(*child).is_none());
+            } else {
+                let next = &arena.entities[child_slot];
+                assert!(arena.resolve(*child).is_some());
+                assert_eq!(next.life, before.life - 1);
+                assert_eq!(next.phase, before.phase.wrapping_add(1));
+                assert_eq!(next.drawing_disabled(), next.life < -1);
+                if next.drawing_disabled() {
+                    assert_eq!(next.life, -2);
+                    child_hidden = true;
+                }
+            }
+        }
+        if let Some(previous) = old_parent {
+            if previous.control_flags & 0x400 != 0 {
+                assert!(arena.resolve(*parent_handle).is_none());
+            } else {
+                let next = session.economy().authored_model17().iter()
+                    .find(|row| row.source_entity_index == meteor.source_entity_index).unwrap();
+                assert_eq!((next.life, next.phase), (previous.life - 1, previous.phase.wrapping_add(1)));
+                assert_eq!(next.control_flags & 0x400 != 0, next.life < 0);
+                if next.control_flags & 0x400 != 0 {
+                    assert!(next.active);
+                    assert_eq!(next.life, -1);
+                    parent_hidden = true;
+                }
+            }
+        }
+        if parent_hidden && child_hidden && arena.resolve(*parent_handle).is_none()
+            && arena.resolve(*child).is_none()
+        {
+            break;
+        }
+    }
+    assert!(parent_hidden && child_hidden);
+    assert!(session.session.state.live.economy.resolve(*parent_handle).is_none());
+    assert!(session.session.state.live.economy.resolve(*child).is_none());
 
     session.reset();
     assert!(session.economy().authored_model17().is_empty());
@@ -6326,6 +6272,16 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         );
     }
     assert_eq!(session.state.display_pitch, 250);
+    // Replay the exact same paid source input under the old writer, so the
+    // discriminator observes the water branch rather than invented counters.
+    let mut historical = session.clone();
+    historical.set_replay_legacy_source_results(true);
+    let mut no_cast = session.clone();
+    no_cast.step_outer_turn(PlayerCommand { pitch: 127, ..PlayerCommand::default() }, 0);
+    let before_accuracy = (
+        session.shared_spells().local_player().projectile_attempts,
+        session.shared_spells().local_player().projectile_hits,
+    );
     let events_before = session.shared_spells().activation_events().len();
     let flyer_slots_before = session
         .economy()
@@ -6365,6 +6321,11 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         0,
     );
     assert_eq!(session.state.display_pitch, 251);
+    let charged = session.shared_spells().player_entity();
+    let uncharged = no_cast.shared_spells().player_entity();
+    assert!(i64::from(charged.mana) + i64::from(charged.mana_regen.min(0))
+        < i64::from(uncharged.mana) + i64::from(uncharged.mana_regen.min(0)),
+        "the ordinary holder charges or queues mana relative to the same turn without casting");
 
     let flyer = session
         .economy()
@@ -6378,6 +6339,7 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (9, 0, 0)
     );
     assert_eq!(flyer.owner_entity_index, session.state.entity_index);
+    assert_eq!(flyer.source_mana, 20, "the paid cast retains its authored projectile mana");
     assert!(flyer.source_entity_index < session.state.entity_index);
     assert!(flyer.active && !flyer.drawing_disabled);
     assert_eq!(flyer.phase, flyer.source_entity_index as u8);
@@ -6515,6 +6477,27 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         .expect("qualified type-0 water constructs the model-5 splash");
     assert_eq!(splash.source_id, session.state.entity_index);
     assert!(session.economy().map_chains().is_linked(splash.index));
+    assert_eq!(
+        (session.shared_spells().local_player().projectile_attempts,
+         session.shared_spells().local_player().projectile_hits),
+        before_accuracy,
+        "source water splash does not reach sub_65780"
+    );
+    assert_eq!(session.completion_statistics().hit_accuracy_percent, 100);
+
+    historical.step_outer_turn(PlayerCommand {
+        opcode: 6, argument_1: 0, pitch: 127, flags: 0x40,
+        ..PlayerCommand::default()
+    }, 0);
+    historical.step_outer_turn(PlayerCommand::default(), 0);
+    historical.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        (historical.shared_spells().local_player().projectile_attempts,
+         historical.shared_spells().local_player().projectile_hits),
+        (before_accuracy.0 + 1, before_accuracy.1),
+        "the actual historical writer counted this splash as a miss"
+    );
+    assert_eq!(historical.completion_statistics().hit_accuracy_percent, 0);
 
     let cast_events = &session.shared_spells().activation_events()[events_before..];
     assert!(cast_events.iter().any(|event| matches!(

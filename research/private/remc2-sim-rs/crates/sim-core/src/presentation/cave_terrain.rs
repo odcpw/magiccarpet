@@ -47,6 +47,8 @@ struct Vertex {
     flags: u16,
     texture: u8,
     uv: u8,
+    #[cfg(test)]
+    near_clamped: bool,
 }
 
 #[derive(Clone)]
@@ -56,7 +58,12 @@ struct Triangle {
     ceiling: bool,
     cell_order: u16,
     flat_shade: u8,
+    #[cfg(test)]
+    near_clamped: bool,
 }
+
+#[cfg(test)]
+pub(crate) const CAVE_NEAR_CLAMPED_PROVENANCE: u8 = 0x40;
 
 #[derive(Clone)]
 pub struct CaveTerrainPlan {
@@ -68,6 +75,8 @@ pub struct CaveTerrainPlan {
     cell_textures: Vec<u8>,
     pub input_hash: u64,
     pub command_hash: u64,
+    #[cfg(test)]
+    tag_near_clamped: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -77,10 +86,16 @@ pub struct CaveRasterReceipt {
 }
 
 impl CaveTerrainPlan {
+    #[cfg(test)]
+    pub(crate) fn tag_near_clamped_for_test(&mut self) {
+        self.tag_near_clamped = true;
+    }
     pub(crate) fn apply_flat_shading(&mut self, enabled: bool) {
         if !enabled { return; }
         self.flat_shading = true;
-        for triangle in &mut self.triangles {
+        // Both Cave traversal branches explicitly select mode 5 for the
+        // ceiling even when flat terrain selects mode 7 for the floor.
+        for triangle in self.triangles.iter_mut().filter(|triangle| !triangle.ceiling) {
             for vertex in &mut triangle.vertices {
                 vertex.pnt5 = i32::from(triangle.flat_shade) << 16;
             }
@@ -224,10 +239,12 @@ impl CaveTerrainPlan {
                 }
             }
             let provenance = provenance | if triangle.ceiling { 4 } else { 2 };
+            #[cfg(test)]
+            let provenance = provenance | if self.tag_near_clamped && triangle.near_clamped { CAVE_NEAR_CLAMPED_PROVENANCE } else { 0 };
             let written_pixels = if let Some(orders) = orders.as_deref_mut() {
                 let width = writer.width();
                 let base = terrain_texture_base(triangle.texture)?;
-                let pixels = if self.flat_shading {
+                let pixels = if self.flat_shading && !triangle.ceiling {
                     rasterize_mode7_triangle_from_tile_atlas(triangle.vertices, width as i32,
                         writer.height() as i32, atlas, base, &tables[..CLASSIC_HD_TABLESN_BYTES], triangle.flat_shade)
                 } else {
@@ -248,7 +265,7 @@ impl CaveTerrainPlan {
                     }
                 }
                 written
-            } else if self.flat_shading {
+            } else if self.flat_shading && !triangle.ceiling {
                 rasterize_classic_hd_mode7_triangle(writer, triangle.vertices, atlas,
                     terrain_texture_base(triangle.texture)?, &tables[..CLASSIC_HD_TABLESN_BYTES],
                     provenance, triangle.flat_shade)?.written_pixels
@@ -435,6 +452,8 @@ pub(crate) fn build_cave_terrain_projected(
         cell_textures,
         input_hash: byte_hash(&input),
         command_hash,
+        #[cfg(test)]
+        tag_near_clamped: false,
     })
 }
 
@@ -466,6 +485,8 @@ fn append_triangles(
             ceiling,
             cell_order,
             flat_shade: source_flat_terrain_shade(std::array::from_fn(|index| cell[index].floor.pnt5)),
+            #[cfg(test)]
+            near_clamped: corners.iter().any(|&corner| cell[corner].near_clamped),
             vertices: corners.map(|corner| {
                 let mut vertex = if ceiling {
                     cell[corner].ceiling
@@ -575,12 +596,75 @@ fn project(
         flags,
         texture,
         uv,
+        #[cfg(test)]
+        near_clamped: grid.view_depth < 128,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_floor_preserves_interpolated_ceiling_in_both_raster_paths() {
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let triangle = |x, ceiling| Triangle {
+            vertices: [
+                Mode5Vertex { x, y: 2, u: 0, v: 0, pnt5: 4 << 16 },
+                Mode5Vertex { x: x + 40, y: 2, u: 0, v: 0, pnt5: 20 << 16 },
+                Mode5Vertex { x, y: 42, u: 0, v: 0, pnt5: 12 << 16 },
+            ],
+            texture: if ceiling { 1 } else { 2 },
+            ceiling,
+            cell_order: if ceiling { 1 } else { 2 },
+            flat_shade: 12,
+            near_clamped: false,
+        };
+        let smooth = CaveTerrainPlan {
+            profile_revision: profile.profile_revision,
+            clear_index: 254,
+            flat_shading: false,
+            triangles: vec![triangle(2, true), triangle(64, false)],
+            cell_orders: vec![0; 65_536],
+            cell_textures: vec![0, 1, 2],
+            input_hash: 7,
+            command_hash: 9,
+            tag_near_clamped: false,
+        };
+        let mut flat = smooth.clone();
+        flat.apply_flat_shading(true);
+        let atlas = vec![17; CLASSIC_HD_TERRAIN_ATLAS_BYTES];
+        let mut tables = vec![0; 83_456];
+        for (shade, row) in tables[..CLASSIC_HD_TABLESN_BYTES].chunks_exact_mut(256).enumerate() {
+            row.fill(shade as u8);
+        }
+        let render = |plan: &CaveTerrainPlan, composed: bool| {
+            let mut indices = plan.initial_indices(&profile);
+            let mut provenance = vec![0; profile.extent()];
+            let mut orders = vec![0; profile.extent()];
+            let mut writer = ClassicHdFrameWriter::from_planes(
+                &profile, &mut indices, &mut provenance, 1, 0, plan.input_hash, 0,
+            ).unwrap();
+            let receipt = if composed {
+                plan.rasterize_with_occlusion(&mut writer, &atlas, &tables, 1, &mut orders).unwrap()
+            } else {
+                plan.rasterize(&mut writer, &atlas, &tables, 1).unwrap()
+            };
+            let _ = writer.finish();
+            assert!(receipt.ceiling_pixels_written > 0 && receipt.floor_pixels_written > 0);
+            indices
+        };
+        for composed in [false, true] {
+            let before = render(&smooth, composed);
+            let after = render(&flat, composed);
+            let roof = |pixels: &[u8]| (0..44).flat_map(|y|
+                pixels[y * 320..y * 320 + 48].iter().copied()).collect::<Vec<_>>();
+            let floor = |pixels: &[u8]| (0..44).flat_map(|y|
+                pixels[y * 320 + 64..y * 320 + 112].iter().copied()).collect::<Vec<_>>();
+            assert_eq!(roof(&before), roof(&after), "ceiling keeps mode5 shades");
+            assert_ne!(floor(&before), floor(&after), "floor switches to mode7");
+        }
+    }
 
     #[test]
     fn cave_occlusion_uses_exact_spans_and_preserves_partial_sprite_visibility() {
@@ -604,6 +688,7 @@ mod tests {
                     ceiling: true,
                     cell_order: 1,
                     flat_shade: 3,
+                    near_clamped: false,
                 },
                 Triangle {
                     vertices: [point(8, 0), point(20, 0), point(8, 12)],
@@ -611,11 +696,13 @@ mod tests {
                     ceiling: false,
                     cell_order: 2,
                     flat_shade: 3,
+                    near_clamped: false,
                 },
             ],
             cell_orders: vec![0; 65_536],
             input_hash: 7,
             command_hash: 9,
+            tag_near_clamped: false,
         };
         let atlas = vec![17; CLASSIC_HD_TERRAIN_ATLAS_BYTES];
         let mut tables = vec![0; 83_456];

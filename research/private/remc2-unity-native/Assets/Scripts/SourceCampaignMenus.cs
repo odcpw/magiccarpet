@@ -88,6 +88,25 @@ namespace MagicCarpet.Native
             return true;
         }
 
+        internal void SynchronizeSourceState(byte menuState)
+        {
+            // Ordinary source callbacks can close menus without a menu command.
+            // Keep unsubmitted command admission separate from this live state.
+            if (menuState > 14) throw new System.ArgumentOutOfRangeException(nameof(menuState));
+            Current = menuState switch {
+                5 => Mode.Spells,
+                6 or 11 or 12 or 14 => Mode.Map,
+                7 => Mode.PlayerInformation,
+                8 => Mode.MapSpells,
+                _ => Mode.Flight
+            };
+            pendingAbandonMenuState = menuState switch {
+                13 => AbandonMenuState.FlightConfirmation,
+                14 => AbandonMenuState.MapConfirmation,
+                _ => AbandonMenuState.None
+            };
+        }
+
         internal void CompleteAction(EngineSessionTransport.SourceMenuAdmission admission)
         {
             if (!HasPendingAction || admission == null || admission.action != PendingAction ||

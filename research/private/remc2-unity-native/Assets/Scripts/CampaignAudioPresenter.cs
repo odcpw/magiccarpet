@@ -25,28 +25,26 @@ namespace MagicCarpet.Native
             internal void Update()
             {
                 owner.RecordLevel2Presentation("audio");
+                Refresh();
+                if (owner.level2DayMusic.timerActive == 0) return;
+                owner.level2DayMusicFadeAccumulator +=
+                    Time.fixedDeltaTime * owner.level2DayMusic.timerHz;
+                var callbacks = Mathf.FloorToInt(owner.level2DayMusicFadeAccumulator);
+                if (callbacks <= 0) return;
+                owner.level2DayMusicFadeAccumulator -= callbacks;
+                owner.level2DayMusic = owner.campaignSession.AdvanceDayMusic(checked((uint)callbacks));
+            }
+
+            internal void Refresh()
+            {
                 MagicCarpetRuntime.Require(
                     owner.campaignSession != null,
                     "Level 2 Day music update has a campaign owner");
-                owner.level2DayMusic = owner.campaignSession.DayMusicState();
-                if (owner.level2DayMusic.timerActive != 0)
-                {
-                    owner.level2DayMusicFadeAccumulator +=
-                        Time.fixedDeltaTime * owner.level2DayMusic.timerHz;
-                    var callbacks = Mathf.FloorToInt(
-                        owner.level2DayMusicFadeAccumulator);
-                    if (callbacks > 0)
-                    {
-                        owner.level2DayMusicFadeAccumulator -= callbacks;
-                        owner.level2DayMusic =
-                            owner.campaignSession.AdvanceDayMusic(
-                                checked((uint)callbacks));
-                    }
-                }
-                else
-                {
+                var state = owner.campaignSession.DayMusicState();
+                if (state.timerActive == 0 || state.targetMode != owner.level2DayMusic.targetMode ||
+                    state.startCount != owner.level2DayMusic.startCount)
                     owner.level2DayMusicFadeAccumulator = 0f;
-                }
+                owner.level2DayMusic = state;
             }
 
             internal void Reset()

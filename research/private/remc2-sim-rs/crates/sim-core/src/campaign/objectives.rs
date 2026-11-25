@@ -5,7 +5,13 @@
 //! campaign views share one mutable representation while preserving the
 //! existing field-style access through `RuntimeSnapshot`'s `Deref` impl.
 
+use crate::game_definition::SemanticId;
+use crate::game_session::{
+    MAX_OBJECTIVE_STAGES, ObjectiveObservation, ObjectiveProgress, ObjectiveStageObservation,
+    ObjectiveStageStatus,
+};
 use crate::native_world::RuntimeObjective;
+use sim_definition::level_definition::LevelObjectiveDefinition;
 
 const SOURCE_PLAYER_SLOT_COUNT: usize = 8;
 
@@ -69,6 +75,11 @@ pub(crate) fn all_other_players_banished(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectiveState {
     pub stage_index: u8,
+    /// Live signed `terrain_2FECE.word_0x2FED5`, reset by InitStages and
+    /// updated by the ordered Castle-mana objective scan. Replays reconstruct
+    /// it from the objective history; it is excluded from legacy state hashes
+    /// so earlier operation receipts remain loadable.
+    pub mana_goal_percent: i16,
     /// `byte_0x36E02`, consumed by remc2's objective-presentation service.
     pub objective_presentation_phase: u8,
     /// Frame-local palette cadence used by the objective-presentation gate.
@@ -96,6 +107,7 @@ impl ObjectiveState {
     ) -> Self {
         Self {
             stage_index,
+            mana_goal_percent: 0,
             objective_presentation_phase,
             objective_presentation_palette_mod: 1,
             objective_textbox_ticks,
@@ -138,6 +150,45 @@ impl ObjectiveState {
 }
 
 impl crate::native_world::Mc2Simulation {
+    fn local_semantic_objectives(&self) -> (&[LevelObjectiveDefinition], &RuntimeObjective) {
+        let level = self
+            .semantic_level_definition()
+            .expect("campaign backend retains its bound semantic level definition");
+        let local = self
+            .runtime()
+            .objectives
+            .first()
+            .expect("campaign runtime retains its local objective carrier");
+        (level.objectives(), local)
+    }
+
+    pub(crate) fn semantic_objective_progress(&self) -> ObjectiveProgress {
+        let (definitions, local) = self.local_semantic_objectives();
+        progress(definitions, local)
+    }
+
+    pub(crate) fn observe_semantic_objectives(&self) -> ObjectiveObservation {
+        let (definitions, local) = self.local_semantic_objectives();
+        let stages = definitions
+            .iter()
+            .zip(local.stage_selectors)
+            .take(MAX_OBJECTIVE_STAGES)
+            .map(|(definition, stage)| ObjectiveStageObservation {
+                id: definition.id().clone(),
+                condition: definition.condition(),
+                status: match stage {
+                    1 => ObjectiveStageStatus::Active,
+                    2 => ObjectiveStageStatus::Completed,
+                    _ => ObjectiveStageStatus::Inactive,
+                },
+            })
+            .collect();
+        ObjectiveObservation {
+            progress: progress(definitions, local),
+            stages,
+        }
+    }
+
     /// The keyboard producer precedes PresentObjective for both playing and
     /// paused outer frames. Keep the source byte carrier and typed state in
     /// the runtime owner together; clients only submit a held input.
@@ -157,6 +208,35 @@ impl crate::native_world::Mc2Simulation {
             .core
             .runtime
             .clear_objective_textbox();
+    }
+}
+
+fn progress(
+    definitions: &[LevelObjectiveDefinition],
+    local: &RuntimeObjective,
+) -> ObjectiveProgress {
+    let all_objectives_satisfied = local.is_level_end != 0;
+    let current_objective = (!all_objectives_satisfied)
+        .then(|| definitions.get(usize::from(local.text_selector)))
+        .flatten()
+        .map(|objective| {
+            SemanticId::parse(objective.id().as_str())
+                .expect("validated level objective ID is a semantic ID")
+        });
+    ObjectiveProgress {
+        current_objective,
+        completed_count: u32::try_from(
+            local
+                .stage_selectors
+                .iter()
+                .take(definitions.len())
+                .filter(|&&stage| stage == 2)
+                .count(),
+        )
+        .expect("validated level objective count fits u32"),
+        total_count: u32::try_from(definitions.len())
+            .expect("validated level objective count fits u32"),
+        all_objectives_satisfied,
     }
 }
 

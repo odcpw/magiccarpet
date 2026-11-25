@@ -142,6 +142,7 @@ pub fn rasterize_indexed_source_sprite(
     framebuffer: &mut [u8],
     viewport_width: usize,
     viewport_height: usize,
+    clip: crate::classic_hd::ClassicHdViewport,
     placement: Mode20SpritePlacement,
     source_width: u16,
     source_height: u16,
@@ -171,6 +172,7 @@ pub fn rasterize_indexed_source_sprite(
         },
         pass,
         true,
+        Some(clip),
     )
 }
 
@@ -940,6 +942,7 @@ fn rasterize_source_sprite(
         compositor,
         pass,
         viewport_width > 320 || viewport_height > 200,
+        None,
     )
 }
 
@@ -957,6 +960,7 @@ fn rasterize_source_sprite_with_clipping(
     compositor: SourceSpriteCompositor,
     pass: SourceSpritePass,
     clip_to_profile_viewport: bool,
+    source_clip: Option<crate::classic_hd::ClassicHdViewport>,
 ) -> Result<Mode20SpriteRasterStats, String> {
     let source_extent = usize::from(source_width) * usize::from(source_height);
     if source_width == 0 || source_height == 0 || source_pixels.len() != source_extent {
@@ -975,6 +979,16 @@ fn rasterize_source_sprite_with_clipping(
             "mode-20 framebuffer extent mismatch: {viewport_width}x{viewport_height} requires {viewport_extent} bytes, got {}",
             framebuffer.len()
         ));
+    }
+    if let Some(clip) = source_clip {
+        if clip.width == 0 || clip.height == 0
+            || u64::from(clip.x) + u64::from(clip.width) > viewport_width as u64
+            || u64::from(clip.y) + u64::from(clip.height) > viewport_height as u64
+            || u64::from(clip.x) + u64::from(clip.width) > i32::MAX as u64
+            || u64::from(clip.y) + u64::from(clip.height) > i32::MAX as u64
+        {
+            return Err("source sprite clip is outside the indexed target".to_owned());
+        }
     }
     let needs_fog = match compositor {
         SourceSpriteCompositor::Indexed { mode, .. } => matches!(mode, 1 | 6 | 7 | 8),
@@ -1100,7 +1114,14 @@ fn rasterize_source_sprite_with_clipping(
     // before doing the fixed-point inverse walk. This is presentation-space
     // work only: every in-viewport sample retains the same transform, source
     // phase, compositor, and write order.
-    let (draw_min_x, draw_max_x, draw_min_y, draw_max_y) = if clip_to_profile_viewport {
+    let (draw_min_x, draw_max_x, draw_min_y, draw_max_y) = if let Some(clip) = source_clip {
+        (
+            min_x.max(clip.x as i32),
+            max_x.min((clip.x + clip.width - 1) as i32),
+            min_y.max(clip.y as i32),
+            max_y.min((clip.y + clip.height - 1) as i32),
+        )
+    } else if clip_to_profile_viewport {
         let viewport_max_x = i32::try_from(viewport_width.saturating_sub(1)).unwrap_or(i32::MAX);
         let viewport_max_y = i32::try_from(viewport_height.saturating_sub(1)).unwrap_or(i32::MAX);
         (
@@ -1379,6 +1400,7 @@ mod tests {
             &mut frame,
             320,
             200,
+            crate::classic_hd::ClassicHdViewport::full(320, 200),
             projected,
             1,
             1,
@@ -1638,6 +1660,7 @@ mod tests {
                 &mut frame,
                 4,
                 4,
+                crate::classic_hd::ClassicHdViewport::full(4, 4),
                 projected,
                 1,
                 1,
@@ -1651,6 +1674,39 @@ mod tests {
             .unwrap();
             assert_eq!(receipt.framebuffer_writes, 1, "source operation {mode}");
             assert_eq!(frame[6], expected, "source operation {mode}");
+        }
+        // The source viewport is an offset subrectangle of a strided target;
+        // keep per-pixel composition and sampling identical inside it.
+        let clip = crate::classic_hd::ClassicHdViewport { x: 2, y: 1, width: 3, height: 3 };
+        let projected = Mode20SpritePlacement {
+            bottom_x: 3, bottom_y: 4, projected_width: 6, projected_height: 6,
+            ..placement(false, 0x1200)
+        };
+        for (pass, mode) in [
+            (SourceSpritePass::Primary, 0),
+            (SourceSpritePass::Reflection, 2),
+            (SourceSpritePass::Shadow, 8),
+        ] {
+            let projected = Mode20SpritePlacement {
+                bottom_y: if pass == SourceSpritePass::Primary { 4 } else { 0 },
+                ..projected
+            };
+            let mut full = vec![77_u8; 8 * 6];
+            let mut clipped = full.clone();
+            for (frame, rect) in [
+                (&mut full, crate::classic_hd::ClassicHdViewport::full(8, 6)),
+                (&mut clipped, clip),
+            ] {
+                rasterize_indexed_source_sprite(frame, 8, 6, rect, projected, 1, 1,
+                    &[9], &tables, 0, mode, 123, pass).unwrap();
+            }
+            for y in 0..6_usize {
+                for x in 0..8_usize {
+                    let inside = (2..5).contains(&x) && (1..4).contains(&y);
+                    assert_eq!(clipped[y * 8 + x], if inside { full[y * 8 + x] } else { 77 });
+                }
+            }
+            assert!(clipped.iter().any(|pixel| *pixel != 77), "the pass intersects the source viewport");
         }
     }
 
@@ -1727,6 +1783,7 @@ mod tests {
             SourceSpriteCompositor::Standard,
             SourceSpritePass::Primary,
             false,
+            None,
         )
         .expect("unclipped profile reference");
         let clipped_stats = rasterize_source_sprite_with_clipping(
@@ -1742,6 +1799,7 @@ mod tests {
             SourceSpriteCompositor::Standard,
             SourceSpritePass::Primary,
             true,
+            None,
         )
         .expect("profile-clipped raster");
 

@@ -16,6 +16,7 @@
     "test:contract": "node --test tests/neutral-session.contract.test.ts"
   },
   "dependencies": {
+    "@bjorn3/browser_wasi_shim": "0.4.2",
     "three": "0.185.1"
   },
   "devDependencies": {

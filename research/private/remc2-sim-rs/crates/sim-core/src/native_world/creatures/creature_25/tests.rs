@@ -1,6 +1,192 @@
 use super::*;
 
 #[test]
+fn cymmeria_repeat_exit_rearms_only_after_ten_inside_visits() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+    use crate::{FlightWorld, PlayerCommand};
+
+    let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL10_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            generated.join("ribbon-20261104-integration/current-owner-package/level10")
+        });
+    let cache = std::env::var_os("MC_LEVEL10_OWNER_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level10"));
+    let mut campaign = CampaignSession::open_with_owner_cache(
+        package,
+        cache,
+        CampaignSelection::ordinary(10).unwrap(),
+    )
+    .expect("open ordinary Cymmeria package at reset");
+
+    let trigger = 255;
+    let expected_rows: Vec<u16> = [249, 250, 251, 252].into_iter().chain(289..=308).collect();
+    let sim = campaign.simulation();
+    let authored = sim.mission().authored_features()[248];
+    assert_eq!(
+        (
+            authored.kind,
+            authored.subtype,
+            authored.activation_group,
+            authored.stage_tag
+        ),
+        (11, 3, 0, 1)
+    );
+    let root = &sim.entities()[trigger];
+    assert_eq!(
+        (
+            root.class,
+            root.model,
+            root.action,
+            root.source_id,
+            root.phase
+        ),
+        (11, 3, 3, 1, 0)
+    );
+    assert_eq!(root.position, authored.world_position(root.position.z));
+    assert_eq!(root.source_dword_10(), 0);
+    let controller = sim.source_arena().handle(trigger as u16).unwrap();
+    assert_eq!(sim.runtime().player_count, 1);
+    let player = sim.state.entity_index;
+    let outside = sim.state.position;
+    let mut inside = root.position;
+    inside.z = sim
+        .canonical_terrain()
+        .ground_height(inside)
+        .wrapping_add(768);
+
+    let visit = |campaign: &mut CampaignSession, outside: bool, publish: bool| {
+        let sim = campaign.simulation();
+        let root = &sim.entities()[trigger];
+        let human = &sim.entities()[usize::from(player)];
+        assert_eq!((human.class, human.model), (3, 0));
+        let bounds = |row: &crate::native_world::EntitySnapshot| {
+            let bytes = row.record_bytes();
+            (
+                i16::from_le_bytes([bytes[88], bytes[89]]),
+                i16::from_le_bytes([bytes[90], bytes[91]]),
+            )
+        };
+        let (root_width, root_depth) = bounds(root);
+        let (human_width, human_depth) = bounds(human);
+        assert_eq!(
+            !crate::level1_mission::source_entities_overlap_xy(
+                root.position,
+                root_width,
+                root_depth,
+                sim.state.position,
+                human_width,
+                human_depth,
+            ),
+            outside,
+            "actual human geometry before the ordinary switch visit",
+        );
+        let phase = root.phase;
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert!(
+            !sim.dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "repeat exit source dispatch: {:?}",
+            sim.dispatch_events()
+        );
+        assert_eq!(sim.source_arena().handle(trigger as u16), Some(controller));
+        let root = &sim.entities()[trigger];
+        assert_eq!(root.phase, phase.wrapping_add(1));
+        assert!(!root.drawing_disabled());
+        let mut groups = sim.dispatch_events().iter().filter(|event| {
+            matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+            )
+        });
+        if publish {
+            assert!(outside && phase & 7 == 0);
+            assert!(matches!(groups.next(),
+                Some(Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 255, pass: 0, authored_indices, .. })
+                    if authored_indices.as_ref() == expected_rows.as_slice()));
+        }
+        assert!(
+            groups.next().is_none(),
+            "only the due outside visit publishes group1"
+        );
+        root.source_dword_10()
+    };
+    let fields = |campaign: &CampaignSession| {
+        let sim = campaign.simulation();
+        sim.economy()
+            .mana_attraction_fields()
+            .iter()
+            .filter(|field| field.active && field.authored_index == 250)
+            .map(|field| {
+                (
+                    sim.source_arena()
+                        .handle(field.source_entity_index)
+                        .unwrap(),
+                    field.life,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert!(fields(&campaign).is_empty());
+    assert_eq!(visit(&mut campaign, true, true), 10);
+    let first = fields(&campaign);
+    assert_eq!(first.len(), 1);
+    for _ in 0..16 {
+        assert_eq!(
+            visit(&mut campaign, true, false),
+            10,
+            "staying outside cannot rearm"
+        );
+    }
+    let held = fields(&campaign);
+    assert_eq!(held, [(first[0].0, first[0].1 - 16)]);
+
+    // Control only the actual participant's position. Its ordinary visits
+    // consume the countdown and stay negative while the participant is inside.
+    campaign
+        .simulation_mut()
+        .set_level2_entity_position(player, inside)
+        .unwrap();
+    for remaining in (0..10).rev() {
+        assert_eq!(visit(&mut campaign, false, false), remaining);
+    }
+    for _ in 0..8 {
+        assert_eq!(
+            visit(&mut campaign, false, false),
+            0,
+            "armed is not outside"
+        );
+    }
+
+    campaign
+        .simulation_mut()
+        .set_level2_entity_position(player, outside)
+        .unwrap();
+    assert!((0..8).any(|_| {
+        let due = campaign.simulation().entities()[trigger].phase & 7 == 0;
+        visit(&mut campaign, true, due) == 10
+    }));
+    let repeated = fields(&campaign);
+    assert_eq!(repeated.len(), 2);
+    assert!(repeated.iter().any(|(handle, _)| *handle == first[0].0));
+    let &(new_field, life) = repeated
+        .iter()
+        .find(|(handle, _)| *handle != first[0].0)
+        .unwrap();
+    assert_eq!(visit(&mut campaign, true, false), 10);
+    assert!(
+        fields(&campaign).contains(&(new_field, life - 1)),
+        "second publication's real temporary field is scheduled"
+    );
+}
+
+#[test]
 fn cymmeria_source_objectives_reach_earned_mana_crossing_and_ordinary_exit() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::campaign::source_arena::SourceEntityHandle;

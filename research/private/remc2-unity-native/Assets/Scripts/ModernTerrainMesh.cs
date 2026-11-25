@@ -37,10 +37,6 @@ namespace MagicCarpet.Native
             internal Mesh Mesh;
             internal Mesh FarMesh;
             internal Mesh ShoreMesh;
-            internal Mesh VoxelMesh;
-            internal Mesh VoxelFarMesh;
-            internal bool VoxelDirty = true;
-            internal bool VoxelFarDirty = true;
             internal bool HasWater;
             internal Bounds WaterBounds;
             internal int DetailTriangles;
@@ -49,7 +45,6 @@ namespace MagicCarpet.Native
         }
 
         private readonly Transform root;
-        private readonly bool voxel;
         private readonly Material[] materials;
         private readonly ModernShoreMask sourceShore;
         private readonly Section[] sections = new Section[Sections * Sections];
@@ -67,8 +62,6 @@ namespace MagicCarpet.Native
         private static readonly int WaveStrength = Shader.PropertyToID("_WaveStrength");
         private bool initialized;
         private bool disposed;
-        private bool presented;
-        private int presentedWorldX, presentedWorldZ;
         private ulong lastGeneration;
         internal ulong Revision { get; private set; }
         internal ulong WaterBedResetRevision { get; private set; }
@@ -128,13 +121,12 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null, bool voxel = false)
+        internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
         {
             if (parent == null) throw new ArgumentNullException(nameof(parent));
             if (terrainMaterial == null) throw new ArgumentNullException(nameof(terrainMaterial));
             if (waterMaterial == null) throw new ArgumentNullException(nameof(waterMaterial));
             root = new GameObject("Modern Terrain").transform;
-            this.voxel = voxel;
             this.sourceShore=sourceShore;
             root.SetParent(parent, false);
             materials = new[] { terrainMaterial, waterMaterial };
@@ -230,7 +222,6 @@ namespace MagicCarpet.Native
                 var section = sections[i];
                 section.HasWater = RebuildSection(i % Sections, i / Sections, section.Mesh, section.FarMesh, section.ShoreMesh,
                     out section.WaterBounds);
-                section.VoxelDirty = section.VoxelFarDirty = true;
                 section.DetailTriangles = (int)((section.Mesh.GetIndexCount(0) + section.Mesh.GetIndexCount(1)) / 3);
                 section.FarTriangles = (int)((section.FarMesh.GetIndexCount(0) + section.FarMesh.GetIndexCount(1)) / 3);
                 dirty[i] = false;
@@ -278,7 +269,6 @@ namespace MagicCarpet.Native
             VisibleFarCopies = 0;
             var worldX = Mathf.FloorToInt(cameraPosition.x / Period);
             var worldZ = Mathf.FloorToInt(cameraPosition.z / Period);
-            presentedWorldX = worldX; presentedWorldZ = worldZ; presented = true;
             for (var sz = 0; sz < Sections; sz++)
             for (var sx = 0; sx < Sections; sx++)
             {
@@ -323,17 +313,12 @@ namespace MagicCarpet.Native
                         // Visibility remains a horizontal wrap window; LOD uses
                         // the nearest 3D bounds point, including flight altitude.
                         var detail = copy.Renderer.bounds.SqrDistance(cameraPosition) <= threshold * threshold;
-                        if (voxel && PatchTouchesSection(sx, sz)) detail = true;
-                        Mesh selected;
-                        if (voxel)
+                        if (copy.Detail != detail)
                         {
-                            selected = VoxelMesh(section, sx, sz, detail);
+                            copy.Filter.sharedMesh = detail ? section.Mesh : section.FarMesh;
+                            copy.Detail = detail;
                         }
-                        else selected = detail ? section.Mesh : section.FarMesh;
-                        if (copy.Filter.sharedMesh != selected) copy.Filter.sharedMesh = selected;
-                        copy.Detail = detail;
-                        VisibleTriangleCount += voxel ? (int)((selected.GetIndexCount(0) + selected.GetIndexCount(1)) / 3) :
-                            detail ? section.DetailTriangles : section.FarTriangles;
+                        VisibleTriangleCount += detail ? section.DetailTriangles : section.FarTriangles;
                         VisibleTriangleCount += (int)section.ShoreMesh.GetIndexCount(0)/3;
                         if (detail) VisibleDetailCopies++; else VisibleFarCopies++;
                     }
@@ -341,70 +326,11 @@ namespace MagicCarpet.Native
             }
         }
 
-        private bool PatchTouchesSection(int sx, int sz)
-        {
-            if (!VoxelPatch.HasValue) return false;
-            var patch = VoxelPatch.Value;
-            float x = sx * SectionSize, z = sz * SectionSize;
-            return x < patch.max.x + 4f && x + SectionSize > patch.min.x - 4f &&
-                   z < patch.max.z + 4f && z + SectionSize > patch.min.z - 4f;
-        }
-
-        private Mesh VoxelMesh(Section section, int sx, int sz, bool detail)
-        {
-            var mesh = detail ? section.VoxelMesh : section.VoxelFarMesh;
-            if (mesh == null)
-            {
-                mesh = new Mesh { name = $"Voxel terrain section {sx},{sz} {(detail ? "near" : "far")}" };
-                mesh.MarkDynamic();
-                if (detail) section.VoxelMesh = mesh; else section.VoxelFarMesh = mesh;
-            }
-            if (detail ? section.VoxelDirty : section.VoxelFarDirty)
-            {
-                Voxels.VoxelTerrainSurface.Build(mesh, detail ? section.Mesh : section.FarMesh,
-                    new Vector2(sx * SectionSize, sz * SectionSize),
-                    detail ? Voxels.VoxelTerrainSurface.NearCell : Voxels.VoxelTerrainSurface.FarCell,
-                    VisualSampleHeight, (x, z) => Water(Mathf.FloorToInt(x / CellSize), Mathf.FloorToInt(z / CellSize)),
-                    (x, z) => DetailColor(Mathf.FloorToInt(x / DetailSize), Mathf.FloorToInt(z / DetailSize)), VoxelPatch);
-                if (detail) section.VoxelDirty = false; else section.VoxelFarDirty = false;
-            }
-            return mesh;
-        }
-
         // Interpolate the same half-cell triangles used by the rendered mesh.
         // The source collision sampler has a distinct 255 rule.
         internal float SampleHeight(float x, float z)
         {
             if(VoxelHeightSampler!=null&&VoxelHeightSampler(x,z) is float local)return local;
-            return VisualSampleHeight(x, z);
-        }
-
-        // Presentation roots can follow the actually selected exterior-column
-        // LOD without changing source collision, water-bed or local patch state.
-        // When no matching copy is currently presented, retain the old sampler.
-        internal float SampleVisualHeight(float x, float z)
-        {
-            if (disposed) throw new ObjectDisposedException(nameof(ModernTerrainMesh));
-            if (!voxel || !initialized || !presented || IsWater(x, z)) return SampleHeight(x, z);
-            float wx = Mathf.Repeat(x, Period), wz = Mathf.Repeat(z, Period);
-            if (Voxels.VoxelTerrainSurface.InPatchCollar(wx, wz, VoxelPatch)) return SampleHeight(x, z);
-            int sx = Mathf.FloorToInt(wx / SectionSize), sz = Mathf.FloorToInt(wz / SectionSize);
-            int dx = Mathf.FloorToInt(x / Period) - presentedWorldX;
-            int dz = Mathf.FloorToInt(z / Period) - presentedWorldZ;
-            if (dx < -1 || dx > 1 || dz < -1 || dz > 1) return SampleHeight(x, z);
-            var section = sections[sx + sz * Sections];
-            var copy = section.Copies[(dx + 1) + (dz + 1) * 3];
-            if (copy == null || !copy.Object.activeSelf) return SampleHeight(x, z);
-            // Observation can mutate terrain before the next presentation pass.
-            // Refresh the selected mesh before reporting a placement on it.
-            VoxelMesh(section, sx, sz, copy.Detail);
-            return Voxels.VoxelTerrainSurface.SurfaceHeight(wx, wz,
-                copy.Detail ? Voxels.VoxelTerrainSurface.NearCell : Voxels.VoxelTerrainSurface.FarCell,
-                VisualSampleHeight);
-        }
-
-        private float VisualSampleHeight(float x, float z)
-        {
             if (!initialized) return 0f;
             var wx = Mathf.Repeat(x, Period) / DetailSize;
             var wz = Mathf.Repeat(z, Period) / DetailSize;
@@ -812,8 +738,6 @@ namespace MagicCarpet.Native
                 Destroy(section.Mesh);
                 Destroy(section.FarMesh);
                 Destroy(section.ShoreMesh);
-                Destroy(section.VoxelMesh);
-                Destroy(section.VoxelFarMesh);
             }
             Destroy(root.gameObject);
         }

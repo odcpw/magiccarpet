@@ -990,6 +990,11 @@ fn restore_actual_staged_bee_trace_frontier() -> GameSession<Mc2CampaignBackend>
             | crate::game_runtime::ReplayOperation::ToggleIconsMap
             | crate::game_runtime::ReplayOperation::TogglePanelTransparency
             | crate::game_runtime::ReplayOperation::ToggleFlatShading
+            | crate::game_runtime::ReplayOperation::PlayerNamesNotice { .. }
+            | crate::game_runtime::ReplayOperation::SourceAudioNotice { .. }
+            | crate::game_runtime::ReplayOperation::FlightAssistanceNotice { .. }
+            | crate::game_runtime::ReplayOperation::HelpModeNotice { .. }
+            | crate::game_runtime::ReplayOperation::GraphicsNotice {..}
             | crate::game_runtime::ReplayOperation::PausedFrame { .. }
             | crate::game_runtime::ReplayOperation::PresentationFrame { .. } => {
                 panic!("the staged Bee combat driver contains only gameplay input");
@@ -1073,6 +1078,11 @@ fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
             | crate::game_runtime::ReplayOperation::ToggleIconsMap
             | crate::game_runtime::ReplayOperation::TogglePanelTransparency
             | crate::game_runtime::ReplayOperation::ToggleFlatShading
+            | crate::game_runtime::ReplayOperation::PlayerNamesNotice { .. }
+            | crate::game_runtime::ReplayOperation::SourceAudioNotice { .. }
+            | crate::game_runtime::ReplayOperation::FlightAssistanceNotice { .. }
+            | crate::game_runtime::ReplayOperation::HelpModeNotice { .. }
+            | crate::game_runtime::ReplayOperation::GraphicsNotice {..}
             | crate::game_runtime::ReplayOperation::PausedFrame { .. }
             | crate::game_runtime::ReplayOperation::PresentationFrame { .. } => {
                 panic!("combat trace contains only gameplay input")

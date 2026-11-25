@@ -679,6 +679,9 @@ fn cave_four_ordinary_lethal_spider_hit_scatters_holders_and_binds_death_mana_wi
         ),
         (10_000, 10_000)
     );
+    step(&mut game, GameCommand { recover_player: true, ..GameCommand::default() });
+    assert_eq!(sim(&game).entities()[usize::from(player)].life, 10_000,
+        "recovery input on a living player must not trigger source revival");
     for _ in 0..128 {
         if sim(&game).session.state.live.player_protection_ticks == 0 {
             break;
@@ -1343,6 +1346,12 @@ fn cave_four_ordinary_lethal_spider_hit_scatters_holders_and_binds_death_mana_wi
         fatal.mailbox.1
     );
     assert_eq!(sim(&game).entities()[usize::from(player)].action, 2);
+    assert!(sim(&game).entities()[usize::from(player)].life < 0);
+    step(&mut game, GameCommand { recover_player: true, ..GameCommand::default() });
+    elapsed += 1;
+    assert!(sim(&game).entities()[usize::from(player)].life < 0,
+        "a recovery press during the real falling death must not revive the player");
+    assert_eq!(sim(&game).source_arena().handle(player), Some(player_handle));
     let fall_height = i32::from(sim(&game).state.position.z)
         - i32::from(
             sim(&game)
@@ -1867,6 +1876,9 @@ fn cave_four_ordinary_lethal_spider_hit_scatters_holders_and_binds_death_mana_wi
         restored.enabled_spell_holders
     );
     assert!(!game.snapshot().value.return_to_title_requested);
+    // Keep the whole shipped Spider encounter as the producer. The outer
+    // loop now gets the very session whose real recovery set bits 2 and 3.
+    crate::game_runtime::GameRuntime::check_retry_after_lethal_encounter(game);
 }
 
 #[test]

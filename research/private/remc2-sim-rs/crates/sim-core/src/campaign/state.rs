@@ -306,6 +306,19 @@ pub struct CampaignSession {
     pub baseline_hash: ResetReceipt,
     pub state: CampaignState,
     pub generation: u64,
+    /// The restore candidate uses the historical audio policy only while
+    /// replaying operations recorded before Goat sound preparation existed.
+    pub(crate) replay_legacy_goat_audio: bool,
+    /// The restore candidate suppresses the Wind sound only during operations
+    /// recorded before source-49 preparation and termination were joined.
+    pub(crate) replay_legacy_wind_audio: bool,
+    /// Preserve historical Results writers only during the recorded prefix.
+    pub(crate) replay_legacy_source_results: bool,
+    /// Recorded operations predating sub_57570 must retain their old hashes.
+    pub(crate) replay_legacy_objective_result: bool,
+    pub(crate) replay_legacy_authored_effect_tiers: bool,
+    /// Historical operations retain the old Castle-revival music countdown.
+    pub(crate) replay_legacy_castle_revival_music: bool,
 }
 
 impl CampaignSession {
@@ -323,6 +336,12 @@ impl CampaignSession {
             baseline_hash,
             state,
             generation: 0,
+            replay_legacy_goat_audio: false,
+            replay_legacy_wind_audio: false,
+            replay_legacy_source_results: false,
+            replay_legacy_objective_result: false,
+            replay_legacy_authored_effect_tiers: false,
+            replay_legacy_castle_revival_music: false,
         }
     }
 

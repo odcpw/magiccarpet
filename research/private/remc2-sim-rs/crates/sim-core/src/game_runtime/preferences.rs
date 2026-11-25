@@ -100,16 +100,6 @@ pub struct PlayerPreferences {
     pub sound_volume: u8,
     pub music_volume: u8,
     pub show_help: bool,
-    /// Original graphics options; old profiles retain source enabled defaults.
-    #[serde(default = "source_graphics_enabled")]
-    pub reflections: bool,
-    #[serde(default = "source_graphics_enabled")]
-    pub sky: bool,
-    #[serde(default = "source_graphics_enabled")]
-    pub shadows: bool,
-    /// Source `m_wDynamicLighting`; old profiles retain the enabled default.
-    #[serde(default = "source_graphics_enabled")]
-    pub dynamic_lighting: bool,
     pub brightness: [u8; 3],
     pub flight_assistance: bool,
     pub fullscreen: bool,
@@ -145,10 +135,6 @@ impl Default for PlayerPreferences {
             sound_volume: 127,
             music_volume: 127,
             show_help: true,
-            reflections: true,
-            sky: true,
-            shadows: true,
-            dynamic_lighting: true,
             brightness: [0; 3],
             flight_assistance: false,
             fullscreen: false,
@@ -156,12 +142,12 @@ impl Default for PlayerPreferences {
     }
 }
 
-const fn source_graphics_enabled() -> bool {
-    true
-}
-
 impl PlayerPreferences {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_legacy_objective_key(false)
+    }
+
+    fn validate_with_legacy_objective_key(&self, allow_objective_key: bool) -> Result<(), String> {
         if self.schema != PREFERENCES_SCHEMA {
             return Err("unsupported preferences schema".into());
         }
@@ -184,6 +170,9 @@ impl PlayerPreferences {
         {
             return Err("preference value outside its supported range".into());
         }
+        if !allow_objective_key && self.keys.contains(&InputKey::O) {
+            return Err("key conflicts with the fixed objective control".into());
+        }
         for i in 0..4 {
             if matches!(self.keys[i], InputKey::C | InputKey::L | InputKey::Space) {
                 return Err(
@@ -205,6 +194,29 @@ impl PlayerPreferences {
         }
         Ok(())
     }
+
+    // Old profiles could bind O despite the fixed objective control. Keep all
+    // other assignments, preferring the original slot default when it is free.
+    // The fallback keys are all offered by source sub_79E10, and outnumber the
+    // other nine slots, so a free key always exists.
+    fn repair_legacy_objective_keys(&mut self) {
+        use InputKey::*;
+        const FALLBACKS: [InputKey; 16] = [
+            UpArrow, DownArrow, LeftArrow, RightArrow, Return, LeftControl, LeftAlt,
+            RightShift, Q, W, T, Y, U, A, F, G,
+        ];
+        let defaults = Self::default().keys;
+        for slot in 0..self.keys.len() {
+            if self.keys[slot] != O {
+                continue;
+            }
+            let replacement = std::iter::once(defaults[slot])
+                .chain(FALLBACKS)
+                .find(|key| !self.keys.contains(key))
+                .expect("more fallback keys than other assignment slots");
+            self.keys[slot] = replacement;
+        }
+    }
 }
 
 fn optional_locale<'de, D: serde::Deserializer<'de>>(
@@ -216,10 +228,30 @@ fn optional_locale<'de, D: serde::Deserializer<'de>>(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PreferencesCommand {
+    SourceGraphics {
+        #[serde(deserialize_with="deserialize_brightness_guard")]
+        session_guard:sim_session::SessionGuard,
+        action:super::SourceGraphicsAction,
+    },
+    SourceHelpMode {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+    },
+    SourceFlightAssistance {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+    },
     SourceBrightness {
         #[serde(deserialize_with = "deserialize_brightness_guard")]
         session_guard: sim_session::SessionGuard,
         action: SourceBrightnessAction,
+    },
+    SourceAudio {
+        #[serde(deserialize_with = "deserialize_brightness_guard")]
+        session_guard: sim_session::SessionGuard,
+        action: SourceAudioAction,
+        #[serde(default)]
+        speech_available: Option<bool>,
     },
     Install {
         profile_dir: String,
@@ -256,6 +288,12 @@ pub enum PreferencesCommand {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceBrightnessAction { Cycle, Increment, Decrement }
+
+/// Source ChangeSettings cases 2, 3 and 4; availability is supplied by the
+/// active audio owner, independently of the user's enabled preference.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceAudioAction { Sound, Music, Speech }
 
 fn deserialize_brightness_guard<'de, D: serde::Deserializer<'de>>(deserializer: D)
     -> Result<sim_session::SessionGuard, D::Error>
@@ -297,6 +335,13 @@ pub struct PreferencesSnapshot {
     /// It is never stored in runtime identity or preferences persistence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_brightness_admitted: Option<bool>,
+    /// Ephemeral result for the guarded source audio command.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_audio_admitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_flight_assistance_admitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_help_mode_admitted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -314,6 +359,34 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    /// SwitchHelpMode_18AA0. Pinned sub_871E0 always returns1; there is no
+    /// ordinary host capability to guess from assets or audio state.
+    pub fn source_help_mode_toggle(&mut self) -> Result<Option<bool>, String> {
+        if self.audio_preview.is_some() { return Ok(None); }
+        let mut preferences = self.current.clone();
+        preferences.show_help = !preferences.show_help;
+        self.write_profile(&preferences)?;
+        let enabled = preferences.show_help;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
+    }
+
+    /// Source case5 changes only the operational flag. The excluded idle
+    /// observations retain their sample/counter until assistance runs again.
+    pub fn source_flight_assistance_toggle(&mut self) -> Result<Option<bool>, String> {
+        if self.audio_preview.is_some() {
+            return Ok(None);
+        }
+        let mut preferences = self.current.clone();
+        preferences.flight_assistance = !preferences.flight_assistance;
+        self.write_profile(&preferences)?;
+        let enabled = preferences.flight_assistance;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
+    }
+
     fn write_profile(&self, preferences: &PlayerPreferences) -> Result<(), String> {
         let path = self.path.as_ref().ok_or("preferences profile is not installed")?;
         let parent = path.parent().ok_or("preferences path has no parent")?;
@@ -329,8 +402,37 @@ impl PreferenceStore {
             }
         }
         let (temp, mut file) = candidate.ok_or("cannot allocate preferences publication file")?;
-        file.write_all(&bytes).and_then(|()| file.sync_all()).map_err(|error| error.to_string())?;
-        fs::rename(temp, path).map_err(|error| error.to_string())
+        let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+        drop(file);
+        let published = written.and_then(|()| fs::rename(&temp, path));
+        if published.is_err() {
+            // This attempt owns the create_new file exclusively. Retire it so
+            // repeated failures cannot exhaust the publication names.
+            let _ = fs::remove_file(&temp);
+        }
+        published.map_err(|error| error.to_string())
+    }
+
+    /// Commit an admitted source audio toggle without disturbing other owners.
+    /// An active dialog preview must retain its independent cancel semantics.
+    pub fn source_audio_toggle(
+        &mut self, action: SourceAudioAction, available: bool,
+    ) -> Result<Option<bool>, String> {
+        if !available || self.audio_preview.is_some() {
+            return Ok(None);
+        }
+        let mut preferences = self.current.clone();
+        let enabled = match action {
+            SourceAudioAction::Sound => &mut preferences.sound_enabled,
+            SourceAudioAction::Music => &mut preferences.music_enabled,
+            SourceAudioAction::Speech => &mut preferences.speech_enabled,
+        };
+        *enabled = !*enabled;
+        let enabled = *enabled;
+        self.write_profile(&preferences)?;
+        self.current = preferences;
+        self.load_status = "saved".into();
+        Ok(Some(enabled))
     }
 
     /// Borrow the authoritative name without materializing a preferences snapshot.
@@ -379,12 +481,19 @@ impl PreferenceStore {
             locale_binding: self.locale.as_ref().map(|locale| locale.identity.clone()),
             language_status: self.language_status.clone(),
             source_brightness_admitted: None,
+            source_audio_admitted: None,
+            source_flight_assistance_admitted: None,
+            source_help_mode_admitted: None,
         }
     }
 
     pub fn command(&mut self, command: PreferencesCommand) -> Result<PreferencesSnapshot, String> {
         match command {
+            PreferencesCommand::SourceGraphics {..}=>return Err("source graphics requires a guarded active campaign".into()),
+            PreferencesCommand::SourceHelpMode { .. } => return Err("source help mode requires a guarded active campaign".into()),
+            PreferencesCommand::SourceFlightAssistance { .. } => return Err("source flight assistance requires a guarded active campaign".into()),
             PreferencesCommand::SourceBrightness { .. } => return Err("source brightness requires a guarded active campaign".into()),
+            PreferencesCommand::SourceAudio { .. } => return Err("source audio requires a guarded active campaign".into()),
             PreferencesCommand::Install { profile_dir } => {
                 if self.path.is_some() {
                     return Err("preferences profile is already installed".into());
@@ -402,8 +511,42 @@ impl PreferenceStore {
                     if bytes.len() as u64 > MAX_PREFERENCES_BYTES {
                         return Err("preferences file is too large".into());
                     }
-                    let value: PlayerPreferences =
-                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                    // Only stored legacy profiles may contain these obsolete
+                    // GAME flags. Validate their original types, discard their
+                    // authority, and preserve every unrelated strict field.
+                    // Preserve serde's original duplicate-field refusal while
+                    // decoding the one historical top-level profile shape.
+                    struct ProfileFields(serde_json::Map<String,serde_json::Value>);
+                    impl<'de> Deserialize<'de> for ProfileFields {
+                        fn deserialize<D:serde::Deserializer<'de>>(decoder:D)->Result<Self,D::Error> {
+                            struct FieldsVisitor;
+                            impl<'input> serde::de::Visitor<'input> for FieldsVisitor {
+                                type Value=ProfileFields;
+                                fn expecting(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str("a preferences object")}
+                                fn visit_map<A:serde::de::MapAccess<'input>>(self,mut input:A)->Result<Self::Value,A::Error> {
+                                    let mut fields=serde_json::Map::new();
+                                    while let Some((key,value))=input.next_entry::<String,serde_json::Value>()? {
+                                        if fields.insert(key.clone(),value).is_some() {
+                                            return Err(serde::de::Error::custom(format!("duplicate preferences field {key}")));
+                                        }
+                                    }
+                                    Ok(ProfileFields(fields))
+                                }
+                            }
+                            decoder.deserialize_map(FieldsVisitor)
+                        }
+                    }
+                    let ProfileFields(mut fields)=serde_json::from_slice::<ProfileFields>(&bytes).map_err(|e|e.to_string())?;
+                    for name in ["reflections","shadows","sky","dynamic_lighting"] {
+                        if let Some(value)=fields.remove(name) {
+                            if !value.is_boolean() {return Err(format!("legacy graphics field {name} must be boolean"));}
+                        }
+                    }
+                    let mut value:PlayerPreferences=serde_json::from_value(serde_json::Value::Object(fields)).map_err(|e|e.to_string())?;
+                    // Only an otherwise-valid old profile receives this repair;
+                    // invalid profiles still take the existing recovery path.
+                    value.validate_with_legacy_objective_key(true)?;
+                    value.repair_legacy_objective_keys();
                     value.validate()?;
                     Ok(value)
                 })();
@@ -557,6 +700,14 @@ impl PreferenceStore {
         self.assistance.reset();
         self.input_generation = None;
     }
+
+    /// Pause/resume keeps the same input owner. Only carry a matching binding;
+    /// an actual reset or new session still starts a fresh observation run.
+    pub(super) fn carry_input_generation(&mut self, previous: (u64, u64), next: (u64, u64)) {
+        if self.input_generation == Some(previous) {
+            self.input_generation = Some(next);
+        }
+    }
 }
 
 /// `LoadLanguageFile` returns the numeric owner filename suffix, not a locale
@@ -709,20 +860,22 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         mut command: sim_session::GameCommand,
     ) -> Result<(), PreferenceStepError<B::Error>> {
         if self.identity().mode != super::RuntimeMode::Playing {
-            self.player_preferences.reset_input();
             return Err(PreferenceStepError::Unavailable);
         }
         self.session().ok_or(PreferenceStepError::Unavailable)?
             .completion_status(guard)
             .map_err(|error| PreferenceStepError::Session(sim_session::GameSessionError::Guard(error)))?;
+        // The exact input sample belongs to this operational producer, not
+        // GAME history. Record only its derived recenter and existing axes.
+        let steering_observation = command.steering_observation.take();
         let top_bar = self.display_settings.top_bar;
         let brightness = self.player_preferences.current.brightness;
         let previous_assistance = self.player_preferences.assistance.clone();
         let previous_sequence = self.player_preferences.assistance_sequence;
         let previous_generation = self.player_preferences.input_generation;
-        // Pause/resume, restart and mission changes advance authoritative
-        // lifecycle generations even when gameplay ticks remain unchanged.
-        // Their first accepted observation cannot inherit an earlier idle run.
+        // Real resets and mission changes start a new input owner. An admitted
+        // pause/resume carries its exact generation binding without consuming
+        // the source idle counter.
         let input_generation = (self.generation, guard.generation);
         if previous_generation != Some(input_generation) {
             self.player_preferences.assistance.reset();
@@ -738,6 +891,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             AssistanceInput {
                 roll: command.roll_axis,
                 pitch: command.pitch_axis,
+                steering_observation,
                 action,
             },
             AssistancePolicy {
@@ -776,6 +930,7 @@ fn command_has_player_activity(command: &sim_session::GameCommand) -> bool {
         || command.cycle_marked_spell.is_some()
         || command.abandon_action.is_some()
         || command.recover_player
+        || command.surrender_player
         || command.remove_castle_stage
         || command.look_yaw != 0
         || command.look_pitch != 0
@@ -787,6 +942,7 @@ fn command_has_player_activity(command: &sim_session::GameCommand) -> bool {
 pub struct AssistanceInput {
     pub roll: i8,
     pub pitch: i8,
+    pub steering_observation: Option<sim_session::SteeringObservation>,
     /// Any held movement/cast or ordered action prevents the idle producer.
     pub action: bool,
 }
@@ -800,17 +956,18 @@ pub struct AssistancePolicy {
 
 #[derive(Clone, Debug, Default)]
 pub struct FlightAssistance {
-    previous: (i8, i8),
+    previous: sim_session::SteeringObservation,
     unchanged: u16,
 }
 impl FlightAssistance {
     pub fn reset(&mut self) {
-        self.previous = (0, 0);
+        self.previous = sim_session::SteeringObservation::default();
         self.unchanged = 0;
     }
 
     /// Preserve source u16 counter width and strict > 0x30 threshold. Activity
-    /// starts a new observation run; excluded modes cannot accumulate a stop.
+    /// starts a new observation run; excluded modes retain, but cannot advance,
+    /// the previous sample and counter (sub_1A7A0).
     pub fn observe(
         &mut self,
         input: AssistanceInput,
@@ -818,10 +975,10 @@ impl FlightAssistance {
         policy: AssistancePolicy,
     ) -> bool {
         if !enabled || !policy.playing || policy.menu_open || policy.network {
-            self.reset();
             return false;
         }
-        let position = (input.roll, input.pitch);
+        let position = input.steering_observation.unwrap_or_else(||
+            sim_session::SteeringObservation::from_axes(input.roll, input.pitch));
         if input.action || self.previous != position {
             self.previous = position;
             self.unchanged = 0;
@@ -833,8 +990,9 @@ impl FlightAssistance {
             return false;
         }
         self.unchanged = 0;
-        // Full-stop's recenter changes the position carrier for the next turn.
-        self.previous = (0, 0);
+        // Opcode39 is only queued here. Retain the observed sample: the later
+        // PlayerEvents handler recenters, and that changed input is observed
+        // on the next pass rather than manufactured in this producer.
         true
     }
 }
@@ -854,8 +1012,9 @@ mod tests {
         };
         use sim_session::{GameCommand, GameSessionError, SessionGuard};
 
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let package = std::env::var_os("MC_FLIGHT_ASSISTANCE_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq8-level1-collision-v5-night"));
         let definition =
             Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
         let open = || {
@@ -894,7 +1053,7 @@ mod tests {
         let guard = observed.session().unwrap().identity().guard();
         let before = observed.session().unwrap().snapshot();
         let before_assistance = assistance(&observed);
-        for (rejected_guard, command, backend_rejection) in [
+        for (rejected_guard, mut command, backend_rejection) in [
             (
                 SessionGuard {
                     expected_tick: 1,
@@ -920,6 +1079,7 @@ mod tests {
                 true,
             ),
         ] {
+            command.steering_observation = Some(sim_session::SteeringObservation::try_from([0.45_f32.to_bits(), 0]).unwrap());
             let observed_error = observed
                 .step_player_with_preferences(rejected_guard, command.clone())
                 .unwrap_err();
@@ -971,6 +1131,11 @@ mod tests {
                     .replay_operation_count(),
                 1
             );
+            for _ in 0..48 {
+                let guard = runtime.session().unwrap().identity().guard();
+                runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            }
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 48);
             runtime.pause(runtime.identity().guard()).unwrap();
         }
         let paused = advanced.session().unwrap().snapshot();
@@ -998,8 +1163,28 @@ mod tests {
                     .replay_operation_count(),
                 paused_operations
             );
-            assert_eq!(runtime.player_preferences.input_generation, None);
+            assert_eq!(runtime.player_preferences.input_generation,
+                Some((runtime.generation, paused_guard.generation)));
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 48,
+                "paused exclusion and a rejected ordinary input retain the source idle run");
+        }
+        for runtime in [&mut observed, &mut advanced] {
+            runtime.resume(runtime.identity().guard()).unwrap();
+            let before = assistance(runtime);
+            assert!(runtime.advance_player_with_preferences(paused_guard, GameCommand::default()).is_err());
+            assert_eq!(assistance(runtime), before, "a stale pre-resume guard consumes nothing");
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            assert_eq!(runtime.player_preferences.assistance_sequence, 2,
+                "the49th actual idle observation follows the retained pause boundary");
             assert_eq!(runtime.player_preferences.assistance.unchanged, 0);
+            let session = runtime.session_mut().unwrap();
+            session.reset(session.identity().guard()).unwrap();
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.advance_player_with_preferences(guard, GameCommand::default()).unwrap();
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 1,
+                "a genuine session reset still starts a fresh input owner");
+            assert_eq!(runtime.player_preferences.assistance_sequence, 2);
         }
     }
 
@@ -1054,10 +1239,6 @@ mod tests {
         customized.invert_mouse = true;
         customized.mouse_sensitivity = 137;
         customized.joystick_dead_zone = 27;
-        customized.reflections = false;
-        customized.sky = false;
-        customized.shadows = false;
-        customized.dynamic_lighting = false;
         customized.flight_assistance = true;
         customized.fullscreen = true;
         runtime.preferences_command(outer, PreferencesCommand::ApplyChecked {
@@ -1152,6 +1333,11 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before_bytes);
         let nested = runtime.session().unwrap().identity().guard();
         runtime.toggle_icons_and_map(playing.guard(), nested).unwrap();
+        runtime.toggle_player_names(playing.guard(), nested).unwrap();
+        for action in [super::super::SourceGraphicsAction::Reflections,super::super::SourceGraphicsAction::Shadows,
+            super::super::SourceGraphicsAction::Sky,super::super::SourceGraphicsAction::DynamicLighting] {
+            runtime.source_graphics(playing.guard(),nested,action).unwrap();
+        }
         let paused = runtime.pause(playing.guard()).unwrap();
         let snapshot = runtime.session().unwrap().snapshot();
         let operations = runtime.session().unwrap().backend().replay_operation_count();
@@ -1161,6 +1347,7 @@ mod tests {
         assert_eq!(runtime.identity().player_preferences.preferences, source_default);
         assert_eq!(runtime.identity().display_settings, paused.display_settings, "source Default does not set minimap/topbar");
         assert!(!runtime.identity().display_settings.minimap);
+        assert!(!runtime.identity().source_player_names_visible, "Default Keys retains auxiliary player-name visibility");
         assert_eq!(runtime.identity().generation, paused.generation);
         assert_eq!(runtime.session().unwrap().snapshot(), snapshot);
         assert_eq!(runtime.session().unwrap().backend().replay_operation_count(), operations);
@@ -1169,15 +1356,33 @@ mod tests {
     }
 
     #[test]
-    fn original_render_options_default_enabled_for_existing_profiles() {
-        let mut old = serde_json::to_value(PlayerPreferences::default()).unwrap();
-        for field in ["reflections", "sky", "shadows", "dynamic_lighting"] {
-            old.as_object_mut().unwrap().remove(field);
-        }
-        let restored: PlayerPreferences = serde_json::from_value(old).unwrap();
-        assert!(
-            restored.reflections && restored.sky && restored.shadows && restored.dynamic_lighting
-        );
+    fn legacy_profile_graphics_migrate_without_becoming_game_authority() {
+        let profile=std::env::temp_dir().join(format!("mc-legacy-graphics-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap(); let path=profile.join("player-preferences.json");
+        let mut expected=PlayerPreferences::default(); expected.player_name="OLIVER".into();
+        expected.keys[0]=InputKey::W; expected.sound_volume=61; expected.show_help=false;
+        let mut old=serde_json::to_value(&expected).unwrap();
+        for field in ["reflections","sky","shadows","dynamic_lighting"] {old[field]=false.into();}
+        let bytes=serde_json::to_vec(&old).unwrap(); fs::write(&path,&bytes).unwrap();
+        let install=||PreferencesCommand::Install {profile_dir:profile.to_string_lossy().into_owned()};
+        let mut store=PreferenceStore::default(); assert_eq!(store.command(install()).unwrap().preferences,expected);
+        assert_eq!(fs::read(&path).unwrap(),bytes,"legacy migration never rewrites on read");
+        assert!(serde_json::from_value::<PlayerPreferences>(old.clone()).is_err(),"live Apply rejects obsolete GAME fields");
+        let graphics=crate::game_runtime::DisplaySettings::default();
+        assert!(graphics.reflections&&graphics.shadows&&graphics.sky&&graphics.dynamic_lighting);
+        store.command(PreferencesCommand::Apply {preferences:expected.clone()}).unwrap();
+        let current:serde_json::Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for field in ["reflections","sky","shadows","dynamic_lighting"] {assert!(current.get(field).is_none());}
+        assert_eq!(serde_json::from_value::<PlayerPreferences>(current).unwrap(),expected);
+        old["sky"]="not a boolean".into(); let bad=serde_json::to_vec(&old).unwrap();fs::write(&path,&bad).unwrap();
+        let mut invalid=PreferenceStore::default();assert!(invalid.command(install()).unwrap().load_status.starts_with("defaults:"));
+        assert_eq!(fs::read(&path).unwrap(),bad);
+        let duplicated=String::from_utf8(bytes).unwrap().replacen('{',"{\"player_name\":\"SECOND\",",1);
+        fs::write(&path,duplicated.as_bytes()).unwrap();let mut duplicate=PreferenceStore::default();
+        assert!(duplicate.command(install()).unwrap().load_status.contains("duplicate preferences field"));
+        assert_eq!(fs::read(&path).unwrap(),duplicated.as_bytes());
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -1448,21 +1653,182 @@ mod tests {
                 ..policy
             },
         ] {
+            let displaced = AssistanceInput { roll: 17, pitch: -9, ..AssistanceInput::default() };
+            assert!(!assist.observe(displaced, true, policy));
+            for _ in 0..48 { assert!(!assist.observe(displaced, true, policy)); }
             for _ in 0..100 {
-                assert!(!assist.observe(idle, true, excluded));
+                assert!(!assist.observe(AssistanceInput { action: true, ..idle }, true, excluded));
             }
-            for _ in 0..48 {
-                assert!(!assist.observe(idle, true, policy));
-            }
-            assert!(assist.observe(idle, true, policy));
+            assert_eq!((assist.previous, assist.unchanged), (sim_session::SteeringObservation::from_axes(17, -9), 48),
+                "excluded source branches do not sample activity or clear the idle run");
+            assert!(assist.observe(displaced, true, policy));
+            assert_eq!(assist.previous, sim_session::SteeringObservation::from_axes(17, -9), "queue39 retains the pre-center sample");
+            assert!(!assist.observe(idle, true, policy), "the later actual center starts a new run");
         }
+        for _ in 0..48 { assert!(!assist.observe(idle, true, policy)); }
         for _ in 0..100 {
-            assert!(!assist.observe(idle, false, policy));
+            assert!(!assist.observe(AssistanceInput { roll: 100, action: true, ..idle }, false, policy));
         }
-        for _ in 0..48 {
-            assert!(!assist.observe(idle, true, policy));
-        }
+        assert_eq!((assist.previous, assist.unchanged), (sim_session::SteeringObservation::default(), 48));
         assert!(assist.observe(idle, true, policy));
+    }
+
+    #[test]
+    fn exact_steering_observation_preserves_activity_and_suppressed_samples() {
+        use sim_session::{GameCommand, SteeringObservation};
+        let zero = AssistanceInput::default();
+        let sample = SteeringObservation::try_from([0.45_f32.to_bits(), 0]).unwrap();
+        let precise = AssistanceInput { steering_observation:Some(sample), ..zero };
+        let policy = AssistancePolicy { playing:true, ..AssistancePolicy::default() };
+        let mut assist = FlightAssistance::default();
+        assert!(!assist.observe(precise,true,policy));
+        for index in 0..100 {
+            assert!(!assist.observe(if index % 2 == 0 { zero } else { precise }, true, policy));
+            assert_eq!(assist.unchanged, 0, "pre-quantization activity never becomes rounded-axis idle");
+        }
+        for _ in 0..48 { assert!(!assist.observe(precise, true, policy)); }
+        assert!(assist.observe(precise, true, policy), "49 unchanged precise samples still recenter");
+        assert_eq!(assist.previous, sample, "recenter is deferred, not an invented zero sample");
+        for (enabled, excluded) in [(false,policy),(true,AssistancePolicy { menu_open:true,..policy }),
+            (true,AssistancePolicy { network:true,..policy }),(true,AssistancePolicy::default())] {
+            for _ in 0..48 { assert!(!assist.observe(precise, true, policy)); }
+            for _ in 0..60 { assert!(!assist.observe(zero, enabled, excluded)); }
+            assert_eq!((assist.previous,assist.unchanged),(sample,48));
+            assert!(assist.observe(precise,true,policy));
+        }
+        assert!(!assist.observe(zero,true,policy), "the actual centered sample resets the run");
+        let legacy = GameCommand::default();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        assert!(!String::from_utf8(bytes.clone()).unwrap().contains("steering_observation"));
+        assert_eq!(serde_json::from_slice::<GameCommand>(&bytes).unwrap(), legacy);
+        let command: GameCommand = serde_json::from_value(serde_json::json!({
+            "steering_observation":[0.45_f32.to_bits(),(-0.0_f32).to_bits()]})).unwrap();
+        assert_eq!(command.steering_observation,Some(sample));
+        assert_eq!(serde_json::to_value(command).unwrap()["steering_observation"],
+            serde_json::json!([0.45_f32.to_bits(),0]));
+        for bits in [serde_json::json!([f32::NAN.to_bits(),0]),serde_json::json!([f32::INFINITY.to_bits(),0]),
+            serde_json::json!([(-128.00002_f32).to_bits(),0]),serde_json::json!([0,127.00001_f32.to_bits()]),
+            serde_json::json!([0]),serde_json::json!([0,0,0]),serde_json::json!([-1,0])] {
+            assert!(serde_json::from_value::<GameCommand>(serde_json::json!({"steering_observation":bits})).is_err());
+        }
+    }
+
+    #[test]
+    fn source_help_mode_toggle_is_atomic_and_preserves_unrelated_preferences() {
+        let profile = std::env::temp_dir().join(format!("mc-help-mode-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap();
+        let install = || PreferencesCommand::Install { profile_dir:profile.to_string_lossy().into_owned() };
+        let mut store = PreferenceStore::default();
+        let uninstalled = store.snapshot();
+        assert!(store.source_help_mode_toggle().is_err());
+        assert_eq!(store.snapshot(),uninstalled);
+        store.command(install()).unwrap();
+        let request = serde_json::json!({"operation":"source_help_mode","session_guard":
+            {"session_id":"1","generation":"2","expected_tick":"3"}});
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(request.clone()).unwrap(),
+            PreferencesCommand::SourceHelpMode { .. }));
+        assert!(store.command(serde_json::from_value(request.clone()).unwrap()).is_err());
+        let mut invented_capability = request;
+        invented_capability["help_available"] = false.into();
+        assert!(serde_json::from_value::<PreferencesCommand>(invented_capability).is_err(),
+            "the pinned source does not expose a host-help availability branch");
+        let before = store.current.clone();
+        assert_eq!(store.source_help_mode_toggle().unwrap(),Some(false));
+        let mut expected = before.clone(); expected.show_help=false;
+        assert_eq!(store.current,expected);
+        let bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        let mut cold = PreferenceStore::default();
+        assert_eq!(cold.command(install()).unwrap().preferences,expected);
+        store.command(PreferencesCommand::PreviewAudio { sound_enabled:false,music_enabled:false,
+            speech_enabled:false,sound_volume:0,music_volume:0 }).unwrap();
+        let preview=store.snapshot();
+        assert_eq!(store.source_help_mode_toggle().unwrap(),None);
+        assert_eq!(store.snapshot(),preview);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(),bytes);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        let destination=store.path.clone().unwrap(); store.path=Some(profile.clone());
+        let retained=store.snapshot();
+        assert!(store.source_help_mode_toggle().is_err());
+        assert_eq!(store.snapshot(),retained);
+        assert_eq!(fs::read(&destination).unwrap(),bytes);
+        store.path=Some(destination);
+        assert_eq!(store.source_help_mode_toggle().unwrap(),Some(true));
+        assert_eq!(store.current,before);
+        assert!(serde_json::to_value(store.snapshot()).unwrap().get("source_help_mode_admitted").is_none());
+        fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn source_flight_assistance_preserves_idle_state_and_atomic_profile() {
+        let profile = std::env::temp_dir().join(format!("mc-flight-assistance-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&profile).unwrap();
+        let mut store = PreferenceStore::default();
+        let before = store.snapshot();
+        assert!(store.source_flight_assistance_toggle().is_err());
+        assert_eq!(store.snapshot(), before);
+        let install = || PreferencesCommand::Install { profile_dir: profile.to_string_lossy().into_owned() };
+        store.command(install()).unwrap();
+        let request = serde_json::json!({"operation":"source_flight_assistance", "session_guard":
+            {"session_id":"1","generation":"2","expected_tick":"3"}});
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(request.clone()).unwrap(),
+            PreferencesCommand::SourceFlightAssistance { .. }));
+        assert!(store.command(serde_json::from_value(request.clone()).unwrap()).is_err());
+        let mut invalid = request;
+        invalid["session_guard"]["expected_tick"] = "03".into();
+        assert!(serde_json::from_value::<PreferencesCommand>(invalid).is_err());
+        let original = store.current.clone();
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(true));
+        let policy = AssistancePolicy { playing: true, ..AssistancePolicy::default() };
+        let input = AssistanceInput { roll: 17, pitch: -9, ..AssistanceInput::default() };
+        assert!(!store.observe_input(input, policy));
+        for _ in 0..48 { assert!(!store.observe_input(input, policy)); }
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(false));
+        for _ in 0..20 { assert!(!store.observe_input(AssistanceInput::default(), policy)); }
+        assert_eq!((store.assistance.previous, store.assistance.unchanged), (sim_session::SteeringObservation::from_axes(17, -9), 48));
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(true));
+        assert!(store.observe_input(input, policy), "reenabling resumes the real idle carrier");
+        assert_eq!(store.assistance_sequence, 1);
+        assert_eq!(store.assistance.previous, sim_session::SteeringObservation::from_axes(17, -9));
+        assert!(!store.observe_input(AssistanceInput::default(), policy));
+        assert_eq!(store.assistance.unchanged, 0);
+        let before = store.snapshot();
+        let bytes = fs::read(profile.join("player-preferences.json")).unwrap();
+        store.command(PreferencesCommand::PreviewAudio { sound_enabled:false, music_enabled:false,
+            speech_enabled:false,sound_volume:0,music_volume:0 }).unwrap();
+        let preview = store.snapshot();
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), None);
+        assert_eq!(store.snapshot(), preview);
+        assert_eq!(fs::read(profile.join("player-preferences.json")).unwrap(), bytes);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        assert_eq!(store.snapshot(), before);
+        let mut cold = PreferenceStore::default();
+        assert_eq!(cold.command(install()).unwrap().preferences, store.snapshot().preferences);
+        assert_eq!(cold.assistance.unchanged, 0, "profile saves the flag, not an idle timer");
+        let mut expected = original;
+        expected.flight_assistance = true;
+        assert_eq!(cold.current, expected, "source action preserves every unrelated preference");
+        let saved_path = store.path.clone().unwrap();
+        let blocked_path = profile.join("blocked-destination");
+        fs::create_dir(&blocked_path).unwrap();
+        store.path = Some(blocked_path.clone());
+        let before = store.snapshot();
+        // Force more failures than the number of candidate names. Every
+        // failure must discard its staging file and preserve the live/profile state.
+        for _ in 0..129 {
+            assert!(store.source_flight_assistance_toggle().is_err());
+        }
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(&saved_path).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&profile).unwrap().count(), 2);
+
+        fs::remove_dir(blocked_path).unwrap();
+        store.path = Some(saved_path);
+        assert_eq!(store.source_flight_assistance_toggle().unwrap(), Some(false));
+        let mut restarted = PreferenceStore::default();
+        assert_eq!(restarted.command(install()).unwrap().preferences, store.snapshot().preferences);
+        fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]
@@ -1523,6 +1889,74 @@ mod tests {
             assert!(assist.observe(AssistanceInput::default(), true, policy));
         }
         assert!(!command_has_player_activity(&GameCommand::default()));
+    }
+
+    #[test]
+    fn legacy_objective_key_is_repaired_without_losing_other_preferences() {
+        let time_tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mc-objective-key-test-{}-{time_tag}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("player-preferences.json");
+        let install = || PreferencesCommand::Install {
+            profile_dir: dir.to_string_lossy().into_owned(),
+        };
+        for slot in 0..10 {
+            let mut old = PlayerPreferences::default();
+            old.player_name = "OLIVER".into();
+            old.sound_volume = 23;
+            old.keys[slot] = InputKey::O;
+            // Occupy the slot's default elsewhere to exercise fallback selection.
+            if slot == 0 {
+                old.keys[4] = InputKey::UpArrow;
+            }
+            assert!(old.validate_with_legacy_objective_key(true).is_ok());
+            assert!(old.validate().is_err());
+            let bytes = serde_json::to_vec(&old).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            let mut store = PreferenceStore::default();
+            let loaded = store.command(install()).unwrap();
+            assert_eq!(loaded.load_status, "loaded");
+            assert_eq!(loaded.preferences.player_name, old.player_name);
+            assert_eq!(loaded.preferences.sound_volume, old.sound_volume);
+            assert_ne!(loaded.preferences.keys[slot], InputKey::O);
+            for other in 0..10 {
+                if other != slot {
+                    assert_eq!(loaded.preferences.keys[other], old.keys[other]);
+                }
+            }
+            assert!(loaded.preferences.validate().is_ok());
+            assert_eq!(fs::read(&path).unwrap(), bytes, "load must not overwrite the old profile");
+
+            let before = store.snapshot();
+            assert!(store.command(PreferencesCommand::Apply { preferences: old }).is_err());
+            assert_eq!(store.snapshot(), before);
+            assert_eq!(fs::read(&path).unwrap(), bytes, "rejected Apply is atomic");
+        }
+        let mut old = PlayerPreferences::default();
+        old.keys[4] = InputKey::O;
+        old.keys[5] = InputKey::O;
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let mut store = PreferenceStore::default();
+        let loaded = store.command(install()).unwrap();
+        assert!(loaded.preferences.validate().is_ok());
+        assert_ne!(loaded.preferences.keys[4], loaded.preferences.keys[5]);
+        for slot in [0, 1, 2, 3, 6, 7, 8, 9] {
+            assert_eq!(loaded.preferences.keys[slot], old.keys[slot]);
+        }
+        old.sound_volume = 128;
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut invalid = PreferenceStore::default();
+        assert!(invalid.command(install()).unwrap().load_status.starts_with("defaults:"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
     #[test]
@@ -1587,10 +2021,6 @@ mod tests {
         ];
         prefs.sound_volume = 63;
         prefs.show_help = false;
-        prefs.reflections = false;
-        prefs.sky = false;
-        prefs.shadows = false;
-        prefs.dynamic_lighting = false;
         prefs.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences: prefs })
@@ -1633,7 +2063,52 @@ mod tests {
             store.snapshot().preferences.keys,
             "source punctuation bindings survive a cold profile load"
         );
-        assert!(!cold.snapshot().preferences.dynamic_lighting);
+        assert!(serde_json::to_value(cold.snapshot()).unwrap()["preferences"].get("dynamic_lighting").is_none());
+        let audio_command = serde_json::json!({
+            "operation": "source_audio",
+            "session_guard": { "session_id": "1", "generation": "2", "expected_tick": "3" },
+            "action": "speech", "speech_available": true
+        });
+        assert!(matches!(serde_json::from_value::<PreferencesCommand>(audio_command.clone()).unwrap(),
+            PreferencesCommand::SourceAudio { action: SourceAudioAction::Speech,
+                speech_available: Some(true), .. }));
+        assert!(store.command(serde_json::from_value(audio_command.clone()).unwrap()).is_err());
+        let mut invalid_guard = audio_command;
+        invalid_guard["session_guard"]["expected_tick"] = serde_json::json!("03");
+        assert!(serde_json::from_value::<PreferencesCommand>(invalid_guard).is_err());
+        assert!(serde_json::to_value(store.snapshot()).unwrap().get("source_audio_admitted").is_none());
+        // The source admission guard and an active dialog preview cannot
+        // mutate either the retained preference or its cold profile.
+        let before = store.snapshot();
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Speech, false).unwrap(), None);
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        store.command(PreferencesCommand::PreviewAudio {
+            sound_enabled: false, music_enabled: true, speech_enabled: false,
+            sound_volume: 10, music_volume: 20,
+        }).unwrap();
+        let preview = store.snapshot();
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Sound, true).unwrap(), None);
+        assert_eq!(store.snapshot(), preview);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        store.command(PreferencesCommand::Cancel).unwrap();
+        assert_eq!(store.snapshot(), before);
+
+        for action in [SourceAudioAction::Sound, SourceAudioAction::Music, SourceAudioAction::Speech] {
+            assert_eq!(store.source_audio_toggle(action, true).unwrap(), Some(false));
+            assert_eq!(store.source_audio_toggle(action, true).unwrap(), Some(true));
+        }
+        assert_eq!(store.source_audio_toggle(SourceAudioAction::Speech, true).unwrap(), Some(false));
+        let mut audio_cold = PreferenceStore::default();
+        assert_eq!(audio_cold.command(install()).unwrap().preferences, store.snapshot().preferences);
+        assert!(!audio_cold.snapshot().preferences.speech_enabled);
+        assert!(audio_cold.snapshot().preferences.sound_enabled);
+        assert_eq!(audio_cold.snapshot().preferences.keys, before.preferences.keys);
+        assert_eq!(audio_cold.snapshot().preferences.sound_volume, 63);
+        let mut uninstalled = PreferenceStore::default();
+        let uninstalled_before = uninstalled.snapshot();
+        assert!(uninstalled.source_audio_toggle(SourceAudioAction::Sound, true).is_err());
+        assert_eq!(uninstalled.snapshot(), uninstalled_before);
         assert_eq!(fs::read(&save).unwrap(), b"existing campaign save");
         fs::remove_file(path).unwrap();
         fs::remove_file(save).unwrap();

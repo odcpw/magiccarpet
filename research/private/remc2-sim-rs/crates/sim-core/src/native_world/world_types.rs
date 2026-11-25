@@ -1,4 +1,5 @@
 use super::*;
+use crate::game_session::{TerrainSample, TerrainWindowRequest};
 use std::sync::Arc;
 
 #[derive(Clone,Debug,Eq,PartialEq)]
@@ -2069,10 +2070,10 @@ pub struct PlayerSnapshot {
         Option<super::source_kill_score::SourceKillScoreMatrix>,
     /// Source `array_0x2BDE[playerColorIndex].byte_0x006_2BE4_11236`.
     ///
-    /// This mutable Level 2 carrier is intentionally separate from the
-    /// compact ActPlayerIndex record at bytes 6..8.  Objective kind 3 reads
-    /// this authoritative value; v3/v4 inspection rows retain `None` and
-    /// cannot construct a qualified mutable Level 2 session.
+    /// This carrier is separate from compact ActPlayerIndex bytes 6..8.
+    /// Qualified Level 2 records provide its initial value; legacy records
+    /// retain `None` until an explicit PlayerEvents case0x1D write. Missing
+    /// initial state still cannot admit a mutable Level 2 type-3 objective.
     pub banishment_state_0x006: Option<u8>,
     /// Source sub_65780 accuracy counters (A4 0x165/0x169). These are not
     /// offsets into the exporter's compact player record.
@@ -2233,12 +2234,25 @@ impl PlayerSnapshot {
     /// Only qualified Level-2 player carriers own this byte; older inspection
     /// records remain closed instead of acquiring mutable objective state.
     pub(super) fn set_banishment_state(&mut self, value: u8) -> bool {
-        let Some(state) = self.banishment_state_0x006.as_mut() else {
+        let (Some(state), Some(byte)) = (
+            self.banishment_state_0x006.as_mut(),
+            self.record.get_mut(PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET),
+        ) else {
             return false;
         };
         *state = value;
-        self.record[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET] = value;
+        *byte = value;
         true
+    }
+
+    /// PlayerEvents case0x1D explicitly writes source byte0x006 to zero.
+    /// A legacy compact record omits its initial value, but this admitted
+    /// source write makes it known without guessing or extending that record.
+    pub(super) fn record_player_event_29_banishment(&mut self) {
+        self.banishment_state_0x006 = Some(0);
+        if let Some(byte) = self.record.get_mut(PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET) {
+            *byte = 0;
+        }
     }
 
     /// Apply `sub_5E310`'s released-holder sentinel while keeping the typed
@@ -2328,6 +2342,52 @@ impl PlayerSnapshot {
         self.level1_source_kill_score_matrix
             .as_mut()
             .is_some_and(|matrix| matrix.increment_for_color(color))
+    }
+}
+
+#[cfg(test)]
+mod player_banishment_write_tests {
+    use super::*;
+
+    #[test]
+    fn event29_write_preserves_legacy_bytes_and_strict_projection_admission() {
+        let private = std::env::var_os("MC_CAPI_FIXTURE_PRIVATE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let first = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| private.join("generated/mc-bhq8-level1-collision-v5-night"));
+        let second = std::env::var_os("MC_CAMPAIGN_PACKAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| private.join("generated/mc-level2-vault-successor-closure-20261025"));
+        let legacy = crate::campaign::CampaignSession::open(first, crate::campaign::spec::CampaignSelection::LEVEL1).unwrap();
+        let mut legacy = legacy.simulation().players()[0].clone();
+        let original = legacy.record_bytes().to_vec();
+        assert_eq!(legacy.banishment_state_0x006, None);
+        assert!(original.get(PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET).is_none());
+        assert!(!legacy.set_banishment_state(1));
+        assert_eq!(legacy.banishment_state_0x006, None);
+        assert_eq!(legacy.record_bytes(), original.as_slice());
+        legacy.record_player_event_29_banishment();
+        assert_eq!(legacy.banishment_state_0x006, Some(0));
+        assert_eq!(legacy.record_bytes(), original.as_slice(), "known source write does not extend or alias the compact record");
+        assert!(!legacy.set_banishment_state(1), "generic projection still requires qualified backing");
+        assert_eq!(legacy.banishment_state_0x006, Some(0));
+        assert_eq!(legacy.record_bytes(), original.as_slice(), "refusal is atomic for Some-without-backing");
+
+        let qualified = crate::campaign::CampaignSession::open(second, crate::campaign::spec::CampaignSelection::LEVEL2).unwrap();
+        let mut qualified = qualified.simulation().players()[0].clone();
+        let mut expected = qualified.record_bytes().to_vec();
+        assert_eq!(expected.get(PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET).copied(), qualified.banishment_state_0x006);
+        assert!(qualified.banishment_state_0x006.is_some());
+        qualified.record_player_event_29_banishment();
+        expected[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET] = 0;
+        assert_eq!(qualified.banishment_state_0x006, Some(0));
+        assert_eq!(qualified.record_bytes(), expected.as_slice());
+        assert!(qualified.set_banishment_state(1));
+        expected[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET] = 1;
+        assert_eq!(qualified.banishment_state_0x006, Some(1));
+        assert_eq!(qualified.record_bytes(), expected.as_slice());
     }
 }
 
@@ -2425,6 +2485,27 @@ pub struct HouseRemovalOutcome {
 }
 
 impl SessionTerrain {
+    pub(crate) fn observe_window(&self, window: TerrainWindowRequest) -> Vec<TerrainSample> {
+        window
+            .tiles()
+            .map(|(x, y)| {
+                let position = Position {
+                    x: u16::from(x) << 8,
+                    y: u16::from(y) << 8,
+                    z: 0,
+                };
+                TerrainSample {
+                    ground_height: self.ground_height(position),
+                    ceiling_height: self.ceiling_height(position),
+                    material_mask: self.material_mask(position),
+                    // The same terrain protection flag used by the guarded
+                    // relative-height writes in world::terrain::disasters.
+                    height_edit_protected: self.angle_flags(crate::Tile { x, y }) & 0x80 != 0,
+                }
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn voxel_world(&self)->Option<&crate::voxel_world::VoxelWorld>{self.voxel.as_ref().map(|v|&v.world)}
 

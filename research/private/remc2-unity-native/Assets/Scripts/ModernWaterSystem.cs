@@ -443,11 +443,7 @@ namespace MagicCarpet.Native
             heightProbe?.Dispose(); effects?.Dispose(); interactions?.Dispose(); spectrum?.Dispose(); coast?.Dispose();
             bed?.Dispose();
             Shader.SetGlobalFloat("_ModernCoastReady",0);
-            if (pattern != null)
-            {
-                if (Application.isPlaying) UnityEngine.Object.Destroy(pattern);
-                else UnityEngine.Object.DestroyImmediate(pattern);
-            }
+            UnityEngine.Object.Destroy(pattern);
             Shader.SetGlobalVector("_ModernWind", Vector4.zero);
             Shader.SetGlobalVector("_ModernWindOffset", Vector4.zero);
             Shader.SetGlobalVector("_ModernCloudWindOffset", Vector4.zero);

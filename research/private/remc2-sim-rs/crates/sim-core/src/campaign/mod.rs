@@ -121,7 +121,7 @@ impl CampaignSession {
     ) -> Result<Self, CampaignOpenError> {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
-            let mut animation_catalog = None;
+            let mut animation_bank = None;
             let inspection = if selection == CampaignSelection::LEVEL1
                 || owner_cache.join("materials/descriptor.json").is_file()
             {
@@ -155,7 +155,8 @@ impl CampaignSession {
                         "material cache does not match the opened campaign package",
                     ));
                 }
-                animation_catalog = assets.source_animation_catalog().cloned();
+                animation_bank = assets.source_animation_bank()
+                    .map(|(catalog, payloads)| (catalog, payloads, Arc::<str>::from(assets.cache_content_sha256())));
                 NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
                     definition, None, enabled,
                 )?
@@ -168,8 +169,8 @@ impl CampaignSession {
                 )?
             };
             let mut simulation = inspection.campaign_reset_session_from_definition(definition)?;
-            if let Some(catalog) = animation_catalog {
-                simulation.bind_source_animation_catalog(catalog)?;
+            if let Some((catalog, payloads, owner)) = animation_bank {
+                simulation.bind_source_animation_catalog(catalog, payloads, owner)?;
             }
             Ok((inspection, simulation))
         })
@@ -546,10 +547,17 @@ impl CampaignSession {
             .campaign_reset_session_with_spell_entry(&self.definition, Some(learned))?;
         let mut candidate = self.clone();
         candidate.simulation = simulation;
-        if let Some(catalog) = self.simulation.source_animations.catalog() {
+        if let (Some(catalog), Some(owner)) = (
+            self.simulation.source_animations.catalog(),
+            &self.simulation.source_animation_owner,
+        ) {
             // Spell entry rematerializes the unpublished world; reinitialize
             // its validated source bank and preload against that new world.
-            candidate.simulation.bind_source_animation_catalog(catalog.clone())?;
+            candidate.simulation.bind_source_animation_catalog(
+                catalog.clone(),
+                self.simulation.source_animation_payloads.clone(),
+                owner.clone(),
+            )?;
         }
         candidate.install_initial_source_global_context(self.source_global_context())?;
         for (player_index, objective) in self.simulation.runtime().objectives.iter().enumerate() {

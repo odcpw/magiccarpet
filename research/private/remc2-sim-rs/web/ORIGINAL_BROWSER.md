@@ -8,7 +8,33 @@ to select a different installed package set for a specific replay. The default r
 now renders the terrain, source-selected original sprite frames, water motion
 and indexed particle blends locally with Three.js/WebGL2. The browser also
 composes the source HUD, spell grid, objectives and minimap. There is no Unity
-process, streamed world image, WASM build, or second gameplay simulation.
+process, streamed world image, or second gameplay simulation in the default route.
+
+## Private NightSpire WASM playtest
+
+This opt-in route runs the same package-backed Rust runtime in a browser worker.
+The existing Three.js client receives guarded world, HUD and input data from the
+worker. The worker uses the WASI in-memory filesystem to load installed packages
+through the native loader. The initial package download requires the static host.
+The one-mission build supports flight, casting, maps, pause and restart. Audio,
+save/load and continuing to another mission use the server-backed route.
+
+Build from the `web` directory with its locked dependencies installed:
+
+```sh
+rustup target add --toolchain 1.98.0 wasm32-wasip1
+cargo +1.98.0 build --locked --manifest-path ../Cargo.toml -p sim-capi --release --target wasm32-wasip1
+target=../target/wasm32-wasip1/release
+output=../../generated/private-wasm-playtest
+python3 prepare_wasm_playtest.py "$output/original-api"
+cp "$target/sim_capi.wasm" "$output/original-api/"
+pnpm exec vite build --mode original --outDir "$output"
+python3 serve_wasm_playtest.py "$output"
+```
+
+Open `http://127.0.0.1:8892/original.html?runtime=wasm`. The output includes
+owner-local data and stays private. Use a fresh generated directory for each
+build. A custom `CARGO_TARGET_DIR` changes the source path for `sim_capi.wasm`.
 
 The prior streamed PoC is retained with `--renderer indexed`. It shares controls
 and uses Rust's software world renderer. The optional Modern mesh consumer is
@@ -246,10 +272,11 @@ python3 original_bridge.py --renderer geometry --modern \
 ```
 
 Append the `--host` and matching `--allow-host` options above for tailnet access.
-The installed 8884 service additionally pins `--library` to the already tested
-native binary SHA-256 `889b470467245f07a552d3e67133b3679db62a297adaa9633cbbdfb909a75d39`.
-It is a transient user service named `magiccarpet-browser-modern.service`.
-It loads the native library directly; a Unity process is unnecessary.
+The installed 8884 service is a transient user service named
+`magiccarpet-browser-modern.service`. It loads the installed native library
+directly. The November 19 lighting comparison used native SHA-256
+`327b91e693efe5ef6fc72601e0b2af76ea6be10c4908dff727569b6e6ae3dddc`
+for both builds.
 
 Native MCD1 character/building/tree/mana rows and MCW1 geometry must have the
 same publication identity. Source controls determine births, actions, shots,
@@ -295,3 +322,32 @@ building presenter. Water/cloud shaders are inexpensive browser presentation,
 not parity with Unity's spectral-water/steam system. Shared audio/menu omissions
 and unfinished Original gameplay remain open. No complete Level 1 mission or
 finished Voxel browser consumer is claimed.
+
+### Rendering ideas to compare across clients
+
+[Dimillian's notes](https://x.com/Dimillian/status/2123333836268294258) are a
+reference for the Three.js, Unity Modern and Voxel visual comparisons.
+
+| Technique | What to compare |
+| --- | --- |
+| PBR, normal maps and bump maps | Start with material response under the same lighting. Three.js already uses PBR and terrain normal maps. Try bump detail where the texture calls for it. |
+| MSAA, FXAA, TAA and temporal upsampling | Three.js uses 2× MSAA. Compare foliage shimmer and motion stability at matched resolution before trying temporal AA or upsampling. FXAA is a cheaper edge pass to compare on phones. |
+| HDR, exposure and bloom | Compare warm lights and readable shadow detail without bleaching the night sky. Three.js adds bloom in HDR before tone mapping and composites the HUD afterward. |
+| Camera and lens effects | Test stylistic grades, grain and similar effects in separate captures. Keep landmarks and controls readable in motion. |
+| Planar reflections | Compare coastal flybys. Three.js renders a low-resolution view of cliffs, buildings and sky when water is in view. Use `reflections=0` to check the same scene with that pass disabled. |
+| Volumetric lighting | Try local fog and shafts where geometry and illumination make their depth apparent. Compare their cost in a moving scene. |
+| Baked global illumination | Try baked light on static walls and terrain. Check how it holds up when buildings or terrain change. |
+| Parallax occlusion mapping | Reserve for prominent materials seen close up. Compare against simple modeling of silhouettes, sills and roof edges. |
+
+The browser village now uses recessed glazing, projecting sills and roof trim.
+Nearby windows, observed fire and authored torch emitters share eight local
+lights. Fireballs and mana feed the same bloom pass as windows. The reflection
+scene shares static mesh geometry and uses separate materials and lights so its
+camera and clipping cannot affect the main pass.
+
+The November 19 comparison used `MODERN_FLY=1` with the browser profile command
+above. Both builds ran at 60.0 FPS with 16.8 ms p95 and p99 during a six-second
+forward flight at 1280×960 on the 3090's 60 Hz desktop. Portrait controls also
+passed in emulation. The opening run contained windows and a cast fireball.
+Authored torches and mana spheres still need a natural gameplay sighting in
+this client.

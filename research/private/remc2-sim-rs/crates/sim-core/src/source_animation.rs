@@ -2,7 +2,7 @@
 //!
 //! This owns the state observed by source gameplay animation-record reads.
 //! Decoded files describe available assets; only source preload or admitted
-//! render demand makes them resident. It does not emulate animated pixels.
+//! render demand makes them resident. Selector clocks own mutable indexed pixels.
 
 use sha2::{Digest, Sha256};
 
@@ -412,6 +412,267 @@ impl SourceAnimationResidency {
     }
 }
 
+/// An action requests source71AB0 reset (`false`) or finish (`true`).
+pub(crate) type SourceAnimationAction<'a> = dyn FnMut(u16, bool) -> Result<(), String> + 'a;
+
+/// Mutable source texture images, independent of the historical residency hash.
+/// One entry exists per selector, never per entity. A frame query is read-only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SourceAnimationClocks {
+    clocks: Vec<Option<SourceAnimationClock>>,
+    used: Vec<bool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceAnimationClock {
+    width: u16,
+    height: u16,
+    count: u16,
+    frame: u16,
+    start: u32,
+    cursor: u32,
+    end: usize,
+    pixels: std::sync::Arc<[u8]>,
+}
+
+impl Default for SourceAnimationClocks {
+    fn default() -> Self {
+        Self {
+            clocks: vec![None; SOURCE_TMAP_COUNT],
+            used: vec![false; SOURCE_TMAP_COUNT],
+        }
+    }
+}
+
+impl SourceAnimationClock {
+    fn from_payload(selector: u16, decoded: &[u8]) -> Result<Option<Self>, String> {
+        if decoded == b"0" {
+            return Ok(None);
+        }
+        let word = |at| sim_ss2_tmap::read_u16(decoded, at, "TMAP header");
+        if word(0)? & 1 == 0 {
+            return Ok(None);
+        }
+        let width = word(2)?;
+        let height = word(4)?;
+        let base_end = 6 + usize::from(width) * usize::from(height);
+        let pixels = decoded
+            .get(6..base_end)
+            .ok_or_else(|| format!("TMAP{selector} base truncated"))?;
+        let count = word(base_end)?;
+        if count == 0 || count == u16::MAX {
+            return Err(format!("TMAP{selector} has invalid frame count {count}"));
+        }
+        let size = usize::try_from(sim_ss2_tmap::read_u32(
+            decoded,
+            base_end + 2,
+            "TMAP stream size",
+        )?)
+        .map_err(|_| format!("TMAP{selector} stream size exceeds usize"))?;
+        let end = base_end
+            .checked_add(6)
+            .and_then(|x| x.checked_add(size))
+            .ok_or_else(|| format!("TMAP{selector} stream extent overflow"))?;
+        if end != decoded.len() {
+            return Err(format!("TMAP{selector} stream extent mismatch"));
+        }
+        let start =
+            u32::try_from(base_end).map_err(|_| format!("TMAP{selector} cursor overflow"))?;
+        Ok(Some(Self {
+            width,
+            height,
+            count,
+            frame: 1,
+            start,
+            cursor: start,
+            end,
+            pixels: pixels.into(),
+        }))
+    }
+
+    fn advance(&mut self, selector: u16, decoded: &[u8]) -> Result<(), String> {
+        if self.frame > self.count {
+            self.frame = 1;
+            self.cursor = self.start;
+        }
+        self.cursor = sim_ss2_tmap::apply_ss2_delta(
+            decoded,
+            std::sync::Arc::make_mut(&mut self.pixels),
+            "source",
+            selector,
+            self.width,
+            self.height,
+            self.cursor,
+            self.end,
+        )?;
+        self.frame += 1;
+        Ok(())
+    }
+}
+
+impl SourceAnimationClocks {
+    /// Mark the actual selector once after a source draw. Static textures need no clock.
+    pub(crate) fn latch_draw_demand(
+        &mut self,
+        selector: u16,
+        decoded: &[u8],
+        residency: &SourceAnimationResidency,
+    ) -> Result<bool, String> {
+        let index = usize::from(selector);
+        let catalog = residency
+            .catalog
+            .as_ref()
+            .ok_or("source animation catalog is unbound")?;
+        let row = catalog
+            .record(selector)
+            .ok_or("source draw selector exceeds504")?;
+        if !residency.resident[index] {
+            return Err(format!("source draw TMAP{selector} is not resident"));
+        }
+        let grouped = matches!(row.group, 311 | 480 | 488 | 496);
+        if row.encoded_frame_count.is_none() && !grouped {
+            return Ok(false);
+        }
+        if self.used[index] {
+            return Ok(false);
+        }
+        if self.clocks[index].is_none() && row.encoded_frame_count.is_some() {
+            self.clocks[index] = Some(
+                SourceAnimationClock::from_payload(selector, decoded)?
+                    .ok_or_else(|| format!("source TMAP{selector} animation header changed"))?,
+            );
+        }
+        self.used[index] = true;
+        Ok(true)
+    }
+
+    /// Service preceding draws once, in selector order. Transactional on malformed streams.
+    pub(crate) fn advance_unpaused<'a>(
+        &mut self,
+        residency: &SourceAnimationResidency,
+        payload: impl Fn(u16) -> Option<&'a [u8]>,
+    ) -> Result<(), String> {
+        if !residency.is_bound() {
+            return Ok(());
+        }
+        let mut next = self.clone();
+        next.discard_unresident(residency);
+        let catalog = residency
+            .catalog
+            .as_ref()
+            .ok_or("source animation catalog is unbound")?;
+        let mut selector = 0;
+        while selector < SOURCE_TMAP_COUNT {
+            if !next.used[selector] {
+                selector += 1;
+                continue;
+            }
+            let group = catalog.records[selector].group;
+            // InitTmaps sets the group-service flag only on these source groups.
+            let grouped = matches!(group, 311 | 480 | 488 | 496);
+            let range = if grouped {
+                let start = usize::from(group);
+                let end = catalog
+                    .records
+                    .iter()
+                    .skip(start)
+                    .take_while(|row| row.group == group)
+                    .count()
+                    + start;
+                start..end
+            } else {
+                selector..selector + 1
+            };
+            for index in range.clone() {
+                next.used[index] = false;
+                if !residency.resident[index] {
+                    continue;
+                }
+                let id = index as u16;
+                let bytes =
+                    payload(id).ok_or_else(|| format!("source TMAP{id} payload unavailable"))?;
+                if next.clocks[index].is_none() {
+                    next.clocks[index] = SourceAnimationClock::from_payload(id, bytes)?;
+                }
+                if let Some(clock) = &mut next.clocks[index] {
+                    clock.advance(id, bytes)?;
+                }
+            }
+            selector = range.end;
+        }
+        *self = next;
+        Ok(())
+    }
+
+    /// Retire mutable images when their source allocation has been released.
+    pub(crate) fn discard_unresident(&mut self, residency: &SourceAnimationResidency) {
+        for index in 0..SOURCE_TMAP_COUNT {
+            if !residency.resident[index] {
+                self.clocks[index] = None;
+                self.used[index] = false;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn discard_for_test(&mut self, selector: u16) {
+        if let Some(clock) = self.clocks.get_mut(usize::from(selector)) {
+            *clock = None;
+        }
+    }
+
+    pub(crate) fn pixels(&self, selector: u16) -> Option<&[u8]> {
+        self.clocks
+            .get(usize::from(selector))?
+            .as_ref()
+            .map(|clock| clock.pixels.as_ref())
+    }
+
+    /// Source71AB0 visits the resident group; finish is true for 221F0, false for 2B860.
+    pub(crate) fn reset_or_finish<'a>(
+        &mut self,
+        selector: u16,
+        finish: bool,
+        residency: &SourceAnimationResidency,
+        payload: impl Fn(u16) -> Option<&'a [u8]>,
+    ) -> Result<(), String> {
+        let catalog = residency
+            .catalog
+            .as_ref()
+            .ok_or("source animation catalog is unbound")?;
+        let group = catalog
+            .record(selector)
+            .ok_or("source action selector exceeds504")?
+            .group;
+        let mut next = self.clone();
+        for row in catalog.records.iter().filter(|row| row.group == group) {
+            let index = usize::from(row.selector);
+            if !residency.resident[index] || row.encoded_frame_count.is_none() {
+                continue;
+            }
+            let bytes = payload(row.selector)
+                .ok_or_else(|| format!("source TMAP{} payload unavailable", row.selector))?;
+            if next.clocks[index].is_none() {
+                next.clocks[index] = SourceAnimationClock::from_payload(row.selector, bytes)?;
+            }
+            let clock = next.clocks[index]
+                .as_mut()
+                .ok_or("source animation header changed")?;
+            if finish {
+                while clock.frame <= clock.count {
+                    clock.advance(row.selector, bytes)?;
+                }
+            } else {
+                std::sync::Arc::make_mut(&mut clock.pixels).fill(0);
+                clock.frame = 1;
+                clock.cursor = clock.start;
+            }
+        }
+        *self = next;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +699,53 @@ mod tests {
     }
 
     #[test]
+    fn shared_draw_latch_advances_once_and_action_reset_is_visible() {
+        // One complete F1FA/type-7 transition, width2 x height1.
+        let mut payload = vec![1, 0, 2, 0, 1, 0, 1, 2, 1, 0, 30, 0, 0, 0];
+        payload.extend_from_slice(&30_u32.to_le_bytes());
+        payload.extend_from_slice(&0xf1fa_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&[0; 8]);
+        payload.extend_from_slice(&14_u32.to_le_bytes());
+        payload.extend_from_slice(&7_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&[0, 1, 3, 4]);
+        let mut residency = empty_pool();
+        residency.demand(0).unwrap();
+        let mut clocks = SourceAnimationClocks::default();
+        clocks.advance_unpaused(&SourceAnimationResidency::default(), |_| None).unwrap();
+        residency.demand(100).unwrap();
+        assert!(!clocks.latch_draw_demand(100, &[0, 0, 1, 0, 1, 0, 8], &residency).unwrap());
+        assert!(clocks.latch_draw_demand(0, &payload, &residency).unwrap());
+        assert!(!clocks.latch_draw_demand(0, &payload, &residency).unwrap());
+        assert_eq!(clocks.pixels(0), Some(&[1, 2][..]));
+        let before = clocks.clone();
+        assert_eq!(clocks.pixels(0), clocks.pixels(0));
+        assert_eq!(clocks, before);
+        clocks
+            .advance_unpaused(&residency, |_| Some(&payload))
+            .unwrap();
+        assert_eq!(clocks.pixels(0), Some(&[3, 4][..]));
+        let serviced = clocks.clone();
+        clocks
+            .advance_unpaused(&residency, |_| Some(&payload))
+            .unwrap();
+        assert_eq!(clocks, serviced, "no draw means no advance");
+        clocks
+            .reset_or_finish(0, false, &residency, |_| Some(&payload))
+            .unwrap();
+        assert_eq!(clocks.pixels(0), Some(&[0, 0][..]));
+        clocks
+            .reset_or_finish(0, true, &residency, |_| Some(&payload))
+            .unwrap();
+        assert_eq!(clocks.pixels(0), Some(&[3, 4][..]));
+        residency.unload_group(0).unwrap();
+        clocks.discard_unresident(&residency);
+        assert_eq!(clocks.pixels(0), None);
+    }
+
+    #[test]
     fn resident_header_read_is_lazy_and_distinct_from_literal_boss_lookahead() {
         let mut state = empty_pool();
         let absent = state.clone();
@@ -448,14 +756,28 @@ mod tests {
         let resident = state.clone();
         assert_eq!(state.resident_frame_count_read(0).unwrap(), Some(5));
         assert_eq!(state, resident, "header reads preserve playback allocation");
-        assert!(state.boss_timer_read(0).unwrap_err().contains("record503+16"));
+        assert!(
+            state
+                .boss_timer_read(0)
+                .unwrap_err()
+                .contains("record503+16")
+        );
         assert!(state.resident_frame_count_read(504).is_err());
-        assert!(SourceAnimationResidency::default().resident_frame_count_read(0).is_err());
+        assert!(
+            SourceAnimationResidency::default()
+                .resident_frame_count_read(0)
+                .is_err()
+        );
         state.unload_group(0).unwrap();
         assert_eq!(state.resident_frame_count_read(0).unwrap(), None);
         state.demand(0).unwrap();
         state.animation_slots[503] = None;
-        assert!(state.resident_frame_count_read(0).unwrap_err().contains("no animation record"));
+        assert!(
+            state
+                .resident_frame_count_read(0)
+                .unwrap_err()
+                .contains("no animation record")
+        );
     }
 
     #[test]

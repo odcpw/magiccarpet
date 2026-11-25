@@ -200,6 +200,14 @@ namespace MagicCarpet.Native
             public LoadingPresentationBinding value;
         }
 
+        [Serializable]
+        private sealed class ActiveEntryPresentationObservation
+        {
+            public Identity identity;
+            public LoadingPresentationBinding value;
+            public SourceAudioCapabilities source_audio_capabilities;
+        }
+
         [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_game_runtime_loading_presentation_json_v1(
             ulong handle, ulong generation, IntPtr buffer, uint capacity, out uint length);
@@ -227,6 +235,11 @@ namespace MagicCarpet.Native
 
         internal static LoadingPresentationBinding ReadActiveEntryPresentation(Identity playing)
         {
+            return ReadActiveEntryObservation(playing).value;
+        }
+
+        private static ActiveEntryPresentationObservation ReadActiveEntryObservation(Identity playing)
+        {
             ValidateIdentityPresentation(playing);
             if (playing.mode is not (PlayingMode or PausedMode) || playing.active_runtime_flow == null ||
                 !HasSessionIdentity(playing) || HasDefinitionIdentityData(playing.pending_definition))
@@ -236,7 +249,7 @@ namespace MagicCarpet.Native
             }
             var handle = ParseCounter(playing.runtime_id, "runtime_id");
             var generation = ParseCounter(playing.generation, "generation");
-            var observation = ReadJson<LoadingPresentationObservation>(
+            var observation = ReadJson<ActiveEntryPresentationObservation>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_active_entry_presentation_json_v1(
                         handle, generation, buffer, capacity, out length),
@@ -247,6 +260,20 @@ namespace MagicCarpet.Native
                     "active-entry asset observation changed its runtime identity");
             }
             ValidateActiveEntryPresentation(playing, observation.value);
+            return observation;
+        }
+
+        internal LoadingPresentationBinding BindActiveEntryPresentation(Identity playing)
+        {
+            var observation = ReadActiveEntryObservation(playing);
+            var after = ReadIdentity(RequireHandle());
+            var qualified = observation.source_audio_capabilities;
+            var current = after.source_audio_capabilities;
+            if (!SameIdentity(playing, after) || qualified == null || current == null ||
+                qualified.sound_available != current.sound_available ||
+                qualified.music_available != current.music_available)
+                throw new InvalidDataException("active-entry audio capabilities do not bind the current runtime identity");
+            Current = after;
             return observation.value;
         }
 
@@ -381,6 +408,19 @@ namespace MagicCarpet.Native
         internal sealed class DisplaySettings
         {
             public bool minimap, top_bar, panels_opaque, flat_shading;
+            public bool reflections, shadows, sky, dynamic_lighting;
+            public byte viewport_size;
+        }
+
+        [Serializable]
+        internal sealed class SourceAudioCapabilities
+        {
+            public bool sound_available, music_available;
+        }
+
+        internal enum SourceViewportAction : byte
+        {
+            MenuDecrease = 0, MenuIncrease = 1, KeyboardEnlarge = 2, KeyboardShrink = 3
         }
 
         [Serializable]
@@ -391,6 +431,8 @@ namespace MagicCarpet.Native
             public string generation;
             public string mode;
             public byte source_speed_index;
+            public bool source_player_names_visible;
+            [OptionalField] public SourceAudioCapabilities source_audio_capabilities;
             [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
             public DisplaySettings display_settings;
@@ -456,6 +498,8 @@ namespace MagicCarpet.Native
 
         private const int SourceActionBlocked = 16;
         internal enum SourceBrightnessAction { Cycle, Increment, Decrement }
+        internal enum SourceAudioAction { Sound, Music, Speech }
+        internal enum SourceGraphicsAction { Reflections, Shadows, Sky, DynamicLighting }
 
         [Serializable]
         private sealed class SourceBrightnessGuard
@@ -467,6 +511,45 @@ namespace MagicCarpet.Native
         private sealed class SourceBrightnessCommand
         {
             public string operation = "source_brightness";
+            public SourceBrightnessGuard session_guard;
+            public string action;
+        }
+
+        [Serializable]
+        private sealed class SourceAudioCommand
+        {
+            public string operation = "source_audio";
+            public SourceBrightnessGuard session_guard;
+            public string action;
+        }
+
+        [Serializable]
+        private sealed class SourceSpeechCommand
+        {
+            public string operation = "source_audio";
+            public SourceBrightnessGuard session_guard;
+            public string action = "speech";
+            public bool speech_available;
+        }
+
+        [Serializable]
+        private sealed class SourceFlightAssistanceCommand
+        {
+            public string operation = "source_flight_assistance";
+            public SourceBrightnessGuard session_guard;
+        }
+
+        [Serializable]
+        private sealed class SourceHelpModeCommand
+        {
+            public string operation = "source_help_mode";
+            public SourceBrightnessGuard session_guard;
+        }
+
+        [Serializable]
+        private sealed class SourceGraphicsCommand
+        {
+            public string operation = "source_graphics";
             public SourceBrightnessGuard session_guard;
             public string action;
         }
@@ -592,6 +675,9 @@ namespace MagicCarpet.Native
 
         internal Identity Current { get; private set; }
         private readonly CampaignRenderTransport renderTransport = new();
+        private Identity lastStepObservationIdentity;
+        private bool lastStepExitActive;
+        private string lastStepExitStateHash;
         private static readonly bool JsonRenderObservations =
             Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-render-json") >= 0;
 
@@ -829,7 +915,20 @@ namespace MagicCarpet.Native
                 maximumLength,
                 "read accepted runtime boundary receipt");
             var receipt = SecretTransitionTransport.Decode(bytes, maximumLength);
-            if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
+            if (receipt.kind == SecretTransitionTransport.MissionRetryBoundaryKind)
+            {
+                if (before.session == null || after.session == null || after.mode != PlayingMode ||
+                    before.runtime_id != after.runtime_id || before.session.session_id != after.session.session_id ||
+                    before.active_runtime_flow?.bound_level_id != after.active_runtime_flow?.bound_level_id ||
+                    before.session.definition_hash != after.session.definition_hash ||
+                    before.session.package_graph_hash != after.session.package_graph_hash ||
+                    ParseCounter(after.generation, "generation") != checked(generation + 1) ||
+                    ParseCounter(after.session.generation, "session generation") !=
+                        checked(ParseCounter(before.session.generation, "session generation") + 1) ||
+                    ParseCounter(after.session.tick, "tick") != 0)
+                    throw new InvalidDataException("mission retry failed to rebuild the same bound mission");
+            }
+            else if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
             {
                 ValidateCompletionTransitionReceipt(
                     receipt.ordinary_completion, before, after, generation);
@@ -885,16 +984,31 @@ namespace MagicCarpet.Native
 
         internal Identity ShowNewGameMap()
         {
-            if (Current?.mode != LoadingMode)
+            var before = Current;
+            if (before?.mode != LoadingMode || !HasDefinitionIdentity(before) ||
+                HasSessionIdentityData(before.session) || HasRuntimeFlowData(before.active_runtime_flow) ||
+                before.pending_definition.runtime_flow.bound_level_id !=
+                    before.pending_definition.runtime_flow.entry_level_id)
                 throw new InvalidOperationException("new-game map requires the resolver entry loading state");
+            var generation = ParseCounter(before.generation, "generation");
             Check(NativeSim.mc_game_runtime_show_new_game_map_v1(RequireHandle(),
-                ParseCounter(Current.generation, "generation")), "show source new-game map");
+                generation), "show source new-game map");
             var map = IdentitySnapshot();
-            if (map.mode != CampaignMode || map.campaign_menu.phase != "mission_select" ||
+            // NewGameDialog reopens the retained frontier. Only ResetCampaign
+            // clears completed missions; a new map selects the first unfinished.
+            var frontier = map.mode == CampaignMode
+                ? before.pending_definition.runtime_flow.entries.FirstOrDefault(entry =>
+                    !map.campaign_menu.completed_levels.Contains(entry.level_id))?.level_id : null;
+            if (map.mode != CampaignMode || map.runtime_id != before.runtime_id ||
+                ParseCounter(map.generation, "generation") != checked(generation + 1) ||
+                HasSessionIdentityData(map.session) || HasDefinitionIdentityData(map.pending_definition) ||
+                !SameRuntimeFlow(before.pending_definition.runtime_flow, map.active_runtime_flow) ||
+                !SameSecretCampaign(before.secret_campaign, map.secret_campaign) ||
+                map.campaign_menu.phase != "mission_select" ||
                 !string.IsNullOrEmpty(map.campaign_menu.completed_level_id) ||
-                map.campaign_menu.completed_levels.Length != 0 ||
-                map.campaign_menu.selected_level_id != map.active_runtime_flow.entry_level_id)
-                throw new InvalidOperationException("new-game map must precede all earned completions");
+                (string.IsNullOrEmpty(map.campaign_menu.selected_level_id) ? null : map.campaign_menu.selected_level_id) != frontier ||
+                (string.IsNullOrEmpty(map.campaign_menu.briefing_level_id) ? null : map.campaign_menu.briefing_level_id) != frontier)
+                throw new InvalidOperationException("new-game map did not preserve its resolver-bound frontier");
             return map;
         }
 
@@ -1030,6 +1144,19 @@ namespace MagicCarpet.Native
             return identity;
         }
 
+        internal byte PlayerMenuState(EngineSessionTransport.Identity observed)
+        {
+            RequireSessionMode(allowPaused: true, "current source player menu state");
+            if (observed == null || observed.session_id != Current.session.session_id ||
+                observed.generation != Current.session.generation || observed.tick != Current.session.tick)
+                throw new InvalidDataException("source menu state requires the current accepted observation");
+            Check(NativeSim.mc_game_runtime_player_menu_state_v1(RequireHandle(),
+                ParseCounter(Current.generation, "generation"),
+                ParseCounter(observed.generation, "session_generation"),
+                ParseCounter(observed.tick, "tick"), out var menuState), "read current source player menu state");
+            return menuState;
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignSnapshot()
         {
             RequireSessionMode(allowPaused: true, "campaign snapshot");
@@ -1080,6 +1207,8 @@ namespace MagicCarpet.Native
                 runtime_contract = before.runtime_contract, runtime_id = before.runtime_id,
                 generation = before.generation, mode = before.mode,
                 source_speed_index = before.source_speed_index,
+                source_player_names_visible = before.source_player_names_visible,
+                source_audio_capabilities = before.source_audio_capabilities,
                 frontend_media = before.frontend_media, player_preferences = before.player_preferences,
                 display_settings = before.display_settings,
                 presentation = before.presentation, campaign_menu = before.campaign_menu,
@@ -1134,7 +1263,9 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap == before.display_settings.minimap ||
                 after.display_settings.top_bar == before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading != before.display_settings.flat_shading)
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("icons and map toggle changed the wrong source state");
             return after;
         }
@@ -1155,7 +1286,9 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque == before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading != before.display_settings.flat_shading)
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("panel transparency toggle changed the wrong source state");
             return after;
         }
@@ -1176,9 +1309,71 @@ namespace MagicCarpet.Native
                 after.display_settings.minimap != before.display_settings.minimap ||
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
-                after.display_settings.flat_shading == before.display_settings.flat_shading)
+                after.display_settings.flat_shading == before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("flat shading toggle changed the wrong source state");
             return after;
+        }
+
+        internal Identity TogglePlayerNames()
+        {
+            RequireSessionMode(allowPaused: true, "toggle player names");
+            var before = Current;
+            Check(NativeSim.mc_game_runtime_toggle_player_names_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick")), "toggle player names");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible == before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size)
+                throw new InvalidDataException("player names toggle changed the wrong runtime state");
+            return after;
+        }
+
+        internal bool SourceViewport(SourceViewportAction action, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source viewport");
+            var before = Current;
+            var size = before.display_settings.viewport_size;
+            var expected = action switch {
+                SourceViewportAction.MenuDecrease => Math.Max(16, size - 1),
+                SourceViewportAction.MenuIncrease => Math.Min(40, size + 1),
+                SourceViewportAction.KeyboardEnlarge => Math.Min(40, size + 1),
+                SourceViewportAction.KeyboardShrink => size > 17 ? size - 1 : size,
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var status = NativeSim.mc_game_runtime_source_viewport_v1(
+                RequireHandle(), ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick"), (byte)action);
+            if (status == SourceActionBlocked) {
+                identity = null;
+                return false;
+            }
+            Check(status, "change source viewport");
+            var after = IdentitySnapshot();
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != expected ||
+                after.source_player_names_visible != before.source_player_names_visible)
+                throw new InvalidDataException("source viewport changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceSpeed(bool secondary, out Identity identity)
@@ -1203,13 +1398,15 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
-                after.source_speed_index != expectedSpeed)
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.source_speed_index != expectedSpeed ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("source speed changed the wrong runtime state");
             identity = after;
             return true;
         }
 
-        private static ulong SourceSpeedStepTick(Identity before, Identity after, bool recoverPlayer)
+        private static ulong ExpectedSourceSpeedStepTick(Identity before, Identity after, bool recoverPlayer)
         {
             // A successful source revival resets speed before entity passes.
             if (after.source_speed_index != before.source_speed_index &&
@@ -1221,10 +1418,179 @@ namespace MagicCarpet.Native
                 2 => 8UL,
                 _ => throw new InvalidDataException("source speed is outside its range")
             };
-            var expectedTick = checked(ParseCounter(before.session.tick, "tick") + passes);
-            if (ParseCounter(after.session.tick, "tick") != expectedTick)
+            return checked(ParseCounter(before.session.tick, "tick") + passes);
+        }
+
+        internal static void ValidateSourceSpeedStepTick(ulong beforeTick, ulong afterTick,
+            ulong expectedTick, bool beforeExitActive, bool afterExitActive)
+        {
+            // Action 12/26 can interrupt the ordinary entity passes and continues
+            // at the bound gameplay tick until its separate completion boundary.
+            if (afterTick != expectedTick &&
+                (!(beforeExitActive || afterExitActive) || afterTick < beforeTick || afterTick > expectedTick))
                 throw new InvalidDataException("campaign step did not advance its source speed passes");
-            return expectedTick;
+        }
+
+        internal bool SourceGraphics(SourceGraphicsAction action, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source graphics");
+            var before = Current;
+            var actionName = action switch {
+                SourceGraphicsAction.Reflections => "reflections",
+                SourceGraphicsAction.Shadows => "shadows",
+                SourceGraphicsAction.Sky => "sky",
+                SourceGraphicsAction.DynamicLighting => "dynamic_lighting",
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var request = new SourceGraphicsCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                },
+                action = actionName
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source graphics");
+            var after = IdentitySnapshot();
+            var oldDisplay = before.display_settings;
+            var newDisplay = after.display_settings;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                newDisplay.minimap != oldDisplay.minimap || newDisplay.top_bar != oldDisplay.top_bar ||
+                newDisplay.panels_opaque != oldDisplay.panels_opaque || newDisplay.flat_shading != oldDisplay.flat_shading ||
+                newDisplay.viewport_size != oldDisplay.viewport_size ||
+                newDisplay.reflections != (action == SourceGraphicsAction.Reflections ? !oldDisplay.reflections : oldDisplay.reflections) ||
+                newDisplay.shadows != (action == SourceGraphicsAction.Shadows ? !oldDisplay.shadows : oldDisplay.shadows) ||
+                newDisplay.sky != (action == SourceGraphicsAction.Sky ? !oldDisplay.sky : oldDisplay.sky) ||
+                newDisplay.dynamic_lighting != (action == SourceGraphicsAction.DynamicLighting ? !oldDisplay.dynamic_lighting : oldDisplay.dynamic_lighting) ||
+                JsonUtility.ToJson(after.player_preferences) != JsonUtility.ToJson(before.player_preferences) ||
+                (before.source_audio_capabilities != null &&
+                 (after.source_audio_capabilities == null ||
+                  after.source_audio_capabilities.sound_available != before.source_audio_capabilities.sound_available ||
+                  after.source_audio_capabilities.music_available != before.source_audio_capabilities.music_available)))
+                throw new InvalidDataException("source graphics changed the wrong runtime state");
+            identity = after;
+            return true;
+        }
+
+        internal bool SourceHelpMode(out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source help mode");
+            var before = Current;
+            var request = new SourceHelpModeCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                }
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source help mode");
+            var after = IdentitySnapshot();
+            var expected = JsonUtility.FromJson<PlayerPreferences>(
+                JsonUtility.ToJson(before.player_preferences.preferences));
+            expected.show_help = !expected.show_help;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                JsonUtility.ToJson(after.player_preferences.preferences) != JsonUtility.ToJson(expected))
+                throw new InvalidDataException("source help mode changed the wrong runtime state");
+            identity = after;
+            return true;
+        }
+
+        internal bool SourceFlightAssistance(out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source flight assistance");
+            var before = Current;
+            var request = new SourceFlightAssistanceCommand {
+                session_guard = new SourceBrightnessGuard {
+                    session_id = before.session.session_id, generation = before.session.generation,
+                    expected_tick = before.session.tick
+                }
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source flight assistance");
+            var after = IdentitySnapshot();
+            var expected = JsonUtility.FromJson<PlayerPreferences>(
+                JsonUtility.ToJson(before.player_preferences.preferences));
+            expected.flight_assistance = !expected.flight_assistance;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                JsonUtility.ToJson(after.player_preferences.preferences) != JsonUtility.ToJson(expected))
+                throw new InvalidDataException("source flight assistance changed the wrong runtime state");
+            identity = after;
+            return true;
+        }
+
+        internal bool SourceAudio(SourceAudioAction action, bool speechAvailable, out Identity identity)
+        {
+            RequireSessionMode(allowPaused: true, "change source audio");
+            var before = Current;
+            var guard = new SourceBrightnessGuard {
+                session_id = before.session.session_id, generation = before.session.generation,
+                expected_tick = before.session.tick
+            };
+            object request = action switch {
+                SourceAudioAction.Sound => new SourceAudioCommand { action = "sound", session_guard = guard },
+                SourceAudioAction.Music => new SourceAudioCommand { action = "music", session_guard = guard },
+                SourceAudioAction.Speech => new SourceSpeechCommand { session_guard = guard, speech_available = speechAvailable },
+                _ => throw new ArgumentOutOfRangeException(nameof(action))
+            };
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(request));
+            var status = mc_game_runtime_preferences_command_json_v1(RequireHandle(),
+                ParseCounter(before.generation, "generation"), bytes, checked((uint)bytes.Length));
+            if (status == SourceActionBlocked) { identity = null; return false; }
+            Check(status, "change source audio");
+            var after = IdentitySnapshot();
+            var oldPrefs = before.player_preferences.preferences;
+            var newPrefs = after.player_preferences.preferences;
+            if (after.generation != before.generation || after.mode != before.mode ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                after.session.generation != before.session.generation || after.session.tick != before.session.tick ||
+                after.source_speed_index != before.source_speed_index ||
+                after.source_player_names_visible != before.source_player_names_visible ||
+                after.display_settings.minimap != before.display_settings.minimap ||
+                after.display_settings.top_bar != before.display_settings.top_bar ||
+                after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
+                after.display_settings.flat_shading != before.display_settings.flat_shading ||
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                (before.source_audio_capabilities != null &&
+                 (after.source_audio_capabilities == null ||
+                  after.source_audio_capabilities.sound_available != before.source_audio_capabilities.sound_available ||
+                  after.source_audio_capabilities.music_available != before.source_audio_capabilities.music_available)) ||
+                newPrefs.sound_enabled != (action == SourceAudioAction.Sound ? !oldPrefs.sound_enabled : oldPrefs.sound_enabled) ||
+                newPrefs.music_enabled != (action == SourceAudioAction.Music ? !oldPrefs.music_enabled : oldPrefs.music_enabled) ||
+                newPrefs.speech_enabled != (action == SourceAudioAction.Speech ? !oldPrefs.speech_enabled : oldPrefs.speech_enabled))
+                throw new InvalidDataException("source audio changed the wrong runtime state");
+            identity = after;
+            return true;
         }
 
         internal bool SourceBrightness(SourceBrightnessAction action, out Identity identity)
@@ -1263,7 +1629,9 @@ namespace MagicCarpet.Native
                 after.display_settings.top_bar != before.display_settings.top_bar ||
                 after.display_settings.panels_opaque != before.display_settings.panels_opaque ||
                 after.display_settings.flat_shading != before.display_settings.flat_shading ||
-                after.player_preferences?.preferences?.brightness == null)
+                after.display_settings.viewport_size != before.display_settings.viewport_size ||
+                after.player_preferences?.preferences?.brightness == null ||
+                after.source_player_names_visible != before.source_player_names_visible)
                 throw new InvalidDataException("source brightness changed the wrong runtime state");
             identity = after;
             return true;
@@ -1285,11 +1653,11 @@ namespace MagicCarpet.Native
             bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null, Vector2? steeringObservation = null)
         {
             CampaignAdvance(roll, pitch, flags, lookYaw, lookPitch, selectSpell,
                 recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment,
-                showObjective, removeCastleStage, mark, cycle, abandonAction);
+                showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
             return CampaignSnapshot();
         }
 
@@ -1301,14 +1669,22 @@ namespace MagicCarpet.Native
             bool showObjective = false, bool removeCastleStage = false,
             EngineSessionTransport.SpellMark mark = null,
             EngineSessionTransport.MarkedSpellCycle cycle = null,
-            string abandonAction = null)
+            string abandonAction = null, Vector2? steeringObservation = null)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
-            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
-            var beforeSessionGeneration =
-                ParseCounter(before.session.generation, "session_generation");
             var beforeTick = ParseCounter(before.session.tick, "tick");
+            if (!ReferenceEquals(lastStepObservationIdentity, before) &&
+                !SameIdentity(lastStepObservationIdentity, before))
+            {
+                lastStepExitActive = RenderObservation().value.exit_sequence_active;
+                lastStepExitStateHash = null;
+                lastStepObservationIdentity = before;
+            }
+            var beforeExitActive = lastStepExitActive;
+            var beforeExitStateHash = beforeExitActive
+                ? lastStepExitStateHash ?? CampaignSnapshot().value.state_hash
+                : null;
             EngineSessionTransport.StepHandle(
                 RequireHandle(),
                 before.session,
@@ -1318,44 +1694,70 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction);
-            if (!JsonRenderObservations)
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction, steeringObservation);
+            EngineSessionTransport.CampaignRenderObservation observation;
+            ulong expectedTick;
+            if (JsonRenderObservations)
             {
-                // Source local-player revival may clear a nonzero speed during
-                // the step, without changing the runtime generation.
+                var updated = IdentitySnapshot();
+                ValidateCampaignStepIdentity(before, updated);
+                expectedTick = ExpectedSourceSpeedStepTick(before, updated, recoverPlayer);
+                observation = JsonRenderObservation();
+            }
+            else
+            {
+                // Revival may clear speed, and enabled flight assistance can
+                // advance its recenter sequence without a runtime generation change.
                 Identity updated = null;
-                var steppedTick = checked(beforeTick + 1);
-                if (before.source_speed_index != 0)
+                if (beforeExitActive || before.source_speed_index != 0 ||
+                    before.player_preferences.preferences.flight_assistance)
                 {
                     updated = IdentitySnapshot();
-                    steppedTick = SourceSpeedStepTick(before, updated, recoverPlayer);
+                    ValidateCampaignStepIdentity(before, updated);
                 }
-                var publication = ReadRenderPublication(before, steppedTick);
-                if (updated != null)
+                expectedTick = ExpectedSourceSpeedStepTick(before, updated ?? before, recoverPlayer);
+                var steppedTick = updated == null ? expectedTick : ParseCounter(updated.session.tick, "tick");
+                try
                 {
-                    var observed = publication.Observation.identity;
-                    if (updated.mode != PlayingMode || updated.generation != before.generation ||
-                        !PreservesSessionBinding(observed, updated.session) ||
-                        updated.session.generation != observed.generation || updated.session.tick != observed.tick)
-                        throw new InvalidDataException("source speed identity does not match the stepped session");
+                    observation = ReadRenderPublication(before, steppedTick).Observation;
                 }
-                else
-                    PublishCampaignIdentity(before, publication.Observation.identity);
-                return publication.Observation;
+                catch (EngineSessionTransport.CommandException exception) when (
+                    updated == null && exception.Status == NativeSim.InvalidArgument &&
+                    exception.Message.EndsWith(": stale render tick", StringComparison.Ordinal))
+                {
+                    updated = IdentitySnapshot();
+                    ValidateCampaignStepIdentity(before, updated);
+                    expectedTick = ExpectedSourceSpeedStepTick(before, updated, recoverPlayer);
+                    observation = ReadRenderPublication(before, ParseCounter(updated.session.tick, "tick")).Observation;
+                }
+                if (updated == null)
+                    PublishCampaignIdentity(before, observation.identity);
+                else if (!SameSessionIdentity(updated.session, observation.identity))
+                    throw new InvalidDataException("source step identity does not match the stepped session");
             }
-            var identity = IdentitySnapshot();
-            if (identity.mode != PlayingMode ||
-                ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
-                !PreservesSessionBinding(before.session, identity.session) ||
-                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
-                ParseCounter(identity.session.generation, "session_generation") !=
-                    beforeSessionGeneration)
+            var afterExitActive = observation.value.exit_sequence_active;
+            ValidateSourceSpeedStepTick(beforeTick, ParseCounter(observation.identity.tick, "tick"),
+                expectedTick, beforeExitActive, afterExitActive);
+            var exitStateHash = beforeExitActive ? CampaignSnapshot().value.state_hash : null;
+            if (beforeExitActive && beforeExitStateHash == exitStateHash)
+                throw new InvalidDataException("campaign exit step did not advance its authoritative state");
+            lastStepObservationIdentity = Current;
+            lastStepExitActive = afterExitActive;
+            lastStepExitStateHash = afterExitActive ? exitStateHash : null;
+            return observation;
+        }
+
+        private void ValidateCampaignStepIdentity(Identity before, Identity after)
+        {
+            if (after.mode != PlayingMode || after.runtime_id != before.runtime_id ||
+                after.generation != before.generation ||
+                !PreservesSessionBinding(before.session, after.session) ||
+                !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow) ||
+                after.session.generation != before.session.generation)
             {
                 throw new InvalidOperationException(
                     "campaign step did not advance only the bound gameplay tick");
             }
-            SourceSpeedStepTick(before, identity, recoverPlayer);
-            return JsonRenderObservation();
         }
 
         internal EngineSessionTransport.EventObservation CampaignEvents(
@@ -1540,6 +1942,7 @@ namespace MagicCarpet.Native
         internal static void ValidateIdentity(Identity identity, ulong handle)
         {
             if (identity == null || identity.display_settings == null || identity.runtime_contract != RuntimeContract ||
+                identity.display_settings.viewport_size < 16 || identity.display_settings.viewport_size > 40 ||
                 identity.source_speed_index > 2 ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
                 !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }

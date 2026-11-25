@@ -5,80 +5,6 @@ constructors and the installed Presentation client's source bindings.
 Use the playable Rust level as the behavior baseline. This work owns art,
 animation and presentation integration, not another mission implementation.
 
-## Native-backed Three.js assets — 2026-11-16
-
-The approved Modern masters now have owner-local browser derivatives: twelve
-rigged character GLBs, eight world GLBs, source mana colours, terrain textures,
-all 17 building profiles and seven Castle profiles. Export recipes are in
-`research/private/character-pipeline/export_browser_{characters,world}.py` from
-the repository root. No paid 3D generation. Voxel masters remain unchanged.
-
-The integrated browser consumes real Rust observations. Desktop/touch controls,
-save/load/reset and the opening 33 Goats/28 residents/41 buildings pass live
-checks; close views cover moving Goats/residents and lit masonry buildings.
-The loaded Archer rig's bow morphs and horizontal arrow release pass staged
-art checks, not native firing qualification. The measured opening village
-holds 60.0 FPS with 16.8 ms p95 after warmup on 3090/1280×960/60 Hz.
-
-Native conditional spawns, per-hoof IK, dynamic Castle placement, live mana
-collection and low shoreline foundations remain open in this consumer. This
-does not close full Level 1 or Unity/Voxel runtime acceptance below. Launch,
-pipeline and exact verification details live in
-`research/private/remc2-sim-rs/web/ORIGINAL_BROWSER.md`; live Modern browser:
-<http://3090.bumblebee-hue.ts.net:8884/?visual=modern>.
-
-## Art readiness alongside OG completion — 2026-11-15
-
-Oliver requests finishing these assets and the environment in parallel with the
-Original port; full alternative-renderer mission qualification waits for that
-port. Source gameplay rules remain unchanged. The normal installed player below
-is still the older qualified version.
-
-New art is checked in actual isolated Unity renders: luminous Modern/source-
-coloured Voxel mana (`c255ed5b`), source-sized fireballs (`775905c5`), blue
-Possession (`3ad54c0b`), native-bound fire/impact visuals and transparent tails
-(`482d9278`, `8cb7034a`), the corrected Modern/Voxel exit face (`f228721f`),
-17 full source building profiles plus seven Castle composites and Voxel LODs
-(`7783c615`), and finer, less glossy trees with readable burned forms
-(`867407c8`). Generated masters and outputs remain owner-local; reproducible
-recipes and presenters are committed. Compact images/XML are under
-generated/level1-assets-20261115. None of these isolated reviews establishes a
-new installed-player, complete-mission or gameplay-performance result.
-
-The clean Castle projectile head (`7201c8ec`) and whole-map Voxel terrain
-(`be7c2958`) have now passed their actual Unity reviews. The head replaces the
-source class9/model10/action10 visual without independent gameplay. Terrain
-uses visible section surfaces at 1m/2m detail and a 0.5m vertical quantum;
-this is whole-map rendering, not whole-map destructive physics. The existing
-fine local destruction patch remains separate. Collector Voxel near/far art
-and all eight native owner colours pass five checks (`ab6237c0`), with paired
-front/side/night/far frames inspected. Building presenter `ae8479dc` selects
-all three Voxel LODs for every admitted opening building, retaining the same
-source identity/stamp validation and the selected physical house exclusion.
-Root join `224f10b9` connects these assets, grounds characters/scenery/pickups
-to the rendered stepped surface, and keeps ownership halos distinct from fire.
-The combined isolated Unity run passes 59/59 checks. Paired actual-map day/night
-art views include the 41 prepared architectural buildings, water, sky and
-terrain; they are frozen-source art workbench views, not live mission evidence.
-
-Decorative Voxel vegetation is now prepared (`c2892a24`) and connected
-(`1a17198b`): grass, fern, shrub, decorative tree trunk/branches/leaves and
-rocks have shared exterior meshes. Four distant foliage kinds retain two-
-triangle, relightable impostors baked from the actual Voxel models. The new
-owner-local authoring commands are `VoxelVegetationBaker.Generate` followed by
-`VoxelVegetationBaker.GenerateImpostors`; the game only loads the results.
-The paired terrain/nature review passes 26/26 checks. At the four pinned art
-views, Voxel vegetation submissions are about 3–27% more triangles than Modern,
-with comparable draw counts; this is a geometry counter, not a frame-rate claim.
-The low shoreline review caught exposed cliff-house bases; bounded sampled
-foundations now close them in both styles and pass 9/9 checks, including the
-same paired real-map gallery. Flat-ground cases add no foundation faces.
-Building art uses full owner records; Rust's current builder consumer instead
-halves raw dimensions into a sparse prefix. Keep that OG discrepancy and dynamic
-placement open. Castle auxiliary class5/model15 uses the existing Archer sprite
-families (visual parameters0/1/206 -> TMAP8/11/121); it does not justify inventing
-another creature master. Its animation/observation binding remains to qualify.
-
 ## Existing assets to retain
 
 | Family | Current coverage | Remaining integration |
@@ -90,11 +16,11 @@ another creature master. Its animation/observation binding remains to qualify.
 | Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; genuine Level1 demolition birth, public combat and positive-life entry | Candidate Modern/Voxel combat, living-entry and F5/R/coldload checks pass; latest installed launchers and performance remain open in mc-oi5 |
 | Firefly | Original-inspired olive/bronze body, violet eyes, warm wings and amber underside; actual Unity25-pose import, coloured Modern/Voxel bindings | Real Level1 combat and F5/R/coldload pass both styles; Modern fade0.167s; clearer breakup camera/media and installation pending in mc-eb8 |
 | Worm | Source-inspired red lens/curved jaws and repeating segment master; corrected baked size/culling, actual Unity25+2-pose imports, independent native multipart placement | Natural group4 birth, all16linked bodies, actual combat, one8192-cell breakup and both-style F5/R/coldload verified; clearer breakup media, performance and installation remain open in mc-7uj |
-| Terrain, water, shore, sky/clouds, wind and moonlight | Shared environment retained; whole-map section-based Voxel land reviewed | Real gameplay/streaming/performance checks after OG completion; smooth water is intentional hybrid rendering |
-| Decorative vegetation and rocks | Separate Modern/Voxel meshes, three LOD paths, instanced placement; Voxel-derived far foliage impostors | Decorative instances do not replace source-owned scenery; final gameplay/performance/install checks remain open |
-| Buildings | Installed:32 opening buildings/four profiles. Art:all41 architectural buildings/eight profiles, Modern and Voxel LODs; library17 profiles plus seven Castle stages | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
-| Mana spheres | Native-owned Modern smooth and source-coloured Voxel representations | Final capture/carry/collection and installation qualification |
-| Fireballs | Native-owned source-sized Modern/Voxel projectiles and impact fragments | Final emission/impact/expiry and installation qualification; projectile never independently bounces |
+| Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
+| Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
+| Buildings | Installed:32 opening buildings/four profiles. Current candidate:all41 architectural buildings/eight profiles, imported in Unity | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
+| Mana spheres | Native-owned 3D representation in Voxel | Modern replacement, ownership colours and capture/collection feedback |
+| Fireballs | Native-owned voxel representation and impact fragments | Modern replacement and consistent emission/impact/expiry presentation |
 
 Unclaimed visible entities still use original sprite billboards. Existing
 attractive scenery does not prove that every gameplay object is converted.
@@ -144,7 +70,7 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 | Traders, remaining runtime qualification | Conditional house production, model14; all47 opening houses have2 occupants | Art/bindings ready; obtain genuine Level1 production and public combat/death/voxel-lifetime evidence without state injection |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
 | Firefly | Six authored, groups 6/33 | Original silhouette, wing/body animation, flight/turn/attack/reaction/death and attack effects |
-| Collector balloon | Spawned by player Castle, class 3/model 3 | Earned birth/flight, four 500-mana collections and 2000 deposit pass on pinned ed08. Dark owner tint passes Modern and hybrid Voxel flight. Source fix 74cc4999 restores projectile collision admission with a focused consumer regression; it is not installed in ed08. Real loss/reclaim/reset/load and final installation remain open. |
+| Collector balloon | Spawned by player Castle, class 3/model 3 | mc-chx: editable model/export and readonly child consumer; earned birth/flight, four500-mana collections and2000 deposit proven. Darker owner tint passes checked 150-frame integrated6 Modern and hybrid Voxel-world flights; balloon geometry remains smooth. Loss/reset/load and installation remain open. |
 | Castle auxiliary/defender | Produced at higher Castle stages, class 5/model 15 | Inspect original appearance; distinct from balloon and invisible shooting controller; match admitted native states |
 
 Reset villager appearances are TMAP 155 ×3, 180 ×6, 183 ×9 and 199 ×10;
@@ -182,7 +108,7 @@ A newly observed natural producer must extend this inventory.
 | Player Castle | Dynamic construction | Source stage silhouettes, growth/construction/removal, owner markings and effects |
 | Authored trees | 18, group 1 | Source-backed teal canopy passes 150-frame live view; fireball live→burning→bare native sequence proven; Voxel graphics, performance and installation remain open |
 | Authored stone | One, group 6 | Candidate07 passes checked 120-frame Modern night view. Two old Voxel views omitted the statue because the FBX root transform was overwritten; test measured old Voxel height 0.0183 versus about 7.8. Wrapper fix 1bd39f0b passes 7/7 Unity tests, and checked integrated8 earned Voxel frames 0/60/110 show it upright at approximate Modern height. Dark seams limit face/arm legibility and exact terrain contact is not proven. Installation and full-level pass remain open. Ordinary Fireballs do not directly collide with unchanged stone in source. |
-| Dolmens | Three at reset | Modern hillside view passes. Fix eaf0f0e6 restores actual Voxel height from 0.048828 to native 6.25; six focused presenter checks pass. Source appearance is static; contact changes player recharge without charged/exhausted/glow visuals. Shared native recharge consumer is verified; the Level 1 HUD comparison alone is inconclusive. Corrected live Voxel view and installation remain open. |
+| Dolmens | Three at reset | Source-grounded revised model passes 150-frame normal-camera hillside view; charge feedback, Voxel view and installation remain open |
 | Exit portal/target | One, group 4 | Source appearance, inactive/active/entry and exit-sequence effects |
 
 Initial BUILD selectors and counts, corrected by the actual material/height
@@ -212,25 +138,22 @@ height-plane hash; Unity generated all three mesh LODs per profile. This is
 preparation evidence, not installed dynamic-building coverage.
 
 Builder construction can choose additional selectors19/22/32/33/35/39/40/62/74,
-along with the opening architectural styles. All source art profiles are prepared.
-The earlier claim that ordinary remc2 houses consume half the raw dimensions was
-wrong: VGA mode doubles TAB dimensions before the handler halves them. Art uses
-the full raw extent; Rust currently consumes a halved raw prefix instead. Keep
-that OG consumer discrepancy open, rather than altering art to match the prefix.
+along with the opening architectural styles. The source construction payload
+uses effective dimensions rawWidth>>1/rawHeight>>1 and the contiguous prefix
+of its cells; downsampling the entire raw matrix gives the wrong geometry.
+These later templates and their actual living constructor consumers remain open.
 
 Modern substitution requires an original intact occupant with expected slot
 generation, selector, action, position and stamped terrain cells. It does not
-cover every later constructor or changed building. Voxel now selects prepared
-brick meshes for all admitted opening buildings and section meshes for whole-map
-land. The selected physical house/local terrain patch retains its separate
-destruction ownership. Dynamic whole-level destructive coverage is still open.
+cover every later constructor or changed building. Voxel currently has one
+selected house and a local terrain patch; whole-level coverage is integration work.
 
 ## Pickups, player presentation and effects
 
 | Asset project | Source occurrence or role | Required result |
 | --- | --- | --- |
-| Experience scroll | Five authored, group 4 | Ordinary input collects all five with effect4/sound63; focused source test proves exact +4 XP. Selected Modern paper/shape pass 292f5562 passes isolated Unity checks and awaits earned live review. Unchanged Voxel variant passes an earned 100-frame integrated11 appearance check. Pickup/reuse and installation qualification remain open. |
-| Castle and Speed jars | One authored each | Both styles pass earned on-screen removal, actual-player F5/R and fresh-player pre-reset loads; all eight pre/post-reset saves pass native cold inspection. Grounding fix 4df898c7+c03a7c90 resolves measured burial in all four style/asset cases to within 0.0000003 world units. Final installation remains open; physical audio audibility and precise normal-camera contact were not established. |
+| Experience scroll | Five authored, group 4 | Current-native earned cut shows five live rows and ordinary controls collect all five with effect4 and sound63 each; focused source test proves exact +4 XP. Integrated6–9 earned Modern views were rejected as tube/gray roll in the close night side view. Candidate08c7 removes preview Voxel stripes with unchanged block geometry and passes its red/green Unity gate, but integrated9 Modern remains visually rejected. Source TMAP259 is a horizontal tied roll; clearer paper and right-rim visibility, live both-style pickup and installation remain open. |
+| Castle and Speed jars | One authored each | Both share source TMAP59 vessel; Castle live Modern/Voxel views and native pickup/reset/cold-load pass. Speed spawns at t1107 and is collected at t1183 through ordinary input; checked fixed-camera Modern/Voxel captures show it through tick1182, absent at tick1183. Actual Unity terrain measurement found 0.1044/0.4119 world-unit burial; 4df898c7+c03a7c90 fix all four style/asset contact cases to within 0.0000003 and portable tests pass 6/6. Actual player F5/R, Castle on-screen pickup removal and installation remain open. |
 | Mana spheres | Runtime deaths/economy | Native lifetime/owner/amount in both styles, capture/carry/collection and save/load |
 | Player presentation | First-person and admitted reflection/possession views | Original-informed carpet/hands/casting cues where visible; no invented rival population |
 | Fireball | Available at start | Emission, travel, impact, fire/expiry; only impact debris bounces |

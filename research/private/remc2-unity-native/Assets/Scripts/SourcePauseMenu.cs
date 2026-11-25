@@ -169,11 +169,12 @@ namespace MagicCarpet.Native
             var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
                 640 * scale, 480 * scale);
             return DrawConfirmation(profile, 2, view, mapOpen || !alive ? 6 : 132,
-                mapOpen || !alive ? 6 : 50, flash, acceptInput);
+                mapOpen || !alive ? 6 : 50, flash, acceptInput, escapeCancels: false);
         }
 
         private ConfirmationResult DrawConfirmation(Profile profile, int textSelector,
-            Rect view, int textX, int textY, bool flash, bool acceptInput = true)
+            Rect view, int textX, int textY, bool flash, bool acceptInput = true,
+            bool escapeCancels = true)
         {
             var scale = view.width / 640f;
             Rect At(Rect rect) => new(view.x + rect.x * scale, view.y + rect.y * scale,
@@ -186,6 +187,10 @@ namespace MagicCarpet.Native
                 GUI.DrawTexture(At(new Rect(x, 104, texture.width, texture.height)), texture);
             }
             if (!acceptInput) return ConfirmationResult.None;
+            // Abandon's source key 1 is handled by the runtime's fresh key
+            // edge. IMGUI may repeat the opening key while it remains held.
+            if (!escapeCancels && Event.current.type == EventType.KeyDown &&
+                Event.current.keyCode == KeyCode.Escape) return ConfirmationResult.None;
             var result = ConfirmationInput(Event.current, At(new Rect(270, 104, 50, 32)),
                 At(new Rect(320, 104, 50, 32)));
             if (result != ConfirmationResult.None) Event.current.Use();
@@ -211,7 +216,9 @@ namespace MagicCarpet.Native
         }
 
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
-            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
+            GameRuntimeTransport.DisplaySettings displaySettings,
+            bool canSave, bool canLoad, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
+            bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
             HoverHelpRow = 0;
             HoverHelpAnchor = default;
@@ -246,7 +253,8 @@ namespace MagicCarpet.Native
             }
             if (options)
             {
-                return DrawOptions(profile, preferences, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex);
+                return DrawOptions(profile, preferences, displaySettings, view, At, Click, DrawBitmap, iconsAndMapVisible, panelsOpaque, flatShading, speedIndex, playerNamesVisible,
+                    soundAvailable, musicAvailable, speechAvailable);
             }
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
@@ -386,8 +394,9 @@ namespace MagicCarpet.Native
             else if (Event.current.type == EventType.MouseDown) { volume = 0; Event.current.Use(); }
         }
 
-        private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, Rect view,
-            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex)
+        private CampaignMenuPresenter.Action DrawOptions(Profile profile, PlayerPreferencesPresenter preferences, GameRuntimeTransport.DisplaySettings displaySettings, Rect view,
+            Func<Rect, Rect> at, Func<Rect, bool> click, Action<int, int, int, bool> drawBitmap, bool iconsAndMapVisible, bool panelsOpaque, bool flatShading, int speedIndex, bool playerNamesVisible,
+            bool soundAvailable, bool musicAvailable, bool speechAvailable)
         {
             var prefs = preferences.Current.preferences;
             var longest = OnText.Concat(OffText).Max(index => language(index).Length) * 8;
@@ -403,12 +412,16 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 6 || index is 8 or 9 or 10 or 11 or 12 or 13 or 14;
+                var supported = index switch {
+                    1 => soundAvailable, 2 => musicAvailable, 3 => speechAvailable,
+                    _ => index <= 14 || index == 16
+                };
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
-                    3 => prefs.speech_enabled, 4 => prefs.flight_assistance,
-                    8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
-                    11 => prefs.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading, _ => false
+                    3 => prefs.speech_enabled, 4 => prefs.flight_assistance, 7 => true,
+                    8 => displaySettings.reflections, 9 => displaySettings.sky, 10 => displaySettings.shadows,
+                    11 => displaySettings.dynamic_lighting, 12 => iconsAndMapVisible, 13 => panelsOpaque, 14 => flatShading,
+                    16 => playerNamesVisible, _ => false
                 };
                 var text = language(index == 6 ? SpeedTextRecord(speedIndex) : enabled ? OnText[index] : OffText[index]);
                 var y = 67 + index * 18;
@@ -419,6 +432,47 @@ namespace MagicCarpet.Native
                 profile.Text.DrawText(text, x + (width - 8 * text.Length) / 2, y + 2, view, profile.Palette[colour]);
                 if (supported && click(hit))
                 {
+                    if (index == 0)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.ToggleHelpMode;
+                    }
+                    if (index is 1 or 2 or 3)
+                    {
+                        Event.current.Use();
+                        return index switch {
+                            1 => CampaignMenuPresenter.Action.ToggleSound,
+                            2 => CampaignMenuPresenter.Action.ToggleMusic,
+                            _ => CampaignMenuPresenter.Action.ToggleSpeech
+                        };
+                    }
+                    if (index == 4)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.ToggleFlightAssistance;
+                    }
+                    if (index is >= 8 and <= 11)
+                    {
+                        Event.current.Use();
+                        return index switch {
+                            8 => CampaignMenuPresenter.Action.ToggleReflections,
+                            9 => CampaignMenuPresenter.Action.ToggleSky,
+                            10 => CampaignMenuPresenter.Action.ToggleShadows,
+                            _ => CampaignMenuPresenter.Action.ToggleDynamicLighting
+                        };
+                    }
+                    if (index == 16)
+                    {
+                        Event.current.Use();
+                        return CampaignMenuPresenter.Action.TogglePlayerNames;
+                    }
+                    if (index == 7)
+                    {
+                        var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.ViewportIncrease :
+                            CampaignMenuPresenter.Action.ViewportDecrease;
+                        Event.current.Use();
+                        return action;
+                    }
                     if (index == 6)
                     {
                         var action = Event.current.button == 1 ? CampaignMenuPresenter.Action.SpeedSecondary :
@@ -448,21 +502,6 @@ namespace MagicCarpet.Native
                         Event.current.Use();
                         return CampaignMenuPresenter.Action.ToggleFlatShading;
                     }
-                    var option = index;
-                    preferences.ApplySource(draft => {
-                        switch (option) {
-                            case 0: draft.show_help = !draft.show_help; break;
-                            case 1: draft.sound_enabled = !draft.sound_enabled; break;
-                            case 2: draft.music_enabled = !draft.music_enabled; break;
-                            case 3: draft.speech_enabled = !draft.speech_enabled; break;
-                            case 4: draft.flight_assistance = !draft.flight_assistance; break;
-                            case 8: draft.reflections = !draft.reflections; break;
-                            case 9: draft.sky = !draft.sky; break;
-                            case 10: draft.shadows = !draft.shadows; break;
-                            case 11: draft.dynamic_lighting = !draft.dynamic_lighting; break;
-                        }
-                    });
-                    Event.current.Use();
                 }
             }
             var okayX = (width - 84) / 2 + (640 - width) / 2;

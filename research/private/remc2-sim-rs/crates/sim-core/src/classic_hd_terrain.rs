@@ -73,6 +73,26 @@ pub struct ClassicHdProjection {
 }
 
 impl ClassicHdProjection {
+    /// Exact source DrawWorld rectangle within the shared indexed target.
+    #[must_use]
+    pub(crate) fn source_viewport(
+        profile: &ClassicHdRenderProfile,
+        camera: Level1TerrainFrameCamera,
+        viewport: crate::classic_hd::ClassicHdViewport,
+    ) -> Self {
+        let geometry = crate::terrain_frame::source_viewport_projection(camera, viewport);
+        let mut projection = Self::from_profile(profile, camera);
+        projection.scale = geometry.scale;
+        projection.pitch_offset = geometry.pitch_offset;
+        projection.center_x = geometry.center_x;
+        projection.center_y = geometry.center_y;
+        projection.viewport_x = viewport.x as i32;
+        projection.viewport_y = viewport.y as i32;
+        projection.viewport_width = viewport.width as i32;
+        projection.viewport_height = viewport.height as i32;
+        projection
+    }
+
     #[must_use]
     pub fn from_profile(
         profile: &ClassicHdRenderProfile,
@@ -1018,6 +1038,38 @@ mod tests {
             render_classic_hd_sky(&profile, camera, &sky, ClassicHdSkyBank::Base256).unwrap(),
             draw_level1_sky(camera, &sky).unwrap()
         );
+        let full = crate::terrain_frame::source_viewport(40).unwrap();
+        assert_eq!(ClassicHdProjection::source_viewport(&profile, camera, full), projection);
+        let patterned: Vec<u8> = (0..LEVEL1_SKY_BYTES)
+            .map(|index| ((index >> 8) ^ index) as u8).collect();
+        assert_eq!(
+            crate::terrain_frame::draw_source_viewport_sky(camera, &patterned, full, 77).unwrap(),
+            draw_level1_sky(camera, &patterned).unwrap(),
+            "size 40 preserves the entire existing sky"
+        );
+        for (size, expected) in [
+            (39, (4, 2, 312, 195)),
+            (16, (96, 60, 128, 80)),
+        ] {
+            let view = crate::terrain_frame::source_viewport(size).unwrap();
+            assert_eq!((view.x, view.y, view.width, view.height), expected);
+            let projected = ClassicHdProjection::source_viewport(&profile, camera, view);
+            assert_eq!(projected.center_x, (view.x + view.width / 2) as i32);
+            assert_eq!(projected.center_y, (view.y + view.height / 2) as i32);
+            assert_eq!(projected.pitch_offset, i32::from(camera.pitch) * view.width as i32 >> 8);
+            assert_eq!(projected.scale, 7 * crate::legacy_sqrt(view.width * view.width + view.height * view.height) as i32 * i32::from(camera.fov) >> 11);
+            assert_ne!(projected.scale, projection.scale, "a cropped full projection is not the source view");
+            let rendered = crate::terrain_frame::draw_source_viewport_sky(camera, &patterned, view, 77).unwrap();
+            for y in 0..200_u32 {
+                for x in 0..320_u32 {
+                    if x < view.x || x >= view.x + view.width || y < view.y || y >= view.y + view.height {
+                        assert_eq!(rendered[(y * 320 + x) as usize], 77, "outside source sky viewport");
+                    }
+                }
+            }
+        }
+        assert!(crate::terrain_frame::source_viewport(15).is_none());
+        assert!(crate::terrain_frame::source_viewport(41).is_none());
     }
 
     #[test]

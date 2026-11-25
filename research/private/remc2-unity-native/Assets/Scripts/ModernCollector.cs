@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 namespace MagicCarpet.Native
@@ -16,49 +15,14 @@ namespace MagicCarpet.Native
             internal NativeSim.CampaignEntityPresentation Sprite;
             internal bool Admitted;
             internal byte Color = byte.MaxValue;
-            internal readonly GameObject NearVoxel, FarVoxel;
 
-            internal Instance(ModernCharacterAsset asset, Transform parent, GameObject nearVoxel, GameObject farVoxel)
-            {
+            internal Instance(ModernCharacterAsset asset, Transform parent) =>
                 Character = new ModernCharacterInstance(asset, parent);
-                if (nearVoxel == null) return;
-                try
-                {
-                    var originals = Character.Root.GetComponentsInChildren<Renderer>(true);
-                    var materials = originals.SelectMany(r => r.sharedMaterials).Where(m => m != null)
-                        .GroupBy(m => MaterialKey(m.name)).ToDictionary(g => g.Key, g => g.First());
-                    NearVoxel = MakeVoxel(nearVoxel, "Collector voxel near", asset, materials);
-                    FarVoxel = MakeVoxel(farVoxel, "Collector voxel far", asset, materials);
-                    foreach (var renderer in originals) renderer.forceRenderingOff = true;
-                    FarVoxel.SetActive(false);
-                }
-                catch { Character.Dispose(); throw; }
-            }
-
-            private GameObject MakeVoxel(GameObject model, string name, ModernCharacterAsset asset,
-                Dictionary<string, Material> materials)
-            {
-                var visual = UnityEngine.Object.Instantiate(model, Character.Root.transform);
-                visual.name = name;
-                // Match ModernCharacterInstance's imported-root placement.
-                visual.transform.localPosition = Vector3.zero;
-                visual.transform.localRotation = Quaternion.Euler(0, asset.forwardYaw, 0);
-                foreach (var renderer in visual.GetComponentsInChildren<Renderer>(true))
-                    renderer.sharedMaterials = renderer.sharedMaterials.Select(m =>
-                    {
-                        var key = MaterialKey(m != null ? m.name : "");
-                        if (!materials.TryGetValue(key, out var result))
-                            throw new InvalidOperationException("Collector voxel material is absent from the accepted master: " + key);
-                        return result;
-                    }).ToArray();
-                return visual;
-            }
 
             public void Dispose() => Character.Dispose();
         }
 
         private readonly ModernCharacterAsset asset;
-        private readonly GameObject nearVoxel, farVoxel;
         private readonly Transform root;
         private readonly Dictionary<ushort, Instance> instances = new();
         private readonly Dictionary<ushort, NativeSim.CampaignEntityPresentation> visible = new();
@@ -75,19 +39,12 @@ namespace MagicCarpet.Native
             new(.12f, .30f, .32f), new(.73f, .38f, .09f),
         };
 
-        internal ModernCollector(Transform parent, bool voxel = false)
+        internal ModernCollector(Transform parent)
         {
             asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/Collector/Character");
             if (asset == null || asset.model == null || asset.height <= 0)
                 throw new InvalidOperationException("Missing imported Collector asset");
             asset.Clip("Idle");
-            if (voxel)
-            {
-                nearVoxel = Resources.Load<GameObject>("ModernCharacters/Collector/CollectorVoxel96");
-                farVoxel = Resources.Load<GameObject>("ModernCharacters/Collector/CollectorVoxel48");
-                if (nearVoxel == null || farVoxel == null)
-                    throw new InvalidOperationException("Missing Collector voxel derivatives");
-            }
             root = new GameObject("Native Castle collectors").transform;
             root.SetParent(parent, false);
         }
@@ -115,7 +72,7 @@ namespace MagicCarpet.Native
                 }
                 if (!instances.TryGetValue(state.entityIndex, out var instance))
                 {
-                    instance = new Instance(asset, root, nearVoxel, farVoxel);
+                    instance = new Instance(asset, root);
                     instances.Add(state.entityIndex, instance);
                 }
                 instance.State = state;
@@ -164,16 +121,8 @@ namespace MagicCarpet.Native
                     Quaternion.Euler(0, 180f - state.yaw * 360f / 2048f, 0));
                 node.transform.localScale = Vector3.one * ((state.renderHeight / 64f) / asset.height);
                 instance.Character.Tick(Time.deltaTime);
-                if (instance.NearVoxel != null)
-                {
-                    var near = (node.transform.position - eye).sqrMagnitude < 128f * 128f;
-                    instance.NearVoxel.SetActive(near);
-                    instance.FarVoxel.SetActive(!near);
-                }
             }
         }
-
-        private static string MaterialKey(string name) => name.Replace('_', ' ').Trim().ToLowerInvariant();
 
         private static void SetOwnerCloth(GameObject root, byte color)
         {

@@ -390,7 +390,8 @@ impl CampaignDayMusicLifecycle {
                 break;
             }
             self.fade_callback_count = self.fade_callback_count.wrapping_add(1);
-            debug_assert!(!matches!(self.envelope.callback(), FadeCallback::Inactive));
+            let callback = self.envelope.callback();
+            debug_assert!(!matches!(callback, FadeCallback::Inactive));
         }
     }
 
@@ -449,6 +450,31 @@ impl CampaignDayMusicLifecycle {
         ]);
         let digest = hasher.finalize();
         u64::from_le_bytes(digest[..8].try_into().expect("sha256 has eight bytes"))
+    }
+}
+
+#[cfg(test)]
+mod music_tests {
+    use super::CampaignDayMusicLifecycle;
+
+    #[test]
+    fn campaign_music_advances_active_callbacks_in_release() {
+        let mut music = CampaignDayMusicLifecycle::start_day();
+        music.update(2, 3);
+        music.advance(127);
+        assert_eq!(music.envelope.current, 127);
+        assert!(music.envelope.timer_active);
+        music.advance(8);
+        assert!(!music.envelope.timer_active);
+        assert_eq!(music.fade_callback_count, 128);
+
+        music.update(1, 3);
+        music.advance(127);
+        assert_eq!(music.envelope.current, 0);
+        assert!(music.envelope.timer_active);
+        music.advance(8);
+        assert!(!music.envelope.timer_active);
+        assert_eq!(music.fade_callback_count, 256);
     }
 }
 
@@ -1310,6 +1336,37 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
                 )
             })?;
             Ok(campaign_day_hud_snapshot(session.generation, snapshot))
+        })
+    })
+}
+
+/// Read the current owner's Castle hit counter after the source HUD draw.
+/// A frame which used the final hit-panel flash can return zero here.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_castle_hud_hit_frames(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    out_frames: *mut u8,
+) -> i32 {
+    boundary_value(out_frames, struct_size::<u8>(), || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Castle HUD hit frames require a campaign session",
+                ));
+            };
+            if generation != session.generation || expected_tick != reset.state.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "Castle HUD hit frames generation/tick {generation}/{expected_tick} does not match {}/{}",
+                        session.generation, reset.state.tick
+                    ),
+                ));
+            }
+            Ok(reset.economy().player_castle_aux_flags())
         })
     })
 }
@@ -2652,6 +2709,50 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
     })
 }
 
+/// Copy the current owner palette with the live source palette modification.
+/// This does not render or advance a presentation frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_palette_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    rgb8_buffer: *mut u8,
+    rgb8_capacity: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "campaign palette byte count")?;
+        write_output(out_written, 0);
+        with_campaign_session(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH,
+                    format!("campaign palette generation {generation} does not match {}", session.generation)));
+            }
+            let CampaignSessionKind::Campaign { reset, day_frame_assets, .. } = &session.kind else {
+                return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "campaign palette requires a campaign session"));
+            };
+            if expected_tick != reset.state.tick {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH,
+                    format!("campaign palette tick {expected_tick} does not match {}", reset.state.tick)));
+            }
+            if rgb8_capacity < 768 {
+                return Err(AbiError::new(MC_STATUS_BUFFER_TOO_SMALL,
+                    format!("campaign palette requires 768 bytes, got {rgb8_capacity}")));
+            }
+            require_output(rgb8_buffer, "campaign palette buffer")?;
+            let assets = day_frame_assets.as_ref().ok_or_else(|| AbiError::new(
+                MC_STATUS_VALIDATION_FAILED, "campaign palette requires a qualified owner cache"))?;
+            let mut palette = [0_u8; 768];
+            palette.copy_from_slice(assets.palette_rgb8());
+            reset.field_palette().apply_rgb8(&mut palette);
+            // SAFETY: the caller's non-null buffer has at least 768 bytes.
+            unsafe { rgb8_buffer.copy_from_nonoverlapping(palette.as_ptr(), palette.len()); }
+            write_output(out_written, 768);
+            Ok(())
+        })
+    })
+}
+
 /// Copy the complete committed Day indexed frame.  Rendering and copying are
 /// separate so a pre-render or stale-generation request cannot expose an old
 /// frame as current.
@@ -3266,6 +3367,47 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             ));
                         }
                         rows[slot] = campaign_live_class14_entity_snapshot(source);
+                    }
+                    // Exit-marker help selects the nearest source subject
+                    // using this existing entity view. Publish the same live
+                    // controller and pose as the minimap, including a hidden
+                    // retained owner until its source slot is reclaimed.
+                    let exit_switch_slots = reset.economy().live_arena_slots().into_iter()
+                        .filter_map(|(slot, kind)| (kind == sim_core::native_world::Level2DynamicArenaKind::AuthoredSwitchProducer).then_some(slot))
+                        .collect::<BTreeSet<_>>();
+                    for source in reset.economy().authored_switch_producers().iter()
+                        .filter(|row| row.active && matches!(row.model, 12 | 31)
+                            && exit_switch_slots.contains(&row.source_entity_index))
+                    {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!("campaign exit switch source slot {} is invalid or duplicated", source.source_entity_index),
+                            ));
+                        }
+                        rows[slot] = McCampaignEntitySnapshotV2 {
+                            abi_version: MC_NATIVE_ABI_VERSION,
+                            struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+                            entity_index: source.source_entity_index,
+                            source_id: source.entity_id,
+                            next_relation: u16::MAX,
+                            parameter_relation: u16::MAX,
+                            authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+                            active: u8::from(source.active && source.drawing_enabled),
+                            class_id: source.source_class,
+                            model: source.model,
+                            action: source.action,
+                            phase: source.phase,
+                            x: source.position.x,
+                            y: source.position.y,
+                            z: source.position.z,
+                            yaw: 0,
+                            pitch: 0,
+                            fov: 0,
+                            actual_speed: 0,
+                            reserved: [0; 4],
+                        };
                     }
                     for source in reset.economy().castle_defenders() {
                         let slot = usize::from(source.source_entity_index);

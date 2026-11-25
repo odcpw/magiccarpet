@@ -902,6 +902,7 @@ fn level_seven_real_group_five_body_accepts_public_carried_possession() {
     let (mut ownership_audio, mut oscillation_audio) = (false, false);
     let mut moved = false;
     let mut recoloured = false;
+    let mut checked_direct_selector = false;
     let color_index = session
         .session
         .state
@@ -1019,6 +1020,32 @@ fn level_seven_real_group_five_body_accepts_public_carried_possession() {
         }
         let current = mc2::read_actor(session.source_arena(), root)
             .expect("original root generation remains current during possession");
+        if current.animation_frame != 0 {
+            let view = session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .into_iter()
+                .find(|view| view.entity_index == root.source_slot)
+                .expect("live authored creature root reaches the source presentation");
+            assert_eq!(
+                view.render_mode, 21,
+                "owner particle is a direct-selector mode"
+            );
+            assert_eq!(
+                crate::native_world::effects::animation_frame(
+                    session.source_arena(),
+                    root.source_slot,
+                    view.render_parameter_index
+                ),
+                current.animation_frame,
+                "the actual source carrier exposes its nonzero oscillation"
+            );
+            assert_eq!(
+                view.selected_tmap, view.base_tmap,
+                "source mode21 selects the base TMAP even while the actor oscillates"
+            );
+            checked_direct_selector = true;
+        }
         owned |= current.owner == player && matches!(current.action, 177 | 178);
         moved |= current.position != head_position;
         if current.owner == player && current.action == 178 {
@@ -1053,6 +1080,10 @@ fn level_seven_real_group_five_body_accepts_public_carried_possession() {
             && ownership_audio
             && oscillation_audio,
         "real carried public Possession reaches original body/owner/sound/motion/colour: accepted={accepted} owned={owned} sound={saw_sound} moved={moved} recoloured={recoloured} ownership_audio={ownership_audio} oscillation_audio={oscillation_audio} impacts={impacts:?}"
+    );
+    assert!(
+        checked_direct_selector,
+        "the real scheduled root must reach a nonzero oscillation"
     );
     assert!(
         session

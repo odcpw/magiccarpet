@@ -7424,15 +7424,15 @@ impl Level2EconomyState {
     /// relation creation and fixed tail bounds are represented below.
     #[cfg(test)]
     pub(super) fn maintain_castle_defenders(&mut self, castle_slot: u16, terrain: &SessionTerrain) {
-        self.maintain_castle_defenders_with_consumer(castle_slot, terrain,
-            &|_: &mut Level2EconomyState, _: Level2CastleState| {});
+        if let Some(snapshot) = self.castle_at(castle_slot).copied() {
+            self.maintain_castle_defenders_with_consumer(snapshot, terrain,
+                &|_: &mut Level2EconomyState, _: Level2CastleState| {});
+        }
     }
 
-    fn maintain_castle_defenders_with_consumer(&mut self, castle_slot: u16, terrain: &SessionTerrain,
-        consumer: &dyn super::player_spell_state::CastleSourceConsumer) {
-        let Some(snapshot) = self.castle_at(castle_slot).copied() else {
-            return;
-        };
+    fn maintain_castle_defenders_with_consumer(&mut self, snapshot: Level2CastleState,
+        terrain: &SessionTerrain, consumer: &dyn super::player_spell_state::CastleSourceConsumer) {
+        let castle_slot = snapshot.source_entity_index;
         let target = usize::from(level2_castle_defender_count(snapshot.level));
         // `sub_5FF50` trusts the player's array_0x3C_60 relation slots. It
         // does not discover holders by parentId, and NewEvent leaves that
@@ -7546,7 +7546,9 @@ impl Level2EconomyState {
             }
             defender_slots[index] = 0;
         }
-        if let Some(castle) = self.castle_entry_mut(castle_slot) {
+        if let Some(castle) = self.castle_entry_mut(castle_slot)
+            .filter(|castle| castle.slot_generation == snapshot.slot_generation)
+        {
             castle.defender_slots = defender_slots;
             castle.defender_count = defenders.len() as u8;
         }
@@ -7622,7 +7624,9 @@ impl Level2EconomyState {
             defender_total_mana = defender_total_mana.saturating_add(child.mana);
             defender_total_max_mana = defender_total_max_mana.saturating_add(child.max_mana);
         }
-        if let Some(castle) = self.castle_entry_mut(castle_slot) {
+        if let Some(castle) = self.castle_entry_mut(castle_slot)
+            .filter(|castle| castle.slot_generation == snapshot.slot_generation)
+        {
             castle.defender_total_mana = defender_total_mana;
             castle.defender_total_max_mana = defender_total_max_mana;
             castle.defender_target_spheres = defender_targets;
@@ -7633,7 +7637,9 @@ impl Level2EconomyState {
         // only for class 5/model 15 rows whose action is not the delete
         // sentinel 125; an invalid relation clears only the root slot and
         // restarts the 16-frame creation cooldown.
-        if let Some(castle) = self.castle_entry_mut(castle_slot) {
+        if let Some(castle) = self.castle_entry_mut(castle_slot)
+            .filter(|castle| castle.slot_generation == snapshot.slot_generation)
+        {
             castle.auxiliary_cooldown = castle.auxiliary_cooldown.saturating_sub(1);
         }
         // `sub_60400` supplies the loop bound for `array_0x5C_92`; it is the
@@ -7648,6 +7654,7 @@ impl Level2EconomyState {
         let mut auxiliary_players = snapshot.auxiliary_player_entity_indices;
         let mut cooldown = self
             .castle_entry(castle_slot)
+            .filter(|castle| castle.slot_generation == snapshot.slot_generation)
             .map(|castle| castle.auxiliary_cooldown)
             .unwrap_or_default();
         for index in 0..auxiliary_target {
@@ -7712,7 +7719,9 @@ impl Level2EconomyState {
             cooldown = 16;
         }
         let auxiliary_count = auxiliary_target as u8;
-        if let Some(castle) = self.castle_entry_mut(castle_slot) {
+        if let Some(castle) = self.castle_entry_mut(castle_slot)
+            .filter(|castle| castle.slot_generation == snapshot.slot_generation)
+        {
             castle.auxiliary_slots = auxiliary_slots;
             castle.auxiliary_count = auxiliary_count;
             castle.auxiliary_cooldown = cooldown;
@@ -8326,7 +8335,9 @@ impl Level2EconomyState {
                     castle.shift_yaw = -8_192;
                     castle.shift_fov = 0x4000;
                 }
-                self.maintain_castle_defenders_with_consumer(castle_slot, terrain, consumer);
+                if let Some(snapshot) = self.castle_at(castle_slot).copied() {
+                    self.maintain_castle_defenders_with_consumer(snapshot, terrain, consumer);
+                }
                 let Some(castle) = self.castle_entry(castle_slot).copied() else {
                     self.advance_castle_phase(castle_slot);
                     return false;
@@ -8543,8 +8554,14 @@ impl Level2EconomyState {
                 // runs `sub_5FF50` after `sub_605E0` has rebuilt the lower
                 // stage. Allocation failure here must not roll back the
                 // already-committed stage transition.
+                // Releasing mana can rebuild the free arena and reclaim the
+                // hidden root. Keep its collector relations for this update.
+                let retired_castle = self.castle_entry(castle_slot)
+                    .copied().filter(|castle| !castle.active);
                 self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
-                self.maintain_castle_defenders_with_consumer(castle_slot, terrain, consumer);
+                if let Some(snapshot) = retired_castle.or_else(|| self.castle_at(castle_slot).copied()) {
+                    self.maintain_castle_defenders_with_consumer(snapshot, terrain, consumer);
+                }
                 if let Some(castle) = self.castle_entry_mut(castle_slot) {
                     // `sub_5FCA0` clears word-0x2E and leaves word-0x30 at
                     // the post-downgrade timer sentinel 5.

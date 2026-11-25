@@ -575,11 +575,11 @@
     "schema": "mc2-level1-native-final-main-correspondence/v1",
     "source_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "cache": {
-      "manifest_sha256": "1eeb90e39927cb28e214e017c2603f3200ee2d3899f3f81ce53063f6d64a63d6",
-      "content_sha256": "cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a",
+      "manifest_sha256": "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082",
+      "content_sha256": "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf",
       "output_count": 1249,
       "source_frame_census_path": "frame/source-frame-census.json",
-      "source_frame_census_sha256": "60b6be08f57ab7feadf59d014d161129c5df31a8c5a752ceb04bc7fcc9634a21"
+      "source_frame_census_sha256": "8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e"
     },
     "profile": {
       "level": 1,
@@ -628,8 +628,8 @@
         "tests": ["source_sprite_tmap::tests::castle_defense_shot_profiles_are_exact_and_unknown_choices_fail_closed", "native_v2::tests::source_ordered_world_frame_exposes_supported_families_without_changing_terrain_contract"]
       },
       "map_chain": {
-        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/renderable_map_chain.rs"],
-        "tests": ["renderable_map_chain::tests::reset_filter_preserves_cross_family_order_through_unsupported_links", "renderable_map_chain::tests::activation_and_cross_tile_motion_use_source_head_insertion", "renderable_map_chain::tests::same_tile_motion_preserves_order_and_retain_removes_reused_slots"]
+        "files": ["research/private/remc2-sim-rs/crates/sim-renderable-map-chain/src/lib.rs"],
+        "tests": ["tests::reset_filter_preserves_cross_family_order_through_unsupported_links", "tests::activation_and_cross_tile_motion_use_source_head_insertion", "tests::same_tile_motion_preserves_order_and_retain_removes_reused_slots"]
       },
       "hotspot_reflection_shadow": {
         "files": ["research/private/remc2-sim-rs/crates/sim-core/src/terrain_frame.rs", "research/private/remc2-sim-rs/crates/sim-core/src/source_sprite_tmap.rs"],
@@ -640,8 +640,8 @@
         "tests": ["dynamic_lighting::tests::fixed_light_array_preserves_history_and_source_walk_order", "dynamic_lighting::tests::admission_schedule_movement_retirement_and_hash_are_source_bounded"]
       },
       "postprocess": {
-        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/indexed_postprocess.rs"],
-        "tests": ["indexed_postprocess::tests::temporal_modes_pin_source_gates_vectors_asymmetry_stride_and_tail", "indexed_postprocess::tests::spatial_path_is_exact_and_exclusive_with_temporal_history", "indexed_postprocess::tests::temporal_requires_primed_main_and_uses_additive_tablesn_offset"]
+        "files": ["research/private/remc2-sim-rs/crates/sim-indexed-postprocess/src/lib.rs"],
+        "tests": ["tests::temporal_modes_pin_source_gates_vectors_asymmetry_stride_and_tail", "tests::spatial_path_is_exact_and_exclusive_with_temporal_history", "tests::temporal_requires_primed_main_and_uses_additive_tablesn_offset"]
       },
       "overlay": {
         "files": ["research/private/remc2-sim-rs/crates/sim-core/src/indexed_overlay.rs", "research/private/remc2-sim-rs/crates/sim-capi/src/presentation_bridge.rs"],

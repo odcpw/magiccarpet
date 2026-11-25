@@ -5,11 +5,11 @@ using UnityEngine;
 namespace MagicCarpet.Native
 {
     // MenusAndIntros DrawScrollDialog_7BF20, DrawScrollDialog2_7B660 and
-    // the eight-slot Save/LoadGameDialog consumers. No gameplay is retained
+    // the ExitDialog and eight-slot Save/LoadGameDialog consumers. No gameplay is retained
     // here: a closed confirmation returns one typed action to the Rust host.
     internal sealed class SourceScrollDialog
     {
-        internal enum Kind { Save, Load, Reset }
+        internal enum Kind { Save, Load, Reset, Exit }
         internal sealed class Completion
         {
             internal readonly Kind Operation;
@@ -33,6 +33,8 @@ namespace MagicCarpet.Native
             this.title = title;
             if (kind == Kind.Reset)
             { x = 37; y = 348; maximumHeight = 60; textSelector = 467; }
+            else if (kind == Kind.Exit)
+            { x = 352; y = 26; maximumHeight = 80; textSelector = 407; }
             else
             {
                 var load = kind == Kind.Load;
@@ -61,9 +63,9 @@ namespace MagicCarpet.Native
             }
             if (height < 0)
             {
-                var confirmed = closeResult == 1 && (kind == Kind.Reset || selected != 0);
+                var confirmed = closeResult == 1 && (kind is Kind.Reset or Kind.Exit || selected != 0);
                 return new Completion(kind, confirmed,
-                    confirmed && kind != Kind.Reset ? new SourceCampaignSaveSlots.Selection(selected, draft) : null);
+                    confirmed && (kind is Kind.Save or Kind.Load) ? new SourceCampaignSaveSlots.Selection(selected, draft) : null);
             }
             if (cache.Campaign?.DialogText == null)
                 throw new InvalidDataException("source scroll dialogs require the original FONT1 cache");

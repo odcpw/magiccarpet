@@ -20,8 +20,7 @@ use crate::{
         source_flat_terrain_shade,
     },
     mode26_raster::{
-        NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
-        visit_mode26_triangle_from_tile_atlas_into_framebuffer,
+        NIGHT_TABLES_BYTES, visit_mode26_triangle_from_tile_atlas_into_framebuffer,
     },
     terrain_reflection::TerrainPass,
 };
@@ -274,7 +273,10 @@ pub fn rasterize_classic_hd_mode26_triangle(
     let height = i32::try_from(writer.height()).map_err(|_| {
         ClassicHdRasterError("Classic HD mode-26 height does not fit i32".to_owned())
     })?;
-    let pixels = rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
+    let clip = writer.write_clip().map(|clip| [clip.x as i32, clip.y as i32,
+        (clip.x + clip.width) as i32, (clip.y + clip.height) as i32]);
+    let mut pixels = Vec::new();
+    visit_mode26_triangle_from_tile_atlas_into_framebuffer(
         vertices,
         width,
         height,
@@ -282,6 +284,8 @@ pub fn rasterize_classic_hd_mode26_triangle(
         texture_base,
         tablesn,
         writer.indices_mut(),
+        clip,
+        |pixel| pixels.push(pixel),
     );
     let source_pixels = u64::try_from(pixels.len()).unwrap_or(u64::MAX);
     let mut written_pixels = 0_u64;
@@ -338,6 +342,8 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
     let mut source_pixels = 0_u64;
     let mut written_pixels = 0_u64;
     let mut clipped_pixels = 0_u64;
+    let clip = writer.write_clip().map(|clip| [clip.x as i32, clip.y as i32,
+        (clip.x + clip.width) as i32, (clip.y + clip.height) as i32]);
     {
         let (indices, provenance_plane) = writer.planes_mut();
         visit_mode26_triangle_from_tile_atlas_into_framebuffer(
@@ -348,6 +354,7 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
             texture_base,
             tablesn,
             indices,
+            clip,
             |pixel| {
                 source_pixels = source_pixels.wrapping_add(1);
                 let Ok(x) = usize::try_from(pixel.sample.x) else {

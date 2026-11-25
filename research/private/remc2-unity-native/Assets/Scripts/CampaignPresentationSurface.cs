@@ -189,6 +189,23 @@ namespace MagicCarpet.Native
         private ulong historyGeneration, historyRevision;
         private byte pendingSceneBlur;
         private bool pendingExitTable, hasSceneHistory;
+        private byte sourceViewportSize = 40;
+
+        internal static Vector4 SourceViewportBounds(byte size)
+        {
+            if (size < 16 || size > 40) throw new ArgumentOutOfRangeException(nameof(size));
+            var left = (40 - size) * 4;
+            var top = (40 - size) * 5 / 2;
+            var bottom = 200 - top - 5 * size;
+            return new Vector4(left / 320f, bottom / 200f,
+                (left + 8 * size) / 320f, (bottom + 5 * size) / 200f);
+        }
+
+        internal void SetSourceViewport(byte size)
+        {
+            SourceViewportBounds(size);
+            sourceViewportSize = size;
+        }
 
         internal RenderTexture ComposedSceneIndices => hasSceneHistory ? composedHistory : null;
         internal Texture2D WorldIndices => worldIndices;
@@ -315,6 +332,7 @@ namespace MagicCarpet.Native
             historyMaterial.SetTexture("_SceneHistory", composedHistory);
             historyMaterial.SetTexture("_BlendLut", pendingExitTable ? exitBlendTable : sceneBlendTable);
             historyMaterial.SetFloat("_BlendHistory", hasSceneHistory && pendingSceneBlur == 2 ? 1f : 0f);
+            historyMaterial.SetVector("_SourceViewport", SourceViewportBounds(sourceViewportSize));
             var previousTarget = RenderTexture.active;
             var previousSrgb = GL.sRGBWrite;
             try
@@ -525,6 +543,11 @@ namespace MagicCarpet.Native
         internal bool HudReady { get; private set; }
         internal bool MinimapPanelReady { get; private set; }
         internal bool LiveMinimapReady { get; private set; }
+        internal bool HasObjectiveHelpSubject { get; private set; }
+        private readonly List<(byte Row, ushort Subject, int X, int Y)> objectiveHelpMarks = new();
+        private readonly List<(byte Row, ushort Subject, int X, int Y)> entityHelpMarks = new();
+        internal IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> ObjectiveHelpMarks => objectiveHelpMarks;
+        internal IReadOnlyList<(byte Row, ushort Subject, int X, int Y)> EntityHelpMarks => entityHelpMarks;
         internal int EntitySurfaceCount => entities.Count;
         internal int RenderedEntitySurfaceCount => entities.Values.Count(row => row.SpriteReady);
         internal bool NativeSceneComplete => nativeSpritesComposited && WorldReady;
@@ -588,6 +611,7 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, false);
             var palette = cache.ReadOutput("palette/paln.rgb8");
             EnsureWorld(presentedIndices, palette);
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
@@ -643,6 +667,7 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(session.DayIndexedFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, false);
             EnsureWorld(presentedIndices, session.DayIndexedFramePalette);
             if (cache.Level3Materials.minimap_symbols != null)
             {
@@ -745,6 +770,7 @@ namespace MagicCarpet.Native
             if (fullMap) MaterializeMapCross(presentedIndices, minimapTables, fullMapCrossColor);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick,
                 fullMap, minimapOverlay.RecordPixel);
+            CollectObjectiveHelpMarks(minimapEntities, minimapMarks, fullMap);
             EnsureWorld(fullMap ? presentedIndices : session.SceneFrameIndices, palette);
             if (!fullMap)
             {
@@ -783,8 +809,6 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("Campaign minimap pixel inputs have invalid extents");
             var written = 0;
             var scale = fullMap ? 1 : 2;
-            var mapWidth = fullMap ? 191 : 64;
-            var mapHeight = fullMap ? 200 : 64;
             foreach (var command in commands)
             {
                 if (command.generation != generation || command.tick != tick)
@@ -813,11 +837,7 @@ namespace MagicCarpet.Native
                     if (symbol != null && symbol.Mask[source] == 0) continue;
                     var x = left + dx;
                     var y = top + dy;
-                    if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight) continue;
-                    var sourceY = y * 2;
-                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                    var halfSpan = fullMap ? 0 : (64 * tables[0x14300 + phase * 4]) >> 8;
-                    if (!fullMap && (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan)) continue;
+                    if (!MinimapEntityInsideAperture(x, y, tables, fullMap)) continue;
                     var offset = y * 320 + x;
                     frame[offset] = command.kind == 3
                         ? tables[0x4000 + (frame[offset] << 8) + command.paletteIndex]
@@ -885,11 +905,7 @@ namespace MagicCarpet.Native
                 var y = mark.y / scale;
                 // DrawObjectiveRectangle_64CE0: three-pixel interior margin,
                 // then a 3x3 outline (the center remains terrain/entity pixels).
-                if (y < 3 || y >= mapHeight - 3 || x < 3 || x >= mapWidth - 3) continue;
-                var sourceY = y * 2;
-                var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                var halfSpan = fullMap ? 0 : (32 * tables[0x14300 + phase * 4]) >> 8;
-                if (!fullMap && (x < 32 - halfSpan + 3 || x >= 32 + halfSpan - 3)) continue;
+                if (!ObjectiveMarkInsideAperture(x, y, tables, fullMap)) continue;
                 for (var dy = -1; dy <= 1; dy++)
                 for (var dx = -1; dx <= 1; dx++)
                 {
@@ -900,6 +916,67 @@ namespace MagicCarpet.Native
                 }
             }
             return written;
+        }
+
+        internal static bool IsMinimapEntityHelpRow(int row) => row is >= 18 and <= 27;
+
+        private void CollectObjectiveHelpMarks(NativeSim.CampaignMinimapEntity[] entities,
+            NativeSim.CampaignMinimapMark[] marks, bool fullMap)
+        {
+            objectiveHelpMarks.Clear();
+            entityHelpMarks.Clear();
+            var scale = fullMap ? 1 : 2;
+            foreach (var mark in marks)
+            {
+                if (mark.kind != 2 || (mark.helpSelector != 0x51 && mark.helpSelector != 0x52))
+                    continue;
+                var x = mark.x / scale;
+                var y = mark.y / scale;
+                // DrawObjectiveRectangle publishes an anchor whenever its
+                // center is admitted, even during the three invisible pulse frames.
+                if (ObjectiveMarkInsideAperture(x, y, minimapTables, fullMap))
+                    objectiveHelpMarks.Add((mark.helpSelector, mark.subjectEntityIndex, x * 2, y * 2));
+            }
+            // sub_885E0 also sets the Type8 presence bit for entity selector 83.
+            // Its unshifted sprite anchor uses the entity aperture without the
+            // three-pixel objective-rectangle margin.
+            HasObjectiveHelpSubject = objectiveHelpMarks.Count != 0;
+            foreach (var entity in entities)
+            {
+                var entityHelp = IsMinimapEntityHelpRow(entity.helpSelector);
+                // Source sub_885E0 still observes a marker stone when its
+                // blinking dot is hidden. Other hidden entities stay omitted.
+                if ((!entityHelp && entity.helpSelector != 0x53) || (entity.visible == 0 && entity.helpSelector != 27) ||
+                    entity.x < 0 || entity.y < 0) continue;
+                var x = entity.x / scale;
+                var y = entity.y / scale;
+                if (!MinimapEntityInsideAperture(x, y, minimapTables, fullMap)) continue;
+                if (entityHelp)
+                    entityHelpMarks.Add((entity.helpSelector, entity.subjectEntityIndex, x * 2, y * 2));
+                else if (!fullMap)
+                    HasObjectiveHelpSubject = true;
+            }
+        }
+
+        private static bool MinimapEntityInsideAperture(int x, int y, byte[] tables, bool fullMap)
+        {
+            if (fullMap) return x >= 0 && x < 191 && y >= 0 && y < 200;
+            if (x < 0 || x >= 64 || y < 0 || y >= 64) return false;
+            var sourceY = y * 2;
+            var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+            var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+            return x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
+        }
+
+        private static bool ObjectiveMarkInsideAperture(int x, int y, byte[] tables, bool fullMap)
+        {
+            if (fullMap)
+                return x >= 3 && x < 191 - 3 && y >= 3 && y < 200 - 3;
+            if (x < 3 || x >= 64 - 3 || y < 3 || y >= 64 - 3) return false;
+            var sourceY = y * 2;
+            var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+            var halfSpan = (32 * tables[0x14300 + phase * 4]) >> 8;
+            return x >= 32 - halfSpan + 3 && x < 32 + halfSpan - 3;
         }
 
         internal static void MaterializeMapCross(byte[] frame, byte[] tables, byte colour)
@@ -1300,6 +1377,9 @@ namespace MagicCarpet.Native
             HudReady = false;
             MinimapPanelReady = false;
             LiveMinimapReady = false;
+            HasObjectiveHelpSubject = false;
+            objectiveHelpMarks.Clear();
+            entityHelpMarks.Clear();
         }
 
         private static Mesh CreateQuad()

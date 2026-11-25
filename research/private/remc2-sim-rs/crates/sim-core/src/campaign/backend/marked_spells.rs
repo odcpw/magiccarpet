@@ -22,6 +22,7 @@ pub(super) fn player_command(
     shared: &Level2SharedSpellResetSession,
     command: &GameCommand,
     player_command: PlayerCommand,
+    has_current_holder: impl Fn(u8) -> bool,
 ) -> Result<PlayerCommand, String> {
     let mark = command.mark_spell.as_ref();
     let cycle = command.cycle_marked_spell.as_ref();
@@ -40,7 +41,7 @@ pub(super) fn player_command(
     }
 
     if let Some(cycle) = cycle {
-        return cycle_player_command(shared, cycle, player_command);
+        return cycle_player_command(shared, cycle, player_command, has_current_holder);
     }
     Ok(player_command)
 }
@@ -82,6 +83,7 @@ fn cycle_player_command(
     shared: &Level2SharedSpellResetSession,
     cycle: &MarkedSpellCycle,
     mut player_command: PlayerCommand,
+    has_current_holder: impl Fn(u8) -> bool,
 ) -> Result<PlayerCommand, String> {
     let player = shared.local_player();
     let current_family = match cycle.hand {
@@ -93,9 +95,7 @@ fn cycle_player_command(
         SpellAssignmentHand::Right => 2,
     };
     let valid_enabled_spell_families =
-        derive_live_enabled_spell_families(&player.enabled_spell_holders, |family| {
-            spells::acquired_holder(shared, family).is_some()
-        });
+        derive_live_enabled_spell_families(&player.enabled_spell_holders, has_current_holder);
     let Some((ui_slot, family)) = find_next_marked_source_slot(
         current_family,
         cycle.direction,
@@ -476,7 +476,7 @@ mod tests {
         // The public runtime enters at the campaign's Level 1 boundary. Seed its
         // replay loader from this real direct Level 2 session, then exercise the
         // existing resolver save/load path over the accepted semantic commands.
-        let replay = Mc2CampaignReplaySave::new(
+        let mut replay = Mc2CampaignReplaySave::new(
             false,
             session.definition().as_ref().clone(),
             session.backend().initial_semantic_spell_carry().unwrap(),
@@ -484,6 +484,13 @@ mod tests {
             session.backend().replay_operations.clone(),
             &expected,
         );
+        // Preserve the actual source HUD policy just as save_replay does;
+        // omission requests the pre-source-HUD replay tail instead.
+        replay.hud_admission_changes = session.backend().hud_admission_changes.clone();
+        assert_eq!(replay.hud_admission_changes.len(), 1);
+        assert_eq!(replay.hud_admission_changes[0].before_operation, 0);
+        assert!(replay.hud_admission_changes[0].top_bar);
+        replay.receipt_sha256 = replay.compute_receipt_sha256();
         let replay_bytes = serde_json::to_vec(&replay).unwrap();
         let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(8802).unwrap();
         let title_guard = loaded.identity().guard();
@@ -509,5 +516,42 @@ mod tests {
             SpellMarkHand::Left
         );
         assert_eq!(source_player_record(restored_session)[398], 1);
+
+        // Controlled outer boundary: the real no-Castle death/recovery
+        // producer is covered by player_lifecycle_tests. Here retain the
+        // genuinely marked spell through retry and its cold replay.
+        let before_retry = super::super::RetrySpellBook::from_campaign(
+            &loaded.session().unwrap().backend().campaign);
+        assert_eq!(before_retry.hand_marks[0], 1);
+        loaded.session_mut().unwrap().backend_mut().campaign.simulation_mut()
+            .stage_no_castle_retry_for_test();
+        let runtime_guard = loaded.identity().guard();
+        let session_guard = loaded.session().unwrap().identity().guard();
+        assert!(loaded.retry_mission_if_ready(runtime_guard, session_guard).unwrap());
+        let retried = loaded.session().unwrap();
+        let after_retry = super::super::RetrySpellBook::from_campaign(&retried.backend().campaign);
+        assert_eq!(after_retry, before_retry);
+        assert_eq!(retried.backend().campaign.simulation().source_exit_result_byte(), 4);
+        assert_eq!(fireball(&retried.snapshot().value).marked_hand, SpellMarkHand::Left);
+        assert_eq!(retried.backend().campaign.simulation().shared_spells().local_player().runtime_spell_experience, [0; 26]);
+
+        let retry_save = resolver.save_replay(&loaded).unwrap();
+        let mut cold_retry = GameRuntime::<Mc2CampaignBackend>::title(8806).unwrap();
+        let guard = cold_retry.identity().guard();
+        resolver.load_replay(&mut cold_retry, guard, 8807, &retry_save).unwrap();
+        let cold = cold_retry.session_mut().unwrap();
+        assert_eq!(cold.backend().campaign.simulation().source_exit_result_byte(), 4);
+        assert_eq!(super::super::RetrySpellBook::from_campaign(&cold.backend().campaign), before_retry);
+        assert_eq!(fireball(&cold.snapshot().value).marked_hand, SpellMarkHand::Left);
+        let guard = super::super::tests::guard(cold);
+        let cycled = cold.step(guard, GameCommand {
+            cycle_marked_spell: Some(MarkedSpellCycle {
+                hand: SpellAssignmentHand::Left,
+                direction: SpellCycleDirection::Next,
+            }),
+            ..GameCommand::default()
+        }).unwrap().value;
+        assert_eq!(fireball(&cycled).hand, SpellHand::Left);
+        assert_eq!(fireball(&cycled).marked_hand, SpellMarkHand::Left);
     }
 }

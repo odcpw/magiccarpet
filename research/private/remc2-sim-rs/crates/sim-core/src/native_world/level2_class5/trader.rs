@@ -1181,16 +1181,52 @@ mod tests {
 
     #[test]
     fn configured_authored_trader_mana_reaches_scheduled_death_and_reclaim() {
+        use crate::game_session::ActorLifecycle;
+
         let mut session = crate::native_world::tests::level_two_campaign_session();
         let player = session.state.entity_index;
-        let (handle, rng, owner) = {
+        let source = {
             let live = &mut session.session.state.live;
-            let source = live
-                .economy
+            live.economy
                 .allocate_authored_trader(125, trader_position(), TRADER_MAX_LIFE, &live.terrain)
-                .unwrap();
-            assert_eq!(source.mana, 0);
-            let slot = source.source_entity_index;
+                .unwrap()
+        };
+        assert_eq!(source.mana, 0);
+        let slot = source.source_entity_index;
+        let handle = session.source_arena().handle(slot).unwrap();
+        let observed = |session: &crate::native_world::Mc2Simulation| {
+            session
+                .creature_page_sources()
+                .find(|row| row.identity.handle == handle)
+        };
+        let alive = observed(&session).unwrap();
+        assert_eq!(
+            alive.identity.kind,
+            crate::level_definition::CreatureKind::Trader
+        );
+        assert_eq!(alive.health, Some((source.life, source.max_life)));
+        assert_eq!(alive.lifecycle, ActorLifecycle::Alive);
+        assert_eq!(
+            (
+                alive.pose.x,
+                alive.pose.y,
+                alive.pose.z,
+                alive.pose.yaw,
+                alive.pose.pitch,
+                alive.roll
+            ),
+            (
+                source.position.x,
+                source.position.y,
+                source.position.z,
+                source.yaw,
+                source.pitch,
+                source.roll
+            )
+        );
+
+        let (rng, owner) = {
+            let live = &mut session.session.state.live;
             // Configured positive state on the actual authored constructor;
             // no claim that an ordinary default mission supplies this mana.
             let row = live
@@ -1212,11 +1248,7 @@ mod tests {
                 state,
                 &mut live.economy.entities[usize::from(slot)],
             );
-            (
-                live.economy.handle(slot).unwrap(),
-                source.entity_rng,
-                state.owner,
-            )
+            (source.entity_rng, state.owner)
         };
         assert_eq!(owner, player);
         let event_start = session.economy().events().len();
@@ -1234,6 +1266,9 @@ mod tests {
             .find(|row| row.source_entity_index == handle.source_slot)
             .unwrap();
         assert!(!source.drawing_enabled);
+        let hidden = observed(&session).unwrap();
+        assert_eq!(hidden.lifecycle, ActorLifecycle::Hidden);
+        assert_eq!(hidden.health, Some((source.life, source.max_life)));
         assert_eq!(source.entity_rng, level2_next_rng16(rng));
         assert_eq!(
             session.source_arena().handle(handle.source_slot),
@@ -1292,6 +1327,7 @@ mod tests {
             Some(handle)
         );
         assert!(session.source_arena().resolve(handle).is_none());
+        assert!(observed(&session).is_none());
         if session.source_arena().handle(handle.source_slot).is_none() {
             assert!(!session.entities()[usize::from(handle.source_slot)].active);
             assert!(!session.economy().map_chains.is_linked(handle.source_slot));

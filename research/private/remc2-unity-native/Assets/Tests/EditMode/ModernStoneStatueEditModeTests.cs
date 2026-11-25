@@ -65,10 +65,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernStoneStatues.MatchesCurrent(current, stale), Is.False);
         }
 
-        [TestCase(false, false)]
-        [TestCase(true, false)]
-        [TestCase(true, true)]
-        public void PresenterPreservesImportedTransformsWhenPlacingStone(bool voxel, bool blockSurface)
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PresenterPreservesImportedTransformsWhenPlacingStone(bool voxel)
         {
             var parent = new GameObject("Stone placement test");
             Material material = null;
@@ -85,8 +84,7 @@ namespace MagicCarpet.Native.Tests
                     baseTmap = 78, selectedTmap = 78, logicalHeight = 500,
                     x = 19328, y = 55936, z = 4575
                 };
-                var presenter = new ModernStoneStatues(parent.transform, voxel, "TMAPS1-0",
-                    blockSurface ? (_, _) => 80f : null);
+                var presenter = new ModernStoneStatues(parent.transform, voxel, "TMAPS1-0");
                 presenter.Observe(3, 10688, new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> {
                     [53] = entity
                 }, new[] { view });
@@ -100,8 +98,7 @@ namespace MagicCarpet.Native.Tests
                 var height = view.logicalHeight / 64f;
                 Assert.That(bounds.size.y, Is.InRange(height * .95f, height * 1.05f),
                     "runtime placement must preserve the prefab's imported axis and scale");
-                Assert.That(bounds.min.y, Is.EqualTo(blockSurface ? 80f : view.z / 64f).Within(height * .03f));
-                Assert.That(view.z, Is.EqualTo(4575), "visual grounding leaves the native pose unchanged");
+                Assert.That(bounds.min.y, Is.EqualTo(view.z / 64f).Within(height * .03f));
                 Assert.That(bounds.center.x, Is.EqualTo(view.x / 64f).Within(height * .1f));
                 Assert.That(bounds.center.z, Is.EqualTo(view.y / 64f).Within(height * .1f));
             }

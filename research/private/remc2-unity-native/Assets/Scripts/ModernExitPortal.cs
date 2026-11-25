@@ -11,7 +11,6 @@ namespace MagicCarpet.Native
     {
         private readonly Transform root;
         private readonly GameObject asset;
-        private readonly Material[] materials;
         private readonly Dictionary<ushort, Instance> instances = new Dictionary<ushort, Instance>();
         private readonly HashSet<ushort> current = new HashSet<ushort>();
         private readonly List<ushort> removed = new List<ushort>();
@@ -23,86 +22,21 @@ namespace MagicCarpet.Native
             internal readonly GameObject node;
             internal readonly Renderer[] renderers;
             internal NativeSim.CampaignEntityPresentation row;
-            internal Instance(NativeSim.CampaignEntityPresentation row, GameObject asset, Transform root, Material[] materials)
+            internal Instance(NativeSim.CampaignEntityPresentation row, GameObject asset, Transform root)
             {
                 sourceId = row.sourceId;
                 generation = row.generation;
-                // FBX imports can carry unit and axis conversion on their root.
-                // World placement must not replace that authored transform.
-                node = new GameObject("Exit target " + row.entityIndex);
-                node.transform.SetParent(root, false);
-                var geometry = new GameObject("Normalized portal geometry").transform;
-                geometry.SetParent(node.transform, false);
-                UnityEngine.Object.Instantiate(asset, geometry, false);
+                node = UnityEngine.Object.Instantiate(asset, root);
+                node.name = "Exit target " + row.entityIndex;
                 renderers = node.GetComponentsInChildren<Renderer>(true);
-                foreach (var renderer in renderers)
-                {
-                    // These are the four materials in the editable master.
-                    // FBX's embedded Standard shader is not supported by URP.
-                    var name = renderer.name;
-                    var material = name.Contains("Red eye") ? 2 :
-                        name.Contains("Deep mouth") ? 1 :
-                        name.Contains("Lower eyelid") || name.Contains("Nose") || name.Contains("Lower lip") ? 3 : 0;
-                    renderer.sharedMaterial = materials[material];
-                }
-                var bounds = LocalBounds(geometry, renderers);
-                if (bounds.size.y <= 0f)
-                    throw new InvalidOperationException("Exit target has no vertical extent");
-                var scale = 1f / bounds.size.y;
-                geometry.localScale = Vector3.one * scale;
-                geometry.localPosition = Vector3.down * (bounds.min.y * scale);
                 this.row = row;
             }
-        }
-
-        // Measure the imported renderer bounds in geometry-local space. Using
-        // each renderer's local bounds avoids world-axis expansion if an
-        // ancestor or imported FBX root is rotated.
-        private static Bounds LocalBounds(Transform geometry, Renderer[] renderers)
-        {
-            var result = new Bounds();
-            var initialized = false;
-            foreach (var renderer in renderers)
-            {
-                var local = renderer.localBounds;
-                var matrix = geometry.worldToLocalMatrix * renderer.localToWorldMatrix;
-                for (var x = -1; x <= 1; x += 2)
-                    for (var y = -1; y <= 1; y += 2)
-                        for (var z = -1; z <= 1; z += 2)
-                        {
-                            var point = matrix.MultiplyPoint3x4(local.center + Vector3.Scale(local.extents, new Vector3(x, y, z)));
-                            if (!initialized) { result = new Bounds(point, Vector3.zero); initialized = true; }
-                            else result.Encapsulate(point);
-                        }
-            }
-            return result;
         }
 
         internal ModernExitPortal(Transform root, bool voxel)
         {
             this.root = root;
             asset = Resources.Load<GameObject>(voxel ? "ModernCharacters/ExitPortal/ExitPortalVoxel" : "ModernCharacters/ExitPortal/ExitPortal");
-            var shader = Shader.Find("Universal Render Pipeline/Lit");
-            if (asset == null || shader == null) { asset = null; return; }
-            materials = new[] {
-                CreateMaterial(shader, "Portal basalt", new Color(.105f, .16f, .19f), .88f),
-                CreateMaterial(shader, "Portal mouth", new Color(.004f, .003f, .003f), 1f),
-                CreateMaterial(shader, "Portal eyes", new Color(.75f, .018f, .009f), .4f, 1.2f),
-                CreateMaterial(shader, "Portal bronze", new Color(.21f, .14f, .075f), .8f)
-            };
-        }
-
-        private static Material CreateMaterial(Shader shader, string name, Color color, float roughness, float emission = 0f)
-        {
-            var material = new Material(shader) { name = name, enableInstancing = true };
-            material.SetColor("_BaseColor", color);
-            material.SetFloat("_Smoothness", 1f - roughness);
-            if (emission > 0f)
-            {
-                material.EnableKeyword("_EMISSION");
-                material.SetColor("_EmissionColor", color * emission);
-            }
-            return material;
         }
 
         internal static bool Matches(NativeSim.CampaignEntityPresentation row) =>
@@ -125,7 +59,7 @@ namespace MagicCarpet.Native
                 }
                 if (!instances.TryGetValue(row.entityIndex, out var instance))
                 {
-                    instance = new Instance(row, asset, root, materials);
+                    instance = new Instance(row, asset, root);
                     instances.Add(row.entityIndex, instance);
                 }
                 instance.row = row;
@@ -164,7 +98,6 @@ namespace MagicCarpet.Native
             foreach (var instance in instances.Values) Destroy(instance.node);
             instances.Clear();
             current.Clear();
-            if (materials != null) foreach (var material in materials) Destroy(material);
         }
 
         private static void Destroy(UnityEngine.Object obj)

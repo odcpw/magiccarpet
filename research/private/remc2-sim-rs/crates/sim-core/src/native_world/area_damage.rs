@@ -23,6 +23,7 @@ pub(crate) struct ActorDomains<'a> {
     villagers: &'a mut VillagerFamily,
     house_parameters: &'a std::collections::BTreeMap<u8, crate::house::HouseParameter>,
     particles: Option<&'a [super::ParticleParameter]>,
+    map_type: Option<super::MapType>,
 }
 
 impl<'a> ActorDomains<'a> {
@@ -36,11 +37,17 @@ impl<'a> ActorDomains<'a> {
             villagers: &mut ordinary.villagers,
             house_parameters: &ordinary.house_parameters,
             particles: None,
+            map_type: None,
         }
     }
 
     pub(crate) fn with_particles(mut self, particles: &'a [super::ParticleParameter]) -> Self {
         self.particles = Some(particles);
+        self
+    }
+
+    pub(crate) fn with_map_type(mut self, map_type: super::MapType) -> Self {
+        self.map_type = Some(map_type);
         self
     }
 
@@ -51,6 +58,7 @@ impl<'a> ActorDomains<'a> {
             villagers: &mut *self.villagers,
             house_parameters: self.house_parameters,
             particles: self.particles,
+            map_type: self.map_type,
         }
     }
 
@@ -61,6 +69,7 @@ impl<'a> ActorDomains<'a> {
             villagers: Some(self.villagers),
             house_parameters: Some(self.house_parameters),
             particles: self.particles,
+            map_type: self.map_type,
             ..super::source_target::Context::default()
         }
     }
@@ -972,7 +981,7 @@ pub(crate) struct EffectLists {
     model45_chain: crate::campaign::source_arena::SourceSlotChain,
     mana_chain: crate::campaign::source_arena::SourceManaChain,
     model22_chain: crate::campaign::source_arena::SourceSlotChain,
-    class5_chains: [crate::campaign::source_arena::SourceSlotChain; 29],
+    class5_chains: std::sync::Arc<[crate::campaign::source_arena::SourceSlotChain; 29]>,
     epoch: u32,
 }
 
@@ -1152,6 +1161,10 @@ pub(crate) fn retire_hidden_player_death_markers(
 }
 
 impl EffectLists {
+    pub(crate) fn retain_class5_chains(&self, arena: &mut SourceArena) {
+        arena.class5_model_chains = Some(self.class5_chains.clone());
+    }
+
     /// Current fixed records reached from the pass-start class-5 heads.
     /// Preserve NewEvent's next-link cut and source-list reset epoch.
     pub(crate) fn class5_current_slots(&self, arena: &SourceArena) -> [Vec<u16>; 29] {
@@ -1307,7 +1320,7 @@ pub(crate) fn capture_effect_lists(
         class3_chain,
         model45_chain,
         model22_chain,
-        class5_chains,
+        class5_chains: std::sync::Arc::new(class5_chains),
         mana_chain: {
             let mut slots = targets
                 .arena
@@ -1972,6 +1985,20 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             return None;
         }
         let economy = &self.arena.economy;
+        if economy.live_arena_kind(slot) == Some(super::Level2DynamicArenaKind::CastleDefender) {
+            let context = self.actors.as_ref()?.source_target_context();
+            let view = super::source_target::read(self.arena, context, slot).ok()??;
+            // sub_4ABA0 sets byte38=1 on the mapped class3/model3 collector.
+            return Some(Actor {
+                source_id: view.source_id,
+                class: view.class,
+                model: view.model,
+                position: view.position,
+                shape: view.collision?,
+                damage_mask: 1,
+                control_flags: view.control_flags,
+            });
+        }
         // SetSmoke4 leaves byte38 zero. Wind still contacts these rows; its
         // geometry comes from the current particle, not the old raw occupant.
         if let Some(current) = economy.live_arena_cursor_row(slot)
@@ -2635,6 +2662,7 @@ mod tests {
             };
             arena.rebuild_source_free_arena();
             let lists = capture_effect_lists(&mut arena, None);
+            lists.retain_class5_chains(&mut arena);
             let before = lists.class5_current_slots(&arena);
             assert!(before.iter().any(|bucket| !bucket.is_empty()));
             let epoch = arena.economy.source_list_epoch();
@@ -2663,6 +2691,13 @@ mod tests {
             let after = lists.class5_current_slots_after_allocation(
                 &arena.economy, &arena.entities,
             );
+            for (model, slots) in after.iter().enumerate() {
+                assert_eq!(
+                    arena.objective_creature_slots(model as u32).unwrap(),
+                    *slots,
+                    "the objective map follows the same captured class-5 head after {case}"
+                );
+            }
             if recycle {
                 assert_eq!(Some(root.unwrap().source_entity_index), replacement);
                 assert_ne!(arena.economy.source_list_epoch(), epoch);

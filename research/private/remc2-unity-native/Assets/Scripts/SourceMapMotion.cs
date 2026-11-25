@@ -174,8 +174,12 @@ namespace MagicCarpet.Native
             Func<int, (int width, int height)> extent, Action<int, int> stamp,
             Action<int, int, int> sound, bool terminalEffectEnabled)
         {
-            if (viewportPath != null && viewportPath.Move())
-            { viewportPath = null; Ready = true; DescriptionViewportY = Y; }
+            if (viewportPath != null)
+            {
+                var arrived = viewportPath.Move();
+                X = viewportPath.X; Y = viewportPath.Y;
+                if (arrived) { viewportPath = null; Ready = true; DescriptionViewportY = Y; }
+            }
             else if (Ready && !Travelling && allowPan) Pan(mouseX, mouseY);
             StepBackground(now, leftHeld, sound);
             StepDecorations(menu, now, terminalEffectEnabled, sound);
