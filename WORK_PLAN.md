@@ -1,8 +1,25 @@
 # Shared-engine delivery plan
 
+### Rendering and scene delivery measured separately — November 25
+
+Browser `71c703fb` is pushed and installed on runtime `d7d89563`. The
+browser now receives the scene and matching HUD in one response, and a
+repeat poll needs only a header. Warm NightSpire samples at 1080×810 on
+the RTX 3090 held about 60 draw frames per second on the 60 Hz display.
+Uncapped Chrome submitted about 758 draws per second in the same scene.
+This measures draw submission throughput. With 25 ms of added latency,
+fresh scene delivery rose from 6.4 to 9.3 per second while simulation stayed
+near 30 turns per second. One map-open sample took 256 ms in both builds.
+Without added latency, fresh scene delivery was 27.6 before and 27.2 after
+in one eight-second loopback sample per build.
+The installed smoke opened NightSpire, rendered at 58 FPS with a 16.8 ms
+95th-percentile frame time, and paused without browser errors. The installed
+native and served bundle matched. Evidence is in
+`research/private/generated/browser-profile-20261125/`.
+
 ### Smoother scene delivery in the private Original — November 25
 
-Browser `f3355888` is pushed and installed on runtime `d7d89563`. In three
+Browser `f3355888` was installed on runtime `d7d89563`. In three
 five-second NightSpire samples per build on the RTX 3090, the median fresh
 scene rate rose from 24.9 to 27.5 per second. The 95th-percentile scene gap
 fell from 66.7 to about 50 ms. Simulation stayed near 30 turns per second.
