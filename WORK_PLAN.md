@@ -1,5 +1,20 @@
 # Shared-engine delivery plan
 
+### Smoother scene delivery in the private Original — November 25
+
+Browser `f3355888` is pushed and installed on runtime `d7d89563`. In three
+five-second NightSpire samples per build on the RTX 3090, the median fresh
+scene rate rose from 24.9 to 27.5 per second. The 95th-percentile scene gap
+fell from 66.7 to about 50 ms. Simulation stayed near 30 turns per second.
+Scene requests rose from about 30 to 33 per second. A paid Fireball spent
+100 mana, the map opened and closed, and pause worked on the candidate.
+The installed build opened NightSpire with no browser errors.
+
+The F8 preference has a guarded Rust command and an indexed-renderer
+consumer. The default geometry client still lacks in-world player labels.
+Evidence is in `research/private/generated/browser-finish-20261125/` and
+the November 25 paired samples under `earned-campaign-20261124/goat-tmap/`.
+
 ### Castle collector cleanup in the private Original — November 24
 
 Runtime `d7d89563` is pushed and installed with native `e9a394b13f4a`.
