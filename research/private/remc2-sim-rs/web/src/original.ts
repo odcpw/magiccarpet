@@ -495,10 +495,12 @@ function syncPlayerInformation(): void {
 
 let display: IndexedDisplay | GeometryDisplay;
 let packetCount = 0, bytesReceived = 0, lastArrival = 0;
+let repeatedFramePolls = 0;
 const intervals: number[] = [];
 async function pollFrame(): Promise<void> {
   const version = controlVersion;
   const before = performance.now();
+  let pollInterval = 1000 / 30;
   try {
     // A lifecycle request may be queued behind an input POST. Do not start a
     // read in that window: it can return the previous paused publication after
@@ -520,7 +522,16 @@ async function pollFrame(): Promise<void> {
     const data = await response.arrayBuffer();
     const frame = geometry ? decodeWorldFrame(data) : decodeOriginalFrame(data);
     if (version !== controlVersion) return;
-    if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) return;
+    if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) {
+      // A draw can release a new publication just after this read. Give it
+      // two short chances before returning to the usual idle polling rate.
+      if (display instanceof OriginalWorldRenderer && playing && repeatedFramePolls < 2) {
+        pollInterval = 8;
+        repeatedFramePolls++;
+      }
+      return;
+    }
+    repeatedFramePolls = 0;
     const query = '?sequence=' + frame.sequence;
     const [stateResponse, observationResponse, modernResponse] = await Promise.all([
       fetch(API + '/state' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
@@ -691,7 +702,7 @@ async function pollFrame(): Promise<void> {
       display_width: DISPLAY_WIDTH, display_height: DISPLAY_HEIGHT,
       playing, paused: !playing && started } });
   } catch (error) { fail(error); }
-  finally { if (connected && !campaignPhase) window.setTimeout(() => void pollFrame(), Math.max(5, 1000 / 30 - (performance.now() - before))); }
+  finally { if (connected && !campaignPhase) window.setTimeout(() => void pollFrame(), Math.max(5, pollInterval - (performance.now() - before))); }
 }
 
 async function sendInput(): Promise<void> {
