@@ -4,7 +4,7 @@ import { decodeOriginalFrame, ORIGINAL_HEIGHT, ORIGINAL_WIDTH, OriginalSceneHist
   type OriginalFrame, type IndexedBlendTables } from './original-adapter';
 import { OriginalHud, type OriginalHudState, type SpellMenu } from './original-hud';
 import { decodeRenderPublication } from './render-publication';
-import { decodeWorldFrame, decodeTerrain, type WorldFrame } from './original-world-data';
+import { decodeWorldFrame, decodeTerrain, splitWorldPublication, type WorldFrame } from './original-world-data';
 import { OriginalWorldRenderer } from './original-world-renderer';
 import { ModernWorldRenderer } from './modern-world-renderer';
 import { decodeModernFrame } from './modern-runtime';
@@ -14,6 +14,7 @@ import { OriginalSpeech, type ObjectiveSpeechCue } from './original-speech';
 import { OriginalCampaignMusic, type CampaignMusicState } from './original-music';
 
 const API = '/original-api';
+const worldStateDecoder = new TextDecoder('utf-8', { fatal: true });
 const modernRequested = new URLSearchParams(location.search).get('visual') === 'modern';
 const DISPLAY_WIDTH = 640, DISPLAY_HEIGHT = 480;
 const element = <T extends HTMLElement>(id: string): T => {
@@ -507,8 +508,20 @@ async function pollFrame(): Promise<void> {
     // resume has already acknowledged. Older reads are rejected by version.
     if (busy) return;
     const geometry = isGeometryDisplay(display);
-    const response = await fetch(API + (geometry ? '/world-frame' : '/frame'), { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    const bundled = display instanceof OriginalWorldRenderer;
+    const endpoint = bundled ? '/world-packet' + (lastFrame ? `?after=${lastFrame.sequence}&generation=${lastFrame.runtimeGeneration}` : '')
+      : geometry ? '/world-frame' : '/frame';
+    const response = await fetch(API + endpoint, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (response.status === 204) {
+      if (bundled && response.headers.get('X-Scene-Pending') === '1') {
+        // The draw acknowledgment can release a new scene just after this
+        // read. Retry briefly without fetching the previous scene again.
+        if (version === controlVersion && playing && repeatedFramePolls < 2) {
+          pollInterval = 8;
+          repeatedFramePolls++;
+        }
+        return;
+      }
       const status = await readStatus();
       // A direct secret entry briefly has no frames while the owner binds the new mission.
       if (version === controlVersion && (status.phase !== 'loading' || status.can_refresh_assets)) showCampaign(status);
@@ -520,26 +533,30 @@ async function pollFrame(): Promise<void> {
     }
     if (!response.ok) { await responseJson(response); return; }
     const data = await response.arrayBuffer();
-    const frame = geometry ? decodeWorldFrame(data) : decodeOriginalFrame(data);
+    const publication = bundled ? splitWorldPublication(data) : null;
+    const frame = geometry ? decodeWorldFrame(publication?.frame ?? data) : decodeOriginalFrame(data);
     if (version !== controlVersion) return;
-    if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) {
-      // A draw can release a new publication just after this read. Give it
-      // two short chances before returning to the usual idle polling rate.
-      if (display instanceof OriginalWorldRenderer && playing && repeatedFramePolls < 2) {
-        pollInterval = 8;
-        repeatedFramePolls++;
-      }
-      return;
-    }
+    if (lastFrame && frame.runtimeGeneration === lastFrame.runtimeGeneration && frame.sequence <= lastFrame.sequence) return;
     repeatedFramePolls = 0;
     const query = '?sequence=' + frame.sequence;
-    const [stateResponse, observationResponse, modernResponse] = await Promise.all([
-      fetch(API + '/state' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
-      fetch(API + '/observation' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
-      display instanceof ModernWorldRenderer ? fetch(API + '/modern-frame' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }) : Promise.resolve(null),
-    ]);
-    if (stateResponse.status === 410 || observationResponse.status === 410 || modernResponse?.status === 410) return;
-    const state = await responseJson<BridgeState>(stateResponse);
+    let state: BridgeState;
+    let observationBytes: Uint8Array;
+    let modernResponse: Response | null = null;
+    if (publication) {
+      state = JSON.parse(worldStateDecoder.decode(publication.state)) as BridgeState;
+      observationBytes = publication.observation;
+    } else {
+      const [stateResponse, observationResponse, modern] = await Promise.all([
+        fetch(API + '/state' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
+        fetch(API + '/observation' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }),
+        display instanceof ModernWorldRenderer ? fetch(API + '/modern-frame' + query, { cache: 'no-store', signal: AbortSignal.timeout(10000) }) : Promise.resolve(null),
+      ]);
+      if (stateResponse.status === 410 || observationResponse.status === 410 || modern?.status === 410) return;
+      state = await responseJson<BridgeState>(stateResponse);
+      if (!observationResponse.ok) { await responseJson(observationResponse); return; }
+      observationBytes = new Uint8Array(await observationResponse.arrayBuffer());
+      modernResponse = modern;
+    }
     if (version !== controlVersion) return;
     showSpeechPreference(state.speech_enabled, state.speech_available);
     configuredMapCode = preferenceKeyCode(state.map_key);
@@ -573,8 +590,7 @@ async function pollFrame(): Promise<void> {
       if (status.running) sessionStorage.setItem(enterMissionKey, JSON.stringify([status.level_id, status.asset_revision]));
       location.reload(); return;
     }
-    if (!observationResponse.ok) { await responseJson(observationResponse); return; }
-    const observation = decodeRenderPublication(new Uint8Array(await observationResponse.arrayBuffer()));
+    const observation = decodeRenderPublication(observationBytes);
     if (observation.runtime_generation !== frame.runtimeGeneration || observation.identity.generation !== frame.sessionGeneration ||
         observation.identity.tick !== frame.tick || BigInt(state.sequence) !== frame.sequence ||
         BigInt(state.runtime_generation) !== frame.runtimeGeneration || BigInt(state.session_generation) !== frame.sessionGeneration || BigInt(state.tick) !== frame.tick)
@@ -691,7 +707,7 @@ async function pollFrame(): Promise<void> {
     }
     if (started && !busy && state.paused && playing) { playing = false; clearMenuKeys(); clearInput(); showMenu('Paused'); }
     const now = performance.now(); if (lastArrival) { intervals.push(now - lastArrival); if (intervals.length > 600) intervals.shift(); }
-    lastArrival = now; packetCount++; bytesReceived += data.byteLength;
+    lastArrival = now; packetCount++; bytesReceived += publication?.frame.byteLength ?? data.byteLength;
     const sorted = [...intervals].sort((a,b) => a-b);
     Object.assign(window, { originalMetrics: { gpu: display.gpu, render_tick: frame.tick.toString(),
       runtime_generation: frame.runtimeGeneration.toString(), session_generation: frame.sessionGeneration.toString(),

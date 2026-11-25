@@ -1,6 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { admitsReflection, admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, orderReflectionRows, reflectionPainterRanks, reflectiveMaterial, sourceProjection, terrainHeight, wrappedDelta, TmapDrawGate, TmapPixelState, type TmapDraw, type WorldSprite } from '../src/original-world-data.ts';
+import { admitsReflection, admitsSprite, assetBytes, decodeTerrain, decodeWorldFrame, orderReflectionRows, reflectionPainterRanks, reflectiveMaterial, sourceProjection, splitWorldPublication, terrainHeight, wrappedDelta, TmapDrawGate, TmapPixelState, type TmapDraw, type WorldSprite } from '../src/original-world-data.ts';
+
+test('bundled world publication splits three byte ranges and rejects a mismatched extent', () => {
+  const packet = new ArrayBuffer(22);
+  const header = new DataView(packet);
+  header.setUint32(0, 0x3142434d, true);
+  header.setUint32(4, 1, true);
+  header.setUint32(8, 2, true);
+  header.setUint32(12, 3, true);
+  new Uint8Array(packet, 16).set([1, 2, 3, 4, 5, 6]);
+  const { frame, state, observation } = splitWorldPublication(packet);
+  assert.deepEqual([...frame], [1]);
+  assert.deepEqual([...state], [2, 3]);
+  assert.deepEqual([...observation], [4, 5, 6]);
+  assert.throws(() => splitWorldPublication(packet.slice(0, 21)));
+  header.setUint32(8, 0, true);
+  assert.throws(() => splitWorldPublication(packet));
+});
 
 test('reflected terrain and actors follow source cell order and admission', () => {
   const sine = new DataView(new ArrayBuffer(2048 * 4)); sine.setInt32(512 * 4, 65536, true);

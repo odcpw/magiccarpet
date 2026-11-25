@@ -43,6 +43,7 @@ PACKAGES = PRIVATE / "generated/mc-voxel-combat-20261107/native-mana-scenario-01
 PIXELS = 320 * 200
 HEADER = struct.Struct("<4sHHHHIQQQQQ")
 WORLD_HEADER = struct.Struct("<4sHHQQQQQIIII")
+WORLD_PUBLICATION_HEADER = struct.Struct("<4sIII")
 MODERN_ASSETS = PRIVATE / "generated/browser-level1-assets"
 MEDIA_CACHE = PRIVATE / "generated/mc2-campaign-media-cache-decoded"
 CAMPAIGN_LAUNCHER = PRIVATE / "remc2-unity-native/run-campaign.sh"
@@ -1246,12 +1247,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args): pass
 
-    def send_data(self, status, data, content_type="application/json", cookie=None, content_encoding=None):
+    def send_data(self, status, data, content_type="application/json", cookie=None, content_encoding=None,
+                  scene_pending=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if scene_pending: self.send_header("X-Scene-Pending", "1")
         if content_encoding: self.send_header("Content-Encoding", content_encoding)
         if cookie: self.send_header("Set-Cookie", f"mc_original={cookie}; HttpOnly; SameSite=Strict; Path=/")
         self.end_headers()
@@ -1423,17 +1426,31 @@ class Handler(BaseHTTPRequestHandler):
             if not assets: return self.send_json(503, {"error": "world assets unavailable"})
             if target.path.endswith("/manifest"): return self.send_json(200, assets.manifest)
             return self.send_data(200, assets.blob, "application/octet-stream")
-        if target.path in ("/original-api/frame", "/original-api/world-frame", "/original-api/modern-frame", "/original-api/terrain", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
+        if target.path in ("/original-api/frame", "/original-api/world-frame", "/original-api/world-packet", "/original-api/modern-frame", "/original-api/terrain", "/original-api/state", "/original-api/observation", "/original-api/world-map"):
             params = parse_qs(target.query)
+            bundling = target.path.endswith('/world-packet')
+            if bundling and (bridge.renderer != 'geometry' or bridge.modern):
+                return self.send_json(404, {"error": "renderer unavailable"})
             try:
                 requested = int(params["sequence"][0]) if "sequence" in params else None
                 if requested is not None and requested < 0: raise ValueError()
+                after = int(params["after"][0]) if bundling and "after" in params else None
+                generation = int(params["generation"][0]) if bundling and "generation" in params else None
+                if after is not None and not 0 <= after < 2**64: raise ValueError()
+                if generation is not None and not 0 <= generation < 2**64: raise ValueError()
             except (ValueError, IndexError): return self.send_json(400, {"error": "invalid publication sequence"})
             publication = bridge.publication(requested)
             if publication is None:
                 if requested is None and bridge.ready and bridge.phase not in ("playing", "paused"):
                     return self.send_data(204, b"", "application/octet-stream")
                 return self.send_json(410 if requested is not None else 503, {"error": "publication unavailable"})
+            if bundling:
+                sequence, frame, state, observation, *_ = publication
+                if sequence == after and state["runtime_generation"] == generation:
+                    return self.send_data(204, b"", "application/octet-stream", scene_pending=True)
+                state_bytes = json.dumps(state, separators=(",", ":")).encode()
+                header = WORLD_PUBLICATION_HEADER.pack(b"MCB1", len(frame), len(state_bytes), len(observation))
+                return self.send_data(200, b"".join((header, frame, state_bytes, observation)), "application/octet-stream")
             if target.path.endswith('/modern-frame'):
                 if bridge.renderer != 'geometry': return self.send_json(404, {'error': 'renderer unavailable'})
                 if publication[7] is None: return self.send_json(503, {'error': bridge.modern_error or 'modern observation unavailable'})

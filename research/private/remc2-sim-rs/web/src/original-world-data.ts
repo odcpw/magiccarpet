@@ -99,6 +99,28 @@ export function decodeWorldFrame(input: ArrayBuffer | Uint8Array): WorldFrame {
   return { runtimeGeneration, sessionGeneration, tick, sequence, terrainRevision,
     palette: bytes.slice(64, 832), sprites, staticPalette: (flags & 1) !== 0 };
 }
+/** One HTTP response containing three views of the same published world. */
+export function splitWorldPublication(input: ArrayBuffer): {
+  frame: Uint8Array; state: Uint8Array; observation: Uint8Array;
+} {
+  const headerBytes = 16;
+  if (input.byteLength < headerBytes) throw new Error('Incomplete world publication');
+  const header = new DataView(input);
+  const frameBytes = header.getUint32(4, true);
+  const stateBytes = header.getUint32(8, true);
+  const observationBytes = header.getUint32(12, true);
+  const stateStart = headerBytes + frameBytes;
+  const observationStart = stateStart + stateBytes;
+  if (header.getUint32(0, true) !== 0x3142434d || !frameBytes || !stateBytes || !observationBytes ||
+      observationStart + observationBytes !== input.byteLength)
+    throw new Error('Invalid world publication extent');
+  return {
+    frame: new Uint8Array(input, headerBytes, frameBytes),
+    state: new Uint8Array(input, stateStart, stateBytes),
+    observation: new Uint8Array(input, observationStart, observationBytes),
+  };
+}
+
 export function decodeTerrain(input: ArrayBuffer | Uint8Array): TerrainPlanes {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if (bytes.length !== 5 * 65536) throw new Error('Incomplete native terrain planes');
